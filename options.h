@@ -4,6 +4,7 @@
 #define APPTITLE 	"DCEMU - DreamCast Emulator for Windows 21-APR-2004"
 #define OPENGL
 
+// Usar funcciones o macros para accesar la memoria
 #define MEMORY_MACROS
 
 //#define PRINT_ASM
