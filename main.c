@@ -405,7 +405,7 @@ void main_loop(void)
 				R(0) = mem_base + 1024*1024*5;
 				rts112(instr);
 			}
-			else  */
+			else */
 			if (PC == HACK_BASE + HACK_GDROM)
 			{
 				logmsg("HACK_GDROM: r6=%x, r7=%x\r\n", R(6), R(7));
@@ -917,13 +917,13 @@ void inicializar_fonts()
 				if (bits % 8 == 0)
 				{
 //					memoria[cnt++] = nibble;
-					memwrite(cnt, &nibble, sizeof(BYTE));
+					memwrite(cnt++, &nibble, sizeof(BYTE));
 					nibble = 0;
 				}
 			}
 		}
 
-//		fprintf(fp, "Finalizamos la letra %c.\r\n", *ptr);
+//		logmsg("Finalizamos la letra %c.\r\n", *ptr);
 		ptr++;
 	}
 }

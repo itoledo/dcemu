@@ -271,11 +271,11 @@ void mem_hash_setup(void)
 	// 1c thru 1f = SH4 Internal Area
 	mem_zone[0x1E] = &stack_mem[0];		// Hmm, this is a cheat!
 
-	//mem_zone[0x80] = &bios_mem[0];		
-	//mem_zone[0x8C] = &memoria[0];
-	//mem_zone[0xA4] = &video_mem[0];		// 64-Bit Acc
-	//mem_zone[0xA5] = &video_mem[0];		// 32-Bit Acc
-	//mem_zone[0xAC] = &memoria[0];
+//	mem_zone[0x80] = &bios_mem[0];		
+//	mem_zone[0x8C] = &memoria[0];
+//	mem_zone[0xA4] = &video_mem[0];		// 64-Bit Acc
+//	mem_zone[0xA5] = &video_mem[0];		// 32-Bit Acc
+//	mem_zone[0xAC] = &memoria[0];
 
 	// cree una copia de los bloques que repiten
 	// Nota: aqui debemos copiar ciertos bloques usando una repeticion
@@ -1404,23 +1404,23 @@ void memread(unsigned long direccion, void * target, size_t size)
 	}
 
 	(*mem_hash_read[direccion >> 24]) (direccion, target, size);
-// #ifdef DEBUG_MEM_READ
+#ifdef DEBUG_MEM_READ
 	if (filelogging & FILELOG_MEMREADS)
 	switch(size)
 	{
 		case 1:
-			logmsg( "memread: dir %8x, byte %x\r\n", direccion, *(BYTE *) target);
+			logxmsg(LOG_MEM, "memread: dir %8x, byte %x\r\n", direccion, *(BYTE *) target);
 			break;
 
 		case 2:
-			logmsg( "memread: dir %8x, word %x\r\n", direccion, *(WORD *) target);
+			logxmsg(LOG_MEM, "memread: dir %8x, word %x\r\n", direccion, *(WORD *) target);
 			break;
 
 		case 4:
-			logmsg( "memread: dir %8x, dword %x\r\n", direccion, *(DWORD *) target);
+			logxmsg(LOG_MEM, "memread: dir %8x, dword %x\r\n", direccion, *(DWORD *) target);
 			break;
 	}
-// #endif
+#endif
 }
 
 void memwrite(unsigned long direccion, void * source, size_t size)
