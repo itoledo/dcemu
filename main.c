@@ -43,14 +43,6 @@ DWORD MAPLE_STATE;
 DWORD MAPLE_SPEED;
 DWORD MAPLE_RESET1;
 
-
-unsigned char * memoria;
-// unsigned char * orig_mem;
-unsigned char * video_mem;
-unsigned char * regmem;
-unsigned char * bios_mem;
-unsigned char * ta_mem;
-
 #define MAX_PARAMS 4
 
 struct opcode_cache_st
@@ -191,12 +183,8 @@ void RedibujarPantalla()
 		bs = draw_backscreen();
 		if (DebugVisible)
 			DebugUpdate(bs);
-/*		else
-		{
-			bs = draw_backscreen();
-		} */
 		if (pausa == true)
-			DrawDebugInlineInfo();
+			DrawDebugInlineInfo(bs);
 		SDL_BlitSurface(bs, NULL, screen, NULL);
 		SDL_Flip(screen);
 /*		SDL_BlitSurface(backscreen, NULL, glscreen, NULL);
@@ -205,7 +193,12 @@ void RedibujarPantalla()
 		glRasterPos2f(0, 0);
 //		SDL_LockSurface(backscreen);
 //		SDL_LockSurface(glscreen);
-		glDrawPixels(640, 480, GL_RGBA /* RGBA */ , GL_UNSIGNED_BYTE, screen->pixels);
+
+//		glDrawPixels(640, 480, GL_RGBA /* RGBA */ , GL_UNSIGNED_BYTE, screen->pixels);
+		int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
+		glDrawPixels(ancho, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
+
+
 /*		switch(screenbits)
 		{
 			case 16:
@@ -315,41 +308,33 @@ void timer_check()
 {
     if (*TSTR & 8)
     {
-//        fprintf(fp, "TCNT2 operando\r\n");
         if ((long) (*TCNT2) < 0) // underflow
         {
-//                fprintf(fp, "TCNT2 underflow\r\n");
                 *TCNT2 = *TCOR2;
                 *TCR2 |= UNF;
         }
         else
-                (*TCNT2)--;
+				*TCNT2 = *TCNT2 - 1;
     }
     if (*TSTR & 2)
     {
         if ((long) (*TCNT1) < 0) // underflow
         {
-//                fprintf(fp, "TCNT1 underflow\r\n");
                 *TCNT1 = *TCOR1;
                 *TCR1 |= UNF;
         }
         else
-                (*TCNT1)--;
+				*TCNT1 = *TCNT1 - 1;
     }
     if ((*TSTR) & 1)
     {
-//        fprintf(fp, "TCNT0 operando\r\n");
         if ((long) (*TCNT0) < 0) // underflow
         {
-//                logmsg("TCNT0 underflow\r\n");
                 (*TCNT0) = *TCOR0;
                 (*TCR0) |= UNF;
         }
         else
-		{
             *TCNT0 = *TCNT0 - 1;
-//            fprintf(fp, "Restando 1 a TCNT0: %d\r\n", *TCNT0);
-		}
     }
 }
 
@@ -358,7 +343,6 @@ void main_loop(void)
 	WORD instr;
 	SDL_Event event;
 	DWORD valor;
-	char buf[100];
 	
 	for (;;)
 	{
@@ -1058,8 +1042,8 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-	PC = 0x8c008300;
+	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+//	PC = 0x8c008300;
 //	PC = 0x00000000;
 //	PC = 0x8c0000e0;
 	str_PC = get_memory_pointer(PC);
@@ -1096,20 +1080,16 @@ int main(int argc, char *argv[])
 #endif	
 
 	// HACK!
-//	*(DWORD *) &memoria[SYSCALL_ROMFONT - mem_base] = SYSCALL_ROMFONT;
-//	*(DWORD *) &memoria[SYSCALL_ROMFONT - 0x80000000] = SYSCALL_ROMFONT;
-
-//	*(DWORD *) &memoria[SYSCALL_ROMFONT - 0x80000000]	= HACK_BASE + HACK_ROMFONT;
  	dwvalor = HACK_BASE + HACK_ROMFONT;	memwrite(SYSCALL_ROMFONT, &dwvalor, sizeof(DWORD));
 	dwvalor = HACK_BASE + HACK_GDROM;	memwrite(SYSCALL_GDROM, &dwvalor, sizeof(DWORD));
  	dwvalor = HACK_BASE + HACK_SYSINFO; memwrite(SYSCALL_SYSINFO, &dwvalor, sizeof(DWORD));
  	dwvalor = HACK_BASE + HACK_FLASHROM; memwrite(SYSCALL_FLASHROM, &dwvalor, sizeof(DWORD));
  	dwvalor = HACK_BASE + HACK_UNKNOWN; memwrite(SYSCALL_UNKNOWN, &dwvalor, sizeof(DWORD));
 
- 	// vamos a hacer esto:
-/*		HACK_BASE		:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
- 		HACK_BASE + 2	:	RTS
- 		HACK_BASE + 4	:	<POSICION DEL FONT EN LA MEMORIA> */
+//	vamos a hacer esto:
+//		HACK_BASE		:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
+//		HACK_BASE + 2	:	RTS
+// 		HACK_BASE + 4	:	<POSICION DEL FONT EN LA MEMORIA>
  
  	wvalor = 0xD000;		memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);
  	wvalor = 0x000B;		memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
@@ -1119,8 +1099,6 @@ int main(int argc, char *argv[])
  	dwvalor = FONT_BASE;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
 #endif 	
 
-/*	*(DWORD *) &memoria[SYSCALL_GDROM	- 0x80000000]	= HACK_BASE + HACK_GDROM;
-	*(WORD *) &memoria[HACK_BASE + HACK_GDROM - 0x80000000] = 0x0009; // NOP */
 	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
 	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
 

@@ -170,7 +170,7 @@ struct st_cmd opcodes[] =
 	{ 0x0038, 0xFFFF, "LDTLB",	OP_T_NA,				NOIMP	},
 	{ 0x00C3, 0xF0FF, "MOVCA.L",OP_T_R0_AT_RN,			NOIMP	},
 	{ 0x0009, 0xFFFF, "NOP",	OP_T_NA,				nop },
-	{ 0x0093, 0xF0FF, "OCBI",	OP_T_AT_RN,				NOIMP	},
+	{ 0x0093, 0xF0FF, "OCBI",	OP_T_AT_RN,				nop	},
 	{ 0x00A3, 0xF0FF, "OCBP",	OP_T_AT_RN,				NOIMP	},// 140
 	{ 0x00B3, 0xF0FF, "OCBWB",	OP_T_AT_RN,				ocbwb141},
 	{ 0x0083, 0xF0FF, "PREF",	OP_T_AT_RN,				pref142 },
@@ -265,7 +265,7 @@ struct st_cmd opcodes[] =
 	{ 0xF01A, 0xF01F, "FMOV",	OP_T_XDM_AT_RN,			fmov227,	REQ_PR_0_SZ_1	},
 	{ 0xF01B, 0xF01F, "FMOV",	OP_T_XDM_AT_MIN_RN,		fmov228,	REQ_PR_0_SZ_1	},
 	{ 0xF017, 0xF01F, "FMOV",	OP_T_XDM_AT_R0_RN,		fmov229,	REQ_PR_0_SZ_1	},
-	{ 0xF0ED, 0xF0FF, "FIPR",	OP_T_FVM_FVN,			NOIMP,		REQ_PR_0		},
+	{ 0xF0ED, 0xF0FF, "FIPR",	OP_T_FVM_FVN,			fipr,		REQ_PR_0		},
 	{ 0xF1FD, 0xF3FF, "FTRV",	OP_T_XMTRX_FVN,			ftrv,		REQ_PR_0		},
 	{ 0xF07D, 0xF0FF, "FSRRA",  OP_T_FRN,               fsrra,		REQ_PR_0		},
 	{ 0xF0FD, 0xF1FF, "FSCA",	OP_T_FPUL_DRN,			fsca,		REQ_PR_0		},

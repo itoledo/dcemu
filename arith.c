@@ -127,7 +127,7 @@ OPCODE(cmphs45) // CMP/HS Rm, Rn (0011nnnn mmmm0010)
 	COPY_REG(rn, R(n));
 
 	if (rn >= rm) */
-	if ((unsigned) R(n) >= (unsigned) R(m))
+	if ((unsigned long) R(n) >= (unsigned long) R(m))
 		SET_T
 	else
 		UNSET_T
@@ -147,7 +147,7 @@ OPCODE(cmpge46) // CMP/GE Rm, Rn (0011nnnn mmmm0011)
 	COPY_REG(rn, R(n));
 
 	if (rn >= rm) */
-	if ((signed) R(n) >= (signed) R(m))
+	if ((signed long) R(n) >= (signed long) R(m))
 		SET_T
 	else
 		UNSET_T
@@ -434,14 +434,9 @@ OPCODE(dmulsl55) // DMULS.L Rm, Rn (0011nnnn mmmm1101)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-//	signed long rm, rn;
 	signed long long x;
 	
-//	COPY_REG(rm, R(m));
-//	COPY_REG(rn, R(n));
-
-	x = (signed long long) R(n) * (signed long long) R(m);
-//	x = (signed long long) rn * (signed long long) rm;
+	x = (signed long long) (signed long) R(n) * (signed long long) (signed long) R(m);
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
 	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
@@ -459,14 +454,9 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-//	unsigned long rm, rn;
 	unsigned long long x;
 
-//	COPY_REG(rm, R(m));
-//	COPY_REG(rn, R(n));
-
-	x = (unsigned long long) R(n) * (unsigned long long) R(m);
-//	x = (unsigned long long) rn * (unsigned long long) rm;
+	x = (unsigned long long) (unsigned long) R(n) * (unsigned long long) (unsigned long) R(m);
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
 	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
@@ -483,21 +473,11 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 OPCODE(dt) // DT Rn (0100nnnn 00010000)
 {
 	short n = (arg >> 8) & 0x0F;
-//	signed long rn;
 
 #ifdef DEBUG_ARITH
 	logmsg("dt: r[%d]=%x\r\n", n, R(n));
 #endif
 
-/*	COPY_REG(rn, R(n));
-
-	if (--rn)
-		UNSET_T
-	else
-		SET_T
-
-	COPY_REG(R(n), rn); */
-	
 	if (--R(n))
 		UNSET_T
 	else
@@ -592,7 +572,8 @@ OPCODE(sub69) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1000)
 	short m = (arg >> 4) & 0x0F;
 //	signed long rm, rn;
 
-	(signed) R(n) -= (signed) R(m);
+//	(signed) R(n) -= (signed) R(m);
+	R(n) -= R(m);
 /*	COPY_REG(rm, R(m));
 	COPY_REG(rn, R(n));
 	
@@ -608,7 +589,8 @@ OPCODE(subc70) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1010)
 	unsigned long tmp0, tmp1;
 
 //	R(n) = R(n) - R(m) - (IS_SR_T() ? 1 : 0);
-	tmp1 = (signed) R(n) - (signed) R(m);
+//	tmp1 = (signed) R(n) - (signed) R(m);
+	tmp1 = R(n) - R(m);
 	tmp0 = R(n);
 	R(n) = tmp1 - (IS_SR_T() ? 1 : 0);
 	if (tmp0 < tmp1)
@@ -724,4 +706,3 @@ OPCODE(muluw66) // MULU.W Rm, Rn (0010nnnn mmmm1110)
         MACL, MACL);
 #endif
 }
-

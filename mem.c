@@ -8,6 +8,12 @@
 DWORD SQ0[8];
 DWORD SQ1[8];
 
+unsigned char * memoria;
+unsigned char * video_mem;
+unsigned char * regmem;
+unsigned char * bios_mem;
+unsigned char * ta_mem;
+unsigned char * control_mem;
 BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
 char * mem_zone[0x100]; // para las zonas de memoria
@@ -35,11 +41,13 @@ mem_access_write_t ignore_write;
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
 
+unsigned char * control_mem;	// empezando en 0x005f0000, 64 kbytes
+
 int inicializar_memoria()
 {
 	logmsg("creando memoria\n");
 
-	memoria = (unsigned char *) malloc(sizeof(char) * mem_size); // 16 megabytes
+	memoria = (unsigned char *) malloc(sizeof(char) * MEM_SIZE); // 16 megabytes
 
 	if (!memoria)
 	{
@@ -54,7 +62,7 @@ int inicializar_memoria()
 
 	logmsg("creando memoria de video\n");
 	
-	video_mem = (unsigned char *) malloc(sizeof(unsigned char) * video_size); // 8 megabytes
+	video_mem = (unsigned char *) malloc(sizeof(unsigned char) * VIDEO_SIZE); // 8 megabytes
 
 	if (!video_mem)
 	{
@@ -85,6 +93,14 @@ int inicializar_memoria()
 	if (!ta_mem)
 	{
 		fprintf(stderr, "No se pudo crear ta_mem.\r\n");
+		return 1;
+	}
+	
+	control_mem = (unsigned char *) malloc(sizeof(unsigned char) * CONTROL_SIZE);
+
+	if (!control_mem)
+	{
+		fprintf(stderr, "No se pudo crear control_mem.\r\n");
 		return 1;
 	}
 	
@@ -573,14 +589,28 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 			bios_read(direccion, p, size);
 		}
 		else
+		{
+			if ((direccion & 0x00FF0000) == 0x005F0000)
+			{
+				memcpy(p, &control_mem[direccion & 0xFFFF], size);
+				logxmsg(LOG_MEM, "leyendo desde control_mem: DW %x\n", *(DWORD *) p);
+			}
 			mem_read_error(direccion, p, size);
+		}
 		break;
 	}
 }
 
 void bios_read(unsigned long direccion, void * p, size_t size)
 {
-	memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
+//	memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
+	if ((direccion & 0x00FF0000) == 0x005F0000)
+	{
+		memcpy(p, &control_mem[direccion & 0xFFFF], size);
+		logxmsg(LOG_MEM, "leyendo control_mem en bios_read, dir %x\n", direccion);
+	}
+	else
+		memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
 }
 
 /* void bios_write(unsigned long direccion, void * p, size_t size)
@@ -602,6 +632,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 {
 	DWORD dw;
 	bool last;
+
+	if ((direccion & 0x00FF0000) == 0x005F0000)
+	{
+		memcpy(&control_mem[direccion & 0xFFFF], p, size);
+	}
 
 	switch(direccion)
 	{
@@ -1209,7 +1244,7 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		case 4:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(DWORD *) p); break;
 	} */
 
-	if (addr < video_size)
+	if (addr < VIDEO_SIZE)
 		memcpy(&video_mem[addr], p, size);
 	
 /*	if (addr < framebuffer_size)

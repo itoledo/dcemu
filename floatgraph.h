@@ -7,6 +7,7 @@ OPCODE(fmov226); // FMOV @(R0, Rm), XDn		(1111nnn1 mmmm0110)
 OPCODE(fmov227); // FMOV XDm, @Rn			(1111nnnn mmm11010)
 OPCODE(fmov228); // FMOV XDm, @-Rn			(1111nnnn mmm11011)
 OPCODE(fmov229); // FMOV XDm, @(R0, Rn)		(1111nnnn mmm10111)
+OPCODE(fipr); // FIPR FVm, FVn (1111nnmm 11101101)
 OPCODE(ftrv); // FTRV XMTRX, FVn (1111nnn 011111101)
 OPCODE(fsrra); // FSRRA FRn (1111nnnn 01111101)
 OPCODE(frchg232);

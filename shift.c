@@ -261,7 +261,7 @@ OPCODE(shlr95) // SHLR Rn : 0 -> Rn -> T (0100nnnn 00000001)
 	R(n) >>= 1;
 	
 	// probando
-//	R(n) &= 0x7FFFFFFF;
+	R(n) &= 0x7FFFFFFF;
 
 #ifdef DEBUG_SHIFT
     logmsg("shlr: r[%d]=%x\r\n", n, R(n));
@@ -282,7 +282,7 @@ OPCODE(shlr2) // SHLR2 Rn: Rn >> 2 -> Rn (0100nnnn 00001001)
 	R(n) >>= 2;
 	
 	// probando!
-//	R(n) &= 0x3FFFFFFF;
+	R(n) &= 0x3FFFFFFF;
 
 #ifdef DEBUG_SHIFT
 	logmsg("shlr2: r[%d]=%x\r\n", n, R(n));
@@ -315,7 +315,7 @@ OPCODE(shlr8) // SHLR8 Rn (0100nnnn 00011001)
 	R(n) >>= 8;
 
 	// probando
-//	R(n) &= 0x00FFFFFF;
+	R(n) &= 0x00FFFFFF;
 
 #ifdef ASM_DEBUG
 	fprintf(logfp, "shlr8: res=%d\r\n", n, R(n));
@@ -348,7 +348,7 @@ OPCODE(shlr16) // SHLR16 Rn (0100nnnn 00101001)
 	R(n) >>= 16;
 
 	// probando
-//	R(n) &= 0x0000FFFF;
+	R(n) &= 0x0000FFFF;
 
 #ifdef ASM_DEBUG
 	fprintf(logfp, "shlr16: res=%d\r\n", n, R(n));

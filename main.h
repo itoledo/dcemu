@@ -48,8 +48,6 @@ extern bool logvideomem;
 
 #define video_base		0xa5000000
 #define n_video_base	0x05000000
-#define video_size		(8 * 1024 * 1024)
-#define mem_size		(16 * 1024 * 1024)
 
 #define HACK_BASE		0x8C000100
 #define HACK_ROMFONT	0x000
@@ -73,8 +71,7 @@ extern unsigned char * video_mem;
 extern unsigned char * regmem;
 extern unsigned char * bios_mem;
 extern unsigned char * ta_mem;
-#define BIOS_SIZE (4*1024*1024) // 2 Megabytes
-#define TA_SIZE		(512)
+extern unsigned char * control_mem;	// empezando en 0x005f0000
 // extern opcode_f * opcode_cache[cache_size];
 extern FILE * logfp, * serialfp, * memfp;
 extern bool pausa;

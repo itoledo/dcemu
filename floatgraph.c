@@ -118,6 +118,18 @@ OPCODE(fmov229) // FMOV XDm, @(R0, Rn) (1111nnnn mmm10111)
 #endif
 }
 
+OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
+{
+	short n = (arg >> 10) & 0x3;
+	short m = (arg >> 8) & 0x3;
+	
+	FR(n+3) =	FR(m+0) * FR(n+0) +
+				FR(m+1) * FR(n+1) +
+				FR(m+2) * FR(n+2) +
+				FR(m+3) * FR(n+3);
+
+}
+
 OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
 {
 	short n = (arg >> 10) & 0x3;

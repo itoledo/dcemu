@@ -371,12 +371,12 @@ void ta_check(DWORD addr)
 				int vq = (p3 >> 30) & 0x1;
 				int pixelformat = (p3 >> 27) & 0x7;
 				DWORD texture_surface = (p3 & 0xFFFFF) << 3; // 20 bits
-				int twiddled = (p3 >> 24) & 0x1;
-				int stride = (p3 >> 21) & 0x1;
+				int twiddled = (p3 >> 26) & 0x1;
+				int stride = (p3 >> 25) & 0x1;
 				
 				pvr_texture_surface = texture_surface;
 //				pvr_texture_twiddled = !twiddled; // 0: twiddled
-				pvr_texture_twiddled = (twiddled ? 0 : 1);
+//				pvr_texture_twiddled = (twiddled ? 0 : 1);
 
 				if (mipmap)
 					logxmsg(LOG_PVR, "texture: enable mipmap\n");
@@ -406,7 +406,6 @@ void ta_check(DWORD addr)
      				pvr_texture_pixelformat = GL_RGB;
      				pvr_texture_pixelpack = GL_UNSIGNED_SHORT_5_6_5;
      				pvr_texture_pixelconvert = NULL;
-//     				pvr_texture_twiddled = 1;
      				break;
 
 					case 2:
@@ -415,7 +414,6 @@ void ta_check(DWORD addr)
 				    pvr_texture_pixelconvert = pcon_argb4444_to_rgba4444;
 				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_EXT;
      				pvr_texture_components = 4;
-//     				pvr_texture_twiddled = 1;
      				break;
 
 					case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;
@@ -427,9 +425,15 @@ void ta_check(DWORD addr)
 				logxmsg(LOG_PVR, "texture: surface %08x\n", texture_surface);
 
 				if (twiddled)
-					logxmsg(LOG_PVR, "texture: twiddled texture\n");
-				else
+				{
 					logxmsg(LOG_PVR, "texture: non-twiddled texture\n");
+					pvr_texture_twiddled = 0;
+				}
+				else
+				{
+					logxmsg(LOG_PVR, "texture: twiddled texture\n");
+					pvr_texture_twiddled = 1;
+				}
 	
 				if (stride)
 					logxmsg(LOG_PVR, "texture: stride\n");
@@ -974,7 +978,9 @@ int screeninit(void)
 //		screen = SDL_SetVideoMode(screenwidth, screenheight, 32 /* 32 */, SDL_OPENGLBLIT);
 //	if (!screen)
 	{
-		screen = SDL_SetVideoMode(640, 480, 32 /* 32 */, SDL_OPENGLBLIT);
+//		screen = SDL_SetVideoMode(640, 480, 32 /* 32 */, SDL_OPENGLBLIT);
+		int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
+		screen = SDL_SetVideoMode(ancho, screenheight, 32 /* 32 */, SDL_OPENGLBLIT);
 		if (screen == NULL)
 		{
 			logxmsg(LOG_PVR, "screen == NULL!!!!\n");
@@ -983,7 +989,8 @@ int screeninit(void)
 		logxmsg(LOG_PVR, "Seteando viewport a %dx%d\n", 640, 480);
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
-		glViewport(0, 0, 640, 480);
+//		glViewport(0, 0, 640, 480);
+		glViewport(0, 0, ancho, screenheight);
 		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);		// This Will Clear The Background Color To Black
 		glClearDepth(1.0);				// Enables Clearing Of The Depth Buffer
 		glDepthFunc(GL_LESS);				// The Type Of Depth Test To Do
@@ -997,7 +1004,8 @@ int screeninit(void)
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
 //		glOrtho(0, width, height, 0, 0.1, 100.0);
-		glOrtho(0, 640, 480, 0, 0, 1024.0);
+//		glOrtho(0, 640, 480, 0, 0, 1024.0);
+		glOrtho(0, ancho, screenheight, 0, 0, 1024.0);
 
 //		glScalef(1.0/640.0,1.0/480.0,1.0);
 //		glTranslatef(-320.0f, -240.0f, -1.0f);

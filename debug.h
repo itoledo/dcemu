@@ -27,6 +27,6 @@ void DebugShow(void);
 void DebugHide(void);
 void DebugPrintf (int which, char * fmt, ...);
 void disasm(DWORD address, char *buffer);
-void DrawDebugInlineInfo();
+void DrawDebugInlineInfo(SDL_Surface * surface);
 
 #endif // _DEBUG_H_

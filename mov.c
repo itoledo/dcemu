@@ -82,7 +82,7 @@ OPCODE(movw5) // MOV.W Rm, @Rn: Rm -> (Rn) (0010nnnn mmmm0001)
 #endif
 }
 
-OPCODE(movl6) // MOV.L Rm,@Rn: Rm -> (Rn) (0010nnnnmmmm0010)
+OPCODE(movl6) // MOV.L Rm, @Rn: Rm -> (Rn) (0010nnnnmmmm0010)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
@@ -111,7 +111,7 @@ OPCODE(movb7) // MOV.B @Rm, Rn: (Rm) -> sign extension -> Rn (0110nnnnmmmm0000)
 #endif
 }
 
-OPCODE(movw8) // MOV.W @Rm,Rn: (Rm) -> sign extension -> Rn (0110nnnnmmmm0001)
+OPCODE(movw8) // MOV.W @Rm, Rn: (Rm) -> sign extension -> Rn (0110nnnnmmmm0001)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
@@ -215,7 +215,7 @@ OPCODE(movw14) // MOV.W @Rm+,Rn: (Rm) -> sign ext -> Rn, Rm + 2 -> Rm (0110nnnnm
 #endif
 }
 
-OPCODE(movl15) // MOV.L @Rm+,Rn: (Rm) -> Rn, Rm + 4 -> Rm (0110nnnnmmmm0110)
+OPCODE(movl15) // MOV.L @Rm+, Rn: (Rm) -> Rn, Rm + 4 -> Rm (0110nnnnmmmm0110)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
@@ -280,7 +280,7 @@ OPCODE(movb19) // MOV.B @(disp, Rm), R0 (10000100 mmmmiiii)
 	
 	memread(R(m) + i, &b, sizeof(BYTE));
 	
-	R(0) = b;
+	R(0) = SignExtend8(b);
 
 #ifdef DEBUG_MOV
 	logmsg("movb19: r[%d]=%x,%d r[%d]=%x,%d\r\n", m, R(m), R(m), 0, R(0), R(0));

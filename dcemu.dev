@@ -25,7 +25,7 @@ CommandLine=
 IncludeVersionInfo=0
 SupportXPThemes=0
 CompilerSet=0
-CompilerSettings=00000000000000000100pd
+CompilerSettings=0000000000000000010000
 UseCustomMakefile=0
 CustomMakefile=
 
@@ -73,7 +73,7 @@ BuildCmd=
 Major=0
 Minor=0
 Release=1
-Build=832
+Build=887
 LanguageID=1033
 CharsetID=1252
 CompanyName=
