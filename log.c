@@ -1,6 +1,7 @@
 #include "main.h"
 #include "log.h"
 #include "opcodes.h"
+#include "options.h"
 
 FILE * logfp, * serialfp, * memfp, * pvrfp, * intcfp;
 

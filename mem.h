@@ -3,6 +3,10 @@
 
 #include "options.h"
 
+extern char * mem_zone[0x100]; // para las zonas de memoria
+#define get_memory_pointer(addr) (&mem_zone[(addr) >> 24][(addr) & 0xFFFFFF])
+
+int inicializar_memoria();
 void mem_hash_setup(void);
 void memread(unsigned long direccion, void * target, size_t size);
 void memwrite(unsigned long direccion, void * source, size_t size);

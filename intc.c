@@ -57,7 +57,8 @@ bool intc(DWORD irq)
 	SET_BIT(SR, SR_RB);
 
 	PC = VBR + 0x600;
-	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];
+//	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];
+	str_PC = get_memory_pointer(PC);
 
 	logmsg("intc: saltando a %x, con registros:\n", PC);
 	dump_registers();

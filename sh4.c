@@ -127,12 +127,15 @@ void PC_f_delayslot2(void)
 		str_PC = &memoria[PC + mem_offset];
 	}
 	else */
-	DWORD offset = PC % 0x20000000;
 
+/*	DWORD offset = PC % 0x20000000;
 	if (offset < BIOS_SIZE) // está dentro del área de BIOS?
 		str_PC = &bios_mem[offset];
 	else
-		str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];
+		str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base]; */
+//	logmsg("saltando a %02x %06x\n", (PC >> 24) & 0xFF, PC & 0x00FFFFFF);
+//	str_PC = &mem_zone[(PC >> 24) & 0xFF][PC & 0x00FFFFFF];
+	str_PC = get_memory_pointer(PC);
 }
 
 void PC_f_delayslot(void)
@@ -171,11 +174,18 @@ void PC_f_nextpc(void)
 		str_PC = &memoria[PC + mem_offset];
 	}
 	else */
-	DWORD offset = PC % 0x20000000;
+
+/*	DWORD offset = PC % 0x20000000;
 
 	if (offset < BIOS_SIZE) // está dentro del área de BIOS?
 		str_PC = &bios_mem[offset];
 	else
 		str_PC = &memoria[offset]; // - mem_n_base];
+		
+	logmsg("offset: %x\n", offset); */
+
+//	logmsg("saltando a %02x %06x\n", (PC >> 24) & 0xFF, PC & 0x00FFFFFF);
+//	str_PC = &mem_zone[(PC >> 24) & 0xFF][PC & 0x00FFFFFF];
+	str_PC = get_memory_pointer(PC);
 }
 

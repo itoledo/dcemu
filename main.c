@@ -43,7 +43,7 @@ DWORD MAPLE_RESET1;
 
 
 unsigned char * memoria;
-unsigned char * orig_mem;
+// unsigned char * orig_mem;
 unsigned char * video_mem;
 unsigned char * regmem;
 unsigned char * bios_mem;
@@ -876,7 +876,7 @@ void inicializar_fonts()
 	
 	buf[1] = '\0';
 //	cnt = mem_n_base + 1024*1024*5; // 5 megas hacia adelante
-	cnt = FONT_N_BASE;
+	cnt = FONT_BASE;
 
 	while (*ptr)
 	{
@@ -906,7 +906,8 @@ void inicializar_fonts()
 				bits++;
 				if (bits % 8 == 0)
 				{
-					memoria[cnt++] = nibble;
+//					memoria[cnt++] = nibble;
+					memwrite(cnt, &nibble, sizeof(BYTE));
 					nibble = 0;
 				}
 			}
@@ -1013,56 +1014,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	logmsg("creando memoria\n");
-
-	memoria = (unsigned char *) malloc(sizeof(char) * mem_size); // 16 megabytes
-
-	if (!memoria)
-	{
-		fprintf(stderr, "No se pudo crear memoria principal.\r\n");
+	if (inicializar_memoria())
 		return 1;
-	}
-	
-	orig_mem = memoria;
-	memoria = memoria - mem_n_base; // lo corremos n_base bytes hacia atrás,
- 									// para aprovechar el offset
 
-	logmsg("creando memoria de video\n");
-	
-	video_mem = (unsigned char *) malloc(sizeof(unsigned char) * video_size); // 8 megabytes
-
-	if (!video_mem)
-	{
-		fprintf(stderr, "No se pudo crear memoria de video.\r\n");
-		return 1;
-	}
-
-	logmsg("creando memoria de registros\n");
-
-	regmem = (unsigned char *) malloc(sizeof(unsigned char) * 0x00FFFFFF); // 16 megabytes
-
-	if (!regmem)
-	{
-		fprintf(stderr, "No se pudo crear regmem.\r\n");
-		return 1;
-	}
-
-	bios_mem = (unsigned char *) malloc(sizeof(unsigned char) * BIOS_SIZE); // 4 MB
-
-	if (!bios_mem)
-	{
-		fprintf(stderr, "No se pudo crear bios_mem.\r\n");
-		return 1;
-	}
-	
-	ta_mem = (unsigned char *) malloc(sizeof(unsigned char) * TA_SIZE);
-
-	if (!ta_mem)
-	{
-		fprintf(stderr, "No se pudo crear ta_mem.\r\n");
-		return 1;
-	}
-	
 	// a configurar las tablas de memoria, etc.
 	mem_hash_setup();
 	regmem_setup();
@@ -1076,7 +1030,8 @@ int main(int argc, char *argv[])
 	// a cargar ip.bin
 	logmsg("cargando ip.bin\n");
 
-	if (cargar_archivo("ip.bin", &memoria[mem_n_base + ip_offset]) < 0)
+//	if (cargar_archivo("ip.bin", &memoria[mem_n_base + ip_offset]) < 0)
+	if (cargar_archivo("ip.bin", get_memory_pointer(mem_base + ip_offset)) < 0)
 	{
 		fprintf(stderr, "No se pudo abrir ip.bin");
 		return 1;
@@ -1093,7 +1048,8 @@ int main(int argc, char *argv[])
 	// a cargar 1st_read.bin
 	logmsg("cargando 1st_read.bin\n");
 
-	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
+//	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
+	if ((tam = cargar_archivo("1st_read.bin", get_memory_pointer(mem_base + mem_offset))) < 0)
 	{
 		fprintf(stderr, "No se pudo abrir 1st_read.bin");
 		return 1;
@@ -1128,10 +1084,11 @@ int main(int argc, char *argv[])
 	}
 
 	moffset = &memoria[mem_n_base + mem_offset]; // ip_bs1_offset]; // &memoria[mem_offset];
-	str_PC = &memoria[mem_n_base + ip_bs1_offset];
+//	str_PC = &memoria[mem_n_base + ip_bs1_offset];
 //	str_PC = &memoria[0xc008300];
 //	str_PC = &bios_mem[0];
-	
+	str_PC = get_memory_pointer(mem_base + ip_bs1_offset);
+
 	R(15) = mem_base + mem_offset + 1024*1024*15 - 4;
 
 	logmsg("inicializando fonts\n");
@@ -1142,7 +1099,7 @@ int main(int argc, char *argv[])
 //	*(DWORD *) &memoria[SYSCALL_ROMFONT - mem_base] = SYSCALL_ROMFONT;
 //	*(DWORD *) &memoria[SYSCALL_ROMFONT - 0x80000000] = SYSCALL_ROMFONT;
 
-	*(DWORD *) &memoria[SYSCALL_ROMFONT - 0x80000000]	= HACK_BASE + HACK_ROMFONT;
+//	*(DWORD *) &memoria[SYSCALL_ROMFONT - 0x80000000]	= HACK_BASE + HACK_ROMFONT;
  	dwvalor = HACK_BASE + HACK_ROMFONT;	memwrite(SYSCALL_ROMFONT, &dwvalor, sizeof(DWORD));
 
  	// vamos a hacer esto:
@@ -1154,8 +1111,10 @@ int main(int argc, char *argv[])
  	wvalor = 0x000B;		memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
  	dwvalor = FONT_BASE;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
 
-	*(DWORD *) &memoria[SYSCALL_GDROM	- 0x80000000]	= HACK_BASE + HACK_GDROM;
-	*(WORD *) &memoria[HACK_BASE + HACK_GDROM - 0x80000000] = 0x0009; // NOP
+/*	*(DWORD *) &memoria[SYSCALL_GDROM	- 0x80000000]	= HACK_BASE + HACK_GDROM;
+	*(WORD *) &memoria[HACK_BASE + HACK_GDROM - 0x80000000] = 0x0009; // NOP */
+	dwvalor = HACK_BASE + HACK_GDROM;	memwrite(SYSCALL_GDROM, &dwvalor, sizeof(DWORD));
+	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
 
 	start_time = time(NULL);
 
@@ -1180,7 +1139,7 @@ int main(int argc, char *argv[])
 	fclose(logfp);
 	fclose(serialfp);
 	
-	free(orig_mem);
+	free(memoria);
 	free(video_mem);
 	free(regmem);
 

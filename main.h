@@ -66,7 +66,7 @@ extern bool logvideomem;
 #define SYSCALL_GDROM	0x8C0000BC
 
 extern unsigned char * memoria;
-extern unsigned char * orig_mem;
+// extern unsigned char * orig_mem;
 extern unsigned char * video_mem;
 extern unsigned char * regmem;
 extern unsigned char * bios_mem;

@@ -7,6 +7,8 @@
 DWORD SQ0[8];
 DWORD SQ1[8];
 
+char * mem_zone[0x100]; // para las zonas de memoria
+
 typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
 typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size);
 
@@ -28,6 +30,62 @@ mem_access_write_t bios_write;
 
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
+
+int inicializar_memoria()
+{
+	logmsg("creando memoria\n");
+
+	memoria = (unsigned char *) malloc(sizeof(char) * mem_size); // 16 megabytes
+
+	if (!memoria)
+	{
+		fprintf(stderr, "No se pudo crear memoria principal.\r\n");
+		return 1;
+	}
+
+//	orig_mem = memoria;
+
+/*	memoria = memoria - mem_n_base; // lo corremos n_base bytes hacia atrás,
+ 									// para aprovechar el offset */
+
+	logmsg("creando memoria de video\n");
+	
+	video_mem = (unsigned char *) malloc(sizeof(unsigned char) * video_size); // 8 megabytes
+
+	if (!video_mem)
+	{
+		fprintf(stderr, "No se pudo crear memoria de video.\r\n");
+		return 1;
+	}
+
+	logmsg("creando memoria de registros\n");
+
+	regmem = (unsigned char *) malloc(sizeof(unsigned char) * 0x00FFFFFF); // 16 megabytes
+
+	if (!regmem)
+	{
+		fprintf(stderr, "No se pudo crear regmem.\r\n");
+		return 1;
+	}
+
+	bios_mem = (unsigned char *) malloc(sizeof(unsigned char) * BIOS_SIZE); // 4 MB
+
+	if (!bios_mem)
+	{
+		fprintf(stderr, "No se pudo crear bios_mem.\r\n");
+		return 1;
+	}
+	
+	ta_mem = (unsigned char *) malloc(sizeof(unsigned char) * TA_SIZE);
+
+	if (!ta_mem)
+	{
+		fprintf(stderr, "No se pudo crear ta_mem.\r\n");
+		return 1;
+	}
+	
+	return 0;
+}
 
 DWORD float_to_dword(float x)
 {
@@ -175,7 +233,15 @@ void mem_hash_setup(void)
 	{
 		mem_hash_read[i] = mem_read_error;
   		mem_hash_write[i] = mem_write_error;
+  		mem_zone[i] = NULL;
 	}
+
+	mem_zone[0x0C] = &memoria[0];
+	mem_zone[0x80] = &bios_mem[0];
+	mem_zone[0x8C] = &memoria[0];
+	mem_zone[0xA4] = &video_mem[0];	// ?
+	mem_zone[0xA5] = &video_mem[0];
+	mem_zone[0xAC] = &memoria[0];
 
 	mem_hash_write[0x10] = ta_write;
 
@@ -1231,14 +1297,16 @@ void ram_read(unsigned long direccion, void * p, size_t size)
 {
 //logmsg( "ram_read: dir %8x, size %x\r\n", direccion, (int) size);
 //memcpy(p, &memoria[(direccion & 0x1FFFFFFF)], size);
-memcpy(p, &orig_mem[(direccion & 0xFFFFFF)], size);
+//	memcpy(p, &orig_mem[(direccion & 0xFFFFFF)], size);
+	memcpy(p, &mem_zone[direccion >> 24][direccion & 0xFFFFFF], size);
 }
 
 void ram_write(unsigned long direccion, void * p, size_t size)
 {
 //logmsg( "ram_write: dir %8x, size %x\r\n", direccion, (int) size);
 //memcpy(&memoria[(direccion % 0x20000000)], p, size);
-memcpy(&orig_mem[(direccion & 0xFFFFFF)], p, size);
+//memcpy(&orig_mem[(direccion & 0xFFFFFF)], p, size);
+	memcpy(&mem_zone[direccion >> 24][direccion & 0xFFFFFF], p, size);
 }
 
 void memread(unsigned long direccion, void * target, size_t size)
