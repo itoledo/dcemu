@@ -323,9 +323,9 @@ void ta_check(DWORD addr)
 				{
 					case 0:
      				logxmsg(LOG_PVR, "texture: ARGB1555\n");
-     				pvr_texture_pixelformat = GL_UNSIGNED_SHORT_5_5_5_1;
+     				pvr_texture_pixelformat = GL_RGBA;
      				pvr_texture_components = 4;
-     				pvr_texture_pixelpack = GL_RGBA;
+     				pvr_texture_pixelpack = GL_UNSIGNED_SHORT_5_5_5_1;
      				pvr_texture_pixelconvert = NULL;
          			break;
 

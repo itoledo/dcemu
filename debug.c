@@ -158,7 +158,7 @@ void DebugUpdate(void)
     	sprintf(buf, "FPUL : %08x", (unsigned int) FPUL);
         BFont_PutStringFont(DebugWindow, DebugFont, 555, 312, buf);
 
-    	sprintf(buf, "Status Register (SR) :-", (unsigned int) FPUL);
+    	sprintf(buf, "Status Register (SR) :-");
         BFont_PutStringFont(DebugWindow, DebugFont, 510, 350, buf);
     	sprintf(buf, "T: %1x", ((SR & 0x01)));
         BFont_PutStringFont(DebugWindow, DebugFont, 510, 362, buf);

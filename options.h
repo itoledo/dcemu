@@ -1,17 +1,17 @@
 #ifndef _OPTIONS_H_
 #define _OPTIONS_H_
 
-#define APPTITLE 	"DCEMU - DreamCast Emulator for Windows 21-APR-2004"
+#define APPTITLE 	"DCEMU - DreamCast Emulator for Windows 29-APR-2004"
 #define OPENGL
 
 // Usar funcciones o macros para accesar la memoria
 #define MEMORY_MACROS
 
 #define USE_BIOS_FONT
-//#define PRINT_ASM
+// #define PRINT_ASM
 #define LOGGING
-//#define JOYSTICK
-//#define ASM_DEBUG
+// #define JOYSTICK
+// #define ASM_DEBUG
 
 // #define DEBUG_MOV
 // #define DEBUG_MOV_MOVA
@@ -30,12 +30,13 @@
 // #define DEBUG_MEM
 // #define DEBUG_MEM_READ
 // #define DEBUG_MEM_WRITE
-#define DEBUG_MEMORY_POINTER
+// #define DEBUG_MEMORY_POINTER
 // #define DEBUG_LOGIC
 // #define DEBUG_MEM_REGISTERS
 // #define DEBUG_MEM_VIDEO
 // #define EXTRA_REG_DEBUG
 #define DEBUG_VERTEX
+#define TEXTURE_CACHING
 // #define FULL_DEBUG_FROM		(0x8c018980)
 // #define FULL_DEBUG_TO		(0x8c018996)
 // #define CHECK_VALUE			(0x8c021410)

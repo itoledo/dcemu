@@ -407,7 +407,8 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 	case 0xa080ffc0: // snd_dbg
 		{
 			memcpy(p, &snd_dbg, size);
-			snd_dbg = 3; // hack
+			snd_dbg &= 3; // hack
+			snd_dbg ^= 3; // hack
 		}
 		break;
 	
