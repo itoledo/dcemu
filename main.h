@@ -71,7 +71,7 @@ extern unsigned char * video_mem;
 extern unsigned char * regmem;
 extern unsigned char * bios_mem;
 extern unsigned char * ta_mem;
-#define BIOS_SIZE (2*1024*1024) // 2 Megabytes
+#define BIOS_SIZE (4*1024*1024) // 2 Megabytes
 #define TA_SIZE		(512)
 // extern opcode_f * opcode_cache[cache_size];
 extern FILE * logfp, * serialfp, * memfp;

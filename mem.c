@@ -251,7 +251,7 @@ void mem_hash_setup(void)
 	// -------------------------------------------------------------------------------
 	mem_zone[0x00] = &bios_mem[0];		// BIOS. Also contains system control regs
 	// 01 = External Device
-	// 02 = ** Unused **				// copy of System control regs
+	// 02 = ** Unused **				// copy of System control regs, but NOT the BIOS
 	// 03 = Copy of 01
 	mem_zone[0x04] = &video_mem[0];		// 64-Bit Acc (TA or PVR)
 	mem_zone[0x05] = &video_mem[0]; 	// 32-Bit Acc (TA or PVR)
@@ -271,7 +271,7 @@ void mem_hash_setup(void)
 	// 1c thru 1f = SH4 Internal Area
 	mem_zone[0x1E] = &stack_mem[0];		// Hmm, this is a cheat!
 
-	mem_zone[0x80] = &bios_mem[0];		// Is this Valid?!?!?!?
+	//mem_zone[0x80] = &bios_mem[0];		
 	//mem_zone[0x8C] = &memoria[0];
 	//mem_zone[0xA4] = &video_mem[0];		// 64-Bit Acc
 	//mem_zone[0xA5] = &video_mem[0];		// 32-Bit Acc
@@ -280,51 +280,49 @@ void mem_hash_setup(void)
 	// cree una copia de los bloques que repiten
 	// Nota: aqui debemos copiar ciertos bloques usando una repeticion
 	// Copy 01 thru 1f -> 21 thru 3f, 41 thru 5f, 61 thru 7f
-	for (i = 0x01; i < 0x20; i++)
+	for (i = 0x00; i < 0x20; i++)
 	{
 		for (i2 = 0x20; i2 <= 0xc0; i2 += 0x20)
 			mem_zone[i | i2] = mem_zone[i];
 	}
  	
+ 	mem_zone[0x70] = &bios_mem[0];
+ 	
 	// Inicializacion de la tabla de funciones tenía acceso 
  	// a bloques de la memoria	
-	mem_hash_write[0x10] = ta_write;
-
 	mem_hash_read[0x00] = bios_read;
-	mem_hash_read[0x80] = bios_read;
-//	mem_hash_write[0x00] = bios_write;
-//	mem_hash_write[0x80] = bios_write;
-
-	// video mem
-	mem_hash_read[0xA4] = video_read;
- 	mem_hash_read[0xA5] = video_read;
  	mem_hash_read[0x04] = video_read;
- 	mem_hash_write[0xA4] = video_write;
-	mem_hash_write[0xA5] = video_write;
-	mem_hash_write[0x04] = video_write;
-	
 	mem_hash_read[0x05] = video_read;
-	mem_hash_write[0x05] = video_write;
-
 	mem_hash_read[0x0C] = ram_read;
+ 	mem_hash_read[0x1F] = regmap_read;
+ 	mem_hash_read[0x70] = bios_read;
+ 	mem_hash_read[0x7E] = ram_read;
+	mem_hash_read[0x80] = bios_read;
 	mem_hash_read[0x8C] = ram_read;
  	mem_hash_read[0xA0] = pvr_read;
+	mem_hash_read[0xA4] = video_read;
+ 	mem_hash_read[0xA5] = video_read;
 	mem_hash_read[0xAC]	= ram_read;
  	mem_hash_read[0xFF] = regmap_read;
 
+//	mem_hash_write[0x00] = bios_write;
+	mem_hash_write[0x04] = video_write;
+	mem_hash_write[0x05] = video_write;
  	mem_hash_write[0x0C] = ram_write;
+	mem_hash_write[0x10] = ta_write;
+ 	mem_hash_write[0x1F] = regmap_write;
+ 	mem_hash_write[0x7E] = ram_write;
+//	mem_hash_write[0x80] = bios_write;
  	mem_hash_write[0x8C] = ram_write;
  	mem_hash_write[0xA0] = pvr_write;
+ 	mem_hash_write[0xA4] = video_write;
+	mem_hash_write[0xA5] = video_write;
  	mem_hash_write[0xAC] = ram_write;
  	mem_hash_write[0xE0] = sq_write;
  	mem_hash_write[0xE1] = sq_write;
  	mem_hash_write[0xE2] = sq_write;
  	mem_hash_write[0xE3] = sq_write;
  	mem_hash_write[0xFF] = regmap_write;
- 	
- 	// test!
- 	mem_hash_write[0x7E] = ram_write;
- 	mem_hash_read[0x7E] = ram_read;
 }
 
 void mem_read_error(unsigned long direccion, void * p, size_t size)
@@ -575,7 +573,7 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 void bios_read(unsigned long direccion, void * p, size_t size)
 {
-	memcpy(p, &bios_mem[direccion % 0x20000000], size);
+	memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
 }
 
 /* void bios_write(unsigned long direccion, void * p, size_t size)
@@ -918,16 +916,16 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 #define PVR_WRITE_CB_1(dir, callback, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} callback(direccion, p, size); break; }
 #define PVR_WRITE_2(dir, texto, arg1, arg2)	{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg1, arg2);} break; }
 
-		PVR_WRITE_1(0xa05f8000 + 0x00 * 4, "COREID (PVR2 Core ID), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x01 * 4, "CORETYPE (PVR2 Core version), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x02 * 4, "COREDISABLE (PVR2) (Enable/disable the submodules of the PVR2 Core), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x00 * 4, "COREID [ID] (PVR2 Core ID), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x01 * 4, "CORETYPE [REV] (PVR2 Core version), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x02 * 4, "COREDISABLE [CORERESET] (PVR2) (Enable/disable the submodules of the PVR2 Core), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x03 * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x04 * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_CB_1(0xa05f8000 + 0x05 * 4, cb_renderstart, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x06 * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x06 * 4, "[TESTSELECT], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x07 * 4, "Unknown, grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x08 * 4, "PRIMALLOCBASE (3D) (Primitive allocation base), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x09 * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x08 * 4, "PRIMALLOCBASE [PARAMBASE] (3D) (Primitive allocation base), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x09 * 4, "[SPANSORTCFG], grabando %x", *(DWORD *) p);
  		PVR_WRITE_1(0xa05f8000 + 0x0a * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x0b * 4, "TILEARRAY (Tile Array base address), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x0c * 4, "Unknown, grabando %x", *(DWORD *) p);
@@ -938,7 +936,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8000 + 0x11 * 4:		// BITMAPTYPE (bitmap display settings)
 		{
-			logxmsg(LOG_PVR, "pvr_write: BITMAPTYPE (bitmap display settings), grabando %x\n",
+			logxmsg(LOG_PVR, "pvr_write: BITMAPTYPE [FB_R_CTRL] (bitmap display settings), grabando %x\n",
 				*(DWORD *)p);
 			dw = *(DWORD *) p;
 			logxmsg(LOG_PVR, "pvr_write: displaymode: %x\r\n", dw);
@@ -974,10 +972,10 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		PVR_WRITE_1(0xa05f8000 + 0x12 * 4, "RENDERFORMAT (3D) (Render output format)", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x13 * 4, "RENDERPITCH (3D) (Render target pitch)", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x14 * 4, "FRAMEBUF (2D) (Framebuffer address)", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x15 * 4, "FRAMEBUF (2D) (Framebuffer address, short field)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x12 * 4, "RENDERFORMAT [FB_W_CTRL] (3D) (Render output format)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x13 * 4, "RENDERPITCH [FB_W_LINESTRIDE] (3D) (Render target pitch)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x14 * 4, "FRAMEBUF [FB_R_SOF1] (2D) (Framebuffer address)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x15 * 4, "FRAMEBUF [FB_R_SOF2] (2D) (Framebuffer address, short field)", *(DWORD *) p);
 		PVR_WRITE_2(0xa05f8000 + 0x16 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
 
 		case 0xa05f8000 + 0x17 * 4:		// DIWSIZE (2D) (Display window size)
@@ -985,7 +983,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			long modulo;
             int shift;
 
-			logxmsg(LOG_PVR, "pvr_write: DIWSIZE (2D) (Display window size), grabando %x\n",
+			logxmsg(LOG_PVR, "pvr_write: DIWSIZE [FB_R_SIZE] (2D) (Display window size), grabando %x\n",
 				*(DWORD *)p);
 
 			dw = *(DWORD *) p;
@@ -1027,22 +1025,23 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		PVR_WRITE_1(0xa05f8000 + 0x18 * 4, "RENDERBASE (3D) (Render target base address), grabando %x", *(DWORD *) p);
-		PVR_WRITE_2(0xa05f8000 + 0x19 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00600a00);
-		PVR_WRITE_1(0xa05f8000 + 0x1a * 4, "RENDERWINDOWX (3D) (Render output window X-start and X-stop), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x1b * 4, "RENDERWINDOWY (3D) (Render output window Y-start and Y-stop), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x18 * 4, "RENDERBASE [FB_W_SOF1](3D) (Render target base address), grabando %x", *(DWORD *) p);
+		PVR_WRITE_2(0xa05f8000 + 0x19 * 4, "[FB_W_SOF2], grabando %x, M=%x", *(DWORD *) p, 0x00600a00);
+		PVR_WRITE_1(0xa05f8000 + 0x1a * 4, "RENDERWINDOWX [FB_X_CLIP] (3D) (Render output window X-start and X-stop), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1b * 4, "RENDERWINDOWY [FB_Y_CLIP] (3D) (Render output window Y-start and Y-stop), grabando %x", *(DWORD *) p);
 		PVR_WRITE_2(0xa05f8000 + 0x1c * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
-		PVR_WRITE_1(0xa05f8000 + 0x1d * 4, "CHEAPSHADOWS (3D) (Cheap shadow enable + strength), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x1e * 4, "CULLINGVALUE (3D) (Minimum allowed polygon area), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x1f * 4, "UNNAMED (3D) (Something to do with rendering), grabando %x", *(DWORD *) p);
-		PVR_WRITE_2(0xa05f8000 + 0x20 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000007);
-		PVR_WRITE_2(0xa05f8000 + 0x21 * 4, "UNNAMED (3D) (Something to do with rendering), grabando %x, M=%x", *(DWORD *)p, 0);
-		PVR_WRITE_2(0xa05f8000 + 0x22 * 4, "Unknown, grabando %x, M=%x", *(DWORD *)p, 0x38d1b710);
-		PVR_WRITE_1(0xa05f8000 + 0x23 * 4, "BGPLANE (3D) (Background plane location), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1d * 4, "CHEAPSHADOWS [FPU_SHAD_SCALE] (3D) (Cheap shadow enable + strength), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1e * 4, "CULLINGVALUE [FPU_CULL_VAL] (3D) (Minimum allowed polygon area), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1f * 4, "[FPU_PARAM_CFG] (3D) (Something to do with rendering), grabando %x", *(DWORD *) p);
+		PVR_WRITE_2(0xa05f8000 + 0x20 * 4, "[HALF_OFFSET], grabando %x, M=%x", *(DWORD *) p, 0x00000007);
+		PVR_WRITE_2(0xa05f8000 + 0x21 * 4, "[FPU_PERP_VAL] (3D) (Something to do with rendering), grabando %x, M=%x", *(DWORD *)p, 0);
+		PVR_WRITE_2(0xa05f8000 + 0x22 * 4, "[ISP_BACKGND_D], grabando %x, M=%x", *(DWORD *)p, 0x38d1b710);
+		PVR_WRITE_1(0xa05f8000 + 0x23 * 4, "BGPLANE [ISP_BACKGND_T] (3D) (Background plane location), grabando %x", *(DWORD *) p);
+
+		PVR_WRITE_1(0xa05f8000 + 0x26 * 4, "[ISP_FEED_CFG], grabando %x", *(DWORD *) p);
 
 		case 0xa05f8000 + 0x24 * 4:		// Unknown
 		case 0xa05f8000 + 0x25 * 4:
-		case 0xa05f8000 + 0x26 * 4:
 		case 0xa05f8000 + 0x27 * 4:
 		{
 			logxmsg(LOG_PVR, "pvr_write: Unknown, grabando %x\n",
@@ -1052,21 +1051,21 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8000 + 0x28 * 4:		// UNNAMED
 		{
-			logxmsg(LOG_PVR, "pvr_write: UNNAMED, grabando %x, M=%x\n",
+			logxmsg(LOG_PVR, "pvr_write: [SDRAM_REFRESH], grabando %x, M=%x\n",
 				*(DWORD *)p, 0x00000020);
 		}
 		break;
 
 		case 0xa05f8000 + 0x29 * 4:		// Unknown
 		{
-			logxmsg(LOG_PVR, "pvr_write: Unknown, grabando %x, M=%x\n",
+			logxmsg(LOG_PVR, "pvr_write: [SDRAM_ARB_CFG], grabando %x, M=%x\n",
 				*(DWORD *)p, 0x0000001f);
 		}
 		break;
 
 		case 0xa05f8000 + 0x2a * 4:		// UNNAMED (PVR) (Graphics memory control)
 		{
-			logxmsg(LOG_PVR, "pvr_write: UNNAMED (PVR) (Graphics memory control), grabando %x, M=%x\n",
+			logxmsg(LOG_PVR, "pvr_write: SDRAM_CFG (PVR) (Graphics memory control), grabando %x, M=%x\n",
 				*(DWORD *)p, 0x15d1c951);
 		}
 		break;
@@ -1080,14 +1079,25 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8000 + 0x2c * 4:		// FOGTABLECOLOR (3D) (Fogging colour when using table fog)
 		{
-			logxmsg(LOG_PVR, "pvr_write: FOGTABLECOLOR (3D) (Fogging colour when using table fog), grabando %x\n",
+			logxmsg(LOG_PVR, "pvr_write: FOGTABLECOLOR [FOG_COL_RAM] (3D) (Fogging colour when using table fog), grabando %x\n",
 				*(DWORD *)p);
 		}
 		break;
 
+		PVR_WRITE_1(0xa05f8000 + 0x2d * 4, "[FOG_COL_VERT], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x2e * 4, "[FOG_DENSITY], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x2f * 4, "[FOG_CLAMP_MAX], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x30 * 4, "[FOG_CLAMP_MIN], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x31 * 4, "[SPG_TRIGGER_POS], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x32 * 4, "[SPG_HBLANK_INT], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x33 * 4, "[SPG_VBLANK_INT], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x34 * 4, "[SPG_CONTROL], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x35 * 4, "[SPG_HBLANK], grabando %x", *(DWORD *) p);
+
 		case 0xa05f80d8: 				// FRAMETOTAL (2D) (Total number of frame cycles)
 		{
 			dw = *(DWORD *) p;
+			logmsg(LOG_PVR, "pvr_write: [SPG_VBLANK]\r\n");
 			logxmsg(LOG_PVR, "pvr_write: número de scanlines por frame: %d\r\n", MSB(dw));
 			logxmsg(LOG_PVR, "pvr_write: número de clocks por scanline: %d\r\n", LSB(dw));
 		}
@@ -1097,25 +1107,42 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		{
 			dw = *(DWORD *) p;
 			long valor = dw & 0x1F; // 5 bits
-			logxmsg(LOG_PVR, "pvr_write: TEXTURESTRIDE: %02x %d\n", valor, valor);
+			logxmsg(LOG_PVR, "pvr_write: TEXTURESTRIDE [SPG_WIDTH] : %02x %d\n", valor, valor);
 		}
 		break;
 
-		PVR_WRITE_1(0xa05f8000 + 0x49 * 4, "PPMATRIXBASE (TA) (Root PP-block matrices base address), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4a * 4, "PRIMALLOCSTART (TA) (Primitive allocation area start), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4b * 4, "PPALLOCSTART (TA) (PP-block allocation area start), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4c * 4, "PRIMALLOCEND (TA) (Primitive allocation area end), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4d * 4, "PPALLOCPOS (TA) (Current PP-block allocation position), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4e * 4, "PRIMALLOCPOS (TA) (Current primitive allocation position), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4f * 4, "TILEARRAYSIZE (TA) (Tile Array dimensions), grabando %x", *(DWORD *) p);
-		PVR_WRITE_CB_1(0xa05f8000 + 0x50 * 4, cb_ppblocksize, "PPBLOCKSIZE (TA) (PP-block sizes), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x51 * 4, "TASTART (TA) (Start vertex enqueueing strobe), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x59 * 4, "PPALLOCEND (TA) (PP-block allocation area end), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x3a * 4, "[TEXT_CONTROL], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x3b * 4, "[VO_CONTROL], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x3c * 4, "[VO_STARTX], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x3d * 4, "[VO_STARTY], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x3e * 4, "[SCALER_CTL], grabando %x", *(DWORD *) p);
 
-//		PVR_WRITE_2(0xa05f8000 + 0x1c * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
+		PVR_WRITE_1(0xa05f8000 + 0x42 * 4, "[PAL_RAM_CTRL], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x43 * 4, "[SPG_STATUS], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x44 * 4, "[FB_BURSTCTRL], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x45 * 4, "[FB_C_SOF], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x46 * 4, "[Y_COEFF], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x47 * 4, "[PT_ALPHA_REF], grabando %x", *(DWORD *) p);
 
+		PVR_WRITE_1(0xa05f8000 + 0x49 * 4, "PPMATRIXBASE [TA_OL_BASE] (TA) (Root PP-block matrices base address), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4a * 4, "PRIMALLOCSTART [TA_ISP_BASE] (TA) (Primitive allocation area start), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4b * 4, "PPALLOCSTART [TA_OL_LIMIT] (TA) (PP-block allocation area start), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4c * 4, "PRIMALLOCEND [TA_ISP_LIMIT] (TA) (Primitive allocation area end), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4d * 4, "PPALLOCPOS [TA_NEXT_OPB] (TA) (Current PP-block allocation position), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4e * 4, "PRIMALLOCPOS [TA_ITP_CURRENT] (TA) (Current primitive allocation position), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4f * 4, "TILEARRAYSIZE [TA_GLOB_TILE_CLIP] (TA) (Tile Array dimensions), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x50 * 4, cb_ppblocksize, "PPBLOCKSIZE [TA_ALLOC_CTRL] (TA) (PP-block sizes), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x51 * 4, "TASTART [TA_LIST_INIT] (TA) (Start vertex enqueueing strobe), grabando %x", *(DWORD *) p);
+
+		PVR_WRITE_1(0xa05f8000 + 0x52 * 4, "[TA_YUV_TEX_BASE], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x53 * 4, "[TA_YUV_TEX_CTRL], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x54 * 4, "[TA_YUV_TEX_CNT], grabando %x", *(DWORD *) p);
+
+		PVR_WRITE_1(0xa05f8000 + 0x58 * 4, "[TA_LIST_CONT], grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x59 * 4, "PPALLOCEND [TA_NEXT_OPB_INIT] (TA) (PP-block allocation area end), grabando %x", *(DWORD *) p);
 
 		// fin PVR
+
 		case 0xa0710000: // Dreamcast RTC, reg 1
 		case 0xa0710004:
 		{
