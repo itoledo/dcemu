@@ -881,6 +881,7 @@ int cargar_bios()
 
 void inicializar_fonts()
 {
+#ifndef USE_BIOS_FONT
 	// 288 narrow (12 x 24, 36 bytes / char)
 	// letra H
 	char * letras = "_!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
@@ -933,6 +934,7 @@ void inicializar_fonts()
 //		logmsg("Finalizamos la letra %c.\r\n", *ptr);
 		ptr++;
 	}
+#endif
 }
 
 int cargar_archivo( char * fname, void * target)
@@ -1076,9 +1078,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
 //	PC = 0x8c008300;
-//	PC = 0x00000000;
+	PC = 0x00000000;
 	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit(screen))
@@ -1107,9 +1109,10 @@ int main(int argc, char *argv[])
 
 	R(15) = mem_base + mem_offset + 1024*1024*15 - 4;
 
+#ifndef USE_BIOS_FONT
 	logmsg("inicializando fonts\n");
-
 	inicializar_fonts();
+#endif	
 
 	// HACK!
 //	*(DWORD *) &memoria[SYSCALL_ROMFONT - mem_base] = SYSCALL_ROMFONT;
@@ -1125,7 +1128,11 @@ int main(int argc, char *argv[])
  
  	wvalor = 0xD000;		memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);
  	wvalor = 0x000B;		memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
+#ifdef USE_BIOS_FONT 	
+ 	dwvalor = 0x00100020;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
+#else 	
  	dwvalor = FONT_BASE;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
+#endif 	
 
 /*	*(DWORD *) &memoria[SYSCALL_GDROM	- 0x80000000]	= HACK_BASE + HACK_GDROM;
 	*(WORD *) &memoria[HACK_BASE + HACK_GDROM - 0x80000000] = 0x0009; // NOP */

@@ -7,6 +7,7 @@
 // Usar funcciones o macros para accesar la memoria
 #define MEMORY_MACROS
 
+#define USE_BIOS_FONT
 //#define PRINT_ASM
 #define LOGGING
 //#define JOYSTICK
