@@ -1,0 +1,1499 @@
+// #include <windows.h>
+#include <time.h>
+#include "main.h"
+#include "intc.h"
+#include "opcodes.h"
+
+DWORD SQ0[8];
+DWORD SQ1[8];
+
+typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
+typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size);
+
+mem_access_read_t video_read;
+mem_access_read_t ram_read;
+mem_access_read_t regmap_read;
+mem_access_read_t mem_read_error;
+mem_access_read_t pvr_read;
+mem_access_read_t bios_read;
+
+mem_access_write_t video_write;
+mem_access_write_t ram_write;
+mem_access_write_t regmap_write;
+mem_access_write_t mem_write_error;
+mem_access_write_t pvr_write;
+mem_access_write_t sq_write;
+mem_access_write_t ta_write;
+mem_access_write_t bios_write;
+
+mem_access_read_t * mem_hash_read[0x100];
+mem_access_write_t * mem_hash_write[0x100];
+
+DWORD float_to_dword(float x)
+{
+	DWORD res;
+
+	memcpy(&res, &x, sizeof(DWORD));
+
+	return res;
+}
+
+float dword_to_float(DWORD x)
+{
+	float res;
+
+	memcpy(&res, &x, sizeof(float));
+
+	return res;
+}
+
+void dump_registers()
+{
+    char buf[4096], buf2[4096];
+	int i;
+	
+    buf2[0] = '\0';
+
+	for (i = 0; i < 24; i++)
+	{
+		sprintf(buf, "r%d=%lx ", i, registers[i]);
+		strcat(buf2, buf);
+	}
+	
+    strcat(buf2, "\r\n");
+
+	for (i = 0; i < 32; i++)
+	{
+		sprintf(buf, "FR%d=%lx ", i, float_to_dword(float_registers[i]));
+		strcat(buf2, buf);
+	}
+    strcat(buf2, "\r\n");
+	sprintf(buf, "T=%d, FPUL=%lx,%f MACL=%lx,%ld MACH=%lx,%ld\r\n", IS_SR_T() ? 1 : 0,
+ 		(DWORD) FPUL, (float) FPUL,
+ 		(DWORD) MACL, (signed long) MACL,
+		(DWORD) MACH, (signed long) MACH);
+	strcat(buf2, buf);
+	
+	sprintf(buf, "SR=%08lx MD:%d RB:%d\n", SR, IS_SET(SR,SR_MD) ? 1 : 0, IS_SET(SR,SR_RB) ? 1 : 0);
+	strcat(buf2, buf);
+	
+	logmsg(buf2);
+}
+
+void check_registers()
+{
+#ifdef CHECK_VALUE
+	int i;
+	
+	for (i = 0; i < 16; i++)
+	{
+		if (registers[i] == CHECK_VALUE)
+		{
+			logmsg("bingo: r[%d]=%x,%d\r\n", i, registers[i], registers[i]);
+			dump_registers();
+			break;
+		}
+	}
+#endif
+}
+
+void regmem_setup(void)
+{
+	PTEL	= (DWORD *) &regmem[0x000004];	*PTEL = 0;
+	CCR		= (DWORD *)	&regmem[0x00001C];	*CCR = 0;
+	EXPEVT	= (DWORD *)	&regmem[0x000024];	*EXPEVT = 0;
+	INTEVT	= (DWORD *) &regmem[0x000028];	*INTEVT = 0;
+	TRA		= (DWORD *) &regmem[0x000020];
+	QACR0	= (DWORD *)	&regmem[0x000038];	*QACR0 = 0;
+	QACR1   = (DWORD *) &regmem[0x00003C];  *QACR1 = 0;
+
+
+	PCTRA	= (DWORD *)	&regmem[0x80002C];	*PCTRA = 0;
+	PDTRA	= (WORD *)	&regmem[0x800030];	*PDTRA = 0;
+	PCTRB	= (DWORD *)	&regmem[0x800040];	*PCTRB = 0;
+	PDTRB	= (WORD *)	&regmem[0x800044];	*PDTRB = 0;
+
+	/*** DMA ***/
+	SAR0	= (DWORD *)	&regmem[0xA00000];
+	DAR0	= (DWORD *)	&regmem[0xA00004];
+	DMATCR0	= (DWORD *)	&regmem[0xA00008];
+	CHCR0	= (DWORD *)	&regmem[0xA0000C];	*CHCR0 = 0;
+
+	SAR1	= (DWORD *)	&regmem[0xA00010];
+	DAR1	= (DWORD *)	&regmem[0xA00014];
+	DMATCR1	= (DWORD *)	&regmem[0xA00018];
+	CHCR1	= (DWORD *)	&regmem[0xA0001C];		*CHCR1 = 0;
+
+	SAR2	= (DWORD *)	&regmem[0xA00020];
+	DAR2	= (DWORD *)	&regmem[0xA00024];
+	DMATCR2	= (DWORD *)	&regmem[0xA00028];
+	CHCR2	= (DWORD *)	&regmem[0xA0002C];		*CHCR2 = 0;
+	
+	SAR3	= (DWORD *)	&regmem[0xA00030];
+	DAR3	= (DWORD *)	&regmem[0xA00034];
+	DMATCR3	= (DWORD *)	&regmem[0xA00038];
+	CHCR3	= (DWORD *)	&regmem[0xA0003C];		*CHCR3 = 0;
+
+	DMAOR	= (DWORD *)	&regmem[0xA00040];		*DMAOR = 0;
+	/*** FIN DMA ***/
+	
+	ICR		= (WORD *)	&regmem[0xD00000];		*ICR = 0;
+	IPRA	= (WORD *)	&regmem[0xD00004];		*IPRA = 0;
+	IPRB	= (WORD *)	&regmem[0xD00008];		*IPRB = 0;
+	IPRC	= (WORD *)	&regmem[0xD0000C];		*IPRC = 0;
+
+	/*** TMU Registers ***/
+	TOCR	= (BYTE *)	&regmem[0xD80000];		*TOCR = 0;
+	TSTR	= (BYTE *)	&regmem[0xD80004];		*TSTR = 0;
+	TCOR0	= (DWORD *)	&regmem[0xD80008];		*TCOR0 = 0xFFFFFFFF;
+	TCNT0	= (DWORD *)	&regmem[0xD8000C];		*TCNT0 = 0xFFFFFFFF;
+	TCR0	= (WORD *)	&regmem[0xD80010];		*TCR0 = 0;
+	TCOR1	= (DWORD *)	&regmem[0xD80014];		*TCOR1 = 0xFFFFFFFF;
+	TCNT1	= (DWORD *)	&regmem[0xD80018];		*TCNT1 = 0xFFFFFFFF;
+	TCR1	= (WORD *)	&regmem[0xD8001C];		*TCR1 = 0;
+	TCOR2	= (DWORD *)	&regmem[0xD80020];		*TCOR2 = 0xFFFFFFFF;
+	TCNT2	= (DWORD *)	&regmem[0xD80024];		*TCNT2 = 0xFFFFFFFF;
+	TCR2	= (WORD *)	&regmem[0xD80028];		*TCR2 = 0;
+	TCPR2	= (DWORD *)	&regmem[0xD8002C];
+	/*** FIN TMU ***/
+	
+	SCSMR2	= (WORD *)	&regmem[0xE80000];		*SCSMR2 = 0;
+	SCBRR2	= (BYTE *)	&regmem[0xE80004];		*SCBRR2 = 0xFF;
+	SCSCR2	= (WORD *)	&regmem[0xE80008];		*SCSCR2 = 0;
+	SCFTDR2	= (BYTE *)	&regmem[0xE8000C];		*SCFTDR2 = 0;
+	SCFSR2	= (WORD *)	&regmem[0xE80010];		*SCFSR2 = 0x60;
+	SCFCR2	= (WORD *)	&regmem[0xE80018];		*SCFCR2 = 0;
+	SCSPTR2	= (WORD *)	&regmem[0xE80020];		*SCSPTR2 = 0;
+	SCLSR2	= (WORD *)	&regmem[0xE80024];		*SCLSR2 = 0;
+}
+
+void mem_hash_setup(void)
+{
+	int i;
+	
+	for (i = 0; i < 0xFF; i++)
+	{
+		mem_hash_read[i] = mem_read_error;
+  		mem_hash_write[i] = mem_write_error;
+	}
+
+	mem_hash_write[0x10] = ta_write;
+
+	mem_hash_read[0x00] = bios_read;
+	mem_hash_read[0x80] = bios_read;
+	mem_hash_write[0x00] = bios_write;
+	mem_hash_write[0x80] = bios_write;
+
+	// video mem
+	mem_hash_read[0xA4] = video_read;
+ 	mem_hash_read[0xA5] = video_read;
+ 	mem_hash_read[0x04] = video_read;
+ 	mem_hash_write[0xA4] = video_write;
+	mem_hash_write[0xA5] = video_write;
+	mem_hash_write[0x04] = video_write;
+	
+	mem_hash_read[0x05] = video_read;
+	mem_hash_write[0x05] = video_write;
+
+	mem_hash_read[0x0C] = ram_read;
+	mem_hash_read[0x8C] = ram_read;
+ 	mem_hash_read[0xA0] = pvr_read;
+	mem_hash_read[0xAC]	= ram_read;
+ 	mem_hash_read[0xFF] = regmap_read;
+
+ 	mem_hash_write[0x0C] = ram_write;
+ 	mem_hash_write[0x8C] = ram_write;
+ 	mem_hash_write[0xA0] = pvr_write;
+ 	mem_hash_write[0xAC] = ram_write;
+ 	mem_hash_write[0xE0] = sq_write;
+ 	mem_hash_write[0xE1] = sq_write;
+ 	mem_hash_write[0xE2] = sq_write;
+ 	mem_hash_write[0xE3] = sq_write;
+ 	mem_hash_write[0xFF] = regmap_write;
+ 	
+ 	// test!
+ 	mem_hash_write[0x7E] = ram_write;
+ 	mem_hash_read[0x7E] = ram_read;
+}
+
+void mem_read_error(unsigned long direccion, void * p, size_t size)
+{
+	logxmsg(LOG_MEM, "mem_read_error: dir %x, tamaño %d\r\n", direccion, size);
+	dump_registers();
+}
+
+void mem_write_error(unsigned long direccion, void * p, size_t size)
+{
+	switch(size)
+	{
+		case 1:	logxmsg(LOG_MEM, "mem_write_error: dir %x, byte %02x %d '%c'\n", direccion, *(BYTE *)p, *(BYTE *)p, *(BYTE *)p);	break;
+		case 2: logxmsg(LOG_MEM, "mem_write_error: dir %x, word %04x %d\n", direccion, *(WORD *) p, *(WORD *)p);					break;
+		case 4: logxmsg(LOG_MEM, "mem_write_error: dir %x - %02x, dword %08x %d\n", direccion, (direccion % 0x100) / 4, *(DWORD *)p, *(DWORD *)p);			break;
+	}
+	dump_registers();
+}
+
+void sq_write(unsigned long direccion, void * p, size_t size)
+{
+    short pos;
+
+/*    switch(size)
+    {
+    case 1: logmsg( "sq_write: dir %x, BYTE %x\r\n", direccion, *(BYTE *)p); break;
+    case 2: logmsg( "sq_write: dir %x, WORD %x\r\n", direccion, *(WORD *)p); break;
+    case 4: logmsg( "sq_write: dir %x, DWORD %x\r\n", direccion, *(DWORD *)p); break;
+    } */
+	
+//	dump_registers();
+
+    pos = (direccion >> 2) & 7; // 3 bits
+
+    if (direccion & 0x20) // 0: SQ0, 1: SQ1
+    {
+        SQ1[pos] = *(DWORD *) p;
+//		logxmsg(LOG_MEM, "sq_write: guardando %x en SQ1[%d]\r\n", *(DWORD *) p, pos);
+    }
+    else
+    {
+        SQ0[pos] = *(DWORD *) p;
+//		logxmsg(LOG_MEM, "sq_write: guardando %x en SQ0[%d]\r\n", *(DWORD *) p, pos);
+    }
+}
+
+void video_read(unsigned long direccion, void * p, size_t size)
+{
+//	long addr = direccion & 0x0FFFFFFF;
+	long addr = direccion & 0x00FFFFFF;
+
+//	memcpy(p, &video_mem[direccion - video_base], size);
+#ifdef DEBUG_MEM_VIDEO
+	if (logvideomem)
+		logmsg("videomem: dir %x\r\n", direccion);
+#endif
+	
+	memcpy(p, &video_mem[addr], size);
+
+/*	if (addr >= 0x04000000 && addr <= 0x07FFFFFF)
+	{
+		memcpy(p, &video_mem[addr - 0x04000000], size);
+	} */
+
+/*    if ((direccion - video_base) >= (screen->w * screen->h * (screen->format->BitsPerPixel / 8))
+    {
+    	memcpy(p, &video_mem[direccion - video_base], 
+	else
+	if ((direccion - video_base) < 0)
+    {
+//        logmsg("dibujando fuera de la pantalla: dir %x\r\n", direccion);
+    }
+    else
+		ReadPixelN(direccion - video_base, p, size); */
+}
+
+void pvr_read(unsigned long direccion, void * p, size_t size)
+{
+	DWORD dw;
+	switch(direccion)
+	{
+	case 0xa080ffc0: // snd_dbg
+		{
+			memcpy(p, &snd_dbg, size);
+			snd_dbg = 3; // hack
+		}
+		break;
+	
+	case 0xa05f688c:
+		{
+			memcpy(p, &G2_FIFO, size);
+			REMOVE_BIT(G2_FIFO, AICA_FIFO);
+		}
+		break;
+
+		case 0xa05f6900: // Pending Interrupts 1
+		{
+			memcpy(p, &ASIC_ACK_A, size);
+		}
+		break;
+
+		case 0xa05f6904: // Pending Interrupts 2
+		{
+			memcpy(p, &ASIC_ACK_B, size);
+		}
+		break;
+
+		case 0xa05f6908: // Pending Interrupts 3
+		{
+			memcpy(p, &ASIC_ACK_C, size);
+		}
+		break;
+
+		case 0xa05f6910: // Enabled Interrupts IRQD_A
+		{
+			memcpy(p, &ASIC_IRQD_A, size);
+		}
+		break;
+
+		case 0xa05f6914: // Enabled Interrupts IRQD_B
+		{
+			memcpy(p, &ASIC_IRQD_B, size);
+		}
+		break;
+
+		case 0xa05f6918: // Enabled Interrupts IRQD_C
+		{
+			memcpy(p, &ASIC_IRQD_C, size);
+		}
+		break;
+
+		case 0xa05f6920: // Enabled Interrupts IRQB_A
+		{
+			memcpy(p, &ASIC_IRQB_A, size);
+		}
+		break;
+
+		case 0xa05f6924: // Enabled Interrupts IRQB_B
+		{
+			memcpy(p, &ASIC_IRQB_B, size);
+		}
+		break;
+
+		case 0xa05f6928: // Enabled Interrupts IRQB_C
+		{
+			memcpy(p, &ASIC_IRQB_C, size);
+		}
+		break;
+
+		case 0xa05f6930: // Enabled Interrupts IRQ9_A
+		{
+			memcpy(p, &ASIC_IRQ9_A, size);
+		}
+		break;
+
+		case 0xa05f6934: // Enabled Interrupts IRQ9_B
+		{
+			memcpy(p, &ASIC_IRQ9_B, size);
+		}
+		break;
+
+		case 0xa05f6938: // Enabled Interrupts IRQ9_C
+		{
+			memcpy(p, &ASIC_IRQ9_C, size);
+		}
+		break;
+
+		case 0xa05f6c18: // MAPLE State
+		{
+			memcpy(p, &MAPLE_STATE, size);
+//			logmsg( "pvr_read: MAPLE_STATE: %x\r\n", MAPLE_STATE);
+			if (MAPLE_STATE & 0x1)
+			{
+//				logmsg( "MAPLE_STATE:Desactivando DMA\r\n");
+				REMOVE_BIT(MAPLE_STATE, 0x1);
+			}
+		}
+		break;
+
+		case 0xa05f8000: // COREID
+		{
+			dw = 0x17fd11db; // fijo para todas las DC
+			memcpy(p, &dw, size);
+			logmsg("pvr_read: COREID\r\n");
+		}
+		break;
+
+		case 0xa05f8044: // BITMAPTYPE
+		{
+			dw = 0x0000000d;
+			memcpy(p, &dw, size);
+			logmsg("pvr_read: BITMAPTYPE\r\n");
+		}
+		break;
+
+		case 0xa05f80cc: // SCANINTPOS
+		{
+			memcpy(p, &PVR_SCANINTPOS, size);
+			logmsg("pvr_read: SCANINTPOS\n");
+		}
+		break;
+
+		case 0xa05f80e8: // BITMAPTYPE2
+		{
+			dw = 0x00160000;
+			memcpy(p, &dw, size);
+			logmsg("pvr_read: BITMAPTYPE2\r\n");
+		}
+		break;
+
+		case 0xa05f810c:
+		{
+			dw = (instrucciones / 10) % 0x1FF;
+			memcpy(p, &dw, size);
+		}
+		break;
+
+		case 0xa05f8050:
+		{
+			dw = 0x00100203;
+			memcpy(p, &dw, size);
+		}
+		break;
+
+		case 0xa05f8144:
+		{
+			logmsg("pvr_read: ta_init\r\n");
+		}
+		break;
+	
+		case 0xa0710000: // Dreamcast RTC, reg 1
+		case 0xa0710004:
+		{
+			logmsg("pvr_read: RTC\r\n");
+		}
+		break;
+
+		default:
+		if (direccion >= 0xA0000000 && direccion <= 0xA01FFFFF) // Boot ROM & Flash ROM
+		{
+			bios_read(direccion, p, size);
+		}
+		else
+			mem_read_error(direccion, p, size);
+		break;
+	}
+}
+
+void bios_read(unsigned long direccion, void * p, size_t size)
+{
+	memcpy(p, &bios_mem[direccion % 0x20000000], size);
+}
+
+void bios_write(unsigned long direccion, void * p, size_t size)
+{
+	memcpy(&bios_mem[direccion % 0x20000000], p, size);
+}
+
+void ta_write(unsigned long direccion, void * p, size_t size)
+{
+	if (direccion >= 0x10000000 + TA_SIZE)
+	{
+		logxmsg(LOG_PVR, "TA: ERROR! direccion %x\n", direccion);
+	}
+	else
+		memcpy(&ta_mem[direccion - 0x10000000], p, size);
+}
+
+void pvr_write(unsigned long direccion, void * p, size_t size)
+{
+	DWORD dw;
+	bool last;
+
+	switch(direccion)
+	{
+	case 0xa080ffc0: // snd_dbg
+		{
+			memcpy(&snd_dbg, p, size);
+		}
+		break;
+	
+	case 0xa05f688c: // G2 FIFO
+		{
+			memcpy(&G2_FIFO, p, size);
+		}
+		break;
+
+		case 0xa05f6900: // Pending Interrupts 1
+		{
+			memcpy(&dw, p, size);
+			REMOVE_BIT(ASIC_ACK_A, dw);
+			logmsg("pvr_write: ASIC_ACK_A: %x\r\n", ASIC_ACK_A);
+		}
+		break;
+
+		case 0xa05f6904: // Pending Interrupts 2
+		{
+			memcpy(&dw, p, size);
+			REMOVE_BIT(ASIC_ACK_B, dw);
+			logmsg("pvr_write: ACK_ACK_B: %x\r\n", ASIC_ACK_B);
+		}
+		break;
+
+		case 0xa05f6908: // Pending Interrupts 3
+		{
+			memcpy(&dw, p, size);
+			REMOVE_BIT(ASIC_ACK_C, dw);
+			logmsg("pvr_write: ASIC_ACK_C: %x\r\n", ASIC_ACK_C);
+		}
+		break;
+
+		case 0xa05f6910: // Enabled Interrupts IRQD_A
+		{
+			memcpy(&ASIC_IRQD_A, p, size);
+			logmsg("pvr_write: ASIC_IRQD_A: %x\r\n", ASIC_IRQD_A);
+		}
+		break;
+
+		case 0xa05f6914: // Enabled Interrupts IRQD_B
+		{
+			memcpy(&ASIC_IRQD_B, p, size);
+			logmsg("pvr_write: ASIC_IRQD_B: %x\r\n", ASIC_IRQD_B);
+		}
+		break;
+
+		case 0xa05f6918: // Enabled Interrupts IRQD_C
+		{
+			memcpy(&ASIC_IRQD_C, p, size);
+			logmsg("pvr_write: ASIC_IRQD_C: %x\r\n", ASIC_IRQD_C);
+		}
+		break;
+
+		case 0xa05f6920: // Enabled Interrupts IRQB_A
+		{
+			memcpy(&ASIC_IRQB_A, p, size);
+			logmsg("pvr_write: ASIC_IRQB_A: %x\r\n", ASIC_IRQB_A);
+		}
+		break;
+
+		case 0xa05f6924: // Enabled Interrupts IRQB_B
+		{
+			memcpy(&ASIC_IRQB_B, p, size);
+			logmsg("pvr_write: ASIC_IRQB_B: %x\r\n", ASIC_IRQB_B);
+		}
+		break;
+
+		case 0xa05f6928: // Enabled Interrupts IRQB_C
+		{
+			memcpy(&ASIC_IRQB_C, p, size);
+			logmsg("pvr_write: ASIC_IRQB_C: %x\r\n", ASIC_IRQB_C);
+		}
+		break;
+
+		case 0xa05f6930: // Enabled Interrupts IRQ9_A
+		{
+			memcpy(&ASIC_IRQ9_A, p, size);
+			logmsg("pvr_write: ASIC_IRQ9_A: %x\r\n", ASIC_IRQ9_A);
+		}
+		break;
+
+		case 0xa05f6934: // Enabled Interrupts IRQ9_B
+		{
+			memcpy(&ASIC_IRQ9_B, p, size);
+			logmsg("pvr_write: ASIC_IRQ9_B: %x\r\n", ASIC_IRQ9_B);
+		}
+		break;
+
+		case 0xa05f6938: // Enabled Interrupts IRQ9_C
+		{
+			memcpy(&ASIC_IRQ9_C, p, size);
+			logmsg("pvr_write: ASIC_IRQ9_C: %x\r\n", ASIC_IRQ9_C);
+		}
+		break;
+
+		/*** MAPLE ***/
+		case 0xa05f6c04: // MAPLE_DMAADDR
+		{
+			memcpy(&MAPLE_DMAADDR, p, size);
+//			logmsg( "pvr_write: MAPLE_DMAADDR: %x\r\n", (MAPLE_DMAADDR & 0x1FFFFFE0));
+		}
+		break;
+		
+		case 0xa05f6c10: // MAPLE_RESET2
+		{
+			memcpy(&MAPLE_RESET2, p, size);
+//			logmsg( "pvr_write: MAPLE_RESET2: %x\r\n", MAPLE_RESET2);
+		}
+		break;
+
+		case 0xa05f6c14: // MAPLE_ENABLE
+		{
+			memcpy(&MAPLE_ENABLE, p, size);
+//			logmsg( "pvr_write: MAPLE_ENABLE: %x\r\n", MAPLE_ENABLE);
+		}
+		break;
+
+		case 0xa05f6c18: // MAPLE_STATE
+		{
+			logmsg("MAPLE_STATE\r\n");
+			memcpy(&MAPLE_STATE, p, size);
+			if (MAPLE_STATE & 0x1)
+			{
+				DWORD td1 = 0, td2, curaddr;
+				int i = 0, j, tam;
+
+//				logmsg( "pvr_write: MAPLE_STATE enabled\r\n");
+
+				// llenemos con algunos datos!
+				// primero tenemos que leer MAPLE_DMAADDR...
+				last = false;
+				curaddr = MAPLE_DMAADDR;
+				while (last == false && i < 1000)
+				{
+					memread(curaddr,  &td1, sizeof(DWORD));
+					memread(curaddr + 4, &td2, sizeof(DWORD));
+					if (td1 == 0)
+					{
+						logmsg( "pvr_write: MAPLE_DMAADDR: dir %x erronea\r\n", MAPLE_DMAADDR);
+						return;
+					}
+//					logmsg( "leídos td1:%x, td2:%x\r\n", td1, td2);
+					last = (td1 & 0x80000000) ? true : false;
+//					logmsg( "tamaño del paquete: %x\r\n", (tam = (td1 & 0xFF) + 1));
+					tam = (td1 & 0xFF) + 1;
+					// ahora tenemos el paquetito! a tratar de leerlo.
+
+					if (((td1 >> 16) & 0x3) != 0) // si no es el puerto 1
+					{
+						// grabemos 0xFFFFFFFF
+						logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
+						dw = 0xFFFFFFFF;
+						memwrite(td2, &dw, sizeof(DWORD));
+					}
+					else
+					if (tam > 0)
+					{
+						DWORD * paquete;
+						maple_devinfo_t devinfo;
+						int recadr, sendadr;
+						
+						paquete = (DWORD *) malloc(sizeof(DWORD) * tam);
+						for (j = 0; j < tam; j++)
+						{
+//							logmsg( "Leyendo paquete en %x\r\n", curaddr + 8 + j*4);
+							memread(curaddr + 8 + j*4, &paquete[j], sizeof(DWORD));
+						}
+						// ya tenemos el paquete en memoria!
+//						logmsg( "comando: %x\r\n", (paquete[0]) & 0xFF);
+//						logmsg( "recaddr: %x\r\n", (recadr = (paquete[0] >> 8) & 0xFF));
+//						logmsg( "sender : %x\r\n", (sendadr = (paquete[0] >> 16) & 0xFF));
+//						logmsg( "adit.w.: %x\r\n", (paquete[0] >> 24) & 0xFF);
+						recadr = (paquete[0] >> 8) & 0xFF;
+						sendadr = (paquete[0] >> 16) & 0xFF;
+						
+						logmsg("recadr:%x, sendadr:%x\r\n", recadr, sendadr);
+
+						if (recadr != 0x20)
+						{
+							logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
+							dw = 0xFFFFFFFF;
+							memwrite(td2, &dw, sizeof(DWORD));
+						}
+						else
+						if ((paquete[0] & 0xFF) == 1) // Request Device Info
+						{
+							// tenemos que guardar el deviceinfo!
+							devinfo.func = (1 << 24); // controlador
+							devinfo.function_data[0] = 0;
+							devinfo.function_data[1] = 0;
+							devinfo.function_data[2] = 0;
+							devinfo.area_code = 0;
+							devinfo.connector_direction = 0;
+							strcpy(devinfo.product_name, "Controlador DC");
+							strcpy(devinfo.product_license, "SEGA");
+							devinfo.standby_power = 0;
+							devinfo.max_power = 0;
+							// a hacer el paquete de respuesta
+							paquete[0] = 0x05 | // device info (response)
+								((sendadr << 8) & 0xFF00) |
+								((((recadr == 0x20) ? 0x20 : 0) << 16) & 0xFF0000) |
+								(((sizeof(maple_devinfo_t)/4) << 24) & 0xFF000000);
+//							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
+							memwrite(td2, &paquete[0], sizeof(DWORD));
+//							logmsg( "Escribiendo devinfo en %x\r\n", td2 + 4);
+							memwrite(td2 + 4, &devinfo, sizeof(maple_devinfo_t));
+						}
+						else
+						if ((paquete[0] & 0xFF) == 9) // MAPLE_COMMAND_GETCOND
+						{
+							// recibe FUNC
+							cont_cond_t ct;
+							
+							ct.buttons = joystick; // CONT_START
+							ct.rtrig = 0;
+							ct.ltrig = 0;
+							ct.joyx = 0;
+							ct.joyy = 0;
+							ct.joy2x = 0;
+							ct.joy2y = 0;
+
+							paquete[0] = 0x08 | // data transfer (response)
+								((sendadr << 8) & 0xFF00) |
+								((((recadr == 0x20) ? 0x20 : 1) << 16) & 0xFF0000) |
+								(((sizeof(cont_cond_t)/4 + 1) << 24) & 0xFF000000);
+								
+//							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
+							memwrite(td2, &paquete[0], sizeof(DWORD));
+							dw = (1 << 24); // MAPLE_FUNC_CONTROLLER
+							memwrite(td2 + 4, &dw, sizeof(DWORD));
+//							logmsg( "Escribiendo cont_cond en %x\r\n", td2 + 8);
+							memwrite(td2 + 8, &ct, sizeof(cont_cond_t));
+						}
+						else
+						{
+							logmsg("comando MAPLE no implementado: %x\r\n", paquete[0]);
+						}
+
+						free(paquete);
+					}
+					else
+					{
+						logmsg("MAPLE: tamaño = %d\r\n", tam);
+	 				}
+//					curaddr += ((td1 & 0xFF) + 1);
+					curaddr += ((td1 & 0xFF) + 1) * 4 + 8; // para que se salte el descriptor + el paquete
+					i++;
+				}
+				maple_dma = true;
+			}
+			else
+			{
+				logmsg( "pvr_write: MAPLE_STATE disabled\r\n");
+			}
+		}
+		break;
+
+		case 0xa05f6c80: // MAPLE_SPEED
+		{
+			memcpy(&MAPLE_SPEED, p, size);
+//			logmsg( "pvr_write: MAPLE_SPEED: %x\r\n", MAPLE_SPEED);
+		}
+		break;
+
+		case 0xa05f6c8c: // MAPLE_RESET1
+		{
+			memcpy(&MAPLE_RESET1, p, size);
+//			logmsg( "pvr_write: MAPLE_RESET1: %x\r\n", MAPLE_RESET1);
+		}
+		break;
+		/*** FIN MAPLE ***/
+
+		case 0xa05f8012: // RENDERFORMAT, "alpha config"
+		{
+			DWORD dw = *(DWORD *) p;
+			char * s_RENDERFORMAT[] = {
+   				"0RGB1555",
+       			"RGB565",
+          		"ARGB4444",
+            	"ARGB1555",
+             	"RGB888",
+              	"0RGB8888",
+               	"ARGB8888",
+                "ARGB4444" };
+			// A, R, G, B, bpp
+			int m_RENDERFORMAT[][5] = {
+   				{ 0, 5, 5, 5, 16 },
+       			{ 0, 5, 6, 5, 16 },
+       			{ 4, 4, 4, 4, 16 },
+       			{ 1, 5, 5, 5, 16 },
+       			{ 0, 8, 8, 8, 16 },
+       			{ 0, 8, 8, 8, 32 },
+       			{ 8, 8, 8, 8, 32 },
+       			{ 4, 4, 4, 4, 16 } };
+   			int idx;
+
+			logmsg("0xa05f8008: RENDERFORMAT=%x\n", *(DWORD *)p);
+			if (dw & 0x1000)
+				logmsg("dither enable\n");
+			idx = dw & 0x07;
+			logmsg("formato: %s\n", s_RENDERFORMAT[idx]);
+			SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, m_RENDERFORMAT[0][idx]);
+			SDL_GL_SetAttribute(SDL_GL_RED_SIZE, m_RENDERFORMAT[1][idx]);
+			SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, m_RENDERFORMAT[2][idx]);
+			SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, m_RENDERFORMAT[3][idx]);
+			SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, m_RENDERFORMAT[4][idx]);
+			SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+		}
+		break;
+
+#define PVR_WRITE_1(dir, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} break; }
+#define PVR_WRITE_CB_1(dir, callback, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} callback(direccion, p, size); break; }
+#define PVR_WRITE_2(dir, texto, arg1, arg2)	{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg1, arg2);} break; }
+
+		PVR_WRITE_1(0xa05f8000 + 0x00 * 4, "COREID (PVR2 Core ID), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x01 * 4, "CORETYPE (PVR2 Core version), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x02 * 4, "COREDISABLE (PVR2) (Enable/disable the submodules of the PVR2 Core), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x03 * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x04 * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x05 * 4, cb_renderstart, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x06 * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x07 * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x08 * 4, "PRIMALLOCBASE (3D) (Primitive allocation base), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x09 * 4, "Unknown, grabando %x", *(DWORD *) p);
+ 		PVR_WRITE_1(0xa05f8000 + 0x0a * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x0b * 4, "TILEARRAY (Tile Array base address), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x0c * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x0d * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x0e * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x0f * 4, "Unknown, grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x10 * 4, "BORDERCOLOR (2D) (Border colour), grabando %x", *(DWORD *) p);
+
+		case 0xa05f8000 + 0x11 * 4:		// BITMAPTYPE (bitmap display settings)
+		{
+			logxmsg(LOG_PVR, "pvr_write: BITMAPTYPE (bitmap display settings), grabando %x\n",
+				*(DWORD *)p);
+			dw = *(DWORD *) p;
+			logxmsg(LOG_PVR, "pvr_write: displaymode: %x\r\n", dw);
+			if (dw & 0x01)
+				logxmsg(LOG_PVR, "bitmap display enable\r\n");
+			if (dw & 0x02)
+				logxmsg(LOG_PVR, "line doubling enable\r\n");
+			switch((dw >> 2) & 0x3)
+			{
+				case 0x00:
+				logxmsg(LOG_PVR, "ARGB1555\r\n");
+				screenbits = 16;
+				break;
+				
+				case 0x01:
+				logxmsg(LOG_PVR, "RGB565\r\n");
+				screenbits = 16;
+				break;
+				
+				case 0x02:
+				logxmsg(LOG_PVR, "RGB888\r\n");
+				screenbits = 24;
+				break;
+				
+				case 0x03:
+				logxmsg(LOG_PVR, "ARGB8888\r\n");
+				screenbits = 32;
+				break;
+			}
+			if (dw & 0x00800000)
+   				logxmsg(LOG_PVR, "pixel clock double enable\r\n");
+			logxmsg(LOG_PVR, "screenbits: %d\r\n", screenbits);
+		}
+		break;
+
+		PVR_WRITE_1(0xa05f8000 + 0x12 * 4, "RENDERFORMAT (3D) (Render output format)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x13 * 4, "RENDERPITCH (3D) (Render target pitch)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x14 * 4, "FRAMEBUF (2D) (Framebuffer address)", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x15 * 4, "FRAMEBUF (2D) (Framebuffer address, short field)", *(DWORD *) p);
+		PVR_WRITE_2(0xa05f8000 + 0x16 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
+
+		case 0xa05f8000 + 0x17 * 4:		// DIWSIZE (2D) (Display window size)
+		{
+			long modulo;
+            int shift;
+
+			logxmsg(LOG_PVR, "pvr_write: DIWSIZE (2D) (Display window size), grabando %x\n",
+				*(DWORD *)p);
+
+			dw = *(DWORD *) p;
+			logxmsg(LOG_PVR, "pvr_write: displaysize: %x\r\n", dw);
+			if (dw & (1 << 20))
+				logxmsg(LOG_PVR, "VGA mode\r\n");
+				
+			if (screenbits == 32)
+                shift = 2;
+            else
+                shift = 1;
+            
+            screenwidth = (((dw & 0x3FF) + 1) * 4) / (screenbits / 8);
+			logxmsg(LOG_PVR, "row length: %d\r\n", screenwidth);
+
+			screenheight = (dw >> 10) & 0x3FF;
+			logxmsg(LOG_PVR, "lines: %d\r\n", screenheight);
+
+			modulo = (((MSB(dw) >> 4) & 0x3FF) - 1) * 4;
+			logxmsg(LOG_PVR, "modulo: %d\r\n", modulo);
+			if (screenheight == 0)
+			{
+				logxmsg(LOG_PVR, "modo inválido. valores por defecto.\n");
+				screenheight = 480;
+				screenwidth = 640;
+				screenbits = 16;
+			}
+			if (screenheight == 476)
+				screenheight = 480;
+			//screeninit(screenwidth, screenheight, screenbits);
+/*			screen = SDL_SetVideoMode(screenwidth, screenheight, screenbits, SDL_DOUBLEBUF);
+			if (screen == NULL)
+			{
+				logmsg("no se pudo cambiar de modo. saliendo.");
+				exit(1);
+			}
+			fflush(logfp);
+			screenbase = (BYTE *) screen->pixels - video_base; */
+		}
+		break;
+
+		PVR_WRITE_1(0xa05f8000 + 0x18 * 4, "RENDERBASE (3D) (Render target base address), grabando %x", *(DWORD *) p);
+		PVR_WRITE_2(0xa05f8000 + 0x19 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00600a00);
+		PVR_WRITE_1(0xa05f8000 + 0x1a * 4, "RENDERWINDOWX (3D) (Render output window X-start and X-stop), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1b * 4, "RENDERWINDOWY (3D) (Render output window Y-start and Y-stop), grabando %x", *(DWORD *) p);
+		PVR_WRITE_2(0xa05f8000 + 0x1c * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
+		PVR_WRITE_1(0xa05f8000 + 0x1d * 4, "CHEAPSHADOWS (3D) (Cheap shadow enable + strength), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1e * 4, "CULLINGVALUE (3D) (Minimum allowed polygon area), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x1f * 4, "UNNAMED (3D) (Something to do with rendering), grabando %x", *(DWORD *) p);
+		PVR_WRITE_2(0xa05f8000 + 0x20 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000007);
+		PVR_WRITE_2(0xa05f8000 + 0x21 * 4, "UNNAMED (3D) (Something to do with rendering), grabando %x, M=%x", *(DWORD *)p, 0);
+		PVR_WRITE_2(0xa05f8000 + 0x22 * 4, "Unknown, grabando %x, M=%x", *(DWORD *)p, 0x38d1b710);
+		PVR_WRITE_1(0xa05f8000 + 0x23 * 4, "BGPLANE (3D) (Background plane location), grabando %x", *(DWORD *) p);
+
+		case 0xa05f8000 + 0x24 * 4:		// Unknown
+		case 0xa05f8000 + 0x25 * 4:
+		case 0xa05f8000 + 0x26 * 4:
+		case 0xa05f8000 + 0x27 * 4:
+		{
+			logxmsg(LOG_PVR, "pvr_write: Unknown, grabando %x\n",
+				*(DWORD *)p);
+		}
+		break;
+
+		case 0xa05f8000 + 0x28 * 4:		// UNNAMED
+		{
+			logxmsg(LOG_PVR, "pvr_write: UNNAMED, grabando %x, M=%x\n",
+				*(DWORD *)p, 0x00000020);
+		}
+		break;
+
+		case 0xa05f8000 + 0x29 * 4:		// Unknown
+		{
+			logxmsg(LOG_PVR, "pvr_write: Unknown, grabando %x, M=%x\n",
+				*(DWORD *)p, 0x0000001f);
+		}
+		break;
+
+		case 0xa05f8000 + 0x2a * 4:		// UNNAMED (PVR) (Graphics memory control)
+		{
+			logxmsg(LOG_PVR, "pvr_write: UNNAMED (PVR) (Graphics memory control), grabando %x, M=%x\n",
+				*(DWORD *)p, 0x15d1c951);
+		}
+		break;
+
+		case 0xa05f8000 + 0x2b * 4:		// Unknown
+		{
+			logxmsg(LOG_PVR, "pvr_write: Unknown, grabando %x, M=%x\n",
+				*(DWORD *)p, 0x0);
+		}
+		break;
+
+		case 0xa05f8000 + 0x2c * 4:		// FOGTABLECOLOR (3D) (Fogging colour when using table fog)
+		{
+			logxmsg(LOG_PVR, "pvr_write: FOGTABLECOLOR (3D) (Fogging colour when using table fog), grabando %x\n",
+				*(DWORD *)p);
+		}
+		break;
+
+		case 0xa05f80d8: 				// FRAMETOTAL (2D) (Total number of frame cycles)
+		{
+			dw = *(DWORD *) p;
+			logxmsg(LOG_PVR, "pvr_write: número de scanlines por frame: %d\r\n", MSB(dw));
+			logxmsg(LOG_PVR, "pvr_write: número de clocks por scanline: %d\r\n", LSB(dw));
+		}
+		break;
+
+		case 0xa05f80e4: // TEXTURESTRIDE (3D) (Width of rectangular texture)
+		{
+			dw = *(DWORD *) p;
+			long valor = dw & 0x1F; // 5 bits
+			logxmsg(LOG_PVR, "pvr_write: TEXTURESTRIDE: %02x %d\n", valor, valor);
+		}
+		break;
+
+		PVR_WRITE_1(0xa05f8000 + 0x49 * 4, "PPMATRIXBASE (TA) (Root PP-block matrices base address), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4a * 4, "PRIMALLOCSTART (TA) (Primitive allocation area start), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4b * 4, "PPALLOCSTART (TA) (PP-block allocation area start), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4c * 4, "PRIMALLOCEND (TA) (Primitive allocation area end), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4d * 4, "PPALLOCPOS (TA) (Current PP-block allocation position), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4e * 4, "PRIMALLOCPOS (TA) (Current primitive allocation position), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x4f * 4, "TILEARRAYSIZE (TA) (Tile Array dimensions), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x50 * 4, cb_ppblocksize, "PPBLOCKSIZE (TA) (PP-block sizes), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x51 * 4, "TASTART (TA) (Start vertex enqueueing strobe), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x59 * 4, "PPALLOCEND (TA) (PP-block allocation area end), grabando %x", *(DWORD *) p);
+
+//		PVR_WRITE_2(0xa05f8000 + 0x1c * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
+
+
+		// fin PVR
+		case 0xa0710000: // Dreamcast RTC, reg 1
+		case 0xa0710004:
+		{
+			logmsg("pvr_write: RTC\r\n");
+		}
+		break;
+
+		default:
+		if ((direccion & 0xfff00000) == 0xa0700000)
+		{
+			logmsg( "pvr_write: SPU Registers (%x)\r\n", direccion);
+		}
+		else
+		if ((direccion & 0xfff00000) == 0xa0800000
+		||  (direccion & 0xfff00000) == 0xa0900000)
+		{
+//			logmsg( "pvr_write: sound ram (%x)\r\n", direccion);
+			SET_BIT(G2_FIFO, AICA_FIFO);
+		}
+		else
+			mem_write_error(direccion, p, size);
+		break;
+	}
+}
+
+void video_write(unsigned long direccion, void * p, size_t size)
+{ 
+//	memcpy(&video_mem[direccion - video_base], p, size);
+//	PutPixelN(direccion - video_base, p, size);
+//	Uint8 * target = (Uint8 *) screen->pixels + (direccion - video_base);
+//	long addr = direccion & 0x0FFFFFFF;
+	long addr = direccion & 0x00FFFFFF;
+
+#ifdef DEBUG_MEM_VIDEO
+	if (logvideomem)
+		logmsg("videomem: dir %x\r\n", direccion);
+#endif
+
+/*    if ((direccion - video_base) < (backscreen->w * backscreen->h * (backscreen->format->BitsPerPixel / 8))
+    &&  (direccion - video_base) > 0)
+    {
+    	SDL_LockSurface(screen);
+    	memcpy(screenbase + direccion, p, size);
+    	SDL_UnlockSurface(screen);
+	} */
+
+/*	if (addr >= 0x04000000 && addr <= 0x07FFFFFF)
+	{
+		memcpy(p, &video_mem[addr - 0x04000000], size);
+	} */
+
+/*	switch(size)
+	{
+		case 1:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(BYTE *) p);	break;
+		case 2:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(WORD *) p); break;
+		case 4:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(DWORD *) p); break;
+	} */
+
+	memcpy(&video_mem[addr], p, size);
+	
+	if (addr < framebuffer_size)
+	{
+		SDL_LockSurface(backscreen);
+		memcpy(backscreen->pixels + addr, p, size);
+		SDL_UnlockSurface(backscreen);
+		refresh_screen = true;
+	}
+}
+
+void regmap_read(unsigned long direccion, void * p, size_t size)
+{
+	memcpy(p, &regmem[direccion & 0x00FFFFFF], size);
+
+/*    if ((direccion & 0x00FF0000) == 0xD80000)
+    {
+        switch(size)
+        {
+        case 1:
+        logmsg("time registers byte read: 0x%x = %x\r\n", direccion, *(BYTE *) p);
+        break;
+        
+        case 2:
+        logmsg("time registers word read: 0x%x = %x\r\n", direccion, *(WORD *) p);
+        break;
+
+        case 4:
+        logmsg("time registers dword read: 0x%x = %x\r\n", direccion, *(DWORD *) p);
+        break;
+        
+        default:
+        logmsg("time registers read: ???");
+        break;
+        }
+    } */
+
+#ifdef DEBUG_MEM_REGISTERS
+	if (logmemreg)
+	switch(size)
+	{
+		case 1:
+			logmsg( "regmap_read: dir %8x, byte %x\r\n", direccion, *(BYTE *) p);
+			break;
+
+		case 2:
+			logmsg( "regmap_read: dir %8x, word %x\r\n", direccion, *(WORD *) p);
+			break;
+
+		case 4:
+			logmsg( "regmap_read: dir %8x, dword %x\r\n", direccion, *(DWORD *) p);
+			break;
+	}
+#endif
+}
+
+void regmap_write(unsigned long direccion, void * p, size_t size)
+{
+	memcpy(&regmem[direccion & 0x00FFFFFF], p, size);
+	
+/*    if ((direccion & 0x00FF0000) == 0xD80000)
+    {
+        switch(size)
+        {
+        case 1:
+        logmsg("time registers byte write: 0x%x = %x\r\n", direccion, *(BYTE *) p);
+        break;
+        
+        case 2:
+        logmsg("time registers word write: 0x%x = %x\r\n", direccion, *(WORD *) p);
+        break;
+
+        case 4:
+        logmsg("time registers dword write: 0x%x = %x\r\n", direccion, *(DWORD *) p);
+        break;
+        
+        default:
+        logmsg("time registers write: ???");
+        break;
+        }
+    } */
+
+	switch(direccion & 0x00FFFFFF)
+	{
+		case 0xe80000: // SCSMR2, Serial Mode Register
+		{
+			CHECK_BIT(SCSMR2, CHR);
+			CHECK_BIT(SCSMR2, PE);
+			CHECK_BIT(SCSMR2, PM);
+			CHECK_BIT(SCSMR2, STOP);
+			CHECK_BIT(SCSMR2, CKS1);
+   			CHECK_BIT(SCSMR2, CKS0);
+		}
+		break;
+		
+		case 0xe80004: // SCBRR2, Bit Rate Register
+		{
+			logmsg( "SCBRR2: %x\r\n", *SCBRR2);
+		}
+		break;
+
+		case 0xe80008:	// SCSCR2, Serial Control Register
+		{
+			CHECK_BIT(SCSCR2, TIE);
+			CHECK_BIT(SCSCR2, RIE);
+			CHECK_BIT(SCSCR2, TE);
+			CHECK_BIT(SCSCR2, RE);
+			CHECK_BIT(SCSCR2, REIE);
+			CHECK_BIT(SCSCR2, CKE1);
+		}
+		break;
+		
+		case 0xe8000c:  // SCFTDR2, Transmit FIFO Data Register
+  		{
+  			logmsg( "SCFTDR2: %x, '%c'\r\n", *SCFTDR2, *SCFTDR2);
+			fprintf(serialfp, "%c", *SCFTDR2);
+			fflush(serialfp);
+    	}
+     	break;
+
+		case 0xe80010:  // SCFSR2, Serial Status Register
+		{
+/*			CHECK_BIT(SCFSR2, PER3);
+			CHECK_BIT(SCFSR2, PER2);
+			CHECK_BIT(SCFSR2, PER1);
+			CHECK_BIT(SCFSR2, PER0);
+			CHECK_BIT(SCFSR2, FER3);
+			CHECK_BIT(SCFSR2, FER2);
+			CHECK_BIT(SCFSR2, FER1);
+			CHECK_BIT(SCFSR2, FER0);
+			CHECK_BIT(SCFSR2, ER);
+			CHECK_BIT(SCFSR2, TEND);
+			CHECK_BIT(SCFSR2, TDFE);
+			CHECK_BIT(SCFSR2, BRK);
+			CHECK_BIT(SCFSR2, FER);
+			CHECK_BIT(SCFSR2, PER);
+			CHECK_BIT(SCFSR2, RDF);
+			CHECK_BIT(SCFSR2, DR); */
+
+			REG_SET_BIT(SCFSR2, SCFSR2_TDFE);
+			REG_SET_BIT(SCFSR2, SCFSR2_TEND);
+		}
+		break;
+	}
+
+// #ifdef DEBUG_MEM_REGISTERS
+//	if (logmemreg)
+	switch(size)
+	{
+		case 1:
+			logxmsg(LOG_MEM, "regmap_write: dir %8x, byte %x\r\n", direccion, *(BYTE *) p);
+			break;
+
+		case 2:
+			logxmsg(LOG_MEM, "regmap_write: dir %8x, word %x\r\n", direccion, *(WORD *) p);
+			break;
+
+		case 4:
+			logxmsg(LOG_MEM, "regmap_write: dir %8x, dword %x\r\n", direccion, *(DWORD *) p);
+			break;
+	}
+// #endif
+}
+
+void ram_read(unsigned long direccion, void * p, size_t size)
+{
+//logmsg( "ram_read: dir %8x, size %x\r\n", direccion, (int) size);
+//memcpy(p, &memoria[(direccion & 0x1FFFFFFF)], size);
+memcpy(p, &orig_mem[(direccion & 0xFFFFFF)], size);
+}
+
+void ram_write(unsigned long direccion, void * p, size_t size)
+{
+//logmsg( "ram_write: dir %8x, size %x\r\n", direccion, (int) size);
+//memcpy(&memoria[(direccion % 0x20000000)], p, size);
+memcpy(&orig_mem[(direccion & 0xFFFFFF)], p, size);
+}
+
+void memread(unsigned long direccion, void * target, size_t size)
+{
+	(*mem_hash_read[direccion >> 24]) (direccion, target, size);
+// #ifdef DEBUG_MEM_READ
+	if (filelogging & FILELOG_MEMREADS)
+	switch(size)
+	{
+		case 1:
+			logmsg( "memread: dir %8x, byte %x\r\n", direccion, *(BYTE *) target);
+			break;
+
+		case 2:
+			logmsg( "memread: dir %8x, word %x\r\n", direccion, *(WORD *) target);
+			break;
+
+		case 4:
+			logmsg( "memread: dir %8x, dword %x\r\n", direccion, *(DWORD *) target);
+			break;
+	}
+// #endif
+}
+
+void memwrite(unsigned long direccion, void * source, size_t size)
+{
+	(*mem_hash_write[direccion >> 24]) (direccion, source, size);
+// #ifdef DEBUG_MEM_WRITE
+	if (filelogging & FILELOG_MEMWRITES)
+	switch(size)
+	{
+		case 1:
+			logmsg( "memwrite: dir %8x, byte %x\r\n", direccion, *(BYTE *) source);
+			break;
+
+		case 2:
+			logmsg( "memwrite: dir %8x, word %x\r\n", direccion, *(WORD *) source);
+			break;
+
+		case 4:
+			logmsg( "memwrite: dir %8x, dword %x\r\n", direccion, *(DWORD *) source);
+			break;
+	}
+// #endif
+}
+
+#ifndef MEMORY_MACROS
+void ReadMemoryF(unsigned long direccion, float * valor)
+{
+/*	unsigned long realdir = direccion % 0x20000000;
+
+	memid(direccion);
+
+#ifdef DEBUG_MEM
+	logmsg( "Leyendo float en dir %x, real %x\r\n", direccion, realdir);
+#endif
+
+	if (realdir >= n_video_base && realdir <= n_video_base + video_size)
+	{
+		*valor = flunpack(&video_mem[realdir - n_video_base]);
+	}
+	else
+	if (realdir >= mem_n_base && realdir <= mem_n_base + mem_size)
+	{
+		*valor = flunpack(&memoria[realdir - mem_n_base]);
+	}
+	else
+	{
+		logmsg( "ReadMemoryF: direccion %x invalida", direccion);
+		*valor = 0;
+	}
+
+#ifdef DEBUG_MEM
+	logmsg( "Leído: %f\r\n", *valor);
+#endif */
+	memread(direccion, valor, sizeof(DWORD));
+}
+
+void ReadMemoryB(unsigned long direccion, unsigned char * valor)
+{
+/*	unsigned long realdir = direccion % 0x20000000;
+
+	BYTE * addr = (BYTE *) memid(direccion);
+
+#ifdef DEBUG_MEM
+	logmsg( "Leyendo byte en dir %x, real %x\r\n", direccion, realdir);
+#endif
+
+	if (addr == NULL)
+	{
+		logmsg( "ReadMemoryB: direccion %x invalida\r\n", direccion);
+		*valor = 0;
+	}
+	else
+		*valor = *addr;
+
+#ifdef DEBUG_MEM
+	logmsg( "Leído: %x\r\n", *valor);
+#endif */
+	memread(direccion, valor, sizeof(BYTE));
+}
+
+void ReadMemoryL(unsigned long direccion, DWORD * valor)
+{
+/*	unsigned long realdir = direccion % 0x20000000;
+
+	DWORD * addr = (DWORD *) memid(direccion);
+
+#ifdef DEBUG_MEM_READ
+	logmsg( "Leyendo dword en dir %x, real %x\r\n", direccion, realdir);
+#endif
+
+	if (addr == NULL)
+	{
+		logmsg( "ReadMemoryL: direccion %x invalida\r\n", direccion);
+		*valor = 0;
+	}
+	else
+		*valor = *addr;
+
+#ifdef DEBUG_MEM_READ
+	logmsg( "Leído: %x\r\n", *valor);
+#endif
+*/
+	memread(direccion, valor, sizeof(DWORD));
+}
+
+void ReadMemoryW(unsigned long direccion, WORD * valor)
+{
+/*	unsigned long realdir = direccion % 0x20000000;
+
+	WORD * addr = (WORD *) memid(direccion);
+
+#ifdef DEBUG_MEM_READ
+	logmsg( "Leyendo word en dir %x, real %x\r\n", direccion, realdir);
+#endif
+
+	if (addr)
+        *valor = *addr;
+	else
+	{
+		logmsg( "ReadMemoryW: direccion %x invalida\r\n", direccion);
+		*valor = 0;
+	}
+
+#ifdef DEBUG_MEM_READ
+	logmsg( "Leído: %x\r\n", *valor);
+#endif
+*/
+	memread(direccion, valor, sizeof(WORD));
+}
+
+void WriteMemoryW(unsigned long direccion, WORD * valor)
+{
+/*	WORD * addr = (WORD *) memid(direccion);
+
+	unsigned long realdir = direccion % 0x20000000;
+
+#ifdef DEBUG_MEM_WRITE
+	logmsg( "WORD %04x -> %08x\r\n", valor, direccion);
+#endif
+
+	if (addr == NULL)
+	{
+		logmsg( "WriteMemoryW: direccion %x invalida, valor %x\r\n", direccion, valor);
+	}
+	else
+	{
+		*addr = valor;
+
+		if (realdir >= n_video_base && realdir <= n_video_base + video_size)
+		{
+//			*(WORD *) &video_mem[realdir - n_video_base] = valor;
+			PutPixelW(realdir - n_video_base, valor);
+		}
+	} */
+	memwrite(direccion, valor, sizeof(WORD));
+}
+
+void WriteMemoryL(unsigned long direccion, DWORD * valor)
+{
+/*	DWORD * addr = (DWORD *) memid(direccion);
+
+	unsigned long realdir = direccion % 0x20000000;
+
+#ifdef DEBUG_MEM_WRITE
+	logmsg( "DWORD %08x -> %08x\r\n", valor, direccion);
+#endif
+
+	if (addr == NULL)
+	{
+		logmsg( "WriteMemoryL: direccion %x invalida, valor %x\r\n", direccion, valor);
+	}
+	else
+	{
+		*addr = valor;
+		if (realdir >= n_video_base && realdir <= n_video_base + video_size)
+		{
+			PutPixelL(realdir - n_video_base, (DWORD) valor);
+		}
+	} */
+	memwrite(direccion, valor, sizeof(DWORD));
+}
+
+void WriteMemoryB(unsigned long direccion, BYTE * valor)
+{
+/*	BYTE * addr = (BYTE *) memid(direccion);
+
+	unsigned long realdir = direccion % 0x20000000;
+
+#ifdef DEBUG_MEM_WRITE
+	logmsg( "BYTE %x -> %08x\r\n", valor, direccion);
+#endif
+
+	if (addr == NULL)
+	{
+		logmsg( "WriteMemoryB: direccion %x invalida, valor %x\r\n", direccion, valor);
+	}
+	else
+	{
+		if (realdir >= n_video_base && realdir <= n_video_base + video_size)
+		{
+			PutPixel(realdir - n_video_base, valor);
+		}
+		*addr = valor;
+	} */
+	memwrite(direccion, valor, sizeof(BYTE));
+}
+
+void WriteMemoryF(unsigned long direccion, float * valor)
+{
+/*	memid(direccion);
+
+	direccion = direccion % 0x20000000;
+
+#ifdef DEBUG_MEM_WRITE
+	logmsg( "FLOAT %f -> %08x\r\n", valor, direccion);
+#endif
+
+	if (direccion >= n_video_base && direccion <= n_video_base + video_size)
+	{
+		* (float *) &video_mem[direccion - n_video_base] = valor;
+
+		PutPixel(direccion - n_video_base, valor);
+	}
+	else
+	if (direccion >= mem_n_base && direccion <= mem_n_base + mem_size)
+	{
+		* (float *) &memoria[direccion - mem_n_base] = valor;
+	}
+	else
+	{
+		logmsg( "WriteMemoryF: direccion %x invalida, valor %x\r\n", direccion, valor);
+	} */
+	memwrite(direccion, valor, sizeof(DWORD));
+}
+#endif
+

@@ -1,0 +1,23 @@
+// PVR
+extern DWORD PVR_SCANINTPOS;	// SCANINTPOS, 0xa05f80cc
+
+// ASIC
+#define ASIC_IRQ9	1
+#define ASIC_IRQB	2
+#define ASIC_IRQD	3
+
+extern	DWORD ASIC_IRQD_A;	// 0xa05f6910
+extern	DWORD ASIC_IRQD_B;	// 0xa05f6914
+extern	DWORD ASIC_IRQD_C;	// 0xa05f6918
+extern	DWORD ASIC_IRQB_A;	// 0xa05f6920
+extern	DWORD ASIC_IRQB_B;	// 0xa05f6924
+extern	DWORD ASIC_IRQB_C;	// 0xa05f6928
+extern	DWORD ASIC_IRQ9_A;	// 0xa05f6930
+extern	DWORD ASIC_IRQ9_B;	// 0xa05f6934
+extern	DWORD ASIC_IRQ9_C;	// 0xa05f6938
+
+extern	DWORD ASIC_ACK_A;	// 0xa05f6900
+extern	DWORD ASIC_ACK_B;	// 0xa05f6904
+extern	DWORD ASIC_ACK_C;	// 0xa05f6908
+
+

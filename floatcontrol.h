@@ -1,0 +1,13 @@
+#ifndef _FLOATCONTROL_H_
+#define _FLOATCONTROL_H_
+
+OPCODE(lds213); 	// LDS Rm, FPSCR : Rm -> FPSCR (0100mmmm 01101010)
+OPCODE(lds214); 	// LDS Rm, FPUL : Rm -> FPUL (0100mmmm 01011010)
+OPCODE(ldsl215); 	// LDS.L @Rm+, FPSCR : (Rm) -> FPSCR, Rm + 4 -> Rm (0100mmmm 01100110)
+OPCODE(ldsl216); 	// LDS.L @Rm+, FPUL (0100mmmm 01010110)
+OPCODE(sts217); 	// STS FPSCR, Rn (0000nnnn 01101010)
+OPCODE(sts218); 	// STS FPUL, Rn : FPUL -> Rn (0000nnnn 01011010)
+OPCODE(stsl219); 	// STS.L FPSCR, @-Rn : Rn - 4 -> Rn, FPSCR -> (Rn) (0100nnnn 01100010)
+OPCODE(stsl220); 	// STS.L FPUL, @-Rn (0100nnnn 01010010)
+
+#endif _FLOATCONTROL_H_

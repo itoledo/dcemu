@@ -1,0 +1,854 @@
+#include "main.h"
+#include <SDL.h>
+#include <SDL_opengl.h>
+
+SDL_Surface *screen;
+SDL_Surface *backscreen;
+SDL_Surface *glscreen;
+
+typedef Uint16 pcon_func(Uint16 src);
+
+int pvr_vertextype;
+int pvr_texture_surface;
+int pvr_texture_pixelformat;
+int pvr_texture_pixelpack;
+int pvr_texture_components;
+int pvr_texture_size_usize;
+int pvr_texture_size_vsize;
+int pvr_texture_twiddled;
+int pvr_listtype;
+int pvr_registering = -1;
+pcon_func * pvr_texture_pixelconvert;
+
+Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
+{
+	return (((src >> 4) & 0x0FFF) | ((src << 12) & 0xF000));
+}
+
+DWORD pvr_registered;
+GLuint pvr_textures[10];
+bool vertexstart = true;
+
+void cb_renderstart(DWORD addr, void * p, size_t size)
+{
+	SDL_GL_SwapBuffers();
+	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso
+
+	logxmsg(LOG_PVR, "cb_renderstart\n");
+
+	// dejemos todo listo para la siguiente pantalla
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+void cb_ppblocksize(DWORD addr, void * p, size_t size)
+{
+	DWORD dw = *(DWORD *) p;
+	int punch_through = (dw >> 16) & 0x3;
+	int transmod = (dw >> 12) & 0x3;
+	int transpoly = (dw >> 8) & 0x3;
+	int opaquemod = (dw >> 4) & 0x3;
+	int opaquepoly = (dw >> 0) & 0x3;
+	
+//	logxmsg(LOG_PVR, "ppblocksize: %08x\n", *(DWORD *) p);
+	logxmsg(LOG_PVR, "punch-through: %d\n", punch_through);
+	logxmsg(LOG_PVR, "transmod: %d\n", transmod);
+	logxmsg(LOG_PVR, "transpoly: %d\n", transpoly);
+	logxmsg(LOG_PVR, "opaquemod: %d\n", opaquemod);
+	logxmsg(LOG_PVR, "opaquepoly: %d\n", opaquepoly);
+
+	pvr_registered = 0;
+
+	if (punch_through > 0)
+		SET_BIT(pvr_registered, 1 << 4);
+	else
+		REMOVE_BIT(pvr_registered, 1 << 4);
+
+	if (transmod > 0)
+		SET_BIT(pvr_registered, 1 << 3);
+	else
+		REMOVE_BIT(pvr_registered, 1 << 3);
+
+	if (transpoly > 0)
+		SET_BIT(pvr_registered, 1 << 2);
+	else
+		REMOVE_BIT(pvr_registered, 1 << 2);
+
+	if (opaquemod > 0)
+		SET_BIT(pvr_registered, 1 << 1);
+	else
+		REMOVE_BIT(pvr_registered, 1 << 1);
+
+	if (opaquepoly > 0)
+		SET_BIT(pvr_registered, 1 << 0);
+	else
+		REMOVE_BIT(pvr_registered, 1 << 0);
+}
+
+void ta_check(DWORD addr)
+{
+/*	DWORD d = *(DWORD *) &ta_mem[0];
+	DWORD * p = (DWORD *) &ta_mem[0];
+	DWORD options = d & 0x1FFFFFFF;
+	long cmd = (d >> 29) & 0x7; */
+
+	DWORD * p = (DWORD *) &ta_mem[addr & 0xFF]; // 0x00 o 0x20
+	DWORD d = *p;
+	DWORD options = d & 0x1FFFFFFF;
+	long cmd = (d >> 29) & 0x7;
+
+/*	if ((addr & 0xFF) == 0x20)
+		return; */
+
+	switch(cmd)
+	{
+		case 0:
+  		{
+    		logxmsg(LOG_PVR, "TA: END_OF_LIST\n");
+/*    		SDL_GL_SwapBuffers();
+			SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso
+
+			// dejemos todo listo para la siguiente pantalla
+			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); */
+//			pvr_registered |= (1 << pvr_listtype);
+		}
+		break;
+		
+		case 1:
+  		{
+    		logxmsg(LOG_PVR, "TA: USER_CLIP\n");
+    		logxmsg(LOG_PVR, "USER_CLIP: Xmin: %x\n", p[4]);
+    		logxmsg(LOG_PVR, "USER_CLIP: Ymin: %x\n", p[5]);
+    		logxmsg(LOG_PVR, "USER_CLIP: Xmax: %x\n", p[6]);
+    		logxmsg(LOG_PVR, "USER_CLIP: Ymax: %x\n", p[7]);
+		}
+		break;
+
+		case 4:
+  		{
+  			int listtype = (options >> 24) & 0x7;
+  			int striplength = (options >> 18) & 0x3;
+  			int clipmode = (options >> 16) & 0x3;
+  			int modifier = (options >> 7) & 0x1;
+  			int modifier_mode = (options >> 6) & 0x1;
+  			int colour_type = (options >> 4) & 0x3;
+  			int texture = (options >> 3) & 0x1;
+  			int specular = (options >> 2) & 0x1;
+  			int shading = (options >> 1) & 0x1;
+  			int uv_format = options & 0x1;
+
+    		logxmsg(LOG_PVR, "TA: POLYGON / MODIFIER_VOLUME\n");
+
+			pvr_vertextype = -1;
+			pvr_listtype = listtype;
+			pvr_registering = listtype;
+
+    		switch(listtype)
+    		{
+    			case 0:	logxmsg(LOG_PVR, "P/MV: opaque polygon\n");		break;
+    			case 1: logxmsg(LOG_PVR, "P/MV: opaque modifier\n");	break;
+    			case 2: logxmsg(LOG_PVR, "P/MV: transparent polygon\n");	break;
+    			case 3: logxmsg(LOG_PVR, "P/MV: transparent modifier\n");	break;
+    			case 4: logxmsg(LOG_PVR, "P/MV: punchthru polygon\n");		break;
+			}
+			
+
+			switch(striplength)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: striplength 1\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: striplength 2\n");	break;
+				case 2: logxmsg(LOG_PVR, "P/MV: striplength 4\n");	break;
+				case 3: logxmsg(LOG_PVR, "P/MV: striplength 6\n");	break;
+			}
+			
+			switch(clipmode)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: disable user clip\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: reserved\n");	break;
+				case 2: logxmsg(LOG_PVR, "P/MV: user clip inside\n");	break;
+				case 3: logxmsg(LOG_PVR, "P/MV: user clip outside\n");	break;
+			}
+		
+			switch(modifier)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: polygon is not affected by modifier volume\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: polygon is affected by modifier volume\n");		break;
+			}
+			
+			switch(modifier_mode)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: cheap shadow modifier\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: normal modifier\n");		break;
+			}
+			
+			switch(colour_type)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: 32bit ARGB packed colour\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: 32bit * 4 floating point colour\n");	break;
+				case 2: logxmsg(LOG_PVR, "P/MV: intensity\n");	break;
+				case 3: logxmsg(LOG_PVR, "P/MV: intensity from previous face\n"); break;
+			}
+			
+			switch(texture)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: disable texture\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: enable texture\n");		break;
+			}
+			
+			switch(specular)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: disable specular highlight\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: enable specular highlight\n");	break;
+			}
+			
+			switch(shading)
+			{
+				case 0: logxmsg(LOG_PVR, "P/MV: flat shading\n");	break;
+				case 1: logxmsg(LOG_PVR, "P/MV: gouraud shading\n");	break;
+			}
+			
+			switch(uv_format)
+			{
+				case 0: logxmsg(LOG_PVR, "32 bit float\n");	break;
+				case 1: logxmsg(LOG_PVR, "16 bit float\n");	break;
+			}
+			
+/*			if (listtype == 0 || listtype == 2 || listtype == 4)
+			{
+				DWORD p1 = *(DWORD *) &ta_mem[1];
+				int depthmode = (p1 >> 29) & 0x7;
+				int cullingmode = (p1 >> 27) & 0x3;
+				int zwrite = (p1 >> 26) & 0x1;
+				int texture = (p1 >> 25) & 0x1;
+				// 3 parámetros inútiles (specular, shading, uvformat)
+				int d_calc_exact = (p1 >> 20) & 0x1;
+			} */
+
+			if (texture == 1)
+			{
+				DWORD p3 = p[3];
+				int mipmap = (p3 >> 31) & 0x1;
+				int vq = (p3 >> 30) & 0x1;
+				int pixelformat = (p3 >> 27) & 0x7;
+				DWORD texture_surface = (p3 & 0xFFFFF) << 3; // 20 bits
+				int twiddled = (p3 >> 24) & 0x1;
+				int stride = (p3 >> 21) & 0x1;
+				
+				pvr_texture_surface = texture_surface;
+				pvr_texture_twiddled = twiddled;
+
+				if (mipmap)
+					logxmsg(LOG_PVR, "texture: enable mipmap\n");
+				else
+					logxmsg(LOG_PVR, "texture: disable mipmap\n");
+
+				if (vq)
+					logxmsg(LOG_PVR, "texture: enable VQ compression for texture\n");
+				else
+					logxmsg(LOG_PVR, "texture: disable compression\n");
+	
+#define CTT() { pvr_texture_pixelformat = -1; pvr_texture_components = -1; pvr_texture_pixelpack = -1; }
+
+				switch (pixelformat)
+				{
+					case 0:
+     				logxmsg(LOG_PVR, "texture: ARGB1555\n");
+     				pvr_texture_pixelformat = GL_UNSIGNED_SHORT_5_5_5_1;
+     				pvr_texture_components = 4;
+     				pvr_texture_pixelpack = GL_RGBA;
+     				pvr_texture_pixelconvert = NULL;
+         			break;
+
+					case 1:
+     				logxmsg(LOG_PVR, "texture: RGB565\n");
+     				pvr_texture_components = 3;
+     				pvr_texture_pixelformat = GL_RGB;
+     				pvr_texture_pixelpack = GL_UNSIGNED_SHORT_5_6_5;
+     				pvr_texture_pixelconvert = NULL;
+     				pvr_texture_twiddled = 1;
+     				break;
+
+					case 2:
+				    logxmsg(LOG_PVR, "texture: ARGB4444\n");
+				    pvr_texture_pixelformat = GL_RGBA;
+				    pvr_texture_pixelconvert = pcon_argb4444_to_rgba4444;
+				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_EXT;
+     				pvr_texture_components = 4;
+     				break;
+
+					case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;
+					case 4: logxmsg(LOG_PVR, "texture: BUMP\n");	CTT();	break;
+					case 5: logxmsg(LOG_PVR, "texture: 4BPP_PALETTE\n");	CTT(); break;
+					case 6: logxmsg(LOG_PVR, "texture: 8BPP_PALETTE\n");	CTT(); break;
+				}
+				
+				logxmsg(LOG_PVR, "texture: surface %08x\n", texture_surface);
+
+				if (twiddled)
+					logxmsg(LOG_PVR, "texture: twiddled texture\n");
+				else
+					logxmsg(LOG_PVR, "texture: non-twiddled texture\n");
+	
+				if (stride)
+					logxmsg(LOG_PVR, "texture: stride\n");
+				else
+					logxmsg(LOG_PVR, "texture: no stride\n");
+	
+/*				pvr_texture_size_usize = (((p[2] >> 3) & 0x7) << 4);
+				pvr_texture_size_vsize = ((p[2] & 0x7) << 4); */
+				switch((p[2] >> 3) & 0x7)
+				{
+					case 0:		pvr_texture_size_usize = 8;		break;
+					case 1:		pvr_texture_size_usize = 16;	break;
+					case 2:		pvr_texture_size_usize = 32;	break;
+					case 3:		pvr_texture_size_usize = 64;	break;
+					case 4:		pvr_texture_size_usize = 128;	break;
+					case 5:		pvr_texture_size_usize = 256;	break;
+					case 6:		pvr_texture_size_usize = 512;	break;
+					case 7:		pvr_texture_size_usize = 1024;	break;
+				}
+				switch(p[2] & 0x7)
+				{
+					case 0:		pvr_texture_size_vsize = 8;		break;
+					case 1:		pvr_texture_size_vsize = 16;	break;
+					case 2:		pvr_texture_size_vsize = 32;	break;
+					case 3:		pvr_texture_size_vsize = 64;	break;
+					case 4:		pvr_texture_size_vsize = 128;	break;
+					case 5:		pvr_texture_size_vsize = 256;	break;
+					case 6:		pvr_texture_size_vsize = 512;	break;
+					case 7:		pvr_texture_size_vsize = 1024;	break;
+				}
+
+				logxmsg(LOG_PVR, "texture size: %d x %d\n", pvr_texture_size_usize, pvr_texture_size_vsize);
+    		}
+			else
+				pvr_texture_surface = 0;
+
+			// revisemos los parámetros para la lista de vertex
+			if (texture == 0)
+   			{
+				switch(colour_type)
+				{
+					case 0:		pvr_vertextype = 0;		break;	// non-textured, packed colour
+					case 1:		pvr_vertextype = 1;		break;	// non-textured, floating colour
+					case 2:		pvr_vertextype = 2;		break;	// non-textured, intensity
+				}
+			}
+			else // textured
+			{
+				if (colour_type == 0) // packed colour
+				{
+					if (uv_format == 0)
+     					pvr_vertextype = 3;		// 32bit UV
+ 					else
+ 						pvr_vertextype = 4;		// 16bit UV
+				}
+				else
+				if (colour_type == 1) // floating colour
+				{
+					if (uv_format == 0)
+						pvr_vertextype = 5;	// 32bit UV
+					else
+						pvr_vertextype = 6;	// 16bit UV
+				}
+				else
+				if (colour_type == 2) // intensity
+				{
+					if (uv_format == 0)
+						pvr_vertextype = 7;	// 32bit UV
+					else
+						pvr_vertextype = 8;	// 16bit UV
+				}
+			}
+			// continúa
+			logxmsg(LOG_PVR, "pvr_vertextype: %d\n", pvr_vertextype);
+		}
+		break;
+       		
+		case 5:		logxmsg(LOG_PVR, "TA: SPRITE\n");				break;
+		case 7:
+  		{
+#ifdef DEBUG_VERTEX
+    		logxmsg(LOG_PVR, "TA: VERTEX\n");
+#endif
+    		
+			if (vertexstart == true)
+			{
+//				static float z = -3.0f;
+//				logxmsg(LOG_PVR, "VERTEX: glBegin\n");
+				
+//				glTranslatef(-320.0f,-240.0f,z);		// Move Left 1.5 Units And Into The Screen 6.0
+//				glTranslatef(0, 0, -40.0f);
+//				glBegin(GL_QUADS);
+				if (pvr_texture_surface)
+				{
+#define DETWIDTAB(x) ( (x&1)|((x&4)>>1)|((x&16)>>2)|((x&64)>>3)|((x&256)>>4)| \
+        ((x&1024)>>5)|((x&4096)>>6)|((x&16384)>>7)|((x&65536)>>8)|((x&262144)>>9) )
+#define DETWIDOUT(x, y) ( DETWIDTAB((y)) | (DETWIDTAB((x)) >> 1) )
+#define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
+        ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
+#define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
+
+					Uint16 * v = (Uint16 *) &video_mem[pvr_texture_surface];
+					Uint16 * newtex = v;
+					bool mustfree = false;
+
+					if (pvr_texture_twiddled)
+					{
+						int i,j;
+						Uint16 * q;
+
+						newtex = malloc(sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize);
+#ifdef DEBUG_VERTEX
+						if (newtex == NULL)
+						{
+							logmsg("newtex NULL\n");
+							exit(1);
+						}
+#endif
+						q = newtex;
+						for (i = 0; i < pvr_texture_size_vsize; i++)
+							for (j = 0; j < pvr_texture_size_usize; j++)
+							{
+#ifdef DEBUG_VERTEX
+								if (TWIDOUT(j,i) > sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize)
+								{
+									logmsg("TWIDOUT!!!\n");
+									exit(1);
+								}
+#endif
+								*(q++) = v[TWIDOUT(j,i)];
+							}
+						mustfree = true;
+						
+/*						FILE * fp = fopen("logs/textura.raw", "wb");
+						
+						fwrite(v, 2, pvr_texture_size_usize * pvr_texture_size_vsize, fp);
+						
+						fclose(fp); */
+					}
+//					{
+//						q[i] = 0x001F; // blue
+//						q[i] = 0x07E0; // green
+//						q[i] = 0xF800; // red
+//					}
+//					glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_BLEND);
+//					glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+//					logxmsg(LOG_PVR, "Haciendo BindTexture y TexImage2D\n");
+					if (pvr_texture_pixelformat != -1)
+					{
+						glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, pvr_texture_size_usize, pvr_texture_size_vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, newtex);
+						glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
+					}
+					if (mustfree)
+						free(newtex);
+//					logxmsg(LOG_PVR, "textura: %04x %04x %04x\n", p[0], p[1], p[2]);
+				}
+				glBegin(GL_TRIANGLE_STRIP);
+				vertexstart = false;
+			}
+
+			switch (pvr_vertextype)
+			{
+				case 0:
+				{
+					float datos[3];
+//					Uint8 r, g, b, a;
+					float r, g, b, a;
+					DWORD base_colour;
+
+//					DWORD dwdatos[8];
+//					memcpy(&dwdatos[0], &ta_mem[0], sizeof(DWORD)*8);
+/*					logxmsg(LOG_PVR, "dwdatos: %08x %08x %08x %08x %08x %08x %08x\n",
+						dwdatos[1], dwdatos[2], dwdatos[3], dwdatos[4], 
+						dwdatos[5], dwdatos[6], dwdatos[7]); */
+
+					memcpy(&datos[0], &p[1], sizeof(float) * 3);
+					memcpy(&base_colour, &p[6], sizeof(DWORD));
+					
+#define PVR_PACK_COLOR(a, r, g, b) ( \
+        ( ((uint8)( a * 255 ) ) << 24 ) | \
+        ( ((uint8)( r * 255 ) ) << 16 ) | \
+        ( ((uint8)( g * 255 ) ) << 8 ) | \
+        ( ((uint8)( b * 255 ) ) << 0 ) )
+
+//					SDL_GetRGBA(base_colour, backscreen->format, &r, &g, &b, &a);
+					a = ((base_colour >> 24) & 0xFF) / 255.0;
+					r = ((base_colour >> 16) & 0xFF) / 255.0;
+					g = ((base_colour >> 8)  & 0xFF) / 255.0;
+					b = ((base_colour >> 0)  & 0xFF) / 255.0;
+					
+/*					logxmsg(LOG_PVR, "vertex tipo 1: color=%02x%02x%02x%02x coords=%f,%f,%f\n",
+						r, g, b, a, datos[0], datos[1], datos[2]);
+					glColor4ub(r, g, b, a); */
+#ifdef DEBUG_VERTEX
+					logxmsg(LOG_PVR, "vertex tipo 0: color=%f,%f,%f,%f coords=%f,%f,%f\n",
+						r, g, b, a, datos[0], datos[1], datos[2]);
+#endif
+					glColor4f(r, g, b, a);
+					glVertex3f(datos[0], datos[1], datos[2] - 100);
+				}
+				break;
+
+				case 1:
+				{
+					float datos[7];
+				
+					memcpy(&datos[0], &p[1], sizeof(float)*7);
+
+#ifdef DEBUG_VERTEX
+					logxmsg(LOG_PVR, "vertex tipo 1: color %f %f %f %f\n", datos[4], datos[5], datos[6], datos[3]);
+					logxmsg(LOG_PVR, "posición: %f %f %f\n", datos[0], datos[1], datos[2]);
+#endif
+					glColor4f(datos[4], datos[5], datos[6], datos[3]);
+					glVertex3f(datos[0], datos[1], datos[2] - 100);
+				}
+				break;
+				
+				case 3: // polígono opaco con textura
+				{
+					float coords[5];
+//					Uint8 r, g, b, a;
+					float r, g, b, a;
+					DWORD base_colour;
+					
+					memcpy(&base_colour, &p[6], sizeof(DWORD));
+					
+					memcpy(&coords[0], &p[1], sizeof(float)*5);
+
+					a = ((base_colour >> 24) & 0xFF) / 255.0;
+					r = ((base_colour >> 16) & 0xFF) / 255.0;
+					g = ((base_colour >> 8)  & 0xFF) / 255.0;
+					b = ((base_colour >> 0)  & 0xFF) / 255.0;
+
+#ifdef DEBUG_VERTEX
+					logxmsg(LOG_PVR, "seteando colores rgba: %f %f %f %f\n", r, g, b, a);
+					logxmsg(LOG_PVR, "seteando texturas en %fx%f\n", coords[3], coords[4]);
+					logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
+#endif
+					glColor4f(r, g, b, a);
+					glTexCoord2f(coords[3], coords[4]);
+					glVertex3f(coords[0], coords[1], coords[2] - 100);
+				}
+				break;
+			}
+
+    		if (options && (1 << 28))
+    		{
+#ifdef DEBUG_VERTEX
+    			logxmsg(LOG_PVR, "VERTEX: end-of-strip\n");
+#endif
+    			glEnd();
+	    		pvr_registering = -1;
+    			vertexstart = true;
+//    			SDL_GL_SwapBuffers();
+			}
+      	}
+       	break;
+       	
+		default:	logxmsg(LOG_PVR, "TA: cmd %d desconocido\n");	break;
+	}
+
+	
+}
+
+void PutPixel(Uint32 pos, Uint32 pixel)
+{
+	Uint8 * p = (Uint8 *) screen->pixels;
+
+	// tenemos una pantalla de 640x480 que empieza en video_base.
+	// el loop para limpiar la pantalla es de 640*480/2 = 307200/2 = 153600 ciclos.
+	// avanzando de 4 en 4 r0 (que parte en video_base).
+	// r2 se va decrementando en 1.
+
+	// si tenemos 2 bytes por pixel: 614400 bytes para la pantalla.
+	// si guardamos 4 bytes por MOV: 614400 / 4 = 153600 ciclos.
+	// por lo tanto, cada MOV guarda 4 bytes = 2 pixeles.
+
+	// asi que, para determinar la pos. de la pantalla en la que estamos guardando
+	// el pixel:
+
+	// x = pos % (640*2);
+	// y = pos / (640*2);
+
+//	int x = pos % (640 * 2);
+//	int y = pos / (640 * 2);
+
+//	p += y * screen->pitch + (x/2) * screen->format->BytesPerPixel;
+	p += pos;
+	
+//	fprintf(fp, "pos: %d\r\n", pos);
+	
+	//	pixel = SDL_MapRGB(screen->format, 0xff, 0xff, 0x00);
+
+	if ( SDL_MUSTLOCK(screen) )
+		SDL_LockSurface(screen);
+
+/*	if (pos > 640*480*screen->format->BytesPerPixel)
+	{
+		fprintf(fp, "pos: %d, %x", pos, pos);
+	}
+	else
+	{ */
+//		p[x % 2] = pixel;
+		*p = pixel;
+//	}
+
+	if ( SDL_MUSTLOCK(screen) )
+		SDL_UnlockSurface(screen);
+}
+
+void PutPixelW(Uint32 pos, WORD pixel)
+{
+	Uint8 * p = (Uint8 *) screen->pixels + pos;
+
+	// tenemos una pantalla de 640x480 que empieza en video_base.
+	// el loop para limpiar la pantalla es de 640*480/2 = 307200/2 = 153600 ciclos.
+	// avanzando de 4 en 4 r0 (que parte en video_base).
+	// r2 se va decrementando en 1.
+
+	// si tenemos 2 bytes por pixel: 614400 bytes para la pantalla.
+	// si guardamos 4 bytes por MOV: 614400 / 4 = 153600 ciclos.
+	// por lo tanto, cada MOV guarda 4 bytes = 2 pixeles.
+
+	// asi que, para determinar la pos. de la pantalla en la que estamos guardando
+	// el pixel:
+
+	// x = pos % (640*2);
+	// y = pos / (640*2);
+
+/*	int x = pos % (640 * 2);
+	int y = pos / (640 * 2);
+
+	p += y * screen->pitch + (x/2) * screen->format->BytesPerPixel; */
+
+//	p += pos;
+	
+	//	pixel = SDL_MapRGB(screen->format, 0xff, 0xff, 0x00);
+
+	if ( SDL_MUSTLOCK(screen) )
+		SDL_LockSurface(screen);
+
+/*	if (pos > 640*480*screen->format->BytesPerPixel)
+	{
+		fprintf(fp, "pos: %d, %x", pos, pos);
+	}
+	else
+	{ */
+/*		p[0] = pixel & 0xff;
+		p[1] = (pixel >> 8) & 0xff; */
+		*(WORD *) p  = (WORD) pixel;
+//	}
+
+	if ( SDL_MUSTLOCK(screen) )
+		SDL_UnlockSurface(screen);
+}
+
+void PutPixelL(Uint32 pos, DWORD pixel)
+{
+	Uint8 * p = (Uint8 *) screen->pixels + pos;
+
+	// tenemos una pantalla de 640x480 que empieza en video_base.
+	// el loop para limpiar la pantalla es de 640*480/2 = 307200/2 = 153600 ciclos.
+	// avanzando de 4 en 4 r0 (que parte en video_base).
+	// r2 se va decrementando en 1.
+
+	// si tenemos 2 bytes por pixel: 614400 bytes para la pantalla.
+	// si guardamos 4 bytes por MOV: 614400 / 4 = 153600 ciclos.
+	// por lo tanto, cada MOV guarda 4 bytes = 2 pixeles.
+
+	// asi que, para determinar la pos. de la pantalla en la que estamos guardando
+	// el pixel:
+
+	// x = pos % (640*2);
+	// y = pos / (640*2);
+
+/*	int x = pos % (640 * 2);
+	int y = pos / (640 * 2);
+
+	p += y * screen->pitch + (x/2) * screen->format->BytesPerPixel; */
+
+//	p += pos;
+	
+	//	pixel = SDL_MapRGB(screen->format, 0xff, 0xff, 0x00);
+
+	if ( SDL_MUSTLOCK(screen) )
+		SDL_LockSurface(screen);
+
+/*	if (pos > 640*480*screen->format->BytesPerPixel)
+	{
+		fprintf(fp, "pos: %d, %x", pos, pos);
+	}
+	else
+	{ */
+/*		p[0] = pixel & 0xff;
+		p[1] = (pixel >> 8) & 0xff; */
+		*(DWORD *) p  = (DWORD) pixel;
+//	}
+
+	if ( SDL_MUSTLOCK(screen) )
+		SDL_UnlockSurface(screen);
+}
+
+void PutPixelN(Uint32 pos, void * data, size_t size)
+{
+	Uint8 * p = (Uint8 *) screen->pixels + pos;
+
+/*	if ( SDL_MUSTLOCK(screen) )
+		SDL_LockSurface(screen); */
+
+	memcpy(p, data, size);
+
+/*	if ( SDL_MUSTLOCK(screen) )
+		SDL_UnlockSurface(screen); */
+}
+
+void ReadPixelN(Uint32 pos, void * data, size_t size)
+{
+	Uint8 * p = (Uint8 *) screen->pixels + pos;
+
+/*	if ( SDL_MUSTLOCK(screen) )
+		SDL_LockSurface(screen); */
+
+	memcpy(data, p, size);
+
+/*	if ( SDL_MUSTLOCK(screen) )
+		SDL_UnlockSurface(screen); */
+}
+
+int screeninit(int width, int height, int bpp)
+{
+	Uint32 rmask, gmask, bmask, amask;
+
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+    rmask = 0xff000000;
+    gmask = 0x00ff0000;
+    bmask = 0x0000ff00;
+    amask = 0x000000ff;
+#else
+    rmask = 0x000000ff;
+    gmask = 0x0000ff00;
+    bmask = 0x00ff0000;
+    amask = 0xff000000;
+#endif
+
+#ifdef OPENGL
+	rmask = 0x000000ff;
+	gmask = 0x0000ff00;
+	bmask = 0x00ff0000;
+	amask = 0xff000000;
+	SDL_GL_SetAttribute( SDL_GL_RED_SIZE, 8 );
+    SDL_GL_SetAttribute( SDL_GL_GREEN_SIZE, 8 );
+    SDL_GL_SetAttribute( SDL_GL_BLUE_SIZE, 8 );
+	SDL_GL_SetAttribute( SDL_GL_ALPHA_SIZE, 8);
+    SDL_GL_SetAttribute( SDL_GL_BUFFER_SIZE, 32 );
+    SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
+	if (!screen)
+	{
+		screen = SDL_SetVideoMode(width, height, 32 /* 32 */, SDL_OPENGLBLIT);
+		logxmsg(LOG_PVR, "Seteando viewport a %dx%d\n", width, height);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+		glViewport(0, 0, width, height);
+		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);		// This Will Clear The Background Color To Black
+		glClearDepth(1.0);				// Enables Clearing Of The Depth Buffer
+		glDepthFunc(GL_LESS);				// The Type Of Depth Test To Do
+		glEnable(GL_DEPTH_TEST);			// Enables Depth Testing
+		glShadeModel(GL_SMOOTH);			// Enables Smooth Color Shading
+	
+		glMatrixMode(GL_PROJECTION);
+		glLoadIdentity();				// Reset The Projection Matrix
+//		gluPerspective(45.0f,(GLfloat)width/(GLfloat)height,1.0f,100.0f);	// Calculate The Aspect Ratio Of The Window
+	
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+//		glOrtho(0, width, height, 0, 0.1, 100.0);
+		glOrtho(0, width, height, 0, 0, 1024.0);
+
+
+//		glScalef(1.0/640.0,1.0/480.0,1.0);
+//		glTranslatef(-320.0f, -240.0f, -1.0f);
+
+//		glOrtho(0, (GLdouble)width, (GLdouble)height, 0.0, 0.1, 100.0);
+//		glPixelZoom(1.0, -1.0);
+
+		glEnable(GL_TEXTURE_2D);
+		glGenTextures(1, &pvr_textures[0]);
+		glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+	}
+#else
+	screen = SDL_SetVideoMode(width, height, bpp, SDL_HWSURFACE | SDL_DOUBLEBUF);
+#endif
+
+	if (screen == NULL)
+	{
+		fprintf(stderr, "No se pudo abrir pantalla.\n");
+		return 1;
+	}
+
+	if (backscreen)
+		SDL_FreeSurface(backscreen);
+
+	logmsg("creando backscreen\n");
+
+    SDL_WM_SetCaption(APPTITLE, NULL);
+    
+	backscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height, bpp, 0x1F << 11, 0x3F << 5, 0x1F, 0);
+
+	if (backscreen == NULL)
+	{
+		fprintf(stderr, "No se pudo crear backscreen\n");
+		return 1;
+	}
+
+	glscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height, 32, rmask, gmask, bmask, amask);
+
+	if (glscreen == NULL)
+	{
+		fprintf(stderr, "No se pudo crear glscreen\n");
+		return 1;
+	}
+
+	logmsg("vaciando backscreen\n");
+
+	SDL_FillRect(backscreen, NULL, 0); // negro
+
+	screenbase = (BYTE *) backscreen->pixels - video_base;
+
+	screenwidth = backscreen->w;
+	screenheight = backscreen->h;
+	screenbits = backscreen->format->BitsPerPixel;
+	framebuffer_size = backscreen->w * backscreen->h * (backscreen->format->BitsPerPixel / 8);
+
+	logmsg("cambiando a modo de pantalla %dx%d %dbpp\n", screenwidth, screenheight, screenbits);
+
+/*	glViewport(0, 0, screenwidth, screenheight);
+	glMatrixMode(GL_PROJECTION);						// Select The Projection Matrix
+	glLoadIdentity();
+	gluPerspective(45.0f,(GLfloat)screenwidth/(GLfloat)screenheight,0.1f,100.0f);
+	glMatrixMode(GL_MODELVIEW);						// Select The Modelview Matrix
+	glLoadIdentity();							// Reset The Modelview Matrix
+
+	glShadeModel(GL_SMOOTH);	
+	glClearColor(0.0, 0.0, 0.0, 0.0);
+	glClearDepth(1.0f);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+	glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST); */
+
+//	logmsg("glClearColor\n");
+//	glShadeModel(GL_FLAT);
+//	glDisable(GL_DEPTH_TEST);
+//	glDisable(GL_LIGHTING);
+//	glDisable(GL_DITHER);
+//	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);			// Clear The Screen And The Depth Buffer
+//	glLoadIdentity();
+
+	logmsg("fin screeninit\n");
+
+	return 0;
+}
+

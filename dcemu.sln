@@ -1,0 +1,21 @@
+Microsoft Visual Studio Solution File, Format Version 8.00
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dcemu", "dcemu.vcproj", "{EA8B3876-8696-4FA7-A036-D9ABBFF2213B}"
+	ProjectSection(ProjectDependencies) = postProject
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfiguration) = preSolution
+		Debug = Debug
+		Release = Release
+	EndGlobalSection
+	GlobalSection(ProjectConfiguration) = postSolution
+		{EA8B3876-8696-4FA7-A036-D9ABBFF2213B}.Debug.ActiveCfg = Debug|Win32
+		{EA8B3876-8696-4FA7-A036-D9ABBFF2213B}.Debug.Build.0 = Debug|Win32
+		{EA8B3876-8696-4FA7-A036-D9ABBFF2213B}.Release.ActiveCfg = Release|Win32
+		{EA8B3876-8696-4FA7-A036-D9ABBFF2213B}.Release.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+	EndGlobalSection
+	GlobalSection(ExtensibilityAddIns) = postSolution
+	EndGlobalSection
+EndGlobal

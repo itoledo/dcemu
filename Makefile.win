@@ -1,0 +1,89 @@
+# Project: dcemu
+# Makefile created by Dev-C++ 4.9.8.7
+
+CPP  = g++.exe -D__DEBUG__
+CC   = gcc.exe -D__DEBUG__
+WINDRES = windres.exe
+RES  = dcemu_private.res
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o $(RES)
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o $(RES)
+LIBS =  -L"C:/Dev-Cpp/lib" -L"C:/lib_sdl/SDL-devel-1.2.7-mingw32/lib" -L"C:/lib_sdl/SDL_image-1.2.3/lib" -L"C:/lib_sdl/SDL_ttf-2.0.6/lib" -L"C:/lib_sdl/sdlconsole-2.1/lib" -mwindows -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_ttf -lSDL_image -lSDL_console -mwindows -g3 
+INCS =  -I"C:/Dev-Cpp/include"  -I"C:/lib_sdl/SDL-devel-1.2.7-mingw32/include/SDL"  -I"C:/lib_sdl/SDL_ttf-2.0.6/include/SDL"  -I"C:/lib_sdl/SDL_image-1.2.3/include/SDL"  -I"C:/lib_sdl/sdlconsole-2.1/include" 
+CXXINCS =  -I"C:/Dev-Cpp/include/c++"  -I"C:/Dev-Cpp/include/c++/mingw32"  -I"C:/Dev-Cpp/include/c++/backward"  -I"C:/Dev-Cpp/include"  -I"C:/lib_sdl/SDL-devel-1.2.7-mingw32/include/SDL"  -I"C:/lib_sdl/SDL_ttf-2.0.6/include/SDL"  -I"C:/lib_sdl/SDL_image-1.2.3/include/SDL"  -I"C:/lib_sdl/sdlconsole-2.1/include" 
+BIN  = dcemu.exe
+CXXFLAGS = $(CXXINCS)  -fverbose-asm -g3
+CFLAGS = $(INCS)-Wall   -fverbose-asm -g3
+
+.PHONY: all all-before all-after clean clean-custom
+
+all: all-before dcemu.exe all-after
+
+
+clean: clean-custom
+	rm -f $(OBJ) $(BIN)
+
+$(BIN): $(OBJ)
+	$(CC) $(LINKOBJ) -o "dcemu.exe" $(LIBS)
+
+./obj/graficos.o: graficos.c
+	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
+
+./obj/main.o: main.c
+	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
+
+./obj/mem.o: mem.c
+	$(CC) -c mem.c -o ./obj/mem.o $(CFLAGS)
+
+./obj/log.o: log.c
+	$(CC) -c log.c -o ./obj/log.o $(CFLAGS)
+
+./obj/BFont.o: BFont.c
+	$(CC) -c BFont.c -o ./obj/BFont.o $(CFLAGS)
+
+./obj/reg.o: reg.c
+	$(CC) -c reg.c -o ./obj/reg.o $(CFLAGS)
+
+./obj/intc.o: intc.c
+	$(CC) -c intc.c -o ./obj/intc.o $(CFLAGS)
+
+./obj/arith.o: arith.c
+	$(CC) -c arith.c -o ./obj/arith.o $(CFLAGS)
+
+./obj/branch.o: branch.c
+	$(CC) -c branch.c -o ./obj/branch.o $(CFLAGS)
+
+./obj/dcopcodes.o: dcopcodes.c
+	$(CC) -c dcopcodes.c -o ./obj/dcopcodes.o $(CFLAGS)
+
+./obj/floatcontrol.o: floatcontrol.c
+	$(CC) -c floatcontrol.c -o ./obj/floatcontrol.o $(CFLAGS)
+
+./obj/floatgraph.o: floatgraph.c
+	$(CC) -c floatgraph.c -o ./obj/floatgraph.o $(CFLAGS)
+
+./obj/floatsimple.o: floatsimple.c
+	$(CC) -c floatsimple.c -o ./obj/floatsimple.o $(CFLAGS)
+
+./obj/logic.o: logic.c
+	$(CC) -c logic.c -o ./obj/logic.o $(CFLAGS)
+
+./obj/mov.o: mov.c
+	$(CC) -c mov.c -o ./obj/mov.o $(CFLAGS)
+
+./obj/shift.o: shift.c
+	$(CC) -c shift.c -o ./obj/shift.o $(CFLAGS)
+
+./obj/syscontrol.o: syscontrol.c
+	$(CC) -c syscontrol.c -o ./obj/syscontrol.o $(CFLAGS)
+
+./obj/opcodes.o: opcodes.c
+	$(CC) -c opcodes.c -o ./obj/opcodes.o $(CFLAGS)
+
+./obj/sh4.o: sh4.c
+	$(CC) -c sh4.c -o ./obj/sh4.o $(CFLAGS)
+
+./obj/debug.o: debug.c
+	$(CC) -c debug.c -o ./obj/debug.o $(CFLAGS)
+
+dcemu_private.res: dcemu_private.rc 
+	$(WINDRES) -i dcemu_private.rc -I rc -o dcemu_private.res -O coff 

@@ -1,0 +1,11 @@
+OPCODE(and72); // (0010 nnnn mmmm 1001)
+OPCODE(and73); // (1100 1001 iiiiiiii)
+OPCODE(not75); // NOT Rm, Rn (0110nnnn mmmm0111)
+OPCODE(or76); // OR Rm, Rn (0010 nnnn mmmm 1011)
+OPCODE(or77); // OR #imm, R0 (11001011 iiiiiiii)
+OPCODE(tasb79); // TAS.B @Rn (0100nnnn 00011011)
+OPCODE(tst80); // TST Rm, Rn (0010nnnn mmmm1000)
+OPCODE(tst81); // TST #imm, R0 (11001000 iiiiiiii)
+OPCODE(xor83); // (0010 nnnn mmmm 1010)
+OPCODE(xor84); // XOR #imm, R0 (11001010 iiiiiiii)
+
