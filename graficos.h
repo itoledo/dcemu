@@ -12,6 +12,11 @@ extern	int 	pvr_scanline;
 extern	DWORD	pvr_fb_r_ctrl;
 extern	DWORD	pvr_fb_r_sof1;
 extern	DWORD	pvr_spg_vblank_int;
+extern	DWORD	pvr_isp_backgnd_t;
+extern	DWORD 	pvr_param_base;
+extern	DWORD 	pvr_region_base;
+extern	DWORD	pvr_ta_itp_current;
+extern	DWORD	pvr_ta_isp_base;
 extern	WORD	pvr_spg_vblank_int_in;
 extern	WORD	pvr_spg_vblank_int_out;
 extern	GLuint	pvr_textures[MAX_TEXTURE_COUNT];
@@ -31,6 +36,7 @@ void limpiar_pantalla();
 
 // callbacks
 void cb_tastart(DWORD addr, void * p, size_t size);
+void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);
 
 extern	SDL_Surface *screen;
 // extern	SDL_Surface *backscreen;

@@ -8,6 +8,8 @@ OPCODE(fmov221) // FMOV DRm, XDn (1111nnn1 mmm01100)
 
 	memcpy(&XD(n), &DR(m), sizeof(float)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov221: FMOV DR%d, XD%d\r\n", m, n);
 #endif
@@ -20,6 +22,8 @@ OPCODE(fmov222) // FMOV XDm, DRn (1111nnn0 mmm11100)
 
 	memcpy(&DR(n), &XD(m), sizeof(float)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov222: FMOV XD%d, DR%d\r\n", m, n);
 #endif
@@ -31,6 +35,8 @@ OPCODE(fmov223) // FMOV XDm, XDn (1111nnn1 mmm11100)
 	short m = (arg >> 5) & 0x07;
 
 	memcpy(&XD(n), &XD(m), sizeof(float)*2);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov223: FMOV XD%d, XD%d\r\n", m, n);
@@ -47,6 +53,8 @@ OPCODE(fmov224) // FMOV @Rm, XDn (1111nnn1 mmmm1000)
 	
 	memread(R(m), &XD(n), sizeof(float)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov224: FMOV @R%d = %x, XD%d", m, R(m), n);
 #endif
@@ -61,6 +69,8 @@ OPCODE(fmov225) // FMOV @Rm+, XDn (1111nnn1 mmmm1001)
 
     R(m) += 8;
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov225: r[%d]=%x - 8 n=%d\r\n", m, R(m), n);
 #endif
@@ -74,6 +84,8 @@ OPCODE(fmov226) // FMOV @(R0, Rm), XDn		(1111nnn1 mmmm0110)
 
 	memread(addr, &XD(n), sizeof(DWORD)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov226: FMOV (R0 + R%d = %x), XD%d\r\n", m, addr, n);
 #endif
@@ -85,6 +97,8 @@ OPCODE(fmov227) // FMOV XDm, @Rn (1111nnnn mmm11010)
 	short m = (arg >> 5) & 0x07;
 
 	memwrite(R(n), &XD(m), sizeof(DWORD) * 2);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov227: FMOV XD%d, @R[%d]=%x\r\n", m, n, R(n));
@@ -100,6 +114,8 @@ OPCODE(fmov228) // FMOV XDm, @-Rn (1111nnnn mmm11011)
     
     memwrite(R(n), &XD(m), sizeof(DWORD)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov228: FMOV XD%d, @-R%d = %x", m, n, R(n));
 #endif
@@ -112,6 +128,8 @@ OPCODE(fmov229) // FMOV XDm, @(R0, Rn) (1111nnnn mmm10111)
 	DWORD addr = R(0) + R(n);
 
 	memwrite(addr, &XD(m), sizeof(DWORD)*2);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov229: XD%d, (R0 + R%d = %x)\r\n", m, n, addr);
@@ -128,6 +146,7 @@ OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 				FR(m+2) * FR(n+2) +
 				FR(m+3) * FR(n+3);
 
+	PC += 2;
 }
 
 OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
@@ -162,6 +181,8 @@ OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
 	FR(4*n+1) = v2;
 	FR(4*n+2) = v3;
 	FR(4*n+3) = v4;
+
+	PC += 2;
 }
 
 OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
@@ -170,6 +191,8 @@ OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 	float f = (float) 1.0 / (float) sqrt(FR(n));
 
 	FR(n) = f;
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fsrra: FR(%d)=%x,%f\r\n", n, float_to_dword(FR(n)), (float) FR(n));
@@ -184,6 +207,8 @@ OPCODE(frchg232) // FRCHG (1111101111111101)
         SET_BIT(FPSCR, FPSCR_FR); */
     UpdateFPSCR(FPSCR ^ FPSCR_FR);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("frchg232: fr=%d\r\n", IS_SET(FPSCR, FPSCR_FR) ? 1 : 0);
 #endif
@@ -196,7 +221,10 @@ OPCODE(fschg233) // FSCHG (11110011 11111101)
 	else
 		SET_BIT(FPSCR, FPSCR_SZ);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fschg233: sz=%d\r\n", IS_SET(FPSCR, FPSCR_SZ) ? 1 : 0);
 #endif
 }
+

@@ -19,6 +19,8 @@ OPCODE(fsca) // FSCA FPUL, DRn
 /*	float_R(n) = 0;
 	float_registers[n+1] = 0; */
 
+	PC += 2;
+
 #ifdef ASM_DEBUG
 	fprintf(logfp, "fsca: n:%d, FPUL=%f, fl_reg[n]=%f, fl_reg[n+1]=%f\r\n",
 		n, (float) FPUL, FR(n), float_registers[n+1]);
@@ -28,5 +30,6 @@ OPCODE(fsca) // FSCA FPUL, DRn
 OPCODE(NOIMP)
 {
 	logmsg("opcode no implementado: %s (%d)\r\n", opcodes[find_opcode(PC)].opdesc, find_opcode(PC));
+	PC += 2;
 }
 

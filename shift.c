@@ -23,6 +23,8 @@ OPCODE(rotl86) // ROTL Rn : T <- Rn <- MSB (0100nnnn 00000100)
 	else
 		R(n) &= 0xFFFFFFFE;
 
+	PC += 2;
+
 #ifdef DEBUG_SHIFT
     logmsg("rotl: despues %x\r\n", R(n));
 #endif
@@ -49,6 +51,8 @@ OPCODE(rotr87) // ROTR Rn (0100nnnn 00000101)
 	else
 		R(n) &= 0x7FFFFFFF;
 
+	PC += 2;
+
 #ifdef DEBUG_SHIFT
     logmsg("rotr: despues %x\r\n", R(n));
 #endif
@@ -72,6 +76,8 @@ OPCODE(rotcl88) // ROTCL Rn (0100nnnn 00100100)
         R(n) |= 0x1;
     else
         R(n) &= 0xFFFFFFFE;
+
+	PC += 2;
 
 #ifdef DEBUG_SHIFT
     logmsg("rotcl: r[%d]=%x\r\n", n, R(n));
@@ -97,6 +103,8 @@ OPCODE(rotcr89) // ROTCR Rn (0100nnnn 00100101)
 	else
 		REMOVE_BIT(SR, SR_T);
 
+	PC += 2;
+
 #ifdef DEBUG_SHIFT
     logmsg("rotcr89: r[%d]=%x\r\n", n, R(n));
 #endif
@@ -108,6 +116,8 @@ OPCODE(shad90) // SHAD Rm, Rn (0100nnnn mmmm1100)
 	short m = (arg >> 4) & 0x0F;
 //	signed long rm;
 	long amount;
+
+	PC += 2;
 
 	if (R(m) == 0)
 		return;
@@ -174,6 +184,8 @@ OPCODE(shar92) // SHAR Rn : MSB -> Rn -> T (0100nnnn 00100001)
 
 //	COPY_REG(R(n), rn);
 
+	PC += 2;
+
 #ifdef DEBUG_SHIFT
     logmsg("shar: despues %x\r\n", R(n));
 #endif
@@ -190,6 +202,8 @@ OPCODE(shld93) // SHLD Rm, Rn (0100nnnn mmmm1101)
 #endif
 
 //	COPY_REG(rm, R(m));
+
+	PC += 2;
 
 	if (R(m) == 0)
 		return;
@@ -240,6 +254,8 @@ OPCODE(shll94) // SHLL Rn : T <- Rn <- 0 (0100nnnn 00000000)
 
 	R(n) <<= 1;
 	
+	PC += 2;
+
 #ifdef DEBUG_SHIFT
     logmsg("shll: despues %x\r\n", R(n));
 #endif
@@ -263,6 +279,8 @@ OPCODE(shlr95) // SHLR Rn : 0 -> Rn -> T (0100nnnn 00000001)
 	// probando
 	R(n) &= 0x7FFFFFFF;
 
+	PC += 2;
+
 #ifdef DEBUG_SHIFT
     logmsg("shlr: r[%d]=%x\r\n", n, R(n));
 #endif
@@ -273,6 +291,8 @@ OPCODE(shll2) // SHLL2 Rn: Rn << 2 -> Rn (0100nnnn 00001000)
 	short n = (arg >> 8) & 0x0F;
 
 	R(n) <<= 2;
+
+	PC += 2;
 }
 
 OPCODE(shlr2) // SHLR2 Rn: Rn >> 2 -> Rn (0100nnnn 00001001)
@@ -283,6 +303,8 @@ OPCODE(shlr2) // SHLR2 Rn: Rn >> 2 -> Rn (0100nnnn 00001001)
 	
 	// probando!
 	R(n) &= 0x3FFFFFFF;
+
+	PC += 2;
 
 #ifdef DEBUG_SHIFT
 	logmsg("shlr2: r[%d]=%x\r\n", n, R(n));
@@ -298,6 +320,8 @@ OPCODE(shll8) // SHLL8 Rn (0100nnnn 00011000)
 #endif
 
 	R(n) <<= 8;
+
+	PC += 2;
 
 #ifdef ASM_DEBUG
 	logmsg("shll8: res=%d\r\n", n, R(n));
@@ -317,6 +341,8 @@ OPCODE(shlr8) // SHLR8 Rn (0100nnnn 00011001)
 	// probando
 	R(n) &= 0x00FFFFFF;
 
+	PC += 2;
+
 #ifdef ASM_DEBUG
 	fprintf(logfp, "shlr8: res=%d\r\n", n, R(n));
 #endif
@@ -332,6 +358,8 @@ OPCODE(shll16) // SHLL16 Rn (0100nnnn 00101000)
 
 	R(n) <<= 16;
 	
+	PC += 2;
+
 #ifdef ASM_DEBUG
 	logmsg("shll16: res=%d\r\n", n, R(n));
 #endif
@@ -349,6 +377,8 @@ OPCODE(shlr16) // SHLR16 Rn (0100nnnn 00101001)
 
 	// probando
 	R(n) &= 0x0000FFFF;
+
+	PC += 2;
 
 #ifdef ASM_DEBUG
 	fprintf(logfp, "shlr16: res=%d\r\n", n, R(n));

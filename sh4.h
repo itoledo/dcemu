@@ -9,6 +9,7 @@ typedef short bool;
 #define true 1
 #define false 0
 
+void ejecutar_instruccion(DWORD instr);
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
 

@@ -13,8 +13,9 @@ OPCODE(bf) // BF label (10001011 ssssssss)
 	if (!IS_SR_T())
 	{
 //		NEXTPC = s;
-		NEXTPC = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
-		PC_func = PC_f_nextpc;
+/*		NEXTPC = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
+		PC_func = PC_f_nextpc; */
+		PC = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
 #ifdef DEBUG_BRANCH
 		if (NEXTPC == 0)
 		{
@@ -22,6 +23,8 @@ OPCODE(bf) // BF label (10001011 ssssssss)
 		}
 #endif
 	}
+	else
+		PC += 2;
 }
 
 OPCODE(bra) // BRA label (1010dddd dddddddd)
@@ -29,8 +32,14 @@ OPCODE(bra) // BRA label (1010dddd dddddddd)
 	DWORD disp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
 
 	//	fprintf(fp, "Cambiando PC de %x a %x. arg %x\r\n", PC, disp, arg & 0x0FFF);
-	delayslot = disp;
-	PC_func = PC_f_delayslot;
+/*	delayslot = disp;
+	PC_func = PC_f_delayslot; */
+
+	PC += 2;
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = disp;
+
 #ifdef DEBUG_BRANCH
 	logmsg("bra: dslot=%x\r\n", disp);
 #endif
@@ -41,8 +50,14 @@ OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 	short n = (arg >> 8) & 0x0F;
 	DWORD target = (DWORD) R(n) + PC + 4;
 
-	delayslot = target;
-	PC_func = PC_f_delayslot;
+/*	delayslot = target;
+	PC_func = PC_f_delayslot; */
+	
+	PC += 2;
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = target;
+
 #ifdef DEBUG_BRANCH
 	if (delayslot == 0)
 	{
@@ -57,8 +72,15 @@ OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 
 	PR = PC + 4;
 
-	delayslot = disp;
-	PC_func = PC_f_delayslot;
+/*	delayslot = disp;
+	PC_func = PC_f_delayslot; */
+
+	PC += 2;
+
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = disp;
+
 #ifdef DEBUG_BRANCH
 	if (delayslot == 0)
 	{
@@ -74,8 +96,13 @@ OPCODE(bsrf109) // BSRF Rn (0000nnnn 00000011)
 
 	PR = PC + 4;
 
-	delayslot = target;
-	PC_func = PC_f_delayslot;
+/*	delayslot = target;
+	PC_func = PC_f_delayslot; */
+	
+	PC += 2;
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = target;
 
 #ifdef DEBUG_BRANCH
 	if (delayslot == 0)
@@ -88,9 +115,15 @@ OPCODE(bsrf109) // BSRF Rn (0000nnnn 00000011)
 OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 {
 	short n = (arg >> 8) & 0x0F;
+	DWORD target = R(n);
 
-	delayslot = R(n);
-	PC_func = PC_f_delayslot;
+/*	delayslot = R(n);
+	PC_func = PC_f_delayslot; */
+
+	PC += 2;
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = target;
 
 #ifdef DEBUG_BRANCH
 	if (delayslot == 0)
@@ -103,11 +136,17 @@ OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 OPCODE(jsr111) // JSR @Rn (0100nnnn 00001011)
 {
 	short n = (arg >> 8) & 0x0F;
+	DWORD target = R(n);
 
 	PR = PC + 4;
 
-	delayslot = R(n);
-	PC_func = PC_f_delayslot;
+/*	delayslot = R(n);
+	PC_func = PC_f_delayslot; */
+
+	PC += 2;
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = target;
 
 #ifdef DEBUG_BRANCH_JSR
     logmsg("jsr: r[%d]=%x\r\n", n, R(n));
@@ -116,8 +155,14 @@ OPCODE(jsr111) // JSR @Rn (0100nnnn 00001011)
 
 OPCODE(rts112) // RTS (00000000 00001011)
 {
-	delayslot = PR;
-	PC_func = PC_f_delayslot;
+/*	delayslot = PR;
+	PC_func = PC_f_delayslot; */
+	DWORD target = PR;
+
+	PC += 2;
+	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+	PC = target;
 
 #ifdef DEBUG_BRANCH
 	if (delayslot == 0)
@@ -136,8 +181,16 @@ OPCODE(bfs) // 10001111dddddddd
 	if (!IS_SR_T())
 	{
 //		disp = SignExtend8(arg & 0x00FF)*2 + PC + 4;
-		delayslot = SignExtend8(arg & 0x00FF)*2 + PC + 4;;
-		PC_func = PC_f_delayslot;
+
+/*		delayslot = SignExtend8(arg & 0x00FF)*2 + PC + 4;;
+		PC_func = PC_f_delayslot; */
+		DWORD nextpc =SignExtend8(arg & 0x00FF)*2 + PC + 4;
+
+		PC += 2;
+		ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+
+		PC = nextpc;
+
 #ifdef DEBUG_BRANCH
 		if (delayslot == 0)
 		{
@@ -145,14 +198,19 @@ OPCODE(bfs) // 10001111dddddddd
 		}
 #endif
 	}
+	else
+		PC += 2;
 }
 
 OPCODE(bt104) // 10001001 dddddddd
 {
 	if (IS_SR_T())
 	{
-		NEXTPC = SignExtend8(arg & 0xFF)*2 + PC + 4; // antes era disp = ...
-		PC_func = PC_f_nextpc;
+/*		NEXTPC = SignExtend8(arg & 0xFF)*2 + PC + 4; // antes era disp = ...
+		PC_func = PC_f_nextpc; */
+		
+		PC = SignExtend8(arg & 0xFF)*2 + PC + 4;
+
 #ifdef DEBUG_BRANCH
 		if (NEXTPC == 0)
 		{
@@ -160,14 +218,24 @@ OPCODE(bt104) // 10001001 dddddddd
 		}
 #endif
 	}
+	else
+		PC += 2;
 }
 
 OPCODE(bts105) // 10001101 dddddddd
 {
 	if (IS_SR_T())
 	{
-		delayslot = SignExtend8(arg & 0xFF)*2 + PC + 4; // antes era disp = ...
-		PC_func = PC_f_delayslot;
+/*		delayslot = SignExtend8(arg & 0xFF)*2 + PC + 4; // antes era disp = ...
+		PC_func = PC_f_delayslot; */
+
+		DWORD nextpc = SignExtend8(arg & 0xFF)*2 + PC + 4;
+
+		PC += 2;
+  		ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+  		
+  		PC = nextpc;
+
 #ifdef DEBUG_BRANCH
 		if (delayslot == 0)
 		{
@@ -175,5 +243,7 @@ OPCODE(bts105) // 10001101 dddddddd
 		}
 #endif
 	}
+	else
+		PC += 2;
 }
 

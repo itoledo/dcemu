@@ -46,20 +46,6 @@ DWORD MAPLE_RESET1;
 
 #define MAX_PARAMS 4
 
-struct opcode_cache_st
-{
-	opcode_f *	func;
-	int			idx;
-	DWORD		params[MAX_PARAMS];
-};
-
-struct opcode_cache_st opcode_cache[CACHE_SIZE];
-#define get_cache_offset(dir) (dir - (mem_base + mem_offset))
-
-// variables globales del programa
-long cache_call = 0;
-long cache_miss = 0;
-
 #ifdef TTF
 TTF_Font * font;
 #else
@@ -124,7 +110,7 @@ void opcode_log(int pos, WORD arg)
 
 void query_cache(WORD arg) // función interna
 {
-	int i=oplist[arg];
+	int i = oplist[arg];
 /*	if (i ==-1) 
 	{
 		return;
@@ -352,7 +338,7 @@ void timer_check()
                 *TCNT2 = *TCOR2;
                 *TCR2 |= TMU_TCR_UNF;
 #ifdef TMU_INT
-                if ((*TCR2 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+//                if ((*TCR2 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
                 	intc(EXC_TMU2_TUNI2);
 #endif
         }
@@ -366,7 +352,7 @@ void timer_check()
                 *TCNT1 = *TCOR1;
                 *TCR1 |= TMU_TCR_UNF;
 #ifdef TMU_INT
-                if ((*TCR1 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+//                if ((*TCR1 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
 	                intc(EXC_TMU1_TUNI1);
 #endif
         }
@@ -380,7 +366,7 @@ void timer_check()
                 (*TCNT0) = *TCOR0;
                 (*TCR0) |= TMU_TCR_UNF;
 #ifdef TMU_INT
-                if ((*TCR0 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+ //               if ((*TCR0 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
 	                intc(EXC_TMU0_TUNI0);
 #endif
         }
@@ -409,187 +395,11 @@ void main_loop(void)
 	logmsg("TRACE: %s\r\n", buf);
 #endif	
 
-			instr = *(WORD *) str_PC;
+//			instr = *(WORD *) str_PC;
 
-/*			
-			if (PC == HACK_BASE + HACK_ROMFONT)
-			{
-				logmsg("HACK_ROMFONT\r\n");
-				R(0) = mem_base + 1024*1024*5;
-				rts112(instr);
-			}
-			else  
-*/
-			if (PC == HACK_BASE + HACK_SYSINFO
-			||  PC == HACK_BASE + HACK_FLASHROM)
-			{
-				logmsg("HACK: PC=%x, retornando 0\n", PC);
-				R(0) = 0;
-				rts112(instr);
-			}
-			else
-			if (PC == HACK_BASE + HACK_GDROM)
-			{
-				logmsg("HACK_GDROM: r6=%x, r7=%x\r\n", R(6), R(7));
-				if (R(6) == 0)
-				{
-					switch(R(7))
-					{
-						case 0: // GDROM_SEND_COMMAND
-						logmsg("GDROM_SEND_COMMAND: r4=%x, r5=%x\r\n", R(4), R(5));
-						switch(R(4))
-						{
-							case 16: // read sector, R(5) es el lugar donde se guardan los datos
-							{
-								int secstart, secnum, idx = 0;
-								BYTE c;
-								DWORD targetaddr;
-//								FILE * fp;
-								char * targetmem;
-								
-								memread(R(5), &secstart, sizeof(int));
-								memread(R(5) + 4, &secnum, sizeof(int));
-								memread(R(5) + 8, &targetaddr, sizeof(DWORD));
-								
-//								secstart -= 11700;
-			
-//								if (secstart != 16)
-/*								if (secstart != 11700 - 16)
-								{
-									logmsg("restando 150 a secstart(%d), final %d\n", secstart, secstart - 150);
-									secstart -= 150;
-								} */
+			ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
 
-								logmsg("read sector: start=%x, num=%x, addr=%x\n", secstart, secnum, targetaddr);
-/*								fp = fopen("dc.iso", "rb");
-								if (!fp)
-								{
-									logmsg("dc.iso no encontrado");
-									break;
-								}
-								logmsg("seeking a %d, %x\n", secstart * 2048, secstart * 2048);
-								fseek(fp,secstart*2048, 0); */
-								targetmem = malloc(sizeof(char) * 2048 * secnum);
-/*								while (idx < 2048 * secnum)
-								{
-									targetmem[idx++] = (c = fgetc(fp));
-								}
-								fclose(fp); */
-								iso_read_sector(&targetmem[0], secstart, secnum);
-								memwrite(targetaddr, &targetmem[0], 2048 * secnum);
-								free(targetmem);
-							}
-							break;
-
-							case 19: // read toc, R(5) es el lugar donde se guardan los datos
-							{
-								int session;
-								DWORD targetaddr;
-								struct TOC toc;
-        
-					        	// hay que leer el # de sesión, es el 1er numero que apunta esa dir
-					        	memread(R(5), &session, sizeof(int));
-					        	logmsg("read toc: sesión n° %d\n", session);
-					        	
-					        	// a llenar un TOC "mula"
-//					        	toc.entry[0] = 0x40002DB4; // CTRL = 4, LBA = 11700
-//					        	toc.entry[0] = 0x40000000; // CTRL = 4, LBA = 0
-								toc.entry[0] = 0x40000000 | iso_get_lba();
-					        	toc.first = 0x00010000;
-					        	toc.last  = 0x00010000;
-					        	toc.dunno = 0;
-					        	memread(R(5) + 4, &targetaddr, sizeof(DWORD));
-					        	logmsg("escribiendo TOC a %x\n", targetaddr);
-					        	memwrite(targetaddr, &toc, sizeof(struct TOC));
-	        				}
-	        				break;
-     					}
-						R(0) = 0x6969;
-						break;
-					
-					    case 1: // GDROM_CHECK_COMMAND
-					    logmsg("GDROM_CHECK_COMMAND: r4=%x, r5=%x\r\n", R(4), R(5));
-					    R(0) = 2;
-					    break;
-      
-    	                case 2: // GDROM_MAIN_LOOP
-    	                logmsg("GDROM_MAIN_LOOP\r\n");
-    	                break;
-
-       					case 3: // GDROM_INIT
-       					logmsg("GDROM_INIT\r\n");
-						break;
-						
-						case 4: // GDROM_CHECK_DRIVE
-						logmsg("GDROM_CHECK_DRIVE\r\n");
-//						valor = 7; // lid closed, no disc
-						valor = 2; // drive is in standby
-						WriteMemoryL(R(4), &valor);
-//						valor = 0x80; // GD-ROM
-						valor = 0x10; // CD-ROM
-						WriteMemoryL(R(4) + 4, &valor);
-						R(0) = 0;
-						break;
-
-						case 10: // GDROM_SECTOR_MODE
-						logmsg("GDROM_SECTOR_MODE\r\n");
-						ReadMemoryL(R(4), &valor);
-						logmsg("valor: %x\r\n", valor);
-						if (valor == 0)
-						{
-							valor = 8192;
-							WriteMemoryL(R(4) + 4, &valor);
-//							valor = 2048; // mode 2
-							valor = 1024 * iso_get_mode();
-							WriteMemoryL(R(4) + 8, &valor);
-							valor = 2048; // sector size in bytes
-							WriteMemoryL(R(4) + 12, &valor);
-						}
-						else
-							logmsg("GDROM_SECTOR_MODE: valor != 0 no implementado\n");
-						R(0) = 0;
-						break;
-						
-						default:
-						logmsg("GDROM: error!\n");
-						break;
-					}
-				}
-				rts112(instr);
-			}
-/*			else
-			if (PC >= mem_base + mem_offset
-			&&  PC <  mem_base + mem_offset + CACHE_SIZE
-//			if ((PC & 0xFF000000) == 0x8C000000
-			&&  opcode_cache[PC - (mem_base + mem_offset)].func
-  			&&  opcode_cache[PC - (mem_base + mem_offset)].func != query_cache)
-			{
-#ifdef LOGGING
-				if (logging)
-					opcode_log(opcode_cache[PC - (mem_base + mem_offset)].idx, instr);
-#endif
-				(opcode_cache[PC - (mem_base + mem_offset)].func) (instr);
-#if defined(EXTRA_REG_DEBUG) || defined(FULL_DEBUG_FROM)
-#ifdef FULL_DEBUG_FROM
-			if (PC >= FULL_DEBUG_FROM && PC <= FULL_DEBUG_TO)
-#endif
-                dump_registers();
-#endif
-#ifdef CHECK_VALUE
-				check_registers();
-#endif
-			if (filelogging & FILELOG_REGISTERS)
-				dump_registers();
-			if (filelogging & FILELOG_CALLS)
-				opcodes[opcode_cache[PC - (mem_base + mem_offset)].idx].llamadas++;
-			} */
-			else
-			{
-				query_cache (instr);
-//			cache_call++;
-			}
-
-			(*PC_func) ();
+//			(*PC_func) ();
 
 			dma_check();
 //			if (timer_cnt++ == 195) // 781.25
@@ -1165,14 +975,6 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	logmsg("vaciando cache\n");
-
-	for (i = 0; i < CACHE_SIZE; i++)
-	{
-		opcode_cache[i].func = query_cache;
-		opcode_cache[i].idx = -1;
-	}
-
 	// a cargar 1st_read.bin
 	logmsg("cargando 1st_read.bin\n");
 
@@ -1183,11 +985,12 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-	PC = 0x8c008300;
+	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+//	PC = 0x8c008300;
 //	PC = 0x00000000;
 //	PC = 0x8c0000e0;
-	str_PC = get_memory_pointer(PC);
+
+//	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit())
  	{
@@ -1256,7 +1059,7 @@ int main(int argc, char *argv[])
 
 	start_time = time(NULL);
 
-	PC_func = PC_f_normal;
+//	PC_func = PC_f_normal;
 	
 	/* registers[1] = 1;
 	R(0) = 0;

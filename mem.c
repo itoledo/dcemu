@@ -563,7 +563,6 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		case 0xa05f810c: // SPG_STATUS
 		{
 //			dw = (instrucciones / 10) % 0x1FF;
-//			dw = pvr_scanline;
 			memcpy(p, &pvr_scanline, size);
 		}
 		break;
@@ -574,12 +573,24 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		case 0xa05f8128:	// TA_ISP_BASE, PVR_TA_VERTBUF_START
+		{
+      		memcpy(p, &pvr_ta_isp_base, size);
+		}
+		break;
+
+		case 0xa05f8138:	// TA_ITP_CURRENT, PVR_TA_VERTBUF_POS
+		{
+      		memcpy(p, &pvr_ta_itp_current, size);
+		}
+		break;
+
 		case 0xa05f8144:
 		{
 			logxmsg(LOG_PVR, "pvr_read: ta_init\r\n");
 		}
 		break;
-	
+
 		case 0xa0710000: // Dreamcast RTC, reg 1
 		case 0xa0710004:
 		{
@@ -934,6 +945,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		break;
 		/*** FIN MAPLE ***/
 
+		// INICIO REGISTROS PVR
+
 		case 0xa05f8012: // RENDERFORMAT, "alpha config"
 		{
 			DWORD dw = *(DWORD *) p;
@@ -982,13 +995,13 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_1(0xa05f8000 + 0x03 * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x04 * 4, "Unknown, grabando %x", *(DWORD *) p);
 //		PVR_WRITE_CB_1(0xa05f8000 + 0x05 * 4, cb_renderstart, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x05 * 4, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x05 * 4, cb_renderstart, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x06 * 4, "[TESTSELECT], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x07 * 4, "Unknown, grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x08 * 4, "PRIMALLOCBASE [PARAMBASE] (3D) (Primitive allocation base), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x08 * 4, cb_param_base, "PRIMALLOCBASE [PARAM_BASE] (3D) (Primitive allocation base), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x09 * 4, "[SPANSORTCFG], grabando %x", *(DWORD *) p);
  		PVR_WRITE_1(0xa05f8000 + 0x0a * 4, "Unknown, grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x0b * 4, "TILEARRAY (Tile Array base address), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x0b * 4, cb_region_base, "TILEARRAY (Tile Array base address) [REGION_BASE], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x0c * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x0d * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x0e * 4, "Unknown, grabando %x", *(DWORD *) p);
@@ -1102,7 +1115,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_2(0xa05f8000 + 0x20 * 4, "[HALF_OFFSET], grabando %x, M=%x", *(DWORD *) p, 0x00000007);
 		PVR_WRITE_2(0xa05f8000 + 0x21 * 4, "[FPU_PERP_VAL] (3D) (Something to do with rendering), grabando %x, M=%x", *(DWORD *)p, 0);
 		PVR_WRITE_2(0xa05f8000 + 0x22 * 4, "[ISP_BACKGND_D], grabando %x, M=%x", *(DWORD *)p, 0x38d1b710);
-		PVR_WRITE_1(0xa05f8000 + 0x23 * 4, "BGPLANE [ISP_BACKGND_T] (3D) (Background plane location), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x23 * 4, cb_isp_backgnd_t, "BGPLANE [ISP_BACKGND_T] (3D) (Background plane location), grabando %x", *(DWORD *) p);
 
 		PVR_WRITE_1(0xa05f8000 + 0x26 * 4, "[ISP_FEED_CFG], grabando %x", *(DWORD *) p);
 

@@ -271,6 +271,7 @@ struct st_cmd opcodes[] =
 	{ 0xF0FD, 0xF1FF, "FSCA",	OP_T_FPUL_DRN,			fsca,		REQ_PR_0		},
 	{ 0xFBFD, 0xFFFF, "FRCHG",	OP_T_NA,				frchg232,	REQ_PR_0		},
 	{ 0xF3FD, 0xFFFF, "FSCHG",	OP_T_NA,				fschg233,	REQ_PR_0		},
+	{ 0x0000, 0xFFFF, "NOIMP",  OP_T_NA,				NOIMP						},
 
 	{ 0, 0, NULL, 0, (void *) NULL }
 };
@@ -342,17 +343,28 @@ int find_opcode(DWORD mempos)
 	}
 
 	return ret;
-
-
 }
 
 void initopcodes()
 {
 	int i;int i2;//int fb;
+	int noimp;
+
+	for (i = 0; opcodes[i].opdesc; i++)
+		if (opcodes[i].op == 0 && opcodes[i].mask == 0xFFFF) // NOIMP
+			break;
+
+	if (!opcodes[i].opdesc)
+	{
+		fprintf(stderr, "opcode NOIMP no encontrado!\n");
+		abort();
+	}
+
+	noimp = i;
 
 	for (i2 = 0; i2<65536; i2++)
 	{
-		oplist[i2]=-1;
+		oplist[i2]=noimp;
 	}
 
 	for (i = 0; opcodes[i].opdesc; i++)

@@ -40,6 +40,8 @@ OPCODE(fldi0170) // FLDI0 FRn (1111nnnn 10001101)
 	short n = (arg >> 8) & 0x0F;
 
 	FR(n) = (float) 0.0;
+
+	PC += 2;
 }
 
 OPCODE(fldi1171) // FLDI1 FRn (1111nnnn 10011101)
@@ -47,6 +49,8 @@ OPCODE(fldi1171) // FLDI1 FRn (1111nnnn 10011101)
 	short n = (arg >> 8) & 0x0F;
 
 	FR(n) = (float) 1.0;
+
+	PC += 2;
 }
 
 OPCODE(fmov172) // FMOV FRm, FRn : FRm -> FRn (1111nnnn mmmm1100)
@@ -56,6 +60,8 @@ OPCODE(fmov172) // FMOV FRm, FRn : FRm -> FRn (1111nnnn mmmm1100)
 
 //	FR(n) = FR(m);
 	memcpy(&FR(n), &FR(m), sizeof(float));
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs172: m:%d, n:%d, FR[m]=%x, FR[n]=%f\r\n", m, n, FR(m), FR(n));
@@ -73,6 +79,8 @@ OPCODE(fmovs173) // FMOV.S @Rm, FRn : (Rm) -> FRn (1111nnnn mmmm1000)
 	FR(n) = (float) f; */
 	
 	memread(R(m), &FR(n), sizeof(DWORD));
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs173: r[%d]=%x, FR(%d)=%x\r\n", m, R(m), n, float_to_dword(FR(n)));
@@ -93,6 +101,8 @@ OPCODE(fmovs174) // FMOV.S @(R0, Rm), FRn
 	
 	memread(R(m) + R(0), &FR(n), sizeof(float));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs174: r[%d]=%x, FR[%d]=%x\r\n", m, R(m), n, float_to_dword(FR(n)));
 #endif
@@ -112,6 +122,8 @@ OPCODE(fmovs175) // FMOV.S @Rm+, FRn (1111nnnn mmmm1001)
 
 	R(m) += 4;
 	
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs175: r[%d]=%x, FR[%d]=%x\r\n", m, R(m), n, float_to_dword(FR(n)));
 #endif
@@ -132,6 +144,8 @@ OPCODE(fmovs176) // FMOV.S FRm, @Rn : FRm -> (Rn) (1111nnnn mmmm1010)
 	} */
 
 	WriteMemoryF(R(n), &FR(m));
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs176: FR[%d]=%x, r[%d]=%x\r\n", m, float_to_dword(FR(m)), n, R(n));
@@ -160,6 +174,8 @@ OPCODE(fmovs177) // FMOV.S FRm, @-Rn (1111nnnn mmmm1011)
 
 	WriteMemoryF(R(n), &FR(m));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs177: FR[%d]=%x, R[%d]=%x\r\n", m, float_to_dword(FR(m)), n, R(n));
 #endif
@@ -181,6 +197,8 @@ OPCODE(fmovs178) // FMOV.S FRm, @(R0, Rn) (1111nnnn mmmm0111)
 
 	WriteMemoryF(R(0) + R(n), &FR(m));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmovs178: FR[%d]=%x, R[0]+R[%d]=%x\r\n", m, float_to_dword(FR(m)), n, R(0) + R(n));
 #endif
@@ -192,6 +210,8 @@ OPCODE(fmov179) // FMOV DRm, DRn (1111nnn0 mmm01100)
 	short m = (arg >> 5) & 0x07;
 
 	memcpy(&DR(n), &DR(m), sizeof(float));
+
+	PC += 2;
 }
 
 OPCODE(fmov180) // FMOV @Rm, DRn (1111nnn0 mmmm1000)
@@ -203,6 +223,8 @@ OPCODE(fmov180) // FMOV @Rm, DRn (1111nnn0 mmmm1000)
 //	doubleread(R(m), DR_index(n));
 	
 	memread(R(m), &DR(n), sizeof(DWORD) * 2);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmov180: r[%d]=%x, n=%d\r\n", m, R(m), n);
@@ -225,6 +247,8 @@ OPCODE(fmov182) // FMOV @Rm+, DRn (1111nnn0 mmmm1001)
 	memread(R(m), &DR(n), sizeof(DWORD)*2);
 
     R(m) += 8;
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fmov182: r[%d]=%x, n=%d\r\n", m, R(m), n);
@@ -251,6 +275,8 @@ OPCODE(fmov184) // FMOV DRm, @-Rn (1111nnnn mmm01011)
 //	doublewrite(R(n), DR_index(m));
 	memwrite(R(n), &DR(m), sizeof(DWORD));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmov184: m=%d, r[%d]=%x\r\n", m, n, R(n));
 #endif
@@ -265,6 +291,8 @@ OPCODE(fmov185) // FMOV DRm, @(R0, Rn) (1111nnnn mmm00111)
 //	doublewrite(addr, DR_index(m));
 	memwrite(addr, &DR(m), sizeof(DWORD)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fmov185: DR%d -> (R0 + R%d = %x)\r\n", m, n, addr);
 #endif
@@ -277,6 +305,8 @@ OPCODE(flds186) // FLDS FRm, FPUL (1111mmmm 00011101)
 //	FPUL = FR(m);
 	memcpy(&FPUL, &FR(m), sizeof(float));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("flds186: FR%d=%f (no conversion) FPUL=%x\r\n", m, FR(m), FPUL);
 #endif
@@ -288,6 +318,8 @@ OPCODE(fsts187) // FSTS FPUL, FRn (1111nnnn 00001101)
 
 //	FR(n) = FPUL;
 	memcpy(&FR(n), &FPUL, sizeof(float));
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fsts187: FPUL=%x (no conversion) FR%d=%x,%f\r\n", FPUL, n, FR(n),FR(n));
@@ -310,6 +342,8 @@ OPCODE(fadd189) // FADD FRm, FRn : FRn + FRm -> FRn (1111nnnn mmmm0000)
 
 	FR(n) += FR(m);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fadd: FR[%d]=%x, FR[%d]=%x\r\n", m, float_to_dword(FR(m)), n, float_to_dword(FR(n)));
 #endif
@@ -325,6 +359,8 @@ OPCODE(fcmpeq190) // FCMP/EQ FRm, FRn (1111nnnn mmmm0100)
     else
         UNSET_T
         
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fcmpeq190: FR(%d)=%f, FR(%d)=%f\r\n", m, FR(m), n, FR(n));
 #endif
@@ -348,6 +384,8 @@ OPCODE(fcmpgt191) // FCMP/GT FRm, FRn (1111nnnn mmmm0101)
         SET_T
     else
         UNSET_T
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fcmpgt191: FR(%d)=%f, FR(%d)=%f\r\n", m, FR(m), n, FR(n));
@@ -384,6 +422,8 @@ OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 #endif
 	}
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fdiv192: FR(%d)=%f, FR(%d)=%f\r\n", m, FR(m), n, FR(n));
 #endif
@@ -407,6 +447,8 @@ OPCODE(float193) // FLOAT FPUL, FRn : (float) FPUL -> FRn (1111nnnn 00101101)
 
 	FR(n) = (float) l;
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("float193: FPUL=%x (CONVERSION FROM SIGNED LONG TO FLOAT) FR(%d)=%f,%x\r\n", FPUL, n, FR(n), float_to_dword(FR(n)));
 #endif
@@ -418,6 +460,8 @@ OPCODE(fmac194) // FMAC FR0, FRm, FRn (1111nnnn mmmm1110)
 	short m = (arg >> 4) & 0x0F;
 
 	FR(n) += FR(0) * FR(m);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fmac194: FR(%d)=%x, FR(%d)=%x\r\n", m, float_to_dword(FR(m)), n, float_to_dword(FR(n)));
@@ -431,6 +475,8 @@ OPCODE(fmul195) // FMUL FRn * FRm -> FRn (1111nnnn mmmm0010)
 
 	FR(n) *= FR(m);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fmul195: FR(%d)=%f, FR(%d)=%f\r\n", m, FR(m), n, FR(n));
 #endif
@@ -441,6 +487,8 @@ OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 	short n = (arg >> 8) & 0x0F;
 
 	FR(n) *= -1;
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fneg196: FR(%d)=%f, FR(%d)=%f\r\n", n, FR(n));
@@ -453,6 +501,8 @@ OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 
 	FR(n) = (float) sqrt(FR(n));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fsqrt197: FR(%d)=%f, FR(%d)=%f\r\n", n, FR(n));
 #endif
@@ -464,6 +514,8 @@ OPCODE(fsub198) // FSUB FRm, FRn (1111nnnn mmmm0001)
 	short m = (arg >> 4) & 0x0F;
 
 	FR(n) -= FR(m);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
     logmsg("fsub198: FR(%d)=%f, FR(%d)=%f\r\n", m, FR(m), n, FR(n));
@@ -497,6 +549,8 @@ OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 /*	logmsg("ftrc199: FPUL=%x,%d FR[%d]=%x,%f\r\n",
 		(DWORD) FPUL, (signed long) FPUL,
 		m, (DWORD) R(m), (float) R(m)); */
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("ftrc199: FR%d=%f,%x (CONVERSION FROM FLOAT TO SIGNED LONG) FPUL=%d,%x\r\n", m, FR(m), float_to_dword(FR(m)), FPUL, FPUL);
@@ -542,6 +596,8 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 	put_double(DR_index(n), &y);
 //    memcpy(&DR(n), &y, sizeof(float)*2);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fadd201: DR%d, DR%d total=%f\r\n", m, n, y);
 	dump_registers();
@@ -561,6 +617,8 @@ OPCODE(fcmpgt203) // FCMP/GT DRm, DRn (1111nnn0 mmm00101)
 		SET_BIT(SR, SR_T);
 	else
 		REMOVE_BIT(SR, SR_T);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fcmpgt203: DR%d > DR%d ?\r\n", m, n);
@@ -592,11 +650,11 @@ OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
 //    memcpy(&DR(n), &y, sizeof(float)*2);
 	put_double(DR_index(n), &y);
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fdiv204: DR%d, DR%d, total=%f\r\n", m, n, y);
 #endif
-
-//	dump_registers();
 }
 
 OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
@@ -620,6 +678,8 @@ OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
 
 //	print_double(*(double *) &DR(n));
 
+	PC += 2;
+
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("float207: FPUL=%x,%d (CONVERSION FROM SIGNED INT TO DOUBLE PREC FP) DR%d\r\n", FPUL, FPUL, n);
 //	dump_registers();
@@ -636,6 +696,8 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 	x = sqrt(x);
 
 	put_double(DR_index(n), &x);
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fsqrt210\n");
@@ -662,6 +724,8 @@ OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 //	y = (signed long) floor(x);
 
  	FPUL = (signed long) floor(x); // y;
+
+	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("ftrc212: (CONVERSION FROM DOUBLE FLOAT TO SIGNED LONG) FPUL=%x,%d\r\n", (DWORD) FPUL, (signed long) FPUL);

@@ -95,7 +95,8 @@ bool intc(DWORD irq)
 
 	PC = VBR + 0x600;
 //	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];
-	str_PC = get_memory_pointer(PC);
+
+//	str_PC = get_memory_pointer(PC);
 
 #ifdef DEBUG_INTC
 	logxmsg(LOG_INTC, "intc: saltando a %x\n", PC);
@@ -171,8 +172,8 @@ void intc_delete(PENDING_INT * int2del)
 
 bool intc_check(DWORD intcheck)
 {
-    if (PC_func != PC_f_normal)
-    	return false;
+/*    if (PC_func != PC_f_normal)
+    	return false; */
 
     SET_BIT(ASIC_ACK_A, intcheck);
 
@@ -196,10 +197,10 @@ void check_ints()
 //    char * s;
 	PENDING_INT * pint, * pint_next;
     
-	if (PC_func != PC_f_normal)
+//	if (PC_func != PC_f_normal)
 /* 	||  IS_SET(SR, SR_BL)
 	||  VBR == 0) */
-		return;
+//		return;
 
 /*	if (pending_ints == 0)
 		return; */

@@ -49,6 +49,11 @@ DWORD pvr_lists[] = {
 DWORD pvr_fb_r_ctrl = (1 << 23) | (1 << 2) | 1; // VGA, enabled, RGB565
 DWORD pvr_fb_r_sof1 = 0x0;
 DWORD pvr_spg_vblank_int = 0x00280208;
+DWORD pvr_isp_backgnd_t = 0x0;
+DWORD pvr_param_base = 0x0;
+DWORD pvr_region_base = 0x0;
+DWORD pvr_ta_itp_current = 0x0;
+DWORD pvr_ta_isp_base = 0x0;
 WORD pvr_spg_vblank_int_in = 0x208;
 WORD pvr_spg_vblank_int_out = 0x028;
 
@@ -133,23 +138,81 @@ void limpiar_pantalla()
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }    
 
+typedef struct pvr_bkg_poly {
+        DWORD          flags1, flags2;
+        DWORD          dummy;
+        float           x1, y1, z1;
+        DWORD          argb1;
+        float           x2, y2, z2;
+        DWORD          argb2;
+        float           x3, y3, z3;
+        DWORD          argb3;
+} pvr_bkg_poly_t;
+
+void cb_renderstart(DWORD addr, void * p, size_t size)
+{
+	pvr_bkg_poly_t bkg;
+	DWORD bgplane = 0;
+
+	logxmsg(LOG_PVR, "tag address: %08x\n", (pvr_isp_backgnd_t >> 3) & 0x1FFFFF);
+	logxmsg(LOG_PVR, "param_base:  %08x\n", (pvr_param_base));
+
+	if (bgplane > 0)
+	{
+    	memread(bgplane, &bkg, sizeof(pvr_bkg_poly_t));
+
+    	logxmsg(LOG_PVR, "bkg: (%f,%f,%f), (%f,%f,%f), (%f,%f,%f)\n",
+    		bkg.x1, bkg.y1, bkg.z1,
+    		bkg.x2, bkg.y2, bkg.z2,
+    		bkg.x3, bkg.y3, bkg.z3);
+	}
+}
+
 void cb_tastart(DWORD addr, void * p, size_t size)
 {
+	DWORD dw;
+
 	SDL_GL_SwapBuffers();
 	pvr_framebufferdisplay = false;
+	
 //	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso ??? VBLINT?
 
-	logxmsg(LOG_PVR, "cb_renderstart\n");
+	logxmsg(LOG_PVR, "cb_tastart\n");
 	pvr_listdone = 0;
 	cur_tex_count = 0;
 
+	// ???
+	memread(0xa05f8128, &dw, sizeof(DWORD)); // leer TA_ISP_BASE
+	memwrite(0xa05f8138, &dw, sizeof(DWORD)); // grabar en TA_ITP_CURRENT
+
 	limpiar_pantalla();
+
+//	logxmsg(LOG_PVR, "ISP_BACKGND_T: %08x\n", pvr_isp_backgnd_t);
 }
 
 void cb_fb_r_sof1(DWORD addr, void * p, size_t size)
 {
 	logxmsg(LOG_PVR, "cb_fb_r_sof1\n");
 	memcpy(&pvr_fb_r_sof1, p, size);
+}
+
+void cb_isp_backgnd_t(DWORD addr, void * p, size_t size)
+{
+	logxmsg(LOG_PVR, "cb_isp_backgnd_t\n");
+	memcpy(&pvr_isp_backgnd_t, p, size);
+	logxmsg(LOG_PVR, "tag address = %x\n", (pvr_isp_backgnd_t >> 3) & 0x1FFFFF);
+}
+
+void cb_param_base(DWORD addr, void * p, size_t size)
+{
+	memcpy(&pvr_param_base, p, size);
+	logxmsg(LOG_PVR, "cb_param_base: %x\n", (pvr_param_base >> 20) & 0xF);
+}
+
+void cb_region_base(DWORD addr, void * p, size_t size)
+{
+	memcpy(&pvr_region_base, p, size);
+	logxmsg(LOG_PVR, "cb_region_base: %x\n", (pvr_region_base >> 2) & 0x3FFFFF);
 }
 
 void cb_fb_w_ctrl(DWORD addr, void * p, size_t size)

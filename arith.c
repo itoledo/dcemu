@@ -19,6 +19,8 @@ OPCODE(add39) // ADD Rm, Rn : Rn + Rm -> Rn (0011nnnn mmmm1100)
 	
 	R(n) += R(m);
 
+	PC += 2;
+
 #ifdef DEBUG_ARITH
     logmsg("add39: r[%d]=%x,%d r[%d]=%x,%d\r\n",
         n, R(n), (signed) R(n),
@@ -37,6 +39,8 @@ OPCODE(add40) // ADD #imm, Rn
 	COPY_REG(R(n), rn); */
 
 	R(n) += s;
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH
     logmsg("add40: r[%d]=%x,%d\r\n",
@@ -62,6 +66,8 @@ OPCODE(addc41) // ADDC Rm, Rn (0011nnnn mmmm1110)
 
 	if (tmp1 > R(n))
 		SET_BIT(SR, SR_T);
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH
     logmsg("addc41: r[%d]=%x,%d r[%d]=%x,%d tmp0=%x,%d, tmp1=%x,%d\r\n",
@@ -89,6 +95,9 @@ OPCODE(cmpeq43) // CMP/EQ #imm, R0 (10001000 iiiiiiii)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
+
 }
 
 OPCODE(cmpeq44) // CMP/EQ Rm, Rn (0011nnnn mmmm0000)
@@ -111,6 +120,8 @@ OPCODE(cmpeq44) // CMP/EQ Rm, Rn (0011nnnn mmmm0000)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmphs45) // CMP/HS Rm, Rn (0011nnnn mmmm0010)
@@ -131,6 +142,8 @@ OPCODE(cmphs45) // CMP/HS Rm, Rn (0011nnnn mmmm0010)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmpge46) // CMP/GE Rm, Rn (0011nnnn mmmm0011)
@@ -151,6 +164,8 @@ OPCODE(cmpge46) // CMP/GE Rm, Rn (0011nnnn mmmm0011)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmphi47) // CMP/HI Rm, Rn (0011nnnn mmmm0110)
@@ -171,6 +186,8 @@ OPCODE(cmphi47) // CMP/HI Rm, Rn (0011nnnn mmmm0110)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmpgt48) // CMP/GT Rm, Rn (0011nnnn mmmm0111)
@@ -191,6 +208,8 @@ OPCODE(cmpgt48) // CMP/GT Rm, Rn (0011nnnn mmmm0111)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmppz49) // CMP/PZ Rn (0100nnnn 00010001)
@@ -209,6 +228,8 @@ OPCODE(cmppz49) // CMP/PZ Rn (0100nnnn 00010001)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmppl50) // CMP/PL Rn (0100nnnn 00010101)
@@ -227,6 +248,8 @@ OPCODE(cmppl50) // CMP/PL Rn (0100nnnn 00010101)
 		SET_T
 	else
 		UNSET_T
+
+	PC += 2;
 }
 
 OPCODE(cmpstr51) // CMP/STR Rm, Rn (0010nnnn mmmm1100)
@@ -261,6 +284,8 @@ OPCODE(cmpstr51) // CMP/STR Rm, Rn (0010nnnn mmmm1100)
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/str: r[%d]=%x, r[%d]=%x\r\n", n, R(n), m, R(m));
 #endif
+
+	PC += 2;
 }
 
 OPCODE(div0s53) // DIV0S Rm, Rn (0010nnnn mmmm0111)
@@ -282,6 +307,8 @@ OPCODE(div0s53) // DIV0S Rm, Rn (0010nnnn mmmm0111)
 		REMOVE_BIT(SR, SR_T);
 	else
 		SET_BIT(SR, SR_T);
+
+	PC += 2;
 }
 
 OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
@@ -418,6 +445,8 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
         REMOVE_BIT(SR, SR_T);
 //    T=(Q==M);
 
+	PC += 2;
+
 #ifdef DEBUG_ARITH
     logmsg("div1s: r[%d]=%x r[%d]=%x\r\n", m, R(m), n, R(n));
 #endif
@@ -428,6 +457,8 @@ OPCODE(div0u54) // DIV0U (00000000 00011001)
     REMOVE_BIT(SR, SR_Q);
     REMOVE_BIT(SR, SR_M);
     REMOVE_BIT(SR, SR_T);
+
+	PC += 2;
 }
 
 OPCODE(dmulsl55) // DMULS.L Rm, Rn (0011nnnn mmmm1101)
@@ -440,6 +471,8 @@ OPCODE(dmulsl55) // DMULS.L Rm, Rn (0011nnnn mmmm1101)
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
 	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH_DMUL
     logmsg("dmuls.l: r[%d]=%x,%d, r[%d]=%x,%d, MACL=%x,%d, MACH=%x,%d\r\n",
@@ -460,6 +493,8 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
 	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH_DMUL
     logmsg("dmulu.l: r[%d]=%x,%d, r[%d]=%x,%d, MACL=%x,%d, MACH=%x,%d\r\n",
@@ -482,6 +517,8 @@ OPCODE(dt) // DT Rn (0100nnnn 00010000)
 		UNSET_T
 	else
 		SET_T
+
+	PC += 2;
 }
 
 OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
@@ -506,6 +543,8 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 	
 	MACL = (DWORD) (result & 0xFFFFFFFF);
 	MACH = (DWORD) ((result >> 32) & 0xFFFFFFFF);
+
+	PC += 2;
 }
 
 OPCODE(neg67) // NEG Rm, Rn : 0 - Rm -> Rn (0110nnnn mmmm1011)
@@ -520,6 +559,8 @@ OPCODE(neg67) // NEG Rm, Rn : 0 - Rm -> Rn (0110nnnn mmmm1011)
 
 	R(n) = (signed) 0 - (signed) R(m);
 //	COPY_REG(R(n), rn);
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH
     logmsg("neg67: r[%d]=%x,%d\r\n", n, R(n), (signed) R(n));
@@ -564,6 +605,8 @@ OPCODE(negc68) // NEGC Rm, Rn (0110nnnn mmmm1010)
         m, R(m), (signed) R(m));
 #endif
 //	dump_registers();
+
+	PC += 2;
 }
 
 OPCODE(sub69) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1000)
@@ -580,6 +623,8 @@ OPCODE(sub69) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1000)
 	rn -= rm;
 	
 	COPY_REG(R(n), rn); */
+
+	PC += 2;
 }
 
 OPCODE(subc70) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1010)
@@ -606,6 +651,8 @@ OPCODE(subc70) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1010)
 		SET_T;
 	}
 
+	PC += 2;
+
 #ifdef DEBUG_ARITH
     logmsg("subc70: r[%d]=%x,%d r[%d]=%x,%d\r\n",
         m, R(m), (signed) R(m),
@@ -620,6 +667,8 @@ OPCODE(extsb58) // EXTS.B Rm, Rn (0110nnnn mmmm1110)
 
 	R(n) = SignExtend8(R(m) & 0x000000FF);
 
+	PC += 2;
+
 #ifdef DEBUG_ARITH
     logmsg("extsb58: r[%d]=%x,%d r[%d]=%x,%d\r\n",
         n, R(n), (signed) R(n),
@@ -633,6 +682,9 @@ OPCODE(extsw59) // EXTS.W Rm, Rn (0110nnnn mmmm1111)
 	short m = (arg >> 4) & 0x0F;
 
 	R(n) = SignExtend16(R(m) & 0x0000FFFF);
+
+	PC += 2;
+
 #ifdef DEBUG_ARITH
     logmsg("extsw59: r[%d]=%x,%d r[%d]=%x,%d\r\n",
         n, R(n), (signed) R(n),
@@ -647,6 +699,8 @@ OPCODE(extub60) // EXTU.B Rm, Rn
 
 	R(n) = (R(m) & 0x000000FF);
 
+	PC += 2;
+
 #ifdef DEBUG_ARITH
 	logmsg("extu.b: r[%d]=%x, r[%d]=%x\r\n", m, R(m), n, R(n));
 #endif
@@ -658,6 +712,8 @@ OPCODE(extuw61) // EXTU.W Rm, Rn (0110nnnn mmmm1101)
 	short m = (arg >> 4) & 0x0F;
 
 	R(n) = R(m) & 0x0000FFFF;
+
+	PC += 2;
 }
     
 OPCODE(mull) // Rn x Rm -> MACL (0000nnnn mmmm0111)
@@ -668,6 +724,8 @@ OPCODE(mull) // Rn x Rm -> MACL (0000nnnn mmmm0111)
 	//	MACL = (R(n) * R(m)) & 0xFFFFFFFF;
 	signed long long x = (signed long long) R(n) * (signed long long) R(m);
 	MACL = (DWORD) (x & 0xFFFFFFFF);
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH_DMUL
     logmsg("mull: r[%d]=%x,%d, r[%d]=%x,%d, MACL=%x,%d\r\n",
@@ -684,6 +742,8 @@ OPCODE(mulsw65) // MULS.W Rm, Rn (0010nnnn mmmm1111)
 
 	MACL = ((signed) (R(n) & 0xFFFF) * (signed) (R(m) & 0xFFFF));
 
+	PC += 2;
+
 #ifdef DEBUG_ARITH_DMUL
     logmsg("mulsw65: r[%d]=%x,%d, r[%d]=%x,%d, MACL=%x,%d\r\n",
         n, R(n), R(n),
@@ -698,6 +758,8 @@ OPCODE(muluw66) // MULU.W Rm, Rn (0010nnnn mmmm1110)
 	short m = (arg >> 4) & 0x0F;
 
 	MACL = ((unsigned) (R(n) & 0xFFFF) * (unsigned) (R(m) & 0xFFFF));
+
+	PC += 2;
 
 #ifdef DEBUG_ARITH_DMUL
     logmsg("muluw66: r[%d]=%x,%d, r[%d]=%x,%d, MACL=%x,%d\r\n",
