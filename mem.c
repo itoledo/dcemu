@@ -21,9 +21,6 @@ BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
 char * mem_zone[0x100]; // para las zonas de memoria
 
-typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
-typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size);
-
 mem_access_read_t video_read;
 mem_access_read_t ram_read;
 mem_access_read_t regmap_read;
@@ -1502,7 +1499,13 @@ void ram_read(unsigned long direccion, void * p, size_t size)
 		return;
 	}
 #endif
-	memcpy(p, get_memory_pointer(direccion), size);
+    switch(size)
+    {
+        case 1:    *(BYTE *) p = *(BYTE *) get_memory_pointer(direccion);   break;
+        case 2:    *(WORD *) p = *(WORD *) get_memory_pointer(direccion);   break;
+        case 4:    *(DWORD *) p = *(DWORD *) get_memory_pointer(direccion); break;
+        default:   memcpy(p, get_memory_pointer(direccion), size);          break;
+    }
 }
 
 void ignore_read(unsigned long direccion, void * p, size_t size)
@@ -1525,18 +1528,29 @@ void ram_write(unsigned long direccion, void * p, size_t size)
 		return;
 	}
 #endif
-	memcpy(get_memory_pointer(direccion), p, size);
+//	memcpy(get_memory_pointer(direccion), p, size);
+    switch(size)
+    {
+        case 1:    *(BYTE *) get_memory_pointer(direccion) = *(BYTE *)p;        break;
+        case 2:    *(WORD *) get_memory_pointer(direccion) = *(WORD *)p;        break;
+        case 4:    *(DWORD *) get_memory_pointer(direccion) = *(DWORD *)p;        break;
+        default:   memcpy(get_memory_pointer(direccion), p, size);              break;
+    }    
 }
 
+#ifdef MEMORY_FUNCTIONS
 void memread(unsigned long direccion, void * target, size_t size)
 {
+#ifdef DEBUG_MEM_HASH
 	if (mem_hash_read[direccion >> 24] == NULL) 
 	{
 		logxmsg(LOG_MEM, "memread: mem_hash_read is NULL for bank %02x\r\n", (direccion >> 24));
 		return;
 	}
+#endif
 
 	(*mem_hash_read[direccion >> 24]) (direccion, target, size);
+
 #ifdef DEBUG_MEM_READ
 	if (filelogging & FILELOG_MEMREADS)
 	switch(size)
@@ -1558,12 +1572,14 @@ void memread(unsigned long direccion, void * target, size_t size)
 
 void memwrite(unsigned long direccion, void * source, size_t size)
 {
+#ifdef DEBUG_MEM_HASH
 	if (mem_hash_write[direccion >> 24] == NULL) 
 	{
 		logxmsg(LOG_MEM, "memwrite: mem_hash_write is NULL for bank %02x\r\n", (direccion >> 24));
 		return;
 	}
-	
+#endif
+
 	(*mem_hash_write[direccion >> 24]) (direccion, source, size);
 #ifdef DEBUG_MEM_WRITE
 	if (filelogging & FILELOG_MEMWRITES)
@@ -1583,6 +1599,7 @@ void memwrite(unsigned long direccion, void * source, size_t size)
 	}
 #endif
 }
+#endif // MEMORY_FUNCTIONS
 
 #ifndef MEMORY_MACROS
 void ReadMemoryF(unsigned long direccion, float * valor)

@@ -12,13 +12,24 @@
 extern char * mem_zone[0x100]; // para las zonas de memoria
 #define get_memory_pointer(addr) (&mem_zone[(addr) >> 24][(addr) & 0xFFFFFF])
 
+typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
+typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size);
+extern mem_access_read_t * mem_hash_read[0x100];
+extern mem_access_write_t * mem_hash_write[0x100];
+
 int inicializar_memoria();
 void mem_hash_setup(void);
-void memread(unsigned long direccion, void * target, size_t size);
-void memwrite(unsigned long direccion, void * source, size_t size);
 void regmem_setup();
 DWORD float_to_dword(float x);
 void dump_registers();
+
+#ifdef MEMORY_FUNCTIONS
+void memread(unsigned long direccion, void * target, size_t size);
+void memwrite(unsigned long direccion, void * source, size_t size);
+#else
+#define memread(direccion, target, size)    (*mem_hash_read[direccion >> 24]) (direccion, target, size)
+#define memwrite(direccion, source, size)   (*mem_hash_write[direccion >> 24]) (direccion, source, size)
+#endif
 
 #ifdef MEMORY_MACROS
 #define ReadMemoryF(a,b) memread(a, b, sizeof(DWORD))

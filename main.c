@@ -110,7 +110,7 @@ void opcode_log(int pos, WORD arg)
 
 void query_cache(WORD arg) // función interna
 {
-	int i = oplist[arg];
+	register int i = oplist[arg];
 /*	if (i ==-1) 
 	{
 		return;
@@ -406,7 +406,8 @@ void main_loop(void)
 
 //			(*PC_func) ();
 
-			dma_check();
+//			dma_check();
+
 //			if (timer_cnt++ == 195) // 781.25
 /*			if (timer_cnt++ == 10)
 			{ */

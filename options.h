@@ -33,10 +33,11 @@
 // #define DEBUG_MEM_WRITE
 // #define DEBUG_MEM_REGISTERS
 // #define DEBUG_MEMORY_POINTER
+// #define DEBUG_MEM_HASH
 // #define DEBUG_LOGIC
 // #define DEBUG_MEM_VIDEO
 // #define EXTRA_REG_DEBUG
-#define DEBUG_VERTEX
+// #define DEBUG_VERTEX
 #define TEXTURE_CACHING
 // #define FULL_DEBUG_FROM		(0x8c018980)
 // #define FULL_DEBUG_TO		(0x8c018996)
