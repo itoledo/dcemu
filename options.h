@@ -34,7 +34,7 @@
 // #define DEBUG_MEM_REGISTERS
 // #define DEBUG_MEM_VIDEO
 // #define EXTRA_REG_DEBUG
-// #define DEBUG_VERTEX
+#define DEBUG_VERTEX
 // #define FULL_DEBUG_FROM		(0x8c018980)
 // #define FULL_DEBUG_TO		(0x8c018996)
 // #define CHECK_VALUE			(0x8c021410)

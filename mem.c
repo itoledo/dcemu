@@ -1399,7 +1399,7 @@ void memread(unsigned long direccion, void * target, size_t size)
 {
 	if (mem_hash_read[direccion >> 24] == NULL) 
 	{
-		logmsg("memread: mem_hash_read is NULL for bank %02x\r\n", (direccion >> 24));
+		logxmsg(LOG_MEM, "memread: mem_hash_read is NULL for bank %02x\r\n", (direccion >> 24));
 		return;
 	}
 
@@ -1427,12 +1427,12 @@ void memwrite(unsigned long direccion, void * source, size_t size)
 {
 	if (mem_hash_write[direccion >> 24] == NULL) 
 	{
-		logmsg("memwrite: mem_hash_write is NULL for bank %02x\r\n", (direccion >> 24));
+		logxmsg(LOG_MEM, "memwrite: mem_hash_write is NULL for bank %02x\r\n", (direccion >> 24));
 		return;
 	}
 	
 	(*mem_hash_write[direccion >> 24]) (direccion, source, size);
-// #ifdef DEBUG_MEM_WRITE
+#ifdef DEBUG_MEM_WRITE
 	if (filelogging & FILELOG_MEMWRITES)
 	switch(size)
 	{
@@ -1448,7 +1448,7 @@ void memwrite(unsigned long direccion, void * source, size_t size)
 			logmsg( "memwrite: dir %8x, dword %x\r\n", direccion, *(DWORD *) source);
 			break;
 	}
-// #endif
+#endif
 }
 
 #ifndef MEMORY_MACROS

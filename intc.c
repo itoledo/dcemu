@@ -8,6 +8,7 @@ static	long	intdelay = 0;
 static	int 	intcnt = 0;
 extern	int		pvr_registered;
 extern	int		pvr_registering;
+extern	int		pvr_listdone;
 
 bool intc(DWORD irq)
 {
@@ -122,6 +123,7 @@ void check_ints()
 
 			case 7:
 //			if (pvr_registering == -1)
+			if (pvr_registered == pvr_listdone) // todas las listas hechas
 				dw = 1 << 2;	// ASIC_EVT_PVR_RENDERDONE
 			break;
 

@@ -19,6 +19,7 @@ int pvr_texture_size_vsize;
 int pvr_texture_twiddled;
 int pvr_listtype;
 int pvr_registering = -1;
+int pvr_listdone = 0;
 pcon_func * pvr_texture_pixelconvert;
 
 Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
@@ -36,6 +37,7 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso
 
 	logxmsg(LOG_PVR, "cb_renderstart\n");
+	pvr_listdone = 0;
 
 	// dejemos todo listo para la siguiente pantalla
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -111,6 +113,7 @@ void ta_check(DWORD addr)
 			// dejemos todo listo para la siguiente pantalla
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); */
 //			pvr_registered |= (1 << pvr_listtype);
+			pvr_listdone |= (1 << pvr_listtype);
 		}
 		break;
 		
