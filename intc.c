@@ -1,4 +1,5 @@
 #include "main.h"
+#include "intc.h"
 
 #define SR_GET_IMASK() ((SR >> 4) & 0xF)
 
@@ -10,17 +11,18 @@ extern	int		pvr_registered;
 extern	int		pvr_registering;
 extern	int		pvr_listdone;
 
+#undef DEBUG_INTC
+
 bool intc(DWORD irq)
 {
 	BYTE v;
 
 	if (IS_SET(SR, SR_BL) || VBR == 0)
-		return false;
-
-	if (inside_int == true)
 	{
-		logmsg("llamando intc mientras se procesa otra int.\n");
-//		return;
+#ifdef DEBUG_INTC
+ 		logxmsg(LOG_INTC, "intc: BL seteado, retornando.\n");
+#endif
+		return false;
 	}
 
 /*	logmsg("antes:");
@@ -31,24 +33,55 @@ bool intc(DWORD irq)
 
 	switch(irq)
 	{
-		case ASIC_IRQ9:		v = 0x9;	break;
-		case ASIC_IRQB:		v = 0xb;	break;
-		case ASIC_IRQD:		v = 0xd;	break;
-		default:			logmsg("ERROR: IRQ NO RECONOCIDA!");		abort();	break;
+		case EXC_IRQ9:			v = 0x9;	break;
+		case EXC_IRQB:			v = 0xb;	break;
+		case EXC_IRQD:			v = 0xd;	break;
+		case EXC_TMU0_TUNI0:	v = ((*IPRA) >> 12) & 0xf;	break;
+		case EXC_TMU1_TUNI1:	v = ((*IPRA) >>  8) & 0xf;	break;
+		case EXC_TMU2_TUNI2:	v = ((*IPRA) >>  4) & 0xf;	break;
+		default:			logxmsg(LOG_INTC, "intc: irq %d, v=1\n", irq);	v = 0x1;	break;
 	}
 	
+	if (v == 0)
+	{
+#ifdef DEBUG_INTC
+	    logxmsg(LOG_INTC, "v = 0 para irq %x, retornando.\n", irq);
+#endif
+ 		return false;	
+	}
+ 
+	if (SR_GET_IMASK() == 0xf)
+	{
+#ifdef DEBUG_INTC
+ 		logxmsg(LOG_INTC, "imask = 0xf, retornando.\n");
+#endif
+ 		return false;
+	}
+
 	if (SR_GET_IMASK() > v)
 	{
-		logmsg("imask > irq, retornando.\n");
+#ifdef DEBUG_INTC
+		logxmsg(LOG_INTC, "imask > irq, retornando.\n");
+#endif
 		return false;
 	}
 
-	switch(irq)
+	if (inside_int == true)
+	{
+#ifdef DEBUG_INTC
+		logxmsg(LOG_INTC, "llamando intc mientras se procesa otra int.\n");
+//		return;
+#endif
+	}
+
+/*	switch(irq)
 	{
 		case ASIC_IRQ9:		*INTEVT = 0x320;	break;
 		case ASIC_IRQB:		*INTEVT = 0x360;	break;
 		case ASIC_IRQD:		*INTEVT = 0x3a0;	break;
-	}
+	} */
+	
+	*INTEVT = irq;
 
 	SSR = SR;
 	SPC = PC;
@@ -62,6 +95,9 @@ bool intc(DWORD irq)
 //	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];
 	str_PC = get_memory_pointer(PC);
 
+#ifdef DEBUG_INTC
+	logxmsg(LOG_INTC, "intc: saltando a %x\n", PC);
+#endif
 /*	logmsg("intc: saltando a %x, con registros:\n", PC);
 	dump_registers(); */
 	inside_int = true;
@@ -71,6 +107,8 @@ bool intc(DWORD irq)
 
 void check_ints()
 {
+    char * s;
+    
 	if (PC_func != PC_f_normal)
 /* 	||  IS_SET(SR, SR_BL)
 	||  VBR == 0) */
@@ -78,9 +116,10 @@ void check_ints()
 
 	intdelay++;
 
-	if (intdelay == 50000)
+	if (intdelay == 180000)
 	{
 		DWORD dw = 0;
+		s = NULL;
 
 		if (intcnt > 9)
 			intcnt = 0;
@@ -90,46 +129,70 @@ void check_ints()
 		switch(intcnt)
 		{
 			case 0:
-			dw = 1 << 3;	// ASIC_EVT_PVR_SCANINT1
+//   			if (pvr_registered == 0 || pvr_registered == pvr_listdone)
+   			{
+				dw = 1 << 3;	// ASIC_EVT_PVR_SCANINT1
+				s = "ASIC_EVT_PVR_SCANINT1\n";
+			}			
 			break;
 
 			case 1:
 			dw = 1 << 4;	// ASIC_EVT_PVR_SCANINT2
+			s = "ASIC_EVT_PVR_SCANINT2\n";
 			break;
 
 			case 2:
 			if ((pvr_registered & (1 << 0)))
+			{
 				dw = 1 << 7;	// ASIC_EVT_PVR_OPAQUEDONE
+				s = "ASIC_EVT_PVR_OPAQUEDONE\n";
+			}				
 			break;
 			
 			case 3:
 			if ((pvr_registered & (1 << 1)))
+			{			
 				dw = 1 << 8;	// ASIC_EVT_PVR_OPAQUEMODDONE
+				s = "ASIC_EVT_PVR_OPAQUEMODDONE\n";
+			}				
 			break;
 			
 			case 4:
 			if ((pvr_registered & (1 << 2)))
+			{			
 				dw = 1 << 9;	// ASIC_EVT_PVR_TRANSDONE
+				s = "ASIC_EVT_PVR_TRANSDONE\n";
+			}				
 			break;
 			
 			case 5:
 			if ((pvr_registered & (1 << 3)))
+			{			
 				dw = 1 << 10;	// ASIC_EVT_PVR_TRANSMODDONE
+				s = "ASIC_EVT_PVR_TRANSMODDONE\n";
+			}				
 			break;
 
 			case 6:
 			if ((pvr_registered & (1 << 4)))
+			{
 				dw = 1 << 21;	// ASIC_EVT_PVR_PTDONE
+				s = "ASIC_EVT_PVR_PTDONE\n";
+			}				
 			break;
 
 			case 7:
 //			if (pvr_registering == -1)
 			if (pvr_registered == pvr_listdone) // todas las listas hechas
+			{
 				dw = 1 << 2;	// ASIC_EVT_PVR_RENDERDONE
+				s = "ASIC_EVT_PVR_RENDERDONE\n";
+			}			
 			break;
 
 			case 8:
 			dw = 1 << 5;	// ASIC_EVT_PVR_VBLINT
+			s = "ASIC_EVT_PVR_VBLINT\n";
 			break;
 
 			case 9:
@@ -152,24 +215,33 @@ void check_ints()
 		if (ASIC_IRQ9_A & dw)
 		{
 			logxmsg(LOG_INTC, "intc: asic_irq9, %d\n", intcnt);
-			if (intc(ASIC_IRQ9))
+//			if (intc(ASIC_IRQ9))
+			if (intc(EXC_IRQ9))
 			{
+			    if (s)
+			    	logxmsg(LOG_PVR, "intc %s ejecutada\n", s);
 				return;
 			}
 		}
 		if (ASIC_IRQD_A & dw)
 		{
 			logxmsg(LOG_INTC, "intc: asic_irqd, %d\n", intcnt);
-			if (intc(ASIC_IRQD))
+//			if (intc(ASIC_IRQD))
+			if (intc(EXC_IRQD))
 			{
+			    if (s)
+			    	logxmsg(LOG_PVR, "intc %s ejecutada\n", s);
 				return;
 			}
 		}				
 		if (ASIC_IRQB_A & dw)
 		{
 			logxmsg(LOG_INTC, "intc: asic_irqb, %d\n", intcnt);
-			if (intc(ASIC_IRQB))
+//			if (intc(ASIC_IRQB))
+			if (intc(EXC_IRQB))
 			{
+			    if (s)
+			    	logxmsg(LOG_PVR, "intc %s ejecutada\n", s);
 				return;
 			}
 		}

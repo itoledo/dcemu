@@ -9,7 +9,7 @@
 #pragma comment(lib, "SDL_image.lib")
 #endif
 #pragma comment(lib, "sdlgfx.lib")
-#pragma comment(lib, "sdlconsole.lib")
+// #pragma comment(lib, "sdlconsole.lib")
 #endif
 
 // #include "windows.h"
@@ -25,13 +25,14 @@
 #include <time.h>
 // #include <unistd.h>
 // #include "SDL_gfxPrimitives.h"
-#include "SDL_console.h"
+// #include "SDL_console.h"
 #include "branch.h"
 #include "opcodes.h"
 #include "mem.h"
 #include "intc.h"
 #include "debug.h"
 #include "graficos.h"
+#include "iso.h"
 
 DWORD snd_dbg;			// ...
 
@@ -76,7 +77,7 @@ time_t start_time;
 long instrucciones = 0;
 bool logging = true;
 int filelogging = 0;
-bool logmem = false;
+bool logmem = FALSE;
 bool logvideomem = false;
 bool logmemreg = false;
 short ultopcnt = 0;
@@ -180,6 +181,7 @@ void RedibujarPantalla()
 
 	if (pvr_framebufferdisplay == true)
 	{
+		logxmsg(LOG_PVR, "RedibujarPantalla()\n");
 /*		bs = draw_backscreen();
 		if (DebugVisible)
 			DebugUpdate(bs);
@@ -193,6 +195,8 @@ void RedibujarPantalla()
 
 /*		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR); */
+
+//	    limpiar_pantalla();
 
 		if (DebugVisible)
 		{
@@ -337,6 +341,8 @@ inline void dma_check()
 	}
 }
 
+#define TMU_INT
+
 inline void timer_check()
 {
     if (*TSTR & 8)
@@ -344,7 +350,11 @@ inline void timer_check()
         if ((long) (*TCNT2) < 0) // underflow
         {
                 *TCNT2 = *TCOR2;
-                *TCR2 |= UNF;
+                *TCR2 |= TMU_TCR_UNF;
+#ifdef TMU_INT
+                if ((*TCR2 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+                	intc(EXC_TMU2_TUNI2);
+#endif
         }
         else
 				*TCNT2 = *TCNT2 - 1;
@@ -354,7 +364,11 @@ inline void timer_check()
         if ((long) (*TCNT1) < 0) // underflow
         {
                 *TCNT1 = *TCOR1;
-                *TCR1 |= UNF;
+                *TCR1 |= TMU_TCR_UNF;
+#ifdef TMU_INT
+                if ((*TCR1 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+	                intc(EXC_TMU1_TUNI1);
+#endif
         }
         else
 				*TCNT1 = *TCNT1 - 1;
@@ -364,7 +378,11 @@ inline void timer_check()
         if ((long) (*TCNT0) < 0) // underflow
         {
                 (*TCNT0) = *TCOR0;
-                (*TCR0) |= UNF;
+                (*TCR0) |= TMU_TCR_UNF;
+#ifdef TMU_INT
+                if ((*TCR0 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+	                intc(EXC_TMU0_TUNI0);
+#endif
         }
         else
             *TCNT0 = *TCNT0 - 1;
@@ -425,36 +443,38 @@ void main_loop(void)
 								int secstart, secnum, idx = 0;
 								BYTE c;
 								DWORD targetaddr;
-								FILE * fp;
+//								FILE * fp;
 								char * targetmem;
 								
 								memread(R(5), &secstart, sizeof(int));
 								memread(R(5) + 4, &secnum, sizeof(int));
 								memread(R(5) + 8, &targetaddr, sizeof(DWORD));
 								
-								secstart -= 11700;
+//								secstart -= 11700;
 			
-								if (secstart != 16)
+//								if (secstart != 16)
+/*								if (secstart != 11700 - 16)
 								{
 									logmsg("restando 150 a secstart(%d), final %d\n", secstart, secstart - 150);
 									secstart -= 150;
-								}
+								} */
 
 								logmsg("read sector: start=%x, num=%x, addr=%x\n", secstart, secnum, targetaddr);
-								fp = fopen("dc.iso", "rb");
+/*								fp = fopen("dc.iso", "rb");
 								if (!fp)
 								{
 									logmsg("dc.iso no encontrado");
 									break;
 								}
 								logmsg("seeking a %d, %x\n", secstart * 2048, secstart * 2048);
-								fseek(fp,secstart*2048, 0);
+								fseek(fp,secstart*2048, 0); */
 								targetmem = malloc(sizeof(char) * 2048 * secnum);
-								while (idx < 2048 * secnum)
+/*								while (idx < 2048 * secnum)
 								{
 									targetmem[idx++] = (c = fgetc(fp));
 								}
-								fclose(fp);
+								fclose(fp); */
+								iso_read_sector(&targetmem[0], secstart, secnum);
 								memwrite(targetaddr, &targetmem[0], 2048 * secnum);
 								free(targetmem);
 							}
@@ -471,7 +491,9 @@ void main_loop(void)
 					        	logmsg("read toc: sesión n° %d\n", session);
 					        	
 					        	// a llenar un TOC "mula"
-					        	toc.entry[0] = 0x40002DB4; // CTRL = 4, LBA = 11700
+//					        	toc.entry[0] = 0x40002DB4; // CTRL = 4, LBA = 11700
+//					        	toc.entry[0] = 0x40000000; // CTRL = 4, LBA = 0
+								toc.entry[0] = 0x40000000 | iso_get_lba();
 					        	toc.first = 0x00010000;
 					        	toc.last  = 0x00010000;
 					        	toc.dunno = 0;
@@ -499,9 +521,11 @@ void main_loop(void)
 						
 						case 4: // GDROM_CHECK_DRIVE
 						logmsg("GDROM_CHECK_DRIVE\r\n");
-						valor = 7; // lid closed, no disc
+//						valor = 7; // lid closed, no disc
+						valor = 2; // drive is in standby
 						WriteMemoryL(R(4), &valor);
-						valor = 0x80; // GD-ROM
+//						valor = 0x80; // GD-ROM
+						valor = 0x10; // CD-ROM
 						WriteMemoryL(R(4) + 4, &valor);
 						R(0) = 0;
 						break;
@@ -514,11 +538,14 @@ void main_loop(void)
 						{
 							valor = 8192;
 							WriteMemoryL(R(4) + 4, &valor);
-							valor = 2048; // mode 2
+//							valor = 2048; // mode 2
+							valor = 1024 * iso_get_mode();
 							WriteMemoryL(R(4) + 8, &valor);
 							valor = 2048; // sector size in bytes
 							WriteMemoryL(R(4) + 12, &valor);
 						}
+						else
+							logmsg("GDROM_SECTOR_MODE: valor != 0 no implementado\n");
 						R(0) = 0;
 						break;
 						
@@ -561,11 +588,10 @@ void main_loop(void)
 //			cache_call++;
 			}
 
-			dma_check();
-			timer_check();
-
 			(*PC_func) ();
 
+			dma_check();
+			timer_check();
 			check_ints();
 
 /*			if (PC == BreakPoint)
@@ -679,7 +705,11 @@ void main_loop(void)
 						pausa = false;
 					else
 						pausa = true;
-						break;
+					break;
+					
+					case SDLK_i: // generar int?
+					intc(0);
+					break;
 						
 					default:
 					break;
@@ -1045,6 +1075,12 @@ int main(int argc, char *argv[])
 
 	if (inicializar_memoria())
 		return 1;
+
+	if (iso_init())
+	{
+ 		fprintf(stderr, "No se pudo cargar ISO.");
+		return 1;
+	}
 
 	// a configurar las tablas de memoria, etc.
 	mem_hash_setup();

@@ -114,6 +114,12 @@ void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
 	return cached_textures[cur_tex_count++].data;
 }
 
+void limpiar_pantalla()
+{
+	// dejemos todo listo para la siguiente pantalla
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}    
+
 void cb_renderstart(DWORD addr, void * p, size_t size)
 {
 	SDL_GL_SwapBuffers();
@@ -123,9 +129,8 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 	logxmsg(LOG_PVR, "cb_renderstart\n");
 	pvr_listdone = 0;
 	cur_tex_count = 0;
-
-	// dejemos todo listo para la siguiente pantalla
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	
+	limpiar_pantalla();
 }
 
 void cb_fb_r_sof1(DWORD addr, void * p, size_t size)
@@ -679,6 +684,26 @@ void ta_check(DWORD addr)
 					glVertex3f(coords[0], coords[1], coords[2] - 100);
 				}
 				break;
+
+				case 5:
+    			{
+					float coords[5];
+					float colores[4];
+					
+					memcpy(&coords[0], &p[1], sizeof(float)*5);
+
+					memcpy(&colores[0], &p[8], sizeof(float)*4);
+
+#ifdef DEBUG_VERTEX
+//					logxmsg(LOG_PVR, "seteando colores rgba: %f %f %f %f\n", r, g, b, a);
+					logxmsg(LOG_PVR, "seteando texturas en %fx%f\n", coords[3], coords[4]);
+					logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
+#endif
+					glColor4f(colores[1], colores[2], colores[3], colores[0]);
+					glTexCoord2f(coords[3], coords[4]);
+					glVertex3f(coords[0], coords[1], coords[2] - 100);
+				}
+				break;
 			}
 
     		if (options && (1 << 28))
@@ -875,7 +900,9 @@ int screeninit(void)
 //	screenwidth = 640;
 //	screenheight = 480;
 
-	logxmsg(LOG_PVR, "bitdepth del framebuffer: %d bits\n", screenbits);
+	logxmsg(LOG_PVR, "screeninit()\n");
+
+//	logxmsg(LOG_PVR, "bitdepth del framebuffer: %d bits\n", screenbits);
 
 	switch(screenformat)
 	{

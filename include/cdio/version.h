@@ -1,0 +1,10 @@
+/* $Id: version.h.in,v 1.4 2004/03/20 12:43:13 rocky Exp $ */
+/** \file version.h 
+ *  \brief  A file simply containing the library version number.
+ */
+
+/*! CDIO_VERSION can as a string in programs to show what version is used. */
+#define CDIO_VERSION "0.69cvs"
+
+/*! LIBCDIO_VERSION_NUM  can be used for testing in the C preprocessor */
+#define LIBCDIO_VERSION_NUM 69

@@ -132,7 +132,8 @@ extern  DWORD *	TCNT2;
 extern  WORD *	TCR2;
 extern  DWORD *	TCPR2;
 
-#define UNF 0x0100
+#define TMU_TCR_UNF		(1 << 8)	// 0x0100
+#define TMU_TCR_UNIE	(1 << 5)
 /*** FIN TMU ***/
 
 extern unsigned long MACH; // Multiply-And-Accumulate register High

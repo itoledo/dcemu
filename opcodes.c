@@ -148,7 +148,7 @@ struct st_cmd opcodes[] =
 	{ 0x400E, 0xF0FF, "LDC",	OP_T_RM_SR,				ldc116 },
 	{ 0x401E, 0xF0FF, "LDC",	OP_T_RM_GBR,			NOIMP	},
 	{ 0x402E, 0xF0FF, "LDC",	OP_T_RM_VBR,			ldc118 },
-	{ 0x403E, 0xF0FF, "LDC",	OP_T_RM_SSR,			NOIMP	},
+	{ 0x403E, 0xF0FF, "LDC",	OP_T_RM_SSR,			ldc119	},
 	{ 0x404E, 0xF0FF, "LDC",	OP_T_RM_SPC,			NOIMP	}, // 120
 	{ 0x403A, 0xF0FF, "LDC",    OP_T_RM_SGR,            NOIMP   }, // INSERTADA
 	{ 0x40FA, 0xF0FF, "LDC",	OP_T_RM_DBR,			ldc122	},
@@ -182,7 +182,7 @@ struct st_cmd opcodes[] =
 	{ 0x0002, 0xF0FF, "STC",	OP_T_SR_RN,				stc147 },	
 	{ 0x0012, 0xF0FF, "STC",	OP_T_GBR_RN,			stc150	},
 	{ 0x0022, 0xF0FF, "STC",	OP_T_VBR_RN,			stc149 },
-	{ 0x0032, 0xF0FF, "STC",	OP_T_SSR_RN,			NOIMP	}, // 150
+	{ 0x0032, 0xF0FF, "STC",	OP_T_SSR_RN,			stc152	}, // 150
 	{ 0x0042, 0xF0FF, "STC",	OP_T_SPC_RN,			NOIMP	},
 	{ 0x003A, 0xF0FF, "STC",	OP_T_SGR_RN,			NOIMP	},
 	{ 0x00FA, 0xF0FF, "STC",	OP_T_DBR_RN,			stc155	},

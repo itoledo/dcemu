@@ -33,7 +33,11 @@ OPCODE(clrt115)	// CLRT (0000000000001000)
 OPCODE(sleep116)
 {
 	// al entrar al sleepmode, se activan las ints
-	REMOVE_BIT(SR, SR_MD);
+/* 	REMOVE_BIT(SR, SR_MD);
+	REMOVE_BIT(SR, SR_BL); */
+//	logmsg("sleep116\n");
+//	UpdateSR(SR & ~(SR_MD | SR_BL));
+	UpdateSR(SR & ~SR_MD);
 }
 
 OPCODE(ldc116) // LDC Rm, SR : Rm -> SR (0100mmmm 00001110)
@@ -56,6 +60,17 @@ OPCODE(ldc118) // LDC Rm, VBR : Rm -> VBR (0100mmmm 00101110)
 
 #ifdef DEBUG_SYSCONTROL
 	logmsg("ldc118: r%d=%x -> VBR\r\n", m, R(m));
+#endif
+}
+
+OPCODE(ldc119) // LDC Rm, SSR : Rm -> SSR (0100mmmm 00111110)
+{
+	short m = (arg >> 8) & 0x0F;
+
+	SSR = R(m);
+
+#ifdef DEBUG_SYSCONTROL
+	logmsg("ldc119: r%d=%x -> SSR\r\n", m, R(m));
 #endif
 }
 
@@ -314,6 +329,17 @@ OPCODE(stc149) // STC VBR, Rn : VBR -> Rn (0000nnnn 00100010)
 
 #ifdef DEBUG_SYSCONTROL
 	logmsg("stc149: VBR=%x -> r[%d]=%x\r\n", VBR, n, R(n));
+#endif
+}
+
+OPCODE(stc152) // STC SSR, Rn : SSR -> Rn (0000nnnn 00110010)
+{
+	short n = (arg >> 8) & 0x0F;
+
+	R(n) = SSR;
+
+#ifdef DEBUG_SYSCONTROL
+	logmsg("stc152: SSR=%x -> r[%d]=%x\r\n", SSR, n, R(n));
 #endif
 }
 

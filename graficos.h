@@ -19,6 +19,7 @@ extern	GLuint	pvr_textures[MAX_TEXTURE_COUNT];
 
 int screeninit(void);
 SDL_Surface * draw_backscreen(void);
+void limpiar_pantalla();
 
 extern	SDL_Surface *screen;
 // extern	SDL_Surface *backscreen;

@@ -978,6 +978,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8000 + 0x11 * 4:		// BITMAPTYPE (bitmap display settings)
 		{
+		    bool reinit = false;
 			logxmsg(LOG_PVR, "pvr_write: BITMAPTYPE [FB_R_CTRL] (bitmap display settings), grabando %x\n",
 				*(DWORD *)p);
 			dw = *(DWORD *) p;
@@ -989,24 +990,32 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			{
 				case 0x00:
 				logxmsg(LOG_PVR, "ARGB0555\r\n");
+				if (screenbits != 16 || screenformat != FRAMEBUFFER_ARGB0555)
+					reinit = true;
 				screenbits = 16;
 				screenformat = FRAMEBUFFER_ARGB0555;
 				break;
 				
 				case 0x01:
 				logxmsg(LOG_PVR, "RGB565\r\n");
+				if (screenbits != 16 || screenformat != FRAMEBUFFER_RGB565)
+					reinit = true;
 				screenbits = 16;
 				screenformat = FRAMEBUFFER_RGB565;
 				break;
 				
 				case 0x02:
 				logxmsg(LOG_PVR, "RGB888\r\n");
+				if (screenbits != 24 || screenformat != FRAMEBUFFER_RGB888)
+					reinit = true;
 				screenbits = 24;
 				screenformat = FRAMEBUFFER_RGB888;
 				break;
 				
 				case 0x03:
 				logxmsg(LOG_PVR, "ARGB0888\r\n");
+				if (screenbits != 32 || screenformat != FRAMEBUFFER_ARGB0888)
+					reinit = true;
 				screenbits = 32;
 				screenformat = FRAMEBUFFER_ARGB0888;
 				break;
@@ -1017,12 +1026,12 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			if (dw & 0x01)
 			{
 				logxmsg(LOG_PVR, "bitmap display enable\r\n");
-				pvr_framebufferdisplay = true;
-				screeninit();
+//				pvr_framebufferdisplay = true;
+				if (reinit)
+					screeninit();
 			}
 			else
 				pvr_framebufferdisplay = false;
-			refresh_screen = true;
 		}
 		break;
 
