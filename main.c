@@ -118,40 +118,45 @@ void query_cache(WORD arg) // función interna
 	if (opcodes[i].restriccion)
 	{
 		// no importa i ya que hay que buscar el opcode igual, de acuerdo a las restricciones
-		for (i = 0; opcodes[i].opdesc; i++)
+		for (i = opcode_primer_restriccion; opcodes[i].opdesc; i++)
 		{
 			if ((arg & opcodes[i].mask) == opcodes[i].op)
 			{
-				if (opcodes[i].restriccion)
+//				if (opcodes[i].restriccion)
 				{
-					bool cont = false;
+//					bool cont = false;
 					switch(opcodes[i].restriccion)
 					{
 					case REQ_PR_0:
 						if (IS_SET(FPSCR, FPSCR_PR))
-							cont = true;
+//							cont = true;
+                              continue;
 						break;
 	
 					case REQ_SZ_0:
 						if (IS_SET(FPSCR, FPSCR_SZ))
-							cont = true;
+//							cont = true;
+                              continue;
 						break;
 	
 					case REQ_PR_0_SZ_1:
 						if (IS_SET(FPSCR, FPSCR_PR) || !IS_SET(FPSCR, FPSCR_SZ))
-							cont = true;
+//							cont = true;
+                              continue;
 						break;
 	
 					case REQ_PR_1_SZ_0:
 						if (!IS_SET(FPSCR, FPSCR_PR) || IS_SET(FPSCR, FPSCR_SZ))
-							cont = true;
+//							cont = true;
+                              continue;
 						break;
 					}
-					if (cont)
-						continue;
+//					if (cont)
+//						continue;
 				}
 				((opcodes[i].funcion) (( arg )));
-				break;
+//				break;
+                return;
 			}
 		}
 	}

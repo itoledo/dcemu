@@ -12,6 +12,7 @@
 #include "opcodes.h"
 
 int oplist[65536];
+int opcode_primer_restriccion = 0;
 
 struct st_cmd opcodes[] =
 {
@@ -366,6 +367,15 @@ void initopcodes()
 	{
 		oplist[i2]=noimp;
 	}
+
+	for (i = 0; opcodes[i].opdesc; i++)
+	{
+	    if (opcodes[i].restriccion)
+	    {
+	        opcode_primer_restriccion = i;
+	        break;
+	    }
+    }
 
 	for (i = 0; opcodes[i].opdesc; i++)
 	{

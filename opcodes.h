@@ -2,6 +2,7 @@ int find_opcode(DWORD mempos);
 void initopcodes();
 
 extern int oplist[65536];
+extern int opcode_primer_restriccion;
 
 #define LSB(arg) (arg & 0xFF)
 #define MSB(arg) ((arg >> 8) & 0xFF)
