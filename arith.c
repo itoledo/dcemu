@@ -214,16 +214,16 @@ OPCODE(cmppz49) // CMP/PZ Rn (0100nnnn 00010001)
 OPCODE(cmppl50) // CMP/PL Rn (0100nnnn 00010101)
 {
 	short n = (arg >> 8) & 0x0F;
-	signed long rn;
+//	signed long rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/pl: r[%d]=%x > 0 ?\r\n", n, (signed long) R(n));
 #endif
 
-	COPY_REG(rn, R(n));
+//	COPY_REG(rn, R(n));
 
-//	if ((signed long) R(n) > 0)
-	if (rn > 0)
+	if ((signed long) R(n) > 0)
+//	if (rn > 0)
 		SET_T
 	else
 		UNSET_T
@@ -434,14 +434,14 @@ OPCODE(dmulsl55) // DMULS.L Rm, Rn (0011nnnn mmmm1101)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+//	signed long rm, rn;
 	signed long long x;
 	
-	COPY_REG(rm, R(m));
-	COPY_REG(rn, R(n));
+//	COPY_REG(rm, R(m));
+//	COPY_REG(rn, R(n));
 
-//	x = (signed long long) R(n) * (signed long long) R(m);
-	x = (signed long long) rn * (signed long long) rm;
+	x = (signed long long) R(n) * (signed long long) R(m);
+//	x = (signed long long) rn * (signed long long) rm;
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
 	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
@@ -459,14 +459,14 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	unsigned long rm, rn;
+//	unsigned long rm, rn;
 	unsigned long long x;
 
-	COPY_REG(rm, R(m));
-	COPY_REG(rn, R(n));
+//	COPY_REG(rm, R(m));
+//	COPY_REG(rn, R(n));
 
-//	x = (unsigned long long) R(n) * (unsigned long long) R(m);
-	x = (unsigned long long) rn * (unsigned long long) rm;
+	x = (unsigned long long) R(n) * (unsigned long long) R(m);
+//	x = (unsigned long long) rn * (unsigned long long) rm;
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
 	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
@@ -483,25 +483,25 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 OPCODE(dt) // DT Rn (0100nnnn 00010000)
 {
 	short n = (arg >> 8) & 0x0F;
-	signed long rn;
+//	signed long rn;
 
 #ifdef DEBUG_ARITH
 	logmsg("dt: r[%d]=%x\r\n", n, R(n));
 #endif
 
-	COPY_REG(rn, R(n));
+/*	COPY_REG(rn, R(n));
 
 	if (--rn)
 		UNSET_T
 	else
 		SET_T
 
-	COPY_REG(R(n), rn);
+	COPY_REG(R(n), rn); */
 	
-/*	if (--R(n))
+	if (--R(n))
 		UNSET_T
 	else
-		SET_T */
+		SET_T
 }
 
 OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
@@ -532,14 +532,14 @@ OPCODE(neg67) // NEG Rm, Rn : 0 - Rm -> Rn (0110nnnn mmmm1011)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+/*	signed long rm, rn;
 
 	COPY_REG(rm, R(m));
 
-	rn = 0 - rm;
+	rn = 0 - rm; */
 
-//	R(n) = (signed) 0 - (signed) R(m);
-	COPY_REG(R(n), rn);
+	R(n) = (signed) 0 - (signed) R(m);
+//	COPY_REG(R(n), rn);
 
 #ifdef DEBUG_ARITH
     logmsg("neg67: r[%d]=%x,%d\r\n", n, R(n), (signed) R(n));
@@ -590,15 +590,15 @@ OPCODE(sub69) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1000)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+//	signed long rm, rn;
 
-//	(signed) R(n) -= (signed) R(m);
-	COPY_REG(rm, R(m));
+	(signed) R(n) -= (signed) R(m);
+/*	COPY_REG(rm, R(m));
 	COPY_REG(rn, R(n));
 	
 	rn -= rm;
 	
-	COPY_REG(R(n), rn);
+	COPY_REG(R(n), rn); */
 }
 
 OPCODE(subc70) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1010)

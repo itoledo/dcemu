@@ -1,4 +1,4 @@
-#define TTF
+// #define TTF
 
 #if defined(WIN32) && !defined(__GNUC__)
 #pragma comment(lib, "SDL.lib")
@@ -31,6 +31,7 @@
 #include "mem.h"
 #include "intc.h"
 #include "debug.h"
+#include "graficos.h"
 
 DWORD snd_dbg;			// ...
 
@@ -92,12 +93,7 @@ char lastop[128];
 bool pausa = false;
 WORD joystick = 0xFFFF;
 SDL_Joystick * js;
-BYTE * screenbase;
 bool refresh_screen = true;
-int screenbits = 16;
-int screenwidth = 640;
-int screenheight = 480;
-int framebuffer_size = 0;
 
 /*
 void opcode_log(int pos, WORD arg)
@@ -188,94 +184,53 @@ static SDL_Rect upper_screen;
 
 void RedibujarPantalla()
 {
-	char buf[512]; //, buf2[128];
-	SDL_Rect rc;
-	//int i;
+	SDL_Surface * bs;
 
-/*	if (pause == false)
+	if (pvr_framebufferdisplay == true)
 	{
-		sprintf(buf, "PC: %08x t:%d spd:%d", //, %08x,%08x,%08x %s",
-			PC, 
-			dif, (dif > 0) ? instrucciones/dif : 0);
-		letras = TTF_RenderText_Solid(font, buf, color_blanco);
-		SDL_FillRect(screen, &upper_screen, 0xFF000000);
-		SDL_BlitSurface(letras, NULL, screen, NULL);
-	}
-	else */
-	if (pausa == true)
-	{
-		time_t dif = time(NULL) - start_time;
-//		int cnt = OPMAXCNT, idx = ultopcnt - 1;
-		SDL_Surface * letras;
-
-		rc.x = 0;
-//		rc.h = 20 * 11;
-		rc.h = 20 * 1;
-		rc.w = screenwidth;
-		rc.y = 0;
-
-		SDL_FillRect(backscreen, &rc, 0x00000000);
-
-		sprintf(buf, "PC: %08lx t:%d spd:%d SR:%08x", //, %08x,%08x,%08x %s",
-			PC, 
-			dif, (dif > 0) ? instrucciones/dif : 0, SR);
-#ifdef TTF
-		letras = TTF_RenderText_Solid(font, buf, color_blanco);
-		logmsg("%s\r\n", buf);
-		if (letras)
-			SDL_BlitSurface(letras, NULL, backscreen, NULL);
-#else
-		BFont_PutStringFont(backscreen, font, 0, 0, buf);
-#endif
-
-/*		if (idx == -1)
-		  idx = OPMAXCNT - 1;
-		while(cnt > 0)
+		bs = draw_backscreen();
+		if (DebugVisible)
+			DebugUpdate(bs);
+/*		else
 		{
-			if (ultop[idx].func)
-		    	(*ultop[idx].func) (&ultop[idx].params);
-			logmsg("%s\r\n", lastop);
-#ifdef TTF
-			letras = TTF_RenderText_Solid(font, lastop, color_blanco);
-#else
-			letras = BFont_CreateSurfaceFont(font, lastop);
-#endif
-			if (letras)
-			{
-				rc.h = letras->h;
-				rc.w = letras->w;
-				rc.y = (cnt+1)* 18;
-				SDL_BlitSurface(letras, NULL, backscreen, &rc);
-			}
-			idx--;
-			cnt--;
-			if (idx == -1)
-				idx = OPMAXCNT - 1;
-		}
-		buf[0] = '\0';
-		for (i=0; i < 16; i++)
-		{
-		  sprintf(buf2, "%x,", registers[i]);
-		  strcat(buf, buf2);
-        }
-#ifdef TTF
-		letras = TTF_RenderText_Solid(font, buf, color_blanco);
-#else
-		letras = BFont_CreateSurfaceFont(font, buf);
-#endif
-		logmsg("%s\r\n", buf);
-		if (letras)
-		{
-			rc.h = letras->h;
-			rc.w = letras->w;
-			rc.y = 18;
-			SDL_BlitSurface(letras, NULL, backscreen, &rc);
+			bs = draw_backscreen();
 		} */
-		refresh_screen = true;
+		if (pausa == true)
+			DrawDebugInlineInfo();
+		SDL_BlitSurface(bs, NULL, screen, NULL);
+		SDL_Flip(screen);
+/*		SDL_BlitSurface(backscreen, NULL, glscreen, NULL);
+		SDL_BlitSurface(glscreen, NULL, screen, NULL);
+		SDL_Flip(screen); */
+		glRasterPos2f(0, 0);
+//		SDL_LockSurface(backscreen);
+//		SDL_LockSurface(glscreen);
+		glDrawPixels(640, 480, GL_RGBA /* RGBA */ , GL_UNSIGNED_BYTE, screen->pixels);
+/*		switch(screenbits)
+		{
+			case 16:
+			glDrawPixels(screenwidth, screenheight, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, screen->pixels);
+			break;
+			
+			case 32:
+			glDrawPixels(640, 480, GL_RGB, GL_UNSIGNED_BYTE, screen->pixels);
+			break;
+			
+			default:
+			logxmsg(LOG_PVR, "screenbits: %d?\n", screenbits);
+			break;
+		} */
+//		SDL_UnlockSurface(backscreen);
+//		SDL_UnlockSurface(glscreen);
+		SDL_GL_SwapBuffers();
 	}
 
+/*
 	if ((refresh_screen) || (DebugVisible))
 	{
+		SDL_Surface * cscreen;
+		
+		draw_backscreen();
 #ifndef OPENGL
 		SDL_BlitSurface(backscreen, NULL, screen, NULL);
 		DebugUpdate();
@@ -287,17 +242,31 @@ void RedibujarPantalla()
 //		glDrawPixels(screenwidth, screenheight, GL_RGB, GL_BYTE, glscreen->pixels);
 //		SDL_UnlockSurface(glscreen);
 //		SDL_GL_SwapBuffers();
-		SDL_BlitSurface(backscreen, NULL, screen, NULL);
-		DebugUpdate();
-		SDL_Flip(screen);
-		glRasterPos2f(0, 0);
+
+//		SDL_BlitSurface(backscreen, NULL, screen, NULL);
+//		cscreen = SDL_ConvertSurface(backscreen, glscreen->format, SDL_HWSURFACE);
+
+		if (pvr_framebufferdisplay == true)
+		{
+			cscreen = SDL_DisplayFormat(backscreen);
+			SDL_BlitSurface(cscreen, NULL, screen, NULL);
+			DebugUpdate();
+			SDL_Flip(screen);
+			glRasterPos2f(0, 0);
+			glDrawPixels(640, 480, GL_RGB */ /* RGBA */ /* , GL_UNSIGNED_BYTE, screen->pixels);
+		}
+
 //		glDrawPixels(screenwidth, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
-		glDrawPixels(640, 480, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
-		SDL_GL_SwapBuffers();
+*/
+/*		SDL_LockSurface(cscreen);
+		glDrawPixels(640, 480, GL_RGBA, GL_UNSIGNED_BYTE, cscreen->pixels);
+		SDL_UnlockSurface(cscreen); */
+/*		SDL_GL_SwapBuffers();
+		SDL_FreeSurface(cscreen);
 #endif
 
 		refresh_screen = false;
-	}
+	} */
 }
 
 Uint32 TimerCallback(Uint32 interval, void * param)
@@ -414,6 +383,14 @@ void main_loop(void)
 			}
 			else  
 */
+			if (PC == HACK_BASE + HACK_SYSINFO
+			||  PC == HACK_BASE + HACK_FLASHROM)
+			{
+				logmsg("HACK: PC=%x, retornando 0\n", PC);
+				R(0) = 0;
+				rts112(instr);
+			}
+			else
 			if (PC == HACK_BASE + HACK_GDROM)
 			{
 				logmsg("HACK_GDROM: r6=%x, r7=%x\r\n", R(6), R(7));
@@ -1021,7 +998,7 @@ int main(int argc, char *argv[])
 
 //	screen = SDL_SetVideoMode(320, 240, 16, SDL_DOUBLEBUF);
 
-	screeninit(640, 480, 16);
+	screeninit();
 
 //	SDL_SetAlpha(screen, SDL_RLEACCEL, 128);
 
@@ -1081,9 +1058,10 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-//	PC = 0x8c008300;
+//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+	PC = 0x8c008300;
 //	PC = 0x00000000;
+//	PC = 0x8c0000e0;
 	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit(screen))
@@ -1123,6 +1101,10 @@ int main(int argc, char *argv[])
 
 //	*(DWORD *) &memoria[SYSCALL_ROMFONT - 0x80000000]	= HACK_BASE + HACK_ROMFONT;
  	dwvalor = HACK_BASE + HACK_ROMFONT;	memwrite(SYSCALL_ROMFONT, &dwvalor, sizeof(DWORD));
+	dwvalor = HACK_BASE + HACK_GDROM;	memwrite(SYSCALL_GDROM, &dwvalor, sizeof(DWORD));
+ 	dwvalor = HACK_BASE + HACK_SYSINFO; memwrite(SYSCALL_SYSINFO, &dwvalor, sizeof(DWORD));
+ 	dwvalor = HACK_BASE + HACK_FLASHROM; memwrite(SYSCALL_FLASHROM, &dwvalor, sizeof(DWORD));
+ 	dwvalor = HACK_BASE + HACK_UNKNOWN; memwrite(SYSCALL_UNKNOWN, &dwvalor, sizeof(DWORD));
 
  	// vamos a hacer esto:
 /*		HACK_BASE		:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
@@ -1139,8 +1121,17 @@ int main(int argc, char *argv[])
 
 /*	*(DWORD *) &memoria[SYSCALL_GDROM	- 0x80000000]	= HACK_BASE + HACK_GDROM;
 	*(WORD *) &memoria[HACK_BASE + HACK_GDROM - 0x80000000] = 0x0009; // NOP */
-	dwvalor = HACK_BASE + HACK_GDROM;	memwrite(SYSCALL_GDROM, &dwvalor, sizeof(DWORD));
-	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
+	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
+	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
+
+	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_SYSINFO, &wvalor, 2);
+	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_SYSINFO + 2, &wvalor, 2);
+
+	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_FLASHROM, &wvalor, 2);
+	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_FLASHROM + 2, &wvalor, 2);
+
+	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_UNKNOWN, &wvalor, 2);
+	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_UNKNOWN + 2, &wvalor, 2);
 
 	start_time = time(NULL);
 

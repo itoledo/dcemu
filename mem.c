@@ -3,6 +3,7 @@
 #include "main.h"
 #include "intc.h"
 #include "opcodes.h"
+#include "graficos.h"
 
 DWORD SQ0[8];
 DWORD SQ1[8];
@@ -20,6 +21,7 @@ mem_access_read_t regmap_read;
 mem_access_read_t mem_read_error;
 mem_access_read_t pvr_read;
 mem_access_read_t bios_read;
+mem_access_read_t ignore_read;
 
 mem_access_write_t video_write;
 mem_access_write_t ram_write;
@@ -28,7 +30,7 @@ mem_access_write_t mem_write_error;
 mem_access_write_t pvr_write;
 mem_access_write_t sq_write;
 mem_access_write_t ta_write;
-// mem_access_write_t bios_write;
+mem_access_write_t ignore_write;
 
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
@@ -305,18 +307,17 @@ void mem_hash_setup(void)
 	mem_hash_read[0xAC]	= ram_read;
  	mem_hash_read[0xFF] = regmap_read;
 
-//	mem_hash_write[0x00] = bios_write;
 	mem_hash_write[0x04] = video_write;
 	mem_hash_write[0x05] = video_write;
  	mem_hash_write[0x0C] = ram_write;
 	mem_hash_write[0x10] = ta_write;
  	mem_hash_write[0x1F] = regmap_write;
  	mem_hash_write[0x7E] = ram_write;
-//	mem_hash_write[0x80] = bios_write;
  	mem_hash_write[0x8C] = ram_write;
  	mem_hash_write[0xA0] = pvr_write;
  	mem_hash_write[0xA4] = video_write;
 	mem_hash_write[0xA5] = video_write;
+	mem_hash_write[0xA6] = ignore_write;
  	mem_hash_write[0xAC] = ram_write;
  	mem_hash_write[0xE0] = sq_write;
  	mem_hash_write[0xE1] = sq_write;
@@ -376,8 +377,8 @@ void video_read(unsigned long direccion, void * p, size_t size)
 
 //	memcpy(p, &video_mem[direccion - video_base], size);
 #ifdef DEBUG_MEM_VIDEO
-	if (logvideomem)
-		logmsg("videomem: dir %x\r\n", direccion);
+//	if (logvideomem)
+		logxmsg(LOG_MEM, "video_read: dir %x\r\n", direccion);
 #endif
 	
 	memcpy(p, &video_mem[addr], size);
@@ -511,11 +512,10 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		case 0xa05f8044: // BITMAPTYPE
+		case 0xa05f8000 + 0x11 * 4:		// FB_R_CTRL
 		{
-			dw = 0x0000000d;
-			memcpy(p, &dw, size);
-			logmsg("pvr_read: BITMAPTYPE\r\n");
+			memcpy(p, &pvr_fb_r_ctrl, size);
+			logxmsg(LOG_PVR, "pvr_read: FB_R_CTRL\r\n");
 		}
 		break;
 
@@ -534,13 +534,6 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		case 0xa05f810c:
-		{
-			dw = (instrucciones / 10) % 0x1FF;
-			memcpy(p, &dw, size);
-		}
-		break;
-
 		case 0xa05f8050:
 		{
 			dw = 0x00100203;
@@ -548,9 +541,22 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		case 0xa05f810c:
+		{
+			dw = (instrucciones / 10) % 0x1FF;
+			memcpy(p, &dw, size);
+		}
+		break;
+
+		case 0xa05f8114:
+		{
+			logxmsg(LOG_PVR, "pvr_read: FB_C_SOF: framebuffer current read address\n");
+		}
+		break;
+
 		case 0xa05f8144:
 		{
-			logmsg("pvr_read: ta_init\r\n");
+			logxmsg(LOG_PVR, "pvr_read: ta_init\r\n");
 		}
 		break;
 	
@@ -940,71 +946,76 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			logxmsg(LOG_PVR, "pvr_write: BITMAPTYPE [FB_R_CTRL] (bitmap display settings), grabando %x\n",
 				*(DWORD *)p);
 			dw = *(DWORD *) p;
+			pvr_fb_r_ctrl = dw;
 			logxmsg(LOG_PVR, "pvr_write: displaymode: %x\r\n", dw);
-			if (dw & 0x01)
-				logxmsg(LOG_PVR, "bitmap display enable\r\n");
 			if (dw & 0x02)
 				logxmsg(LOG_PVR, "line doubling enable\r\n");
 			switch((dw >> 2) & 0x3)
 			{
 				case 0x00:
-				logxmsg(LOG_PVR, "ARGB1555\r\n");
+				logxmsg(LOG_PVR, "ARGB0555\r\n");
 				screenbits = 16;
+				screenformat = FRAMEBUFFER_ARGB0555;
 				break;
 				
 				case 0x01:
 				logxmsg(LOG_PVR, "RGB565\r\n");
 				screenbits = 16;
+				screenformat = FRAMEBUFFER_RGB565;
 				break;
 				
 				case 0x02:
 				logxmsg(LOG_PVR, "RGB888\r\n");
 				screenbits = 24;
+				screenformat = FRAMEBUFFER_RGB888;
 				break;
 				
 				case 0x03:
-				logxmsg(LOG_PVR, "ARGB8888\r\n");
+				logxmsg(LOG_PVR, "ARGB0888\r\n");
 				screenbits = 32;
+				screenformat = FRAMEBUFFER_ARGB0888;
 				break;
 			}
 			if (dw & 0x00800000)
    				logxmsg(LOG_PVR, "pixel clock double enable\r\n");
 			logxmsg(LOG_PVR, "screenbits: %d\r\n", screenbits);
+			if (dw & 0x01)
+			{
+				logxmsg(LOG_PVR, "bitmap display enable\r\n");
+				pvr_framebufferdisplay = true;
+				screeninit();
+			}
+			else
+				pvr_framebufferdisplay = false;
+			refresh_screen = true;
 		}
 		break;
 
-		PVR_WRITE_1(0xa05f8000 + 0x12 * 4, "RENDERFORMAT [FB_W_CTRL] (3D) (Render output format)", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x12 * 4, cb_fb_w_ctrl, "RENDERFORMAT [FB_W_CTRL] (3D) (Render output format): %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x13 * 4, "RENDERPITCH [FB_W_LINESTRIDE] (3D) (Render target pitch)", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x14 * 4, "FRAMEBUF [FB_R_SOF1] (2D) (Framebuffer address)", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x15 * 4, "FRAMEBUF [FB_R_SOF2] (2D) (Framebuffer address, short field)", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x14 * 4, cb_fb_r_sof1, "FRAMEBUF [FB_R_SOF1] (2D) (Framebuffer address): %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x15 * 4, "FRAMEBUF [FB_R_SOF2] (2D) (Framebuffer address, short field): %x", *(DWORD *) p);
 		PVR_WRITE_2(0xa05f8000 + 0x16 * 4, "Unknown, grabando %x, M=%x", *(DWORD *) p, 0x00000000);
 
 		case 0xa05f8000 + 0x17 * 4:		// DIWSIZE (2D) (Display window size)
 		{
 			long modulo;
-            int shift;
 
 			logxmsg(LOG_PVR, "pvr_write: DIWSIZE [FB_R_SIZE] (2D) (Display window size), grabando %x\n",
 				*(DWORD *)p);
 
 			dw = *(DWORD *) p;
 			logxmsg(LOG_PVR, "pvr_write: displaysize: %x\r\n", dw);
-			if (dw & (1 << 20))
-				logxmsg(LOG_PVR, "VGA mode\r\n");
 				
-			if (screenbits == 32)
-                shift = 2;
-            else
-                shift = 1;
-            
-            screenwidth = (((dw & 0x3FF) + 1) * 4) / (screenbits / 8);
-			logxmsg(LOG_PVR, "row length: %d\r\n", screenwidth);
+			screenwidth = (dw & 0x3FF) + 1;
+			logxmsg(LOG_PVR, "screenwidth (en unidades de 32 bits): %d\r\n", screenwidth);
 
-			screenheight = (dw >> 10) & 0x3FF;
-			logxmsg(LOG_PVR, "lines: %d\r\n", screenheight);
+			screenheight = ((dw >> 10) & 0x3FF) + 1;
+			logxmsg(LOG_PVR, "screenheight: %d\r\n", screenheight);
 
-			modulo = (((MSB(dw) >> 4) & 0x3FF) - 1) * 4;
+			modulo = (dw >> 20) & 0x3FF;
 			logxmsg(LOG_PVR, "modulo: %d\r\n", modulo);
+
 			if (screenheight == 0)
 			{
 				logxmsg(LOG_PVR, "modo inválido. valores por defecto.\n");
@@ -1012,17 +1023,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				screenwidth = 640;
 				screenbits = 16;
 			}
-			if (screenheight == 476)
-				screenheight = 480;
-			//screeninit(screenwidth, screenheight, screenbits);
-/*			screen = SDL_SetVideoMode(screenwidth, screenheight, screenbits, SDL_DOUBLEBUF);
-			if (screen == NULL)
-			{
-				logmsg("no se pudo cambiar de modo. saliendo.");
-				exit(1);
-			}
-			fflush(logfp);
-			screenbase = (BYTE *) screen->pixels - video_base; */
+			screeninit();
+			refresh_screen = true;
 		}
 		break;
 
@@ -1178,8 +1180,13 @@ void video_write(unsigned long direccion, void * p, size_t size)
 	long addr = direccion & 0x00FFFFFF;
 
 #ifdef DEBUG_MEM_VIDEO
-	if (logvideomem)
-		logmsg("videomem: dir %x\r\n", direccion);
+//	if (logvideomem)
+	switch(size)
+	{
+		case 1:	logxmsg(LOG_MEM, "video_write: dir %x, BYTE %x\n", direccion, *(BYTE *) p);	break;
+		case 2: logxmsg(LOG_MEM, "video_write: dir %x, WORD %x\n", direccion, *(WORD *) p);	break;
+		case 4: logxmsg(LOG_MEM, "video_write: dir %x, DWORD %x\n", direccion, *(DWORD *) p);	break;
+	}
 #endif
 
 /*    if ((direccion - video_base) < (backscreen->w * backscreen->h * (backscreen->format->BitsPerPixel / 8))
@@ -1205,13 +1212,13 @@ void video_write(unsigned long direccion, void * p, size_t size)
 	if (addr < video_size)
 		memcpy(&video_mem[addr], p, size);
 	
-	if (addr < framebuffer_size)
+/*	if (addr < framebuffer_size)
 	{
 		SDL_LockSurface(backscreen);
 		memcpy(backscreen->pixels + addr, p, size);
-		SDL_UnlockSurface(backscreen);
+		SDL_UnlockSurface(backscreen); */
 		refresh_screen = true;
-	}
+/*	} */
 }
 
 void regmap_read(unsigned long direccion, void * p, size_t size)
@@ -1382,6 +1389,14 @@ void ram_read(unsigned long direccion, void * p, size_t size)
 	memcpy(p, get_memory_pointer(direccion), size);
 }
 
+void ignore_read(unsigned long direccion, void * p, size_t size)
+{
+}
+
+void ignore_write(unsigned long direccion, void * p, size_t size)
+{
+}
+
 void ram_write(unsigned long direccion, void * p, size_t size)
 {
 //logmsg( "ram_write: dir %8x, size %x\r\n", direccion, (int) size);
@@ -1407,7 +1422,7 @@ void memread(unsigned long direccion, void * target, size_t size)
 
 	(*mem_hash_read[direccion >> 24]) (direccion, target, size);
 #ifdef DEBUG_MEM_READ
-	if (filelogging & FILELOG_MEMREADS)
+//	if (filelogging & FILELOG_MEMREADS)
 	switch(size)
 	{
 		case 1:
@@ -1435,19 +1450,19 @@ void memwrite(unsigned long direccion, void * source, size_t size)
 	
 	(*mem_hash_write[direccion >> 24]) (direccion, source, size);
 #ifdef DEBUG_MEM_WRITE
-	if (filelogging & FILELOG_MEMWRITES)
+//	if (filelogging & FILELOG_MEMWRITES)
 	switch(size)
 	{
 		case 1:
-			logmsg( "memwrite: dir %8x, byte %x\r\n", direccion, *(BYTE *) source);
+			logxmsg(LOG_MEM, "memwrite: dir %8x, byte %x\r\n", direccion, *(BYTE *) source);
 			break;
 
 		case 2:
-			logmsg( "memwrite: dir %8x, word %x\r\n", direccion, *(WORD *) source);
+			logxmsg(LOG_MEM, "memwrite: dir %8x, word %x\r\n", direccion, *(WORD *) source);
 			break;
 
 		case 4:
-			logmsg( "memwrite: dir %8x, dword %x\r\n", direccion, *(DWORD *) source);
+			logxmsg(LOG_MEM, "memwrite: dir %8x, dword %x\r\n", direccion, *(DWORD *) source);
 			break;
 	}
 #endif

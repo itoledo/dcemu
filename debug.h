@@ -21,11 +21,12 @@ extern int DebugMode;
 extern DWORD MemDebug;
 extern DWORD BreakPoint;
 
-void DebugUpdate(void);
+void DebugUpdate(SDL_Surface * DebugDest);
 int DebugInit(SDL_Surface *screenptr);
 void DebugShow(void);
 void DebugHide(void);
 void DebugPrintf (int which, char * fmt, ...);
 void disasm(DWORD address, char *buffer);
+void DrawDebugInlineInfo();
 
 #endif // _DEBUG_H_

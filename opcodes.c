@@ -172,7 +172,7 @@ struct st_cmd opcodes[] =
 	{ 0x0009, 0xFFFF, "NOP",	OP_T_NA,				nop },
 	{ 0x0093, 0xF0FF, "OCBI",	OP_T_AT_RN,				NOIMP	},
 	{ 0x00A3, 0xF0FF, "OCBP",	OP_T_AT_RN,				NOIMP	},// 140
-	{ 0x00B3, 0xF0FF, "OCBWB",	OP_T_AT_RN,				NOIMP	},
+	{ 0x00B3, 0xF0FF, "OCBWB",	OP_T_AT_RN,				ocbwb141},
 	{ 0x0083, 0xF0FF, "PREF",	OP_T_AT_RN,				pref142 },
 	{ 0x002B, 0xFFFF, "RTE",	OP_T_NA,				rte143	},
 	// página 148

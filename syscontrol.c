@@ -233,6 +233,11 @@ OPCODE(ldsl135) // LDS.L @Rm+, PR : (Rm) -> PR, Rm + 4 -> Rm (0100mmmm 00100110)
 #endif
 }
 
+OPCODE(ocbwb141) // OCBWB @Rn (0000nnnn 10110011)
+{
+	// FIXME: qué hace este opcode?
+}
+
 OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 {
 	short n = (arg >> 8) & 0x0F;

@@ -2,12 +2,13 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include "options.h"
+#include "graficos.h"
 
 #define TEXTURE_CACHING
 
 SDL_Surface *screen;
-SDL_Surface *backscreen;
-// SDL_Surface *glscreen;
+// SDL_Surface *backscreen;
+SDL_Surface *glscreen;
 
 typedef Uint16 pcon_func(Uint16 src);
 
@@ -26,6 +27,14 @@ int pvr_srcblend;
 int pvr_dstblend;
 int pvr_srcblendmode;
 int pvr_dstblendmode;
+int pvr_framebufferdisplay = true;
+int screenbits = 16;
+int screenwidth = 320; // en unidades de 32 bits
+int screenheight = 480;
+int screenformat = FRAMEBUFFER_RGB565;
+int framebuffer_size = 640*480*2;
+DWORD pvr_fb_r_ctrl = (1 << 23) | (1 << 2) | 1; // VGA, enabled, RGB565
+DWORD pvr_fb_r_sof1 = 0x0;
 pcon_func * pvr_texture_pixelconvert;
 
 Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
@@ -33,7 +42,7 @@ Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
 	return (((src >> 4) & 0x0FFF) | ((src << 12) & 0xF000));
 }
 
-DWORD pvr_registered;
+DWORD pvr_registered = 0;
 #define MAX_TEXTURE_COUNT 10
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
         ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
@@ -106,6 +115,7 @@ void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
 void cb_renderstart(DWORD addr, void * p, size_t size)
 {
 	SDL_GL_SwapBuffers();
+	pvr_framebufferdisplay = false;
 	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso
 
 	logxmsg(LOG_PVR, "cb_renderstart\n");
@@ -114,6 +124,31 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 
 	// dejemos todo listo para la siguiente pantalla
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+void cb_fb_r_sof1(DWORD addr, void * p, size_t size)
+{
+	logxmsg(LOG_PVR, "cb_fb_r_sof1\n");
+	memcpy(&pvr_fb_r_sof1, p, size);
+}
+
+void cb_fb_w_ctrl(DWORD addr, void * p, size_t size)
+{
+	DWORD z;
+	logxmsg(LOG_PVR, "cb_fb_w_ctrl\n");
+	memcpy(&z, p, size);
+	
+	switch(z & 0x7)
+	{
+		case 0:	logxmsg(LOG_PVR, "0555KRGB\n");	break;
+		case 1: logxmsg(LOG_PVR, "565RGB\n"); break;
+		case 2: logxmsg(LOG_PVR, "4444ARGB\n"); break;
+		case 3: logxmsg(LOG_PVR, "1555ARGB\n"); break;
+		case 4: logxmsg(LOG_PVR, "888RGB\n"); break;
+		case 5: logxmsg(LOG_PVR, "0888KRGB\n"); break;
+		case 6: logxmsg(LOG_PVR, "8888ARGB\n"); break;
+		case 7: logxmsg(LOG_PVR, "reserved\n"); break;
+	}
 }
 
 void cb_ppblocksize(DWORD addr, void * p, size_t size)
@@ -340,7 +375,8 @@ void ta_check(DWORD addr)
 				int stride = (p3 >> 21) & 0x1;
 				
 				pvr_texture_surface = texture_surface;
-				pvr_texture_twiddled = twiddled;
+//				pvr_texture_twiddled = !twiddled; // 0: twiddled
+				pvr_texture_twiddled = (twiddled ? 0 : 1);
 
 				if (mipmap)
 					logxmsg(LOG_PVR, "texture: enable mipmap\n");
@@ -370,7 +406,7 @@ void ta_check(DWORD addr)
      				pvr_texture_pixelformat = GL_RGB;
      				pvr_texture_pixelpack = GL_UNSIGNED_SHORT_5_6_5;
      				pvr_texture_pixelconvert = NULL;
-     				pvr_texture_twiddled = 1;
+//     				pvr_texture_twiddled = 1;
      				break;
 
 					case 2:
@@ -379,7 +415,7 @@ void ta_check(DWORD addr)
 				    pvr_texture_pixelconvert = pcon_argb4444_to_rgba4444;
 				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_EXT;
      				pvr_texture_components = 4;
-     				pvr_texture_twiddled = 1;
+//     				pvr_texture_twiddled = 1;
      				break;
 
 					case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;
@@ -822,12 +858,95 @@ void ReadPixelN(Uint32 pos, void * data, size_t size)
 		SDL_UnlockSurface(screen); */
 }
 
-int screeninit(int width, int height, int bpp)
+// int screeninit(int width, int height, int bpp)
+int screeninit(void)
 {
 	Uint32 rmask, gmask, bmask, amask;
+	Uint32 glrmask, glgmask, glbmask, glamask;
+	int asize, rsize, gsize, bsize;
 	int i;
 
-#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+//	screenwidth = 640;
+//	screenheight = 480;
+
+	logxmsg(LOG_PVR, "bitdepth del framebuffer: %d bits\n", screenbits);
+
+	switch(screenformat)
+	{
+		case FRAMEBUFFER_ARGB0555:
+		{
+			logxmsg(LOG_PVR, "formato del framebuffer: argb0555\n");
+			amask = 0;
+			rmask = 0x1f << 10;
+			gmask = 0x1f << 5;
+			bmask = 0x1f;
+			glamask = 0;
+			glrmask = 0x003e;
+			glgmask = 0x07c0;
+			glbmask = 0xf800;
+			asize = 0;
+			rsize = 5;
+			gsize = 5;
+			bsize = 5;
+		}
+		break;
+
+		case FRAMEBUFFER_RGB565:
+		{
+			logxmsg(LOG_PVR, "formato del framebuffer: rgb565\n");
+			amask = 0;
+			rmask = 0x1f << 11;
+			gmask = 0x3f << 5;
+			bmask = 0x1f;
+			glamask = 0;
+			glrmask = 0x001f;
+			glgmask = 0x07e0;
+			glbmask = 0xf800;
+			asize = 0;
+			rsize = 5;
+			gsize = 6;
+			bsize = 5;
+		}
+		break;
+		
+		case FRAMEBUFFER_RGB888:
+		{
+			logxmsg(LOG_PVR, "formato del framebuffer: rgb888\n");
+			amask = 0;
+			rmask = 0xff << 16;
+			gmask = 0xff << 8;
+			bmask = 0xff;
+			glamask = 0;
+			glrmask = 0x0000ff00;
+			glgmask = 0x00ff0000;
+			glbmask = 0xff000000;
+			asize = 0;
+			asize = 8;
+			gsize = 8;
+			bsize = 8;
+		}
+		break;
+		
+		case FRAMEBUFFER_ARGB0888:
+		{
+			logxmsg(LOG_PVR, "formato del framebuffer: argb0888\n");
+			amask = 0;
+			rmask = 0xff << 16;
+			gmask = 0xff << 8;
+			bmask = 0xff;
+			glamask = 0;
+			glrmask = 0x00ff0000;
+			glgmask = 0x0000ff00;
+			glbmask = 0x000000ff;
+			asize = 0;
+			rsize = 8;
+			gsize = 8;
+			bsize = 8;
+		}
+		break;
+	}
+
+/* #if SDL_BYTEORDER == SDL_BIG_ENDIAN
     rmask = 0xff000000;
     gmask = 0x00ff0000;
     bmask = 0x0000ff00;
@@ -837,26 +956,34 @@ int screeninit(int width, int height, int bpp)
     gmask = 0x0000ff00;
     bmask = 0x00ff0000;
     amask = 0xff000000;
-#endif
+#endif */
 
 #ifdef OPENGL
-	rmask = 0x000000ff;
+/*	rmask = 0x000000ff;
 	gmask = 0x0000ff00;
 	bmask = 0x00ff0000;
-	amask = 0xff000000;
+	amask = 0xff000000; */
 	SDL_GL_SetAttribute( SDL_GL_RED_SIZE, 8 );
     SDL_GL_SetAttribute( SDL_GL_GREEN_SIZE, 8 );
     SDL_GL_SetAttribute( SDL_GL_BLUE_SIZE, 8 );
 	SDL_GL_SetAttribute( SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute( SDL_GL_BUFFER_SIZE, 32 );
     SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
-	if (!screen)
+/*	if (!screen)
+	{ */
+//		screen = SDL_SetVideoMode(screenwidth, screenheight, 32 /* 32 */, SDL_OPENGLBLIT);
+//	if (!screen)
 	{
-		screen = SDL_SetVideoMode(width, height, 32 /* 32 */, SDL_OPENGLBLIT);
-		logxmsg(LOG_PVR, "Seteando viewport a %dx%d\n", width, height);
+		screen = SDL_SetVideoMode(640, 480, 32 /* 32 */, SDL_OPENGLBLIT);
+		if (screen == NULL)
+		{
+			logxmsg(LOG_PVR, "screen == NULL!!!!\n");
+			exit(1);
+		}
+		logxmsg(LOG_PVR, "Seteando viewport a %dx%d\n", 640, 480);
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
-		glViewport(0, 0, width, height);
+		glViewport(0, 0, 640, 480);
 		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);		// This Will Clear The Background Color To Black
 		glClearDepth(1.0);				// Enables Clearing Of The Depth Buffer
 		glDepthFunc(GL_LESS);				// The Type Of Depth Test To Do
@@ -870,8 +997,7 @@ int screeninit(int width, int height, int bpp)
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
 //		glOrtho(0, width, height, 0, 0.1, 100.0);
-		glOrtho(0, width, height, 0, 0, 1024.0);
-
+		glOrtho(0, 640, 480, 0, 0, 1024.0);
 
 //		glScalef(1.0/640.0,1.0/480.0,1.0);
 //		glTranslatef(-320.0f, -240.0f, -1.0f);
@@ -892,7 +1018,7 @@ int screeninit(int width, int height, int bpp)
 		}
 	}
 #else
-	screen = SDL_SetVideoMode(width, height, bpp, SDL_HWSURFACE | SDL_DOUBLEBUF);
+	screen = SDL_SetVideoMode(screenwidth, screenheight, 32, SDL_HWSURFACE | SDL_DOUBLEBUF);
 #endif
 
 	if (screen == NULL)
@@ -901,22 +1027,24 @@ int screeninit(int width, int height, int bpp)
 		return 1;
 	}
 
-	if (backscreen)
-		SDL_FreeSurface(backscreen);
-
-	logmsg("creando backscreen\n");
+/*	if (backscreen)
+		SDL_FreeSurface(backscreen); */
 
     SDL_WM_SetCaption(APPTITLE, NULL);
+    SDL_WM_SetIcon(SDL_LoadBMP("dcemu.bmp"), NULL);
     
-	backscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height, bpp, 0x1F << 11, 0x3F << 5, 0x1F, 0);
+//	backscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, screenwidth, screenheight, screenbits, 0x1F << 11, 0x3F << 5, 0x1F, 0);
+//	backscreen = SDL_CreateRGBSurface(SDL_SWSURFACE, screenwidth, screenheight, screenbits, glrmask, glgmask, glbmask, 0);
+
+/*	backscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, screenwidth, screenheight, screenbits, rmask, gmask, bmask, 0);
 
 	if (backscreen == NULL)
 	{
 		fprintf(stderr, "No se pudo crear backscreen\n");
 		return 1;
-	}
+	} */
 
-/*	glscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height, 32, rmask, gmask, bmask, amask);
+/*	glscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 16, 0xff, 0xff << 8, 0xff << 16, 0xff << 24);
 
 	if (glscreen == NULL)
 	{
@@ -924,45 +1052,59 @@ int screeninit(int width, int height, int bpp)
 		return 1;
 	} */
 
-	logmsg("vaciando backscreen\n");
+//	SDL_FillRect(backscreen, NULL, 0); // negro
 
-	SDL_FillRect(backscreen, NULL, 0); // negro
+//	screenwidth = backscreen->w;
+//	screenheight = backscreen->h;
+//	screenbits = backscreen->format->BitsPerPixel;
+//	framebuffer_size = backscreen->w * backscreen->h * (backscreen->format->BitsPerPixel / 8);
 
-	screenbase = (BYTE *) backscreen->pixels - video_base;
-
-	screenwidth = backscreen->w;
-	screenheight = backscreen->h;
-	screenbits = backscreen->format->BitsPerPixel;
-	framebuffer_size = backscreen->w * backscreen->h * (backscreen->format->BitsPerPixel / 8);
-
-	logmsg("cambiando a modo de pantalla %dx%d %dbpp\n", screenwidth, screenheight, screenbits);
-
-/*	glViewport(0, 0, screenwidth, screenheight);
-	glMatrixMode(GL_PROJECTION);						// Select The Projection Matrix
-	glLoadIdentity();
-	gluPerspective(45.0f,(GLfloat)screenwidth/(GLfloat)screenheight,0.1f,100.0f);
-	glMatrixMode(GL_MODELVIEW);						// Select The Modelview Matrix
-	glLoadIdentity();							// Reset The Modelview Matrix
-
-	glShadeModel(GL_SMOOTH);	
-	glClearColor(0.0, 0.0, 0.0, 0.0);
-	glClearDepth(1.0f);
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LEQUAL);
-	glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST); */
-
-//	logmsg("glClearColor\n");
-//	glShadeModel(GL_FLAT);
-//	glDisable(GL_DEPTH_TEST);
-//	glDisable(GL_LIGHTING);
-//	glDisable(GL_DITHER);
-//	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+//	logxmsg(LOG_PVR, "backscreen: %dx%d %dbpp\n", screenwidth, screenheight, screenbits);
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);			// Clear The Screen And The Depth Buffer
-//	glLoadIdentity();
-
-	logmsg("fin screeninit\n");
 
 	return 0;
+}
+
+struct rgbmask
+{
+	Uint32 rmask;
+	Uint32 gmask;
+	Uint32 bmask;
+	Uint32 amask;
+};
+
+struct rgbmask mask[] =
+{
+	{ 0x1f << 10, 0x1f << 5, 0x1f, 0 },	// ARGB0555
+	{ 0x1f << 11, 0x3f << 5, 0x1f, 0 }, // RGB565
+	{ 0xff << 16, 0xff << 8, 0xff, 0 }, // RGB888
+	{ 0xff << 16, 0xff << 8, 0xff, 0 }  // ARGB0888
+};
+
+//void draw_backscreen()
+SDL_Surface * draw_backscreen()
+{
+/*	SDL_LockSurface(backscreen);
+	memcpy(backscreen->pixels, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1), framebuffer_size);
+	SDL_UnlockSurface(backscreen); */
+	SDL_Surface * tmp;
+	int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
+	tmp = SDL_CreateRGBSurfaceFrom(
+ 			get_memory_pointer(0xA5000000 + pvr_fb_r_sof1),
+    		ancho,
+      		screenheight,
+        	screenbits,
+			ancho * (screenbits / 8),
+         	mask[screenformat].rmask,
+         	mask[screenformat].gmask,
+         	mask[screenformat].bmask,
+         	mask[screenformat].amask);
+ 	if (tmp == NULL)
+ 	{
+ 		logxmsg(LOG_PVR, "error al crear backscreen\n");
+ 		exit(1);
+	}
+	return tmp;
 }
 

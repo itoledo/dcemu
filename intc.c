@@ -27,7 +27,7 @@ bool intc(DWORD irq)
 	dump_registers(); */
 
 	// a revisar por int's pendientes
-	logmsg("imask: %x, VBR: %x\r\n", SR_GET_IMASK(), VBR);
+//	logmsg("imask: %x, VBR: %x\r\n", SR_GET_IMASK(), VBR);
 
 	switch(irq)
 	{
@@ -61,8 +61,8 @@ bool intc(DWORD irq)
 //	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];
 	str_PC = get_memory_pointer(PC);
 
-	logmsg("intc: saltando a %x, con registros:\n", PC);
-	dump_registers();
+/*	logmsg("intc: saltando a %x, con registros:\n", PC);
+	dump_registers(); */
 	inside_int = true;
 //	filelogging = FILELOG_CALLS;
 	return true;
@@ -97,27 +97,27 @@ void check_ints()
 			break;
 
 			case 2:
-			if (pvr_registered & (1 << 0))
+			if ((pvr_registered & (1 << 0)))
 				dw = 1 << 7;	// ASIC_EVT_PVR_OPAQUEDONE
 			break;
 			
 			case 3:
-			if (pvr_registered & (1 << 1))
+			if ((pvr_registered & (1 << 1)))
 				dw = 1 << 8;	// ASIC_EVT_PVR_OPAQUEMODDONE
 			break;
 			
 			case 4:
-			if (pvr_registered & (1 << 2))
+			if ((pvr_registered & (1 << 2)))
 				dw = 1 << 9;	// ASIC_EVT_PVR_TRANSDONE
 			break;
 			
 			case 5:
-			if (pvr_registered & (1 << 3))
+			if ((pvr_registered & (1 << 3)))
 				dw = 1 << 10;	// ASIC_EVT_PVR_TRANSMODDONE
 			break;
 
 			case 6:
-			if (pvr_registered & (1 << 4))
+			if ((pvr_registered & (1 << 4)))
 				dw = 1 << 21;	// ASIC_EVT_PVR_PTDONE
 			break;
 

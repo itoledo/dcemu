@@ -30,10 +30,6 @@ extern unsigned char * str_PC;
 // extern void PutPixelL(Uint32 pos, DWORD pixel);
 extern void PutPixelN(Uint32 pos, void * data, size_t size);
 extern void ReadPixelN(Uint32 pos, void * data, size_t size);
-extern SDL_Surface *screen;
-extern SDL_Surface *backscreen;
-// extern SDL_Surface *glscreen;
-extern BYTE * screenbase;
 extern bool logmem;
 extern bool logmemreg;
 extern bool logvideomem;
@@ -58,12 +54,18 @@ extern bool logvideomem;
 #define HACK_BASE		0x8C000100
 #define HACK_ROMFONT	0x000
 #define HACK_GDROM		0x100
+#define HACK_SYSINFO	0x200
+#define HACK_FLASHROM	0x300
+#define HACK_UNKNOWN	0x400
 
 #define FONT_BASE		(mem_base + 1024*1024*5)
 #define FONT_N_BASE		(mem_n_base + 1024*1024*5)
 
-#define SYSCALL_ROMFONT	0x8C0000B4
-#define SYSCALL_GDROM	0x8C0000BC
+#define SYSCALL_SYSINFO		0x8C0000B0
+#define SYSCALL_ROMFONT		0x8C0000B4
+#define SYSCALL_FLASHROM	0x8C0000B8
+#define SYSCALL_GDROM		0x8C0000BC
+#define SYSCALL_UNKNOWN		0x8C0000E0
 
 extern unsigned char * memoria;
 // extern unsigned char * orig_mem;
@@ -78,11 +80,6 @@ extern FILE * logfp, * serialfp, * memfp;
 extern bool pausa;
 extern long instrucciones;
 extern bool refresh_screen;
-extern int screenbits;
-extern int screenwidth;
-extern int screenheight;
-extern int framebuffer_size;
-
 
 extern DWORD G2_FIFO;		// G2 FIFO
 #define AICA_FIFO		(0x01)

@@ -7,7 +7,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "debug.h"
+#include "graficos.h"
 #include "BFont.h"
+#include <time.h>
 
 int DebugVisible = 1;
 int DebugMode = DBG_STOP;
@@ -15,13 +17,13 @@ DWORD MemDebug = 0x8c000000;
 DWORD BreakPoint = 0x8c00b940;
 
 SDL_Surface *DebugWindow;
-SDL_Surface *DebugDest;
+// SDL_Surface *DebugDest;
 
 BFont_Info *DebugFont;
 
 int DebugInit(SDL_Surface *Screen)
 {
-	DebugDest = Screen;
+//	DebugDest = Screen;
 
 //	DebugFont = BFont_LoadFont("ConsoleFont.bmp");
 	DebugFont = BFont_LoadFont("font.bmp");
@@ -34,7 +36,8 @@ int DebugInit(SDL_Surface *Screen)
 	if (DebugWindow == NULL)
  		return 1;
 
-   	SDL_SetAlpha(DebugWindow, SDL_SRCALPHA | SDL_RLEACCEL, 0x80);    //60
+//   	SDL_SetAlpha(DebugWindow, SDL_SRCALPHA | SDL_RLEACCEL, 0x80);    //60
+
 	return 0;
 }
 
@@ -48,7 +51,7 @@ void DebugHide(void)
 	DebugVisible = 0;
 }
 
-void DebugUpdate(void)
+void DebugUpdate(SDL_Surface * DebugDest)
 {
 	char buf[100];
 	char buf2[100];
@@ -57,34 +60,36 @@ void DebugUpdate(void)
 	int x, y;
 	WORD opcode;
 	BYTE b;
-  	
+	Uint32 color_black = SDL_MapRGBA(DebugDest->format, 0x0, 0x0, 0x0, 0x0);
+	Uint32 color_white = SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0);
+
 	if (DebugVisible) 
  	{
-   		SDL_FillRect(DebugWindow, NULL, SDL_MapRGBA(DebugDest->format, 0x0, 0x0, 0x0, 0x0));
+   		SDL_FillRect(DebugWindow, NULL, color_black);
    		
    		// Populate Debug Window
    		rect.x = 3; rect.y = 3;
      	rect.h = 3; rect.w = 630;
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
 	
      	rect.h = 470; rect.w = 3;
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
 	
    		rect.x = 633;
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
 	
 	    rect.x = 230; rect.h = 275;
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
 
   		rect.w = 630; rect.h = 3;
     	rect.x = 3; rect.y = 275;
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
          
         rect.y = 473; rect.w += 3;
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
         
         rect.y = 450; 
-  		SDL_FillRect(DebugWindow, &rect, SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0));
+  		SDL_FillRect(DebugWindow, &rect, color_white);
    		BFont_PutStringFont(DebugWindow, DebugFont, 10, 457, "F9 = Single Step   /"
         	"   F10 = Stop Execution   /   F11 = Run   /   F12 = Toggle Debug Screen   /   KP+ KP- = Page through Memory");
 
@@ -318,4 +323,25 @@ void disasm(DWORD address, char *buffer)
 		sprintf(buffer, "???");
 }
 
+void DrawDebugInlineInfo(SDL_Surface * surface)
+{
+extern time_t start_time;
+extern long instrucciones;
+
+	char buf[512]; //, buf2[128];
+	SDL_Rect rc;
+	time_t dif = time(NULL) - start_time;
+
+	rc.x = 0;
+	rc.h = 12;
+	rc.w = 320;
+	rc.y = 0;
+
+	SDL_FillRect(surface, &rc, 0x00000000);
+
+	sprintf(buf, "PC: %08lx t:%d spd:%d SR:%08x", //, %08x,%08x,%08x %s",
+			PC, 
+			dif, (dif > 0) ? instrucciones/dif : 0, SR);
+	BFont_PutStringFont(surface, DebugFont, 0, 0, buf);
+}
 
