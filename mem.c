@@ -4,6 +4,9 @@
 #include "intc.h"
 #include "opcodes.h"
 #include "graficos.h"
+#include "intc.h"
+
+#define DWREF(p) (*(DWORD *)(p))
 
 DWORD SQ0[8];
 DWORD SQ1[8];
@@ -535,9 +538,9 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		case 0xa05f80cc: // SCANINTPOS
+		case 0xa05f80cc: // SPG_VBLANK_INT
 		{
-			memcpy(p, &PVR_SCANINTPOS, size);
+			memcpy(p, &pvr_spg_vblank_int, size);
 			logmsg("pvr_read: SCANINTPOS\n");
 		}
 		break;
@@ -557,10 +560,11 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		case 0xa05f810c:
+		case 0xa05f810c: // SPG_STATUS
 		{
-			dw = (instrucciones / 10) % 0x1FF;
-			memcpy(p, &dw, size);
+//			dw = (instrucciones / 10) % 0x1FF;
+//			dw = pvr_scanline;
+			memcpy(p, &pvr_scanline, size);
 		}
 		break;
 
@@ -656,7 +660,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		{
 			memcpy(&dw, p, size);
 			REMOVE_BIT(ASIC_ACK_A, dw);
-			logmsg("pvr_write: ASIC_ACK_A: %x\r\n", ASIC_ACK_A);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_ACK_A: quitando bits %x, quedamos en %x\r\n", dw, ASIC_ACK_A);
 		}
 		break;
 
@@ -664,7 +668,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		{
 			memcpy(&dw, p, size);
 			REMOVE_BIT(ASIC_ACK_B, dw);
-			logmsg("pvr_write: ACK_ACK_B: %x\r\n", ASIC_ACK_B);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_ACK_B: quitando bits %x, quedamos en %x\r\n", dw, ASIC_ACK_B);
 		}
 		break;
 
@@ -672,70 +676,84 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		{
 			memcpy(&dw, p, size);
 			REMOVE_BIT(ASIC_ACK_C, dw);
-			logmsg("pvr_write: ASIC_ACK_C: %x\r\n", ASIC_ACK_C);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_ACK_C: quitando bits %x, quedamos en %x\r\n", dw, ASIC_ACK_C);
 		}
 		break;
 
 		case 0xa05f6910: // Enabled Interrupts IRQD_A
 		{
 			memcpy(&ASIC_IRQD_A, p, size);
-			logmsg("pvr_write: ASIC_IRQD_A: %x\r\n", ASIC_IRQD_A);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQD_A: %x\r\n", ASIC_IRQD_A);
 		}
 		break;
 
 		case 0xa05f6914: // Enabled Interrupts IRQD_B
 		{
 			memcpy(&ASIC_IRQD_B, p, size);
-			logmsg("pvr_write: ASIC_IRQD_B: %x\r\n", ASIC_IRQD_B);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQD_B: %x\r\n", ASIC_IRQD_B);
 		}
 		break;
 
 		case 0xa05f6918: // Enabled Interrupts IRQD_C
 		{
 			memcpy(&ASIC_IRQD_C, p, size);
-			logmsg("pvr_write: ASIC_IRQD_C: %x\r\n", ASIC_IRQD_C);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQD_C: %x\r\n", ASIC_IRQD_C);
 		}
 		break;
 
 		case 0xa05f6920: // Enabled Interrupts IRQB_A
 		{
 			memcpy(&ASIC_IRQB_A, p, size);
-			logmsg("pvr_write: ASIC_IRQB_A: %x\r\n", ASIC_IRQB_A);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQB_A: %x\r\n", ASIC_IRQB_A);
 		}
 		break;
 
 		case 0xa05f6924: // Enabled Interrupts IRQB_B
 		{
 			memcpy(&ASIC_IRQB_B, p, size);
-			logmsg("pvr_write: ASIC_IRQB_B: %x\r\n", ASIC_IRQB_B);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQB_B: %x\r\n", ASIC_IRQB_B);
 		}
 		break;
 
 		case 0xa05f6928: // Enabled Interrupts IRQB_C
 		{
 			memcpy(&ASIC_IRQB_C, p, size);
-			logmsg("pvr_write: ASIC_IRQB_C: %x\r\n", ASIC_IRQB_C);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQB_C: %x\r\n", ASIC_IRQB_C);
 		}
 		break;
 
 		case 0xa05f6930: // Enabled Interrupts IRQ9_A
 		{
 			memcpy(&ASIC_IRQ9_A, p, size);
-			logmsg("pvr_write: ASIC_IRQ9_A: %x\r\n", ASIC_IRQ9_A);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQ9_A: %x\r\n", ASIC_IRQ9_A);
 		}
 		break;
 
 		case 0xa05f6934: // Enabled Interrupts IRQ9_B
 		{
 			memcpy(&ASIC_IRQ9_B, p, size);
-			logmsg("pvr_write: ASIC_IRQ9_B: %x\r\n", ASIC_IRQ9_B);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQ9_B: %x\r\n", ASIC_IRQ9_B);
 		}
 		break;
 
 		case 0xa05f6938: // Enabled Interrupts IRQ9_C
 		{
 			memcpy(&ASIC_IRQ9_C, p, size);
-			logmsg("pvr_write: ASIC_IRQ9_C: %x\r\n", ASIC_IRQ9_C);
+			logxmsg(LOG_INTC, "pvr_write: ASIC_IRQ9_C: %x\r\n", ASIC_IRQ9_C);
+		}
+		break;
+
+		case 0xa05f6940: // SB_PDTNRM	PVR-DMA trigger select from normal interrupt
+		{
+			memcpy(&SB_PDTNRM, p, size);
+			logxmsg(LOG_INTC, "SB_PDTNRM	PVR-DMA trigger select from normal interrupt: %x\n", SB_PDTNRM);
+		}
+		break;
+
+		case 0xa05f6944: // SB_PDTEXT	PVR-DMA trigger select from external interrupt
+		{
+			memcpy(&SB_PDTEXT, p, size);
+			logxmsg(LOG_INTC, "SB_PDTEXT	PVR-DMA trigger select from external interrupt: %x\n", SB_PDTEXT);
 		}
 		break;
 
@@ -881,7 +899,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						{
 							logmsg("comando MAPLE no implementado: %x\r\n", paquete[0]);
 						}
-
+						intc_add(ASIC_EVT_MAPLE_DMA, 0);
 						free(paquete);
 					}
 					else
@@ -963,7 +981,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_1(0xa05f8000 + 0x02 * 4, "COREDISABLE [CORERESET] (PVR2) (Enable/disable the submodules of the PVR2 Core), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x03 * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x04 * 4, "Unknown, grabando %x", *(DWORD *) p);
-		PVR_WRITE_CB_1(0xa05f8000 + 0x05 * 4, cb_renderstart, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
+//		PVR_WRITE_CB_1(0xa05f8000 + 0x05 * 4, cb_renderstart, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
+		PVR_WRITE_1(0xa05f8000 + 0x05 * 4, "RENDERSTART (3D) (Start render strobe), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x06 * 4, "[TESTSELECT], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x07 * 4, "Unknown, grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x08 * 4, "PRIMALLOCBASE [PARAMBASE] (3D) (Primitive allocation base), grabando %x", *(DWORD *) p);
@@ -1026,7 +1045,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			if (dw & 0x01)
 			{
 				logxmsg(LOG_PVR, "bitmap display enable\r\n");
-//				pvr_framebufferdisplay = true;
+				pvr_framebufferdisplay = true;
 				if (reinit)
 					screeninit();
 			}
@@ -1136,24 +1155,64 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_1(0xa05f8000 + 0x2f * 4, "[FOG_CLAMP_MAX], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x30 * 4, "[FOG_CLAMP_MIN], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x31 * 4, "[SPG_TRIGGER_POS], grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x32 * 4, "[SPG_HBLANK_INT], grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x33 * 4, "[SPG_VBLANK_INT], grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x34 * 4, "[SPG_CONTROL], grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x35 * 4, "[SPG_HBLANK], grabando %x", *(DWORD *) p);
+//		PVR_WRITE_1(0xa05f8000 + 0x32 * 4, "[SPG_HBLANK_INT], grabando %x", *(DWORD *) p);
+//		PVR_WRITE_1(0xa05f8000 + 0x33 * 4, "[SPG_VBLANK_INT], grabando %x", *(DWORD *) p);
+//		PVR_WRITE_1(0xa05f8000 + 0x34 * 4, "[SPG_CONTROL], grabando %x", *(DWORD *) p);
+//		PVR_WRITE_1(0xa05f8000 + 0x35 * 4, "[SPG_HBLANK], grabando %x", *(DWORD *) p);
 
-		case 0xa05f80d8: 				// FRAMETOTAL (2D) (Total number of frame cycles)
+		case (0xa05f8000 + 0x32 * 4): // 0xa05f80c8, SPG_HBLANK_INT
+		{
+		    logxmsg(LOG_PVR, "SPG_HBLANK_INT: hblank_in_interrupt = %x\n", (DWREF(p) >> 16) & 0x3FF);
+		    logxmsg(LOG_PVR, "SPG_HBLANK_INT: hblank_int_mode = %d\n", (DWREF(p) >> 12) & 0x3);
+		    logxmsg(LOG_PVR, "SPG_HBLANK_INT: line_comp_val = %x\n", DWREF(p) & 0x3FF);
+		}
+  		break;
+        
+		case (0xa05f8000 + 0x33 * 4): // 0xa05f80cc, SPG_VBLANK_INT
+		{
+      		pvr_spg_vblank_int_out = (DWREF(p) >> 16) & 0x3FF;
+      		pvr_spg_vblank_int_in  = DWREF(p) & 0x3FF;
+		    logxmsg(LOG_PVR, "SPG_VBLANK_INT: vblank out interrupt line number = %x\n", pvr_spg_vblank_int_out);
+		    logxmsg(LOG_PVR, "SPG_VBLANK_INT: vblank in interrupt line number = %x\n", pvr_spg_vblank_int_in);
+		}
+  		break;
+        
+		case (0xa05f8000 + 0x34 * 4): // 0xa05f80d0, SPG_CONTROL
+		{
+		    logxmsg(LOG_PVR, "SPG_CONTROL: csync_on_h = %d\n", (DWREF(p) >> 9) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: sync_direction = %d\n", (DWREF(p) >> 8) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: PAL = %d\n", (DWREF(p) >> 7) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: NTSC = %d\n", (DWREF(p) >> 6) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: force_field2 = %d\n", (DWREF(p) >> 5) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: interlace = %d\n", (DWREF(p) >> 4) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: spg_lock = %d\n", (DWREF(p) >> 3) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: mcsync_pol = %d\n", (DWREF(p) >> 2) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: mvsync_pol = %d\n", (DWREF(p) >> 1) & 1);
+		    logxmsg(LOG_PVR, "SPG_CONTROL: mhsync_pol = %d\n", (DWREF(p) >> 0) & 1);
+		}
+		break;
+
+		case 0xa05f8000 + 0x35 * 4: // 0xa05f80d4, SPG_HBLANK
+		{
+		    logxmsg(LOG_PVR, "SPG_HBLANK: hbend = %x, hbstart = %x\n",
+		    	(DWREF(p) >> 16) & 0x3ff,
+		    	DWREF(p) & 0x3ff);
+		}
+		break;
+
+		case 0xa05f8000 + 0x36 * 4: // 0xa05f80d8, SPG_LOAD
 		{
 			dw = *(DWORD *) p;
-			logxmsg(LOG_PVR, "pvr_write: [SPG_VBLANK]\r\n");
-			logxmsg(LOG_PVR, "pvr_write: número de scanlines por frame: %d\r\n", MSB(dw));
-			logxmsg(LOG_PVR, "pvr_write: número de clocks por scanline: %d\r\n", LSB(dw));
+			logxmsg(LOG_PVR, "SPG_LOAD: vcount = %x, hcount = %x\n",
+   				(dw >> 16) & 0x3ff,
+   				dw & 0x3ff);
 		}
 		break;
 
 		case 0xa05f80e4: // TEXTURESTRIDE (3D) (Width of rectangular texture)
 		{
-			dw = *(DWORD *) p;
 			long valor = dw & 0x1F; // 5 bits
+			dw = *(DWORD *) p;
 			logxmsg(LOG_PVR, "pvr_write: TEXTURESTRIDE [SPG_WIDTH] : %02x %d\n", valor, valor);
 		}
 		break;
@@ -1179,7 +1238,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_1(0xa05f8000 + 0x4e * 4, "PRIMALLOCPOS [TA_ITP_CURRENT] (TA) (Current primitive allocation position), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x4f * 4, "TILEARRAYSIZE [TA_GLOB_TILE_CLIP] (TA) (Tile Array dimensions), grabando %x", *(DWORD *) p);
 		PVR_WRITE_CB_1(0xa05f8000 + 0x50 * 4, cb_ppblocksize, "PPBLOCKSIZE [TA_ALLOC_CTRL] (TA) (PP-block sizes), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x51 * 4, "TASTART [TA_LIST_INIT] (TA) (Start vertex enqueueing strobe), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x51 * 4, cb_tastart, "TASTART [TA_LIST_INIT] (TA) (Start vertex enqueueing strobe), grabando %x", *(DWORD *) p);
 
 		PVR_WRITE_1(0xa05f8000 + 0x52 * 4, "[TA_YUV_TEX_BASE], grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x53 * 4, "[TA_YUV_TEX_CTRL], grabando %x", *(DWORD *) p);

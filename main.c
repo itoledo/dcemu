@@ -313,7 +313,7 @@ Uint32 TimerCallback(Uint32 interval, void * param)
 	return 250; /* 1000 */
 }
 
-inline void dma_check()
+void dma_check()
 {
 	if (*DMAOR & DME)
 	{
@@ -343,7 +343,7 @@ inline void dma_check()
 
 #define TMU_INT
 
-inline void timer_check()
+void timer_check()
 {
     if (*TSTR & 8)
     {
@@ -395,6 +395,7 @@ void main_loop(void)
 	SDL_Event event;
 	int cnt = 0;
 	DWORD valor;
+//	int timer_cnt = 0;
 	
 	for (;;)
 	{
@@ -591,7 +592,13 @@ void main_loop(void)
 			(*PC_func) ();
 
 			dma_check();
-			timer_check();
+//			if (timer_cnt++ == 195) // 781.25
+/*			if (timer_cnt++ == 10)
+			{ */
+			if (*TSTR)
+				timer_check();
+/*				timer_cnt = 0;
+			} */
 			check_ints();
 
 /*			if (PC == BreakPoint)
@@ -607,13 +614,69 @@ void main_loop(void)
 			instrucciones++;
 
 //			if ((instrucciones % 3333333) == 0) // cada 200 mhz / 60 revisamos eventos / redibujamos pantalla
+			if ((cnt % (3333333 / 0x1FF)) == 0)
+			{
+				pvr_scanline++;
+				
+				if (pvr_scanline == pvr_spg_vblank_int_out)
+				{
+        			logxmsg(LOG_PVR, "llamando SCANINT1\n");
+    				intc_add(ASIC_EVT_PVR_SCANINT1, 0);
+				}
+				else
+				if (pvr_scanline == pvr_spg_vblank_int_in)
+				{
+        			logxmsg(LOG_PVR, "llamando SCANINT2\n");
+    				intc_add(ASIC_EVT_PVR_SCANINT2, 0);
+				}
+			}
+
 			if ((++cnt) == 3333333)
 			{
    				cnt = 0;
+   				pvr_scanline = 0;
 				break; // salimos de este ciclo y vamos al siguiente
 			}						
 		}
 
+		if (pvr_3dscene)
+		{
+//			if (!(pvr_listdone & (1 << 4)) && pvr_registered & (1 << 4))
+			if (pvr_registered & (1 << 4))
+			{
+       			logxmsg(LOG_INTC, "añadiendo intc para PT\n");
+				intc_add(pvr_lists[4], 0);
+			}
+//			if (!(pvr_listdone & (1 << 3)) && pvr_registered & (1 << 3))
+			if (pvr_registered & (1 << 3))
+			{
+       			logxmsg(LOG_INTC, "añadiendo intc para TRANSMOD\n");
+				intc_add(pvr_lists[3], 0);
+			}
+//			if (!(pvr_listdone & (1 << 2)) && pvr_registered & (1 << 2))
+			if (pvr_registered & (1 << 2))
+			{
+       			logxmsg(LOG_INTC, "añadiendo intc para TRANSPOLY\n");
+				intc_add(pvr_lists[2], 0);
+			}
+//			if (!(pvr_listdone & (1 << 1)) && pvr_registered & (1 << 1))
+			if (pvr_registered & (1 << 1))
+			{
+       			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEMOD\n");
+				intc_add(pvr_lists[1], 0);
+			}
+//			if (!(pvr_listdone & (1 << 0)) && pvr_registered & (1 << 0))
+			if (pvr_registered & (1 << 0))
+			{
+       			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEPOLY\n");
+				intc_add(pvr_lists[0], 0);
+			}
+//			intc_add(ASIC_EVT_PVR_RENDERDONE, 0);
+		}
+
+		logxmsg(LOG_PVR, "llamando VBLINT\n");
+		intc_add(ASIC_EVT_PVR_VBLINT, 0);
+//		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
 
 		while (SDL_PollEvent(&event))
@@ -1120,8 +1183,8 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-//	PC = 0x8c008300;
+//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+	PC = 0x8c008300;
 //	PC = 0x00000000;
 //	PC = 0x8c0000e0;
 	str_PC = get_memory_pointer(PC);

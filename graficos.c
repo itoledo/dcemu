@@ -3,6 +3,7 @@
 #include <SDL_opengl.h>
 #include "options.h"
 #include "graficos.h"
+#include "intc.h"
 
 #define TEXTURE_CACHING
 
@@ -36,8 +37,21 @@ float screentexheight = 512.0f;
 int screenheight = 480;
 int screenformat = FRAMEBUFFER_RGB565;
 int framebuffer_size = 640*480*2;
+int pvr_scanline = 0;
+int pvr_3dscene = 0;
+DWORD pvr_registered = 0;
+DWORD pvr_lists[] = {
+		ASIC_EVT_PVR_OPAQUEDONE,
+		ASIC_EVT_PVR_OPAQUEMODDONE,
+		ASIC_EVT_PVR_TRANSDONE,
+		ASIC_EVT_PVR_TRANSMODDONE,
+		ASIC_EVT_PVR_PTDONE };
 DWORD pvr_fb_r_ctrl = (1 << 23) | (1 << 2) | 1; // VGA, enabled, RGB565
 DWORD pvr_fb_r_sof1 = 0x0;
+DWORD pvr_spg_vblank_int = 0x00280208;
+WORD pvr_spg_vblank_int_in = 0x208;
+WORD pvr_spg_vblank_int_out = 0x028;
+
 pcon_func * pvr_texture_pixelconvert;
 
 Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
@@ -45,7 +59,6 @@ Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
 	return (((src >> 4) & 0x0FFF) | ((src << 12) & 0xF000));
 }
 
-DWORD pvr_registered = 0;
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
         ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
 #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
@@ -120,16 +133,16 @@ void limpiar_pantalla()
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }    
 
-void cb_renderstart(DWORD addr, void * p, size_t size)
+void cb_tastart(DWORD addr, void * p, size_t size)
 {
 	SDL_GL_SwapBuffers();
 	pvr_framebufferdisplay = false;
-	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso
+//	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso ??? VBLINT?
 
 	logxmsg(LOG_PVR, "cb_renderstart\n");
 	pvr_listdone = 0;
 	cur_tex_count = 0;
-	
+
 	limpiar_pantalla();
 }
 
@@ -175,6 +188,7 @@ void cb_ppblocksize(DWORD addr, void * p, size_t size)
 	logxmsg(LOG_PVR, "opaquepoly: %d\n", opaquepoly);
 
 	pvr_registered = 0;
+	pvr_3dscene = 1;
 
 	if (punch_through > 0)
 		SET_BIT(pvr_registered, 1 << 4);
@@ -229,6 +243,9 @@ void ta_check(DWORD addr)
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); */
 //			pvr_registered |= (1 << pvr_listtype);
 			pvr_listdone |= (1 << pvr_listtype);
+   			intc_add(pvr_lists[pvr_listtype], 100);
+			if (pvr_listdone == pvr_registered)
+				intc_add(ASIC_EVT_PVR_RENDERDONE, 200);
 		}
 		break;
 		

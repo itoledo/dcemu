@@ -1,5 +1,5 @@
 /* -*- c -*-
-    $Id: cdio.h,v 1.49 2004/05/13 01:50:10 rocky Exp $
+    $Id: cdio.h,v 1.1 2004/05/19 12:55:32 itoledo Exp $
 
     Copyright (C) 2001 Herbert Valerio Riedel <hvr@gnu.org>
     Copyright (C) 2003, 2004 Rocky Bernstein <rocky@panix.com>
@@ -33,6 +33,21 @@
 #define CDIO_API_VERSION 1
 
 #include <cdio/version.h>
+
+#ifdef _WIN32
+#undef HAVE_UNISTD_H
+#undef HAVE_STDINT_H
+#undef HAVE_INTTYPES_H
+#undef HAVE_STDBOOL_H
+#undef HAVE_ISOC99_PRAGMA
+#include <windows.h>
+#define uint8_t BYTE
+#define int32_t int
+#define uint32_t unsigned int
+#define uint16_t unsigned short
+#define int8_t short
+#define uint64_t unsigned long long
+#endif
 
 #ifdef  HAVE_SYS_TYPES_H
 #include <sys/types.h>

@@ -208,7 +208,7 @@ void PC_f_nextpc(void)
 	str_PC = get_memory_pointer(PC);
 }
 
-inline void swap_floatregisters(void)
+void swap_floatregisters(void)
 {
     float tempr[16];
 
@@ -217,7 +217,7 @@ inline void swap_floatregisters(void)
 	memcpy(&float_registers[0], &tempr[0], sizeof(float)*16);
 }
 
-inline void swap_registers(void)
+void swap_registers(void)
 {
 	DWORD tempr[8];
 	

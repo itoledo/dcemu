@@ -10,6 +10,8 @@ static	int 	intcnt = 0;
 extern	int		pvr_registered;
 extern	int		pvr_registering;
 extern	int		pvr_listdone;
+static	DWORD	pending_ints = 0;
+DWORD	intc_queuemask = 0;
 
 #undef DEBUG_INTC
 
@@ -33,9 +35,9 @@ bool intc(DWORD irq)
 
 	switch(irq)
 	{
-		case EXC_IRQ9:			v = 0x9;	break;
-		case EXC_IRQB:			v = 0xb;	break;
-		case EXC_IRQD:			v = 0xd;	break;
+/* 2 */	case EXC_IRQD:			v = 0x1;	break; // más de 0001, no corre
+/* 4 */	case EXC_IRQB:			v = 0x3;	break; // más de 0011, no corre
+/* 6 */	case EXC_IRQ9:			v = 0x5;	break; // más de 0101, no corre
 		case EXC_TMU0_TUNI0:	v = ((*IPRA) >> 12) & 0xf;	break;
 		case EXC_TMU1_TUNI1:	v = ((*IPRA) >>  8) & 0xf;	break;
 		case EXC_TMU2_TUNI2:	v = ((*IPRA) >>  4) & 0xf;	break;
@@ -105,23 +107,160 @@ bool intc(DWORD irq)
 	return true;
 }
 
+typedef struct pending_ints_str PENDING_INT;
+
+struct pending_ints_str
+{
+    PENDING_INT * next;
+    DWORD pending_int;
+    int cnt;
+};
+
+PENDING_INT * last_int;
+PENDING_INT * int_list;
+
+void intc_add(DWORD inttoadd, int cnt)
+{
+	PENDING_INT * tmp;
+
+	if (intc_queuemask & inttoadd)
+	{
+     	logxmsg(LOG_INTC, "descartando int %x\n", inttoadd);
+		return; // descartamos si ya existe una
+	}
+
+	tmp = malloc(sizeof(PENDING_INT));
+	tmp->pending_int = inttoadd;
+	tmp->cnt = cnt;
+	tmp->next = NULL;
+	if (last_int != NULL)
+		last_int->next = tmp;
+	last_int = tmp;
+	if (int_list == NULL)
+		int_list = tmp;
+/*	pending_ints |= inttoadd; */
+	SET_BIT(ASIC_ACK_A, inttoadd);
+	intc_queuemask |= inttoadd;
+	logxmsg(LOG_INTC, "añadiendo int %x, total %x\n", inttoadd, intc_queuemask);
+}
+
+void intc_delete(PENDING_INT * int2del)
+{
+    PENDING_INT * tmp, * tmp_next;
+	logxmsg(LOG_INTC, "borrando int %x\n", int2del->pending_int);
+    intc_queuemask &= ~int2del->pending_int;
+	if (int2del == int_list)
+	{
+		int_list = int_list->next;
+		last_int = int_list;
+		free(int2del);
+	}
+    for (tmp = int_list; tmp; tmp = tmp_next)
+    {
+        tmp_next = tmp->next;
+        if (tmp->next == int2del)
+        {
+            tmp->next = int2del->next;
+            if (last_int == int2del)
+            	last_int = tmp;
+            free(int2del);
+            return;
+		}
+	}
+}
+
+bool intc_check(DWORD intcheck)
+{
+    if (PC_func != PC_f_normal)
+    	return false;
+
+    SET_BIT(ASIC_ACK_A, intcheck);
+
+	if (ASIC_IRQ9_A & intcheck
+	&&	intc(EXC_IRQ9))
+	    return true;
+ 
+	if (ASIC_IRQB_A & intcheck
+	&&  intc(EXC_IRQB))
+	    return true;
+ 
+	if (ASIC_IRQD_A & intcheck
+	&&  intc(EXC_IRQD))
+	    return true;
+	    
+	return false;
+}
+
 void check_ints()
 {
-    char * s;
+//    char * s;
+	PENDING_INT * pint, * pint_next;
     
 	if (PC_func != PC_f_normal)
 /* 	||  IS_SET(SR, SR_BL)
 	||  VBR == 0) */
 		return;
 
-	intdelay++;
+/*	if (pending_ints == 0)
+		return; */
+		
+	if (int_list == NULL)
+ 		return;
 
-	if (intdelay == 180000)
+	for (pint = int_list; pint; pint = pint_next)
+	{
+     	pint_next = pint->next;
+/*		if (--pint->cnt > 0)
+			continue; */
+     	if (pint->pending_int & ASIC_IRQ9_A
+     	&&  intc(EXC_IRQ9))
+     	{
+          	intc_delete(pint);
+          	return;
+		}
+     	if (pint->pending_int & ASIC_IRQB_A
+     	&&  intc(EXC_IRQB))
+     	{
+          	intc_delete(pint);
+          	return;
+		}
+     	if (pint->pending_int & ASIC_IRQD_A
+     	&&  intc(EXC_IRQD))
+     	{
+          	intc_delete(pint);
+          	return;
+		}
+		intc_delete(pint);
+	}
+/*	if (pending_ints & ASIC_IRQ9_A
+	&&  intc(EXC_IRQ9))
+	{
+		pending_ints = 0;
+		return;
+	}
+		
+	if (pending_ints & ASIC_IRQB_A
+	&&  intc(EXC_IRQB))
+	{
+		pending_ints = 0;
+		return;
+	}
+
+	if (pending_ints & ASIC_IRQD_A
+	&&  intc(EXC_IRQD))
+	{
+		pending_ints = 0;
+		return;
+	} */
+
+/*	intdelay++;
+
+	if (intdelay == 50000)
 	{
 		DWORD dw = 0;
 		s = NULL;
 
-		if (intcnt > 9)
+		if (intcnt > 6)
 			intcnt = 0;
 
 //		logxmsg(LOG_INTC, "intc: procesando eventos PVR: cnt = %d\n", intcnt);
@@ -129,19 +268,6 @@ void check_ints()
 		switch(intcnt)
 		{
 			case 0:
-//   			if (pvr_registered == 0 || pvr_registered == pvr_listdone)
-   			{
-				dw = 1 << 3;	// ASIC_EVT_PVR_SCANINT1
-				s = "ASIC_EVT_PVR_SCANINT1\n";
-			}			
-			break;
-
-			case 1:
-			dw = 1 << 4;	// ASIC_EVT_PVR_SCANINT2
-			s = "ASIC_EVT_PVR_SCANINT2\n";
-			break;
-
-			case 2:
 			if ((pvr_registered & (1 << 0)))
 			{
 				dw = 1 << 7;	// ASIC_EVT_PVR_OPAQUEDONE
@@ -149,7 +275,7 @@ void check_ints()
 			}				
 			break;
 			
-			case 3:
+			case 1:
 			if ((pvr_registered & (1 << 1)))
 			{			
 				dw = 1 << 8;	// ASIC_EVT_PVR_OPAQUEMODDONE
@@ -157,7 +283,7 @@ void check_ints()
 			}				
 			break;
 			
-			case 4:
+			case 2:
 			if ((pvr_registered & (1 << 2)))
 			{			
 				dw = 1 << 9;	// ASIC_EVT_PVR_TRANSDONE
@@ -165,7 +291,7 @@ void check_ints()
 			}				
 			break;
 			
-			case 5:
+			case 3:
 			if ((pvr_registered & (1 << 3)))
 			{			
 				dw = 1 << 10;	// ASIC_EVT_PVR_TRANSMODDONE
@@ -173,7 +299,7 @@ void check_ints()
 			}				
 			break;
 
-			case 6:
+			case 4:
 			if ((pvr_registered & (1 << 4)))
 			{
 				dw = 1 << 21;	// ASIC_EVT_PVR_PTDONE
@@ -181,7 +307,7 @@ void check_ints()
 			}				
 			break;
 
-			case 7:
+			case 5:
 //			if (pvr_registering == -1)
 			if (pvr_registered == pvr_listdone) // todas las listas hechas
 			{
@@ -190,12 +316,7 @@ void check_ints()
 			}			
 			break;
 
-			case 8:
-			dw = 1 << 5;	// ASIC_EVT_PVR_VBLINT
-			s = "ASIC_EVT_PVR_VBLINT\n";
-			break;
-
-			case 9:
+			case 6:
 			if (maple_dma)
 			{
 				dw = 1 << 12; // maple dma complete
@@ -233,7 +354,7 @@ void check_ints()
 			    	logxmsg(LOG_PVR, "intc %s ejecutada\n", s);
 				return;
 			}
-		}				
+		}
 		if (ASIC_IRQB_A & dw)
 		{
 			logxmsg(LOG_INTC, "intc: asic_irqb, %d\n", intcnt);

@@ -5,11 +5,11 @@
 #define DCEMU_PRIVATE_H
 
 // VERSION DEFINITIONS
-#define VER_STRING	"0.0.1.1233"
+#define VER_STRING	"0.0.1.1315"
 #define VER_MAJOR	0
 #define VER_MINOR	0
 #define VER_RELEASE	1
-#define VER_BUILD	1233
+#define VER_BUILD	1315
 #define COMPANY_NAME	""
 #define FILE_VERSION	""
 #define FILE_DESCRIPTION	"DCEMU - Dreamcast Emulator"

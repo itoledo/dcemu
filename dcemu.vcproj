@@ -19,7 +19,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				AdditionalIncludeDirectories="C:\lib_sdl\SDL_image-1.2.3\include"
+				AdditionalIncludeDirectories="&quot;C:\lib_sdl\SDL-devel-1.2.7-mingw32\include&quot;;&quot;C:\lib_sdl\SDL_image-1.2.3\include&quot;;.\include"
 				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS"
 				MinimalRebuild="TRUE"
 				BasicRuntimeChecks="3"
@@ -34,10 +34,10 @@
 			<Tool
 				Name="VCLinkerTool"
 				RegisterOutput="FALSE"
-				AdditionalDependencies="opengl32.lib"
+				AdditionalDependencies="opengl32.lib libcdio.lib libiso9660.lib winmm.lib"
 				OutputFile="$(OutDir)/dcemu.exe"
 				LinkIncremental="2"
-				AdditionalLibraryDirectories="C:\lib_sdl\SDL_image-1.2.3\lib"
+				AdditionalLibraryDirectories="&quot;C:\lib_sdl\SDL_image-1.2.3\lib&quot;;&quot;C:\lib_sdl\SDL-devel-1.2.7-mingw32\lib&quot;;.\lib\msvc"
 				IgnoreAllDefaultLibraries="FALSE"
 				GenerateDebugInformation="TRUE"
 				ProgramDatabaseFile="$(OutDir)/dcemu.pdb"
@@ -142,6 +142,9 @@
 				RelativePath=".\dcopcodes.c">
 			</File>
 			<File
+				RelativePath=".\debug.c">
+			</File>
+			<File
 				RelativePath=".\floatcontrol.c">
 			</File>
 			<File
@@ -152,6 +155,12 @@
 			</File>
 			<File
 				RelativePath=".\graficos.c">
+			</File>
+			<File
+				RelativePath=".\intc.c">
+			</File>
+			<File
+				RelativePath=".\iso.c">
 			</File>
 			<File
 				RelativePath=".\log.c">
@@ -170,6 +179,12 @@
 			</File>
 			<File
 				RelativePath=".\opcodes.c">
+			</File>
+			<File
+				RelativePath=".\reg.c">
+			</File>
+			<File
+				RelativePath=".\sh4.c">
 			</File>
 			<File
 				RelativePath=".\shift.c">

@@ -210,9 +210,11 @@ void DebugUpdate(void)
 void disasm(DWORD address, char *buffer)
 {
 	WORD opcode;
+	WORD op;
+
 	memread(address, &opcode, 2);
 
-	WORD op = find_opcode(address);
+	op = find_opcode(address);
 
 	if (op != 0xffff) {
 		switch(opcodes[op].params) 

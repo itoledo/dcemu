@@ -7,12 +7,12 @@ WINDRES = windres.exe
 RES  = dcemu_private.res
 OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o $(RES)
 LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o $(RES)
-LIBS =  -L"C:/Dev-Cpp/lib" -L"C:/lib_sdl/SDL-devel-1.2.7-mingw32/lib" -L"C:/lib_sdl/SDL_image-1.2.3/lib" -L"C:/lib_sdl/SDL_ttf-2.0.6/lib" -L"C:/lib_sdl/sdlconsole-2.1/lib" -mwindows -Llib/ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lwinmm -mwindows -march=athlon-xp -m3dnow 
+LIBS =  -L"C:/Dev-Cpp/lib" -L"C:/lib_sdl/SDL-devel-1.2.7-mingw32/lib" -L"C:/lib_sdl/SDL_image-1.2.3/lib" -L"C:/lib_sdl/SDL_ttf-2.0.6/lib" -L"C:/lib_sdl/sdlconsole-2.1/lib" -mwindows -Llib/ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lwinmm -mwindows -march=athlon -mmmx 
 INCS =  -I"C:/Dev-Cpp/include"  -I"C:/lib_sdl/SDL-devel-1.2.7-mingw32/include/SDL"  -I"C:/lib_sdl/SDL_ttf-2.0.6/include/SDL"  -I"C:/lib_sdl/SDL_image-1.2.3/include/SDL"  -I"C:/lib_sdl/sdlconsole-2.1/include" 
 CXXINCS =  -I"C:/Dev-Cpp/include/c++"  -I"C:/Dev-Cpp/include/c++/mingw32"  -I"C:/Dev-Cpp/include/c++/backward"  -I"C:/Dev-Cpp/include"  -I"C:/lib_sdl/SDL-devel-1.2.7-mingw32/include/SDL"  -I"C:/lib_sdl/SDL_ttf-2.0.6/include/SDL"  -I"C:/lib_sdl/SDL_image-1.2.3/include/SDL"  -I"C:/lib_sdl/sdlconsole-2.1/include" 
 BIN  = dcemu.exe
-CXXFLAGS = $(CXXINCS)  -O2 -march=athlon-xp -m3dnow
-CFLAGS = $(INCS)-Wall -fomit-frame-pointer -Iinclude/   -O2 -march=athlon-xp -m3dnow
+CXXFLAGS = $(CXXINCS)  -fexpensive-optimizations -O2 -march=athlon -mmmx
+CFLAGS = $(INCS)-Wall -fomit-frame-pointer -Iinclude/   -fexpensive-optimizations -O2 -march=athlon -mmmx
 
 .PHONY: all all-before all-after clean clean-custom
 
