@@ -344,6 +344,7 @@ void ta_check(DWORD addr)
 				    pvr_texture_pixelconvert = pcon_argb4444_to_rgba4444;
 				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_EXT;
      				pvr_texture_components = 4;
+     				pvr_texture_twiddled = 1;
      				break;
 
 					case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;

@@ -10,12 +10,14 @@ OPCODE(add39) // ADD Rm, Rn : Rn + Rm -> Rn (0011nnnn mmmm1100)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+/*	signed long rm, rn;
 
 	COPY_REG(rm, R(m));
 	COPY_REG(rn, R(n));
 	rn += rm;
-	COPY_REG(R(n), rn);
+	COPY_REG(R(n), rn); */
+	
+	R(n) += R(m);
 
 #ifdef DEBUG_ARITH
     logmsg("add39: r[%d]=%x,%d r[%d]=%x,%d\r\n",
@@ -28,11 +30,13 @@ OPCODE(add40) // ADD #imm, Rn
 {
 	short n = (arg >> 8) & 0x0F;
 	signed long s = SignExtend8(arg & 0xFF);
-	signed long rn;
+/*	signed long rn;
 
 	COPY_REG(rn, R(n));
 	rn += s;
-	COPY_REG(R(n), rn);
+	COPY_REG(R(n), rn); */
+
+	R(n) += s;
 
 #ifdef DEBUG_ARITH
     logmsg("add40: r[%d]=%x,%d\r\n",
@@ -70,7 +74,7 @@ OPCODE(addc41) // ADDC Rm, Rn (0011nnnn mmmm1110)
 OPCODE(cmpeq43) // CMP/EQ #imm, R0 (10001000 iiiiiiii)
 {
 	signed long i = SignExtend8(arg & 0xFF);
-	signed long r0;
+//	signed long r0;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/eq: r[0]=%x,%d,'%c' == #%x,%d,'%c' ?\r\n",
@@ -78,9 +82,10 @@ OPCODE(cmpeq43) // CMP/EQ #imm, R0 (10001000 iiiiiiii)
         (signed) i, (signed) i, (signed) i);
 #endif
 
-	COPY_REG(r0, R(0));
+/*	COPY_REG(r0, R(0));
 
-	if (r0 == i)
+	if (r0 == i) */
+	if (R(0) == i)
 		SET_T
 	else
 		UNSET_T
@@ -90,7 +95,7 @@ OPCODE(cmpeq44) // CMP/EQ Rm, Rn (0011nnnn mmmm0000)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+//	signed long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/eq: r[%d]=%x,%d,'%c' == r[%d]=%x,%d,'%c' ?\r\n",
@@ -98,11 +103,11 @@ OPCODE(cmpeq44) // CMP/EQ Rm, Rn (0011nnnn mmmm0000)
         m, (signed) R(m), (signed) R(m), (signed) R(m));
 #endif
 
-	COPY_REG(rm, R(m));
-	COPY_REG(rn, R(n));
+/*	COPY_REG(rm, R(m));
+	COPY_REG(rn, R(n)); */
 
-//	if ((signed) R(m) == (signed) R(n))
-	if (rm == rn)
+	if ((signed) R(m) == (signed) R(n))
+//	if (rm == rn)
 		SET_T
 	else
 		UNSET_T
@@ -112,16 +117,17 @@ OPCODE(cmphs45) // CMP/HS Rm, Rn (0011nnnn mmmm0010)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	unsigned long rm, rn;
+//	unsigned long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/hs: r[%d]=%x >= r[%d]=%x ?\r\n", n, (unsigned long) R(n), m, (unsigned long) R(m));
 #endif
 
-	COPY_REG(rm, R(m));
+/*	COPY_REG(rm, R(m));
 	COPY_REG(rn, R(n));
 
-	if (rn >= rm)
+	if (rn >= rm) */
+	if ((unsigned) R(n) >= (unsigned) R(m))
 		SET_T
 	else
 		UNSET_T
@@ -131,16 +137,17 @@ OPCODE(cmpge46) // CMP/GE Rm, Rn (0011nnnn mmmm0011)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+//	signed long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/ge: r[%d]=%x >= r[%d]=%x ?\r\n", n, (signed long) R(n), m, (signed long) R(m));
 #endif
 
-	COPY_REG(rm, R(m));
+/*	COPY_REG(rm, R(m));
 	COPY_REG(rn, R(n));
 
-	if (rn >= rm)
+	if (rn >= rm) */
+	if ((signed) R(n) >= (signed) R(m))
 		SET_T
 	else
 		UNSET_T
@@ -150,17 +157,17 @@ OPCODE(cmphi47) // CMP/HI Rm, Rn (0011nnnn mmmm0110)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	unsigned long rm, rn;
+//	unsigned long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/hi: r[%d]=%x > r[%d]=%x ?\r\n", n, (unsigned long) R(n), m, (unsigned long) R(m));
 #endif
 
-	COPY_REG(rm, R(m));
-	COPY_REG(rn, R(n));
+/*	COPY_REG(rm, R(m));
+	COPY_REG(rn, R(n)); */
 
-//	if ((unsigned long) R(n) > (unsigned long) R(m))
-	if (rn > rm)
+	if ((unsigned long) R(n) > (unsigned long) R(m))
+//	if (rn > rm)
 		SET_T
 	else
 		UNSET_T
@@ -170,17 +177,17 @@ OPCODE(cmpgt48) // CMP/GT Rm, Rn (0011nnnn mmmm0111)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	signed long rm, rn;
+//	signed long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/gt: r[%d]=%x > r[%d]=%x ?\r\n", n, (signed long) R(n), m, (signed long) R(m));
 #endif
 
-	COPY_REG(rm, R(m));
-	COPY_REG(rn, R(n));
+/*	COPY_REG(rm, R(m));
+	COPY_REG(rn, R(n)); */
 
-//	if ((signed long) R(n) > (signed long) R(m))
-	if (rn > rm)
+	if ((signed long) R(n) > (signed long) R(m))
+//	if (rn > rm)
 		SET_T
 	else
 		UNSET_T
@@ -189,16 +196,16 @@ OPCODE(cmpgt48) // CMP/GT Rm, Rn (0011nnnn mmmm0111)
 OPCODE(cmppz49) // CMP/PZ Rn (0100nnnn 00010001)
 {
 	short n = (arg >> 8) & 0x0F;
-	signed long rn;
+//	signed long rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/pz: r[%d]=%x >= 0 ?\r\n", n, (signed long) R(n));
 #endif
 
-	COPY_REG(rn, R(n));
+//	COPY_REG(rn, R(n));
 
-//	if ((signed long) R(n) >= 0)
-	if (rn >= 0)
+	if ((signed long) R(n) >= 0)
+//	if (rn >= 0)
 		SET_T
 	else
 		UNSET_T
