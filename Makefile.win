@@ -12,7 +12,7 @@ INCS =  -I"D:/Dev-Cpp/include"  -I"D:/lib_sdl/SDL-1.2.7/include/SDL"  -I"D:/lib_
 CXXINCS =  -I"D:/Dev-Cpp/include/c++"  -I"D:/Dev-Cpp/include/c++/mingw32"  -I"D:/Dev-Cpp/include/c++/backward"  -I"D:/Dev-Cpp/include"  -I"D:/lib_sdl/SDL-1.2.7/include/SDL"  -I"D:/lib_sdl/SDL_image-1.2.3/include" 
 BIN  = dcemu.exe
 CXXFLAGS = $(CXXINCS)  -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
-CFLAGS = $(INCS)-Wall -Iinclude/   -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
+CFLAGS = $(INCS)-Wall -fomit-frame-pointer -Iinclude/   -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
 
 .PHONY: all all-before all-after clean clean-custom
 

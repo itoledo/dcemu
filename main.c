@@ -74,6 +74,8 @@ WORD joystick = 0xFFFF;
 SDL_Joystick * js;
 bool refresh_screen = true;
 
+void timer_check();
+
 /*
 void opcode_log(int pos, WORD arg)
 {
@@ -245,16 +247,20 @@ void RedibujarPantalla()
 
 Uint32 TimerCallback(Uint32 interval, void * param)
 {
-	SDL_Event e;
+/*	SDL_Event e;
 	
 	e.type = SDL_USEREVENT;
-	e.user.code = 1;
+	e.user.code = 1; */
 /*	e.user.data1 = NULL;
 	e.user.data2 = NULL; */
 
-	SDL_PushEvent(&e);
+/*	SDL_PushEvent(&e);
 
-	return 250; /* 1000 */
+	return 250; */ /* 1000 */
+
+	timer_check();
+
+	return 10;
 }
 
 void dma_check()
@@ -364,8 +370,10 @@ void main_loop(void)
 //			if (timer_cnt++ == 195) // 781.25
 /*			if (timer_cnt++ == 10)
 			{ */
-			if (*TSTR)
-				timer_check();
+
+/*			if (*TSTR)
+				timer_check(); */
+
 /*				timer_cnt = 0;
 			} */
 			check_ints();
@@ -844,7 +852,7 @@ int main(int argc, char *argv[])
 	WORD wvalor;
 	DWORD dwvalor;
 
-//	SDL_TimerID timer_id;
+	SDL_TimerID timer_id;
 
 	//FILE * fp; 
 
@@ -854,8 +862,8 @@ int main(int argc, char *argv[])
 #ifdef _DEBUG
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE
 #else
-//	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER
-	if ( SDL_Init( SDL_INIT_VIDEO
+	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER
+//	if ( SDL_Init( SDL_INIT_VIDEO
 #endif
 #ifdef JOYSTICK
 		| SDL_INIT_JOYSTICK
@@ -960,7 +968,7 @@ int main(int argc, char *argv[])
 //	DebugShow();
 //	ConsolePrintf(0, "%s", "test");
 	
-/*	logmsg("añadiendo timer\n");
+	logmsg("añadiendo timer\n");
 
 	timer_id = SDL_AddTimer(20, TimerCallback, NULL);
 
@@ -968,7 +976,7 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stderr, "No se pudo crear timer: %s\r\n", SDL_GetError());
 		return 1;
-	} */
+	}
 
 	if ( SDL_MUSTLOCK(screen) )
 	{
@@ -1038,7 +1046,7 @@ int main(int argc, char *argv[])
 
 	main_loop();
 
-//	SDL_RemoveTimer(timer_id);
+	SDL_RemoveTimer(timer_id);
 
 	fprintf(logfp, "PC:%lx VBR:%lx spd:%d", PC, VBR, instrucciones/(time(NULL) - start_time));
 
