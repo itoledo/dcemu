@@ -261,8 +261,8 @@ OPCODE(rte143) // RTE (00000000 00101011)
 	delayslot = SPC;
 	PC_func = PC_f_delayslot;
 	inside_int = false;
-	logmsg("rte: SR=%x, SPC=%x\r\n", SR, SPC);
-	dump_registers();
+/*	logmsg("rte: SR=%x, SPC=%x\r\n", SR, SPC);
+	dump_registers(); */
 //	filelogging = 0;
 //	dump_llamadas();
 }

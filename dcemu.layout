@@ -33,13 +33,12 @@ TopLine=261
 LeftChar=1
 [Editor_2]
 Open=0
+Top=0
 <<<<<<< dcemu.layout
-Top=0
-CursorCol=1
-CursorRow=1
-TopLine=1
+CursorCol=4
+CursorRow=153
+TopLine=136
 =======
-Top=0
 CursorCol=1
 CursorRow=540
 TopLine=1
@@ -68,8 +67,8 @@ LeftChar=1
 [Editor_5]
 Open=0
 Top=0
-CursorCol=4
-CursorRow=9
+CursorCol=6
+CursorRow=15
 TopLine=1
 LeftChar=1
 [Editor_6]
@@ -94,7 +93,7 @@ CursorRow=8
 TopLine=1
 LeftChar=1
 [Editor_9]
-Open=0
+Open=1
 Top=0
 CursorCol=1
 CursorRow=62
@@ -129,7 +128,7 @@ CursorRow=3
 TopLine=1
 LeftChar=1
 [Editor_14]
-Open=0
+Open=1
 Top=0
 CursorCol=1
 CursorRow=509
@@ -199,7 +198,7 @@ CursorRow=17
 TopLine=1
 LeftChar=1
 [Editor_24]
-Open=0
+Open=1
 Top=0
 CursorCol=2
 CursorRow=194

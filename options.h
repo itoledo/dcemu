@@ -29,6 +29,7 @@
 // #define DEBUG_MEM
 // #define DEBUG_MEM_READ
 // #define DEBUG_MEM_WRITE
+#define DEBUG_MEMORY_POINTER
 // #define DEBUG_LOGIC
 // #define DEBUG_MEM_REGISTERS
 // #define DEBUG_MEM_VIDEO

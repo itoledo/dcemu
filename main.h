@@ -32,7 +32,7 @@ extern void PutPixelN(Uint32 pos, void * data, size_t size);
 extern void ReadPixelN(Uint32 pos, void * data, size_t size);
 extern SDL_Surface *screen;
 extern SDL_Surface *backscreen;
-extern SDL_Surface *glscreen;
+// extern SDL_Surface *glscreen;
 extern BYTE * screenbase;
 extern bool logmem;
 extern bool logmemreg;

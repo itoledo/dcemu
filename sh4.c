@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "main.h" // para definición de BIOS_SIZE
 #include "sh4.h"
+#include "options.h"
 
 extern FILE * logfp, * serialfp, * memfp;
 extern unsigned char * memoria;
@@ -102,6 +103,7 @@ void PC_f_delayslot2(void)
 {
 	if (delayslot == 0)
 	{
+		logmsg("PC_f_delayslot2: saltando a delayslot 0? PC=%x\n", PC);
 		dump_registers();
 		fclose(logfp);
 		abort();
@@ -135,6 +137,13 @@ void PC_f_delayslot2(void)
 		str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base]; */
 //	logmsg("saltando a %02x %06x\n", (PC >> 24) & 0xFF, PC & 0x00FFFFFF);
 //	str_PC = &mem_zone[(PC >> 24) & 0xFF][PC & 0x00FFFFFF];
+#ifdef DEBUG_MEMORY_POINTER
+	if (get_memory_pointer(PC) == NULL)
+	{	
+		logxmsg(LOG_MEM, "PC_f_delayslot2: direccion %x invalida\n", PC);
+		abort();
+	}
+#endif
 	str_PC = get_memory_pointer(PC);
 }
 
@@ -149,6 +158,7 @@ void PC_f_nextpc(void)
 {
 	if (NEXTPC == 0)
 	{
+		logmsg("PC_f_nextpc: saltando a delayslot 0? PC=%x\n", PC);
 		dump_registers();
 		fclose(logfp);
 		abort();
@@ -186,6 +196,15 @@ void PC_f_nextpc(void)
 
 //	logmsg("saltando a %02x %06x\n", (PC >> 24) & 0xFF, PC & 0x00FFFFFF);
 //	str_PC = &mem_zone[(PC >> 24) & 0xFF][PC & 0x00FFFFFF];
+
+#ifdef DEBUG_MEMORY_POINTER
+	if (get_memory_pointer(PC) == NULL)
+	{	
+		logxmsg(LOG_MEM, "PC_f_nextpc: direccion %x invalida\n", PC);
+		abort();
+	}
+#endif
+
 	str_PC = get_memory_pointer(PC);
 }
 

@@ -7,6 +7,8 @@
 DWORD SQ0[8];
 DWORD SQ1[8];
 
+BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
+
 char * mem_zone[0x100]; // para las zonas de memoria
 
 typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
@@ -237,6 +239,7 @@ void mem_hash_setup(void)
 	}
 
 	mem_zone[0x0C] = &memoria[0];
+	mem_zone[0x7E] = &stack_mem[0];
 	mem_zone[0x80] = &bios_mem[0];
 	mem_zone[0x8C] = &memoria[0];
 	mem_zone[0xA4] = &video_mem[0];	// ?
@@ -285,7 +288,7 @@ void mem_hash_setup(void)
 void mem_read_error(unsigned long direccion, void * p, size_t size)
 {
 	logxmsg(LOG_MEM, "mem_read_error: dir %x, tamaño %d\r\n", direccion, size);
-	dump_registers();
+//	dump_registers();
 }
 
 void mem_write_error(unsigned long direccion, void * p, size_t size)
@@ -296,7 +299,7 @@ void mem_write_error(unsigned long direccion, void * p, size_t size)
 		case 2: logxmsg(LOG_MEM, "mem_write_error: dir %x, word %04x %d\n", direccion, *(WORD *) p, *(WORD *)p);					break;
 		case 4: logxmsg(LOG_MEM, "mem_write_error: dir %x - %02x, dword %08x %d\n", direccion, (direccion % 0x100) / 4, *(DWORD *)p, *(DWORD *)p);			break;
 	}
-	dump_registers();
+//	dump_registers();
 }
 
 void sq_write(unsigned long direccion, void * p, size_t size)
@@ -1298,7 +1301,14 @@ void ram_read(unsigned long direccion, void * p, size_t size)
 //logmsg( "ram_read: dir %8x, size %x\r\n", direccion, (int) size);
 //memcpy(p, &memoria[(direccion & 0x1FFFFFFF)], size);
 //	memcpy(p, &orig_mem[(direccion & 0xFFFFFF)], size);
-	memcpy(p, &mem_zone[direccion >> 24][direccion & 0xFFFFFF], size);
+#ifdef DEBUG_MEMORY_POINTER
+	if (get_memory_pointer(direccion) == NULL)
+	{	
+		logxmsg(LOG_MEM, "ram_read: direccion %x invalida\n", direccion);
+		return;
+	}
+#endif
+	memcpy(p, get_memory_pointer(direccion), size);
 }
 
 void ram_write(unsigned long direccion, void * p, size_t size)
@@ -1306,7 +1316,14 @@ void ram_write(unsigned long direccion, void * p, size_t size)
 //logmsg( "ram_write: dir %8x, size %x\r\n", direccion, (int) size);
 //memcpy(&memoria[(direccion % 0x20000000)], p, size);
 //memcpy(&orig_mem[(direccion & 0xFFFFFF)], p, size);
-	memcpy(&mem_zone[direccion >> 24][direccion & 0xFFFFFF], p, size);
+#ifdef DEBUG_MEMORY_POINTER
+	if (get_memory_pointer(direccion) == NULL)
+	{	
+		logxmsg(LOG_MEM, "ram_write: direccion %x invalida\n", direccion);
+		return;
+	}
+#endif
+	memcpy(get_memory_pointer(direccion), p, size);
 }
 
 void memread(unsigned long direccion, void * target, size_t size)

@@ -291,7 +291,8 @@ void RedibujarPantalla()
 		DebugUpdate();
 		SDL_Flip(screen);
 		glRasterPos2f(0, 0);
-		glDrawPixels(screenwidth, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
+//		glDrawPixels(screenwidth, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
+		glDrawPixels(640, 480, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
 		SDL_GL_SwapBuffers();
 #endif
 
@@ -959,7 +960,6 @@ int main(int argc, char *argv[])
 
 	SDL_TimerID timer_id;
 
-	unsigned char * moffset;
 	FILE * fp; 
 
 	inicializar_logs();
@@ -1059,9 +1059,13 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-//	PC = 0x8c008300;
+//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+	PC = 0x8c008300;
 //	PC = 0;
+//	str_PC = &memoria[mem_n_base + ip_bs1_offset];
+//	str_PC = &memoria[0xc008300];
+//	str_PC = &bios_mem[0];
+	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit(screen))
  	{
@@ -1086,12 +1090,6 @@ int main(int argc, char *argv[])
 	{
 		fprintf(logfp, "Es necesario SDL_Lock\r\n");
 	}
-
-	moffset = &memoria[mem_n_base + mem_offset]; // ip_bs1_offset]; // &memoria[mem_offset];
-//	str_PC = &memoria[mem_n_base + ip_bs1_offset];
-//	str_PC = &memoria[0xc008300];
-//	str_PC = &bios_mem[0];
-	str_PC = get_memory_pointer(mem_base + ip_bs1_offset);
 
 	R(15) = mem_base + mem_offset + 1024*1024*15 - 4;
 

@@ -16,7 +16,7 @@ void logmsg (char * fmt, ...)
 	va_end (args);
  
 	fprintf(logfp, "%8lx: %s", PC, buf);
-//	fflush(logfp);
+	fflush(logfp);
 #endif
 }
 
@@ -40,7 +40,7 @@ void logxmsg (int tipo, char * fmt, ...)
 	}
   
 	fprintf(fp, "%8lx: %s", PC, buf);
-//	fflush(fp);
+	fflush(fp);
 #endif
 }
 

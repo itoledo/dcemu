@@ -5,7 +5,7 @@
 
 SDL_Surface *screen;
 SDL_Surface *backscreen;
-SDL_Surface *glscreen;
+// SDL_Surface *glscreen;
 
 typedef Uint16 pcon_func(Uint16 src);
 
@@ -803,13 +803,13 @@ int screeninit(int width, int height, int bpp)
 		return 1;
 	}
 
-	glscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height, 32, rmask, gmask, bmask, amask);
+/*	glscreen = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height, 32, rmask, gmask, bmask, amask);
 
 	if (glscreen == NULL)
 	{
 		fprintf(stderr, "No se pudo crear glscreen\n");
 		return 1;
-	}
+	} */
 
 	logmsg("vaciando backscreen\n");
 
