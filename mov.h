@@ -33,4 +33,5 @@ OPCODE(movt35); // MOVT Rn : T -> Rn (0000nnnn 00101001)
 OPCODE(swapb36); // SWAP.B Rm, Rn (0110nnnn mmmm1000)
 OPCODE(swapw37); // SWAP.W Rm, Rn (0110nnnn mmmm1001)
 OPCODE(xtrct38); // XTRCT Rm, Rn (0010nnnn mmmm1101)
-
+OPCODE(movw29); // MOV.W R0, @(disp, GBR)
+OPCODE(movl30); // MOV.L R0, @(disp, GBR)

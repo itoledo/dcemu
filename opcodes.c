@@ -47,8 +47,8 @@ struct st_cmd opcodes[] =
 	{ 0x000E, 0xF00F, "MOV.L",	OP_T_AT_R0_RM_RN,		movl27 },		// 0000nnnn mmmm1110
 
 	{ 0xC000, 0xFF00, "MOV.B",	OP_T_R0_AT_DISP_GBR,	NOIMP	},
-	{ 0xC100, 0xFF00, "MOV.W",	OP_T_R0_AT_DISP_GBR,	NOIMP	},
-	{ 0xC200, 0xFF00, "MOV.L",	OP_T_R0_AT_DISP_GBR,	NOIMP	}, // 30
+	{ 0xC100, 0xFF00, "MOV.W",	OP_T_R0_AT_DISP_GBR,	movw29	},
+	{ 0xC200, 0xFF00, "MOV.L",	OP_T_R0_AT_DISP_GBR,	movl30	}, // 30
 	{ 0xC400, 0xFF00, "MOV.B",	OP_T_AT_DISP_GBR_R0,	movb31	},
 	{ 0xC500, 0xFF00, "MOV.W",	OP_T_AT_DISP_GBR_R0,	NOIMP	},
 	{ 0xC600, 0xFF00, "MOV.L",	OP_T_AT_DISP_GBR_R0,	movl33	},
@@ -151,7 +151,7 @@ struct st_cmd opcodes[] =
 	{ 0x403E, 0xF0FF, "LDC",	OP_T_RM_SSR,			NOIMP	},
 	{ 0x404E, 0xF0FF, "LDC",	OP_T_RM_SPC,			NOIMP	}, // 120
 	{ 0x403A, 0xF0FF, "LDC",    OP_T_RM_SGR,            NOIMP   }, // INSERTADA
-	{ 0x40FA, 0xF0FF, "LDC",	OP_T_RM_DBR,			NOIMP	},
+	{ 0x40FA, 0xF0FF, "LDC",	OP_T_RM_DBR,			ldc122	},
 	{ 0x408E, 0xF08F, "LDC",	OP_T_RM_RN_BANK,		NOIMP	}, // REVISAR
 	{ 0x4007, 0xF0FF, "LDC.L",	OP_T_AT_RM_PLUS_SR,		ldcl122	},
 	{ 0x4017, 0xF0FF, "LDC.L",	OP_T_AT_RM_PLUS_GBR,	ldcl123	},
@@ -180,12 +180,12 @@ struct st_cmd opcodes[] =
 	{ 0x0018, 0xFFFF, "SETT",	OP_T_NA,				sett145 },	// 00000000 00011000
 	{ 0x001B, 0xFFFF, "SLEEP",	OP_T_NA,				sleep116	},
 	{ 0x0002, 0xF0FF, "STC",	OP_T_SR_RN,				stc147 },	
-	{ 0x0012, 0xF0FF, "STC",	OP_T_GBR_RN,			NOIMP	},
+	{ 0x0012, 0xF0FF, "STC",	OP_T_GBR_RN,			stc150	},
 	{ 0x0022, 0xF0FF, "STC",	OP_T_VBR_RN,			stc149 },
 	{ 0x0032, 0xF0FF, "STC",	OP_T_SSR_RN,			NOIMP	}, // 150
 	{ 0x0042, 0xF0FF, "STC",	OP_T_SPC_RN,			NOIMP	},
 	{ 0x003A, 0xF0FF, "STC",	OP_T_SGR_RN,			NOIMP	},
-	{ 0x00FA, 0xF0FF, "STC",	OP_T_DBR_RN,			NOIMP	},
+	{ 0x00FA, 0xF0FF, "STC",	OP_T_DBR_RN,			stc155	},
 	{ 0x0082, 0xF08F, "STC",	OP_T_RM_BANK_RN,		stc154	}, // REVISAR
 	{ 0x4003, 0xF0FF, "STC.L",	OP_T_SR_AT_MIN_RN,		stcl155	},
 	{ 0x4013, 0xF0FF, "STC.L",	OP_T_GBR_AT_MIN_RN,		stcl156	},
@@ -212,7 +212,7 @@ struct st_cmd opcodes[] =
 	{ 0xF00A, 0xF00F, "FMOV.S", OP_T_FRM_AT_RN,			fmovs176,	REQ_SZ_0	}, // 176	// 1111nnnn mmmm1010
 	{ 0xF00B, 0xF00F, "FMOV.S",	OP_T_FRM_AT_MIN_RN,		fmovs177,	REQ_SZ_0	},
 	{ 0xF007, 0xF00F, "FMOV.S",	OP_T_FRM_AT_R0_RN,		fmovs178,	REQ_SZ_0	},
-	{ 0xF00C, 0xF11F, "FMOV",	OP_T_DRM_DRN,			NOIMP,		REQ_PR_0_SZ_1	},
+	{ 0xF00C, 0xF11F, "FMOV",	OP_T_DRM_DRN,			fmov179,	REQ_PR_0_SZ_1	},
 	{ 0xF008, 0xF10F, "FMOV",	OP_T_AT_RM_DRN,			fmov180,	REQ_PR_0_SZ_1	},
 	{ 0xF006, 0xF10F, "FMOV",	OP_T_AT_R0_RM_DRN,		NOIMP,		REQ_PR_0_SZ_1	},
 	{ 0xF009, 0xF10F, "FMOV",	OP_T_AT_RM_PLUS_DRN,	fmov182,	REQ_PR_0_SZ_1	},
@@ -279,28 +279,71 @@ int find_opcode(DWORD mempos)
 {
 	int i, ret = -1;
 	WORD target;
-
+	bool cont;
+	
 	ReadMemoryW(mempos, &target);
 
 	for (i = 0; opcodes[i].opdesc; i++)
 	{
+		cont = false;
 		if ((target & opcodes[i].mask) == opcodes[i].op)
 		{
-            if (ret == -1)
-            	ret = i;
-            else
-            {
-                FILE * f = fopen("logs/error.txt", "a");
-             	fprintf(f, "opcode %x marca 2 o mas resultados: %d %s, %d %s\r\n",
-					target,
-					ret, opcodes[ret].opdesc,
-					i, opcodes[i].opdesc);
-             	fclose(f);
-         	}
+			if (opcodes[i].restriccion)
+			{
+				switch(opcodes[i].restriccion)
+				{
+					case REQ_PR_0:
+						if (IS_SET(FPSCR, FPSCR_PR))
+							cont = true;
+						break;
+	
+					case REQ_SZ_0:
+						if (IS_SET(FPSCR, FPSCR_SZ))
+							cont = true;
+						break;
+	
+					case REQ_PR_0_SZ_1:
+						if (IS_SET(FPSCR, FPSCR_PR) || !IS_SET(FPSCR, FPSCR_SZ))
+							cont = true;
+						break;
+	
+					case REQ_PR_1_SZ_0:
+						if (!IS_SET(FPSCR, FPSCR_PR) || IS_SET(FPSCR, FPSCR_SZ))
+							cont = true;
+						break;
+				}
+				if (cont)
+					continue;
+
+            	if (ret == -1)
+            		ret = i;
+           		else
+           		{
+                	FILE * f = fopen("logs/error.txt", "a");
+                	fprintf(f, "opcode %x marca 2 o mas resultados: %d %s, %d %s\r\n",
+                		target, ret, opcodes[ret].opdesc, i, opcodes[i].opdesc);
+               		fclose(f);
+           		}
+				//break;
+ 		    } 
+ 		    else
+ 		    {
+            	if (ret == -1)
+            		ret = i;
+           		else
+           		{
+                	FILE * f = fopen("logs/error.txt", "a");
+                	fprintf(f, "opcode %x marca 2 o mas resultados: %d %s, %d %s\r\n",
+                		target, ret, opcodes[ret].opdesc, i, opcodes[i].opdesc);
+               		fclose(f);
+           		}
+ 		    }
 		}
 	}
 
 	return ret;
+
+
 }
 
 void initopcodes()

@@ -186,6 +186,14 @@ OPCODE(fmovs178) // FMOV.S FRm, @(R0, Rn) (1111nnnn mmmm0111)
 #endif
 }
 
+OPCODE(fmov179) // FMOV DRm, DRn (1111nnn0 mmm01100)
+{
+   	short n = (arg >> 9) & 0x07;
+	short m = (arg >> 5) & 0x07;
+
+	memcpy(&DR(n), &DR(m), sizeof(float));
+}
+
 OPCODE(fmov180) // FMOV @Rm, DRn (1111nnn0 mmmm1000)
 {
    	short n = (arg >> 9) & 0x07;

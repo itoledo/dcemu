@@ -3,7 +3,7 @@
 	SYSCONTROL - System Control Opcodes for SH-4 Processor
 
 *****************************************************************************/
-
+ 
 #include <stdio.h>
 #include "sh4.h"
 
@@ -294,6 +294,28 @@ OPCODE(stc149) // STC VBR, Rn : VBR -> Rn (0000nnnn 00100010)
 #endif
 }
 
+OPCODE(stc150) // STC GBR, Rn 
+{
+	short n = (arg >> 8) & 0x0F;
+
+	R(n) = GBR;
+
+#ifdef DEBUG_SYSCONTROL
+	logmsg("stc150: GBR=%x -> r[%d]=%x\r\n", GBR, n, R(n));
+#endif
+}
+
+OPCODE(stc155) // STC DBR, Rn 
+{
+	short n = (arg >> 8) & 0x0F;
+
+	R(n) = DBR;
+
+#ifdef DEBUG_SYSCONTROL
+	logmsg("stc155: DBR=%x -> r[%d]=%x\r\n", DBR, n, R(n));
+#endif
+}
+
 OPCODE(stc154) // STC Rm_BANK, Rn (0000nnnn 1mmm0010)
 {
 	short n = (arg >> 8) & 0x0F;
@@ -491,3 +513,9 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 //	logmsg("imm: %x, NEXTPC: %x\r\n", imm, NEXTPC);
 }
 
+OPCODE(ldc122) // LDC Rm, DBR
+{
+	short m = (arg >> 8) & 0x0F;
+
+	ReadMemoryL(R(m), &DBR);
+}

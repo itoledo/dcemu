@@ -1,4 +1,4 @@
-// mov.cpp
+//  mov.cpp
 #include "main.h"
 
 OPCODE(mov0) // MOV #imm,Rn: imm -> sign extension-> Rn (1110nnnn iiiiiiii)
@@ -482,3 +482,21 @@ OPCODE(xtrct38) // XTRCT Rm, Rn (0010nnnn mmmm1101)
 #endif
 }
 
+OPCODE(movw29) // MOV.W R0, @(disp, GBR)
+{
+	BYTE disp = (arg & 0x00FF);
+	DWORD source = (disp << 1) + GBR;
+	WORD valor = (WORD) (R(0) & 0xFFFF);
+	
+	WriteMemoryW(source, &valor);
+
+}
+
+OPCODE(movl30) // MOV.L R0, @(disp, GBR)
+{
+	BYTE disp = (arg & 0x00FF);
+	DWORD source = (disp << 2) + GBR;
+	
+	WriteMemoryL(source, &R(0));
+
+}
