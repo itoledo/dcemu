@@ -3,5 +3,6 @@
 
 OPCODE(fsca); 	// FSCA FPUL, DRn
 OPCODE(NOIMP);
+OPCODE(BIOS_HACK);
 
 #endif // _DCOPCODES_H_

@@ -81,12 +81,9 @@ cached_texture cached_textures[MAX_TEXTURE_COUNT];
 int cur_tex_count = 0;
 
 GLuint pvr_textures[MAX_TEXTURE_COUNT];
+GLuint background_texture;
 
 bool vertexstart = true;
-
-void register_texture(int usize, int vsize, DWORD memorypos, void * data)
-{
-}
 
 void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 {
@@ -100,12 +97,13 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
     		&&  cached_textures[i].vsize == vsize
     		&&  cached_textures[i].memorypos == memorypos)
     		{
+          		logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
     			glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
     			return;
     		}
     	}
 
-//	logxmsg(LOG_PVR, "get_texture: creando textura %d\n", cur_tex_count);
+	logxmsg(LOG_PVR, "get_texture: creando textura %d\n", cur_tex_count);
 
 	// si llegamos aquí, la textura no está.
 	cached_textures[cur_tex_count].usize = usize;
@@ -117,7 +115,8 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 	// ahora al twiddle
 	if (twiddled)
 	{
-		q = cached_textures[cur_tex_count].data = (void *) malloc(sizeof(Uint16) * usize * vsize);
+		cached_textures[cur_tex_count].data = (void *) malloc(sizeof(Uint16) * usize * vsize);
+		q = cached_textures[cur_tex_count].data;
     	for (i = 0; i < vsize; i++)
     		for (j = 0; j < usize; j++)
     		{
@@ -129,7 +128,16 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 //		memcpy(q, v, usize * vsize * sizeof(Uint16)); */
 
     glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
+    if (glGetError() != GL_NO_ERROR)
+    	logxmsg(LOG_PVR, "get_texture: error en glBindTexture\n");
+    logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x\n", usize, vsize, memorypos | 0xA5000000);
     glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, usize, vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
+    if (glGetError() != GL_NO_ERROR)
+    	logxmsg(LOG_PVR, "get_texture: error en glTexImage2D\n");
+
+	FILE * fp = fopen("texture.raw", "wb");
+	fwrite(cached_textures[cur_tex_count].data, usize * vsize, sizeof(Uint16), fp);
+	fclose(fp);
 
     if (twiddled)
     	free(cached_textures[cur_tex_count].data);
@@ -142,21 +150,19 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
 {
 	Uint16 * q, * v;
-	int j;
-	register int i;
+	int i, j;
 
 	for (i = 0; i < cur_tex_count; i++)
 	{
-		if (cached_textures[i].memorypos == memorypos
- 		&&	cached_textures[i].usize == usize
-		&&  cached_textures[i].vsize == vsize)
+		if (cached_textures[i].usize == usize
+		&&  cached_textures[i].vsize == vsize
+		&&  cached_textures[i].memorypos == memorypos)
 		{
 //			logxmsg(LOG_PVR, "texture_find_or_create: retornando textura ya procesada\n");
-			*index = i;
 			return cached_textures[i].data;
 		}
 	}
-
+	
 	logxmsg(LOG_PVR, "texture_find_or_create: creando textura %d\n", cur_tex_count);
 
 	// si llegamos aquí, la textura no está.
@@ -183,7 +189,6 @@ void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
 			*(q++) = v[TWIDOUT(j,i)];
 		}
 		
-    *index = cur_tex_count;
 	return cached_textures[cur_tex_count++].data;
 }
 
@@ -664,22 +669,8 @@ void ta_check(DWORD addr)
 			{
 				if (pvr_texture_surface)
 				{
-/*					Uint16 * v = (Uint16 *) &video_mem[pvr_texture_surface];
-					Uint16 * newtex; // = v
-					int index; */
-
+        			logxmsg(LOG_PVR, "llamando a get_texture(%d, %d, %d, %d)\n", pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface, pvr_texture_twiddled);
      				get_texture(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface, pvr_texture_twiddled);
-
-/*					if (pvr_texture_twiddled)
-					{
-						newtex = texture_find_or_create(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface);
-					}
-					if (pvr_texture_pixelformat != -1)
-					{
-						lastindex = index;
-						glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, pvr_texture_size_usize, pvr_texture_size_vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, newtex);
-						glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
-					} */
 				}
 				glBlendFunc(pvr_srcblend, pvr_dstblend);
 				glBegin(GL_TRIANGLE_STRIP);
@@ -981,6 +972,7 @@ int screeninit(void)
 	Uint32 glrmask, glgmask, glbmask, glamask;
 	int asize, rsize, gsize, bsize;
 	int i;
+	static bool textures_created = false;
 
 //	screenwidth = 640;
 //	screenheight = 480;
@@ -1145,21 +1137,34 @@ int screeninit(void)
 
 		glEnable(GL_TEXTURE_2D);
 		glEnable(GL_BLEND);
-		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
-			glGenTextures(1, &pvr_textures[i]);
-/*		glGenTextures(1, &pvr_textures[0]);
-		glGenTextures(1, &pvr_textures[1]); */
-		glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
-		glBindTexture(GL_TEXTURE_2D, pvr_textures[1]);
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);	// Linear Filtering
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);	// Linear Filtering
+/*		if (textures_created == false)
+		{ */
+    /* 		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
+    			glGenTextures(1, &pvr_textures[i]); */
+            glGenTextures(MAX_TEXTURE_COUNT, pvr_textures);
+            glGenTextures(1, &background_texture);
+    /*		glGenTextures(1, &pvr_textures[0]);
+    		glGenTextures(1, &pvr_textures[1]); */
+    		glBindTexture(GL_TEXTURE_2D, background_texture);
+    		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
+    		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+    		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
+    		{
+        		glBindTexture(GL_TEXTURE_2D, pvr_textures[i]);
+        		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
+        		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+    		}
+/*    		glBindTexture(GL_TEXTURE_2D, pvr_textures[1]);
+    		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
+    		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering */
 		
-		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
-		{
-			cached_textures[i].data = NULL;
-		}
+/*    		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
+    		{
+    			cached_textures[i].data = NULL;
+    		} */
+    		
+    		textures_created = true;
+//		} */
 	}
 #else
 	screen = SDL_SetVideoMode(screenwidth, screenheight, 32, SDL_HWSURFACE | SDL_DOUBLEBUF);
@@ -1254,7 +1259,7 @@ SDL_Surface * draw_backscreen()
 
 void DibujarFramebuffer()
 {
-	glBindTexture(GL_TEXTURE_2D, pvr_textures[1]);
+	glBindTexture(GL_TEXTURE_2D, background_texture);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, screenancho);
 	switch(screenformat)
 	{
@@ -1299,6 +1304,7 @@ void DibujarFramebuffer()
 	glEnable(GL_DEPTH_TEST);
 	// fin textura 1024
 
+	logxmsg(LOG_PVR, "DibujarFramebuffer: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
 }
 

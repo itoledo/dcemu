@@ -10,7 +10,11 @@ typedef short bool;
 #define false 0
 
 // __fastcall void ejecutar_instruccion(DWORD instr);
+#ifndef MACRO_REPLACEMENTS
 void ejecutar_instruccion(DWORD instr);
+#else
+#define ejecutar_instruccion(instr) (query_cache(instr))
+#endif
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
 

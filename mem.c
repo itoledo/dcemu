@@ -355,6 +355,7 @@ void mem_write_error(unsigned long direccion, void * p, size_t size)
 		case 1:	logxmsg(LOG_MEM, "mem_write_error: dir %x, byte %02x %d '%c'\n", direccion, *(BYTE *)p, *(BYTE *)p, *(BYTE *)p);	break;
 		case 2: logxmsg(LOG_MEM, "mem_write_error: dir %x, word %04x %d\n", direccion, *(WORD *) p, *(WORD *)p);					break;
 		case 4: logxmsg(LOG_MEM, "mem_write_error: dir %x - %02x, dword %08x %d\n", direccion, (direccion % 0x100) / 4, *(DWORD *)p, *(DWORD *)p);			break;
+		default: logxmsg(LOG_MEM, "mem_write_error: size %d\n", size);	break;
 	}
 //	dump_registers();
 }
@@ -403,6 +404,7 @@ void video_read(unsigned long direccion, void * p, size_t size)
         case 1:		*(BYTE *)p = *(BYTE *) &video_mem[addr];		break;
         case 2:		*(WORD *)p = *(WORD *) &video_mem[addr];		break;
         case 4:		*(DWORD *)p = *(DWORD *) &video_mem[addr];	break;
+		default:	memcpy(p, &video_mem[addr], size);   		break;
     }
 
 /*	if (addr >= 0x04000000 && addr <= 0x07FFFFFF)
@@ -1334,6 +1336,7 @@ void video_write(unsigned long direccion, void * p, size_t size)
      	case 1:		*(BYTE *) &video_mem[addr] = *(BYTE *) p;	break;
      	case 2:		*(WORD *) &video_mem[addr] = *(WORD *) p;	break;
      	case 4:		*(DWORD *) &video_mem[addr] = *(DWORD *) p;	break;
+     	default:	memcpy(&video_mem[addr], p, size);			break;
 	}
 
 //	memcpy(&video_mem[addr], p, size);
@@ -1548,7 +1551,7 @@ void ram_write(unsigned long direccion, void * p, size_t size)
         case 2:    *(WORD *) get_memory_pointer(direccion) = *(WORD *)p;        break;
         case 4:    *(DWORD *) get_memory_pointer(direccion) = *(DWORD *)p;        break;
         default:   memcpy(get_memory_pointer(direccion), p, size);              break;
-    }    
+	}
 }
 
 #ifdef MEMORY_FUNCTIONS

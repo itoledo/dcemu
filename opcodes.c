@@ -206,6 +206,7 @@ struct st_cmd opcodes[] =
 	// Floating-Point Single-Precision Instructions
 	{ 0xF08D, 0xF0FF, "FLDI0",	OP_T_FRN,				fldi0170,	REQ_PR_0	}, // 170
 	{ 0xF09D, 0xF0FF, "FLDI1",	OP_T_FRN,				fldi1171,	REQ_PR_0	},
+
 	{ 0xF00C, 0xF00F, "FMOV",	OP_T_FRM_FRN,			fmov172,	REQ_SZ_0	},
 	{ 0xF008, 0xF00F, "FMOV.S", OP_T_AT_RM_FRN,			fmovs173,	REQ_SZ_0	}, // 173
 	{ 0xF006, 0xF00F, "FMOV.S",	OP_T_AT_R0_RM_FRN,		fmovs174,	REQ_SZ_0	},
@@ -213,6 +214,7 @@ struct st_cmd opcodes[] =
 	{ 0xF00A, 0xF00F, "FMOV.S", OP_T_FRM_AT_RN,			fmovs176,	REQ_SZ_0	}, // 176	// 1111nnnn mmmm1010
 	{ 0xF00B, 0xF00F, "FMOV.S",	OP_T_FRM_AT_MIN_RN,		fmovs177,	REQ_SZ_0	},
 	{ 0xF007, 0xF00F, "FMOV.S",	OP_T_FRM_AT_R0_RN,		fmovs178,	REQ_SZ_0	},
+
 	{ 0xF00C, 0xF11F, "FMOV",	OP_T_DRM_DRN,			fmov179,	REQ_PR_0_SZ_1	},
 	{ 0xF008, 0xF10F, "FMOV",	OP_T_AT_RM_DRN,			fmov180,	REQ_PR_0_SZ_1	},
 	{ 0xF006, 0xF10F, "FMOV",	OP_T_AT_R0_RM_DRN,		NOIMP,		REQ_PR_0_SZ_1	},
@@ -220,6 +222,7 @@ struct st_cmd opcodes[] =
 	{ 0xF00A, 0xF01F, "FMOV",	OP_T_DRM_AT_RN,			NOIMP,		REQ_PR_0_SZ_1	},
 	{ 0xF00B, 0xF01F, "FMOV",	OP_T_DRM_AT_MIN_RN,		fmov184,	REQ_PR_0_SZ_1	}, // 184
 	{ 0xF007, 0xF01F, "FMOV",	OP_T_DRM_AT_R0_RN,		fmov185,	REQ_PR_0_SZ_1	},
+
 	{ 0xF01D, 0xF0FF, "FLDS",	OP_T_FRM_FPUL,			flds186						},
 	{ 0xF00D, 0xF0FF, "FSTS",	OP_T_FPUL_FRN,			fsts187						}, // 187
 	{ 0xF05D, 0xF0FF, "FABS",	OP_T_FRN,				NOIMP,		REQ_PR_0		},
@@ -272,7 +275,10 @@ struct st_cmd opcodes[] =
 	{ 0xF0FD, 0xF1FF, "FSCA",	OP_T_FPUL_DRN,			fsca,		REQ_PR_0		},
 	{ 0xFBFD, 0xFFFF, "FRCHG",	OP_T_NA,				frchg232,	REQ_PR_0		},
 	{ 0xF3FD, 0xFFFF, "FSCHG",	OP_T_NA,				fschg233,	REQ_PR_0		},
+
+	// no existen en la DC
 	{ 0x0000, 0xFFFF, "NOIMP",  OP_T_NA,				NOIMP						},
+	{ 0xFFFF, 0xFFFF, "HACK",	OP_T_NA,				BIOS_HACK					},
 
 	{ 0, 0, NULL, 0, (void *) NULL }
 };

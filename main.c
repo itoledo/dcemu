@@ -995,16 +995,16 @@ int main(int argc, char *argv[])
 //		HACK_BASE + 2	:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
 // 		HACK_BASE + 4	:	<POSICION DEL FONT EN LA MEMORIA>
  
- 	wvalor = 0xD000;		memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);
- 	wvalor = 0x000B;		memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
+ 	wvalor = 0x000B;		memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);
+ 	wvalor = 0xD000;		memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
 #ifdef USE_BIOS_FONT 	
  	dwvalor = 0x00100020;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
 #else 	
  	dwvalor = FONT_BASE;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
 #endif 	
 
-	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
-	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
+	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
+	wvalor = 0xFFFF; /* BIOS_HACK*/		memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
 
 	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_SYSINFO, &wvalor, 2);
 	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_SYSINFO + 2, &wvalor, 2);
