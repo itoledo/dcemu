@@ -260,9 +260,12 @@ OPCODE(movl18) // MOV.L Rm, @(disp, Rn) : Rm -> (disp x 4 + Rn) (0001nnnn mmmmdd
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	BYTE disp = arg & 0x0F;
-
-	WriteMemoryL(R(n) + disp * 4, (DWORD *) &R(m));
+	DWORD disp = arg & 0x0F;
+	DWORD valor = R(m);
+	disp <<= 2;
+	disp += R(n);
+	
+	WriteMemoryL(disp, &valor);
 
 #ifdef DEBUG_MOV
 	logmsg("movl18: r[%d]=%x,%d r[%d]=%x,%d\r\n", m, R(m), R(m), n, R(n), R(n));

@@ -552,8 +552,10 @@ void main_loop(void)
 				opcodes[opcode_cache[PC - (mem_base + mem_offset)].idx].llamadas++;
 			} */
 			else
+			{
 				query_cache (instr);
 //			cache_call++;
+			}
 
 			dma_check();
 			timer_check();
@@ -564,6 +566,9 @@ void main_loop(void)
 
 			check_ints();
 
+			if (PC == BreakPoint)
+				DebugMode = DBG_STOP;
+				
 			if (DebugMode == DBG_STEP)
 			{
 				DebugMode = DBG_STOP;
@@ -950,6 +955,11 @@ int cargar_archivo( char * fname, void * target)
 	return cnt;
 }
 
+void exitproc(void)
+{
+	logmsg("Exited with PC = %08x", PC);
+}
+
 int main(int argc, char *argv[])
 {
 //	long idx, cnt = 0;
@@ -1059,9 +1069,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
 //	PC = 0x8c008300;
-	PC = 0x00000000;
+//	PC = 0x00000000;
 	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit(screen))
@@ -1129,6 +1139,7 @@ int main(int argc, char *argv[])
 
 	logmsg("llamando a main_loop\n");
 
+	atexit(exitproc);
 	main_loop();
 
 	SDL_RemoveTimer(timer_id);

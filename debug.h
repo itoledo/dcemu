@@ -19,6 +19,7 @@
 extern int DebugVisible;
 extern int DebugMode;
 extern DWORD MemDebug;
+extern DWORD BreakPoint;
 
 void DebugUpdate(void);
 int DebugInit(SDL_Surface *screenptr);

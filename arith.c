@@ -12,12 +12,9 @@ OPCODE(add39) // ADD Rm, Rn : Rn + Rm -> Rn (0011nnnn mmmm1100)
 	short m = (arg >> 4) & 0x0F;
 	signed long rm, rn;
 
-//	(signed) R(n) += (signed) R(m);
 	COPY_REG(rm, R(m));
 	COPY_REG(rn, R(n));
-	
 	rn += rm;
-	
 	COPY_REG(R(n), rn);
 
 #ifdef DEBUG_ARITH
@@ -33,14 +30,9 @@ OPCODE(add40) // ADD #imm, Rn
 	signed long s = SignExtend8(arg & 0xFF);
 	signed long rn;
 
-//	(signed) R(n) += (signed) s;
 	COPY_REG(rn, R(n));
-	
 	rn += s;
-	
 	COPY_REG(R(n), rn);
-
-//	logmsg("add40: R(%d)=%d,%x\n", n, R(n), R(n));
 
 #ifdef DEBUG_ARITH
     logmsg("add40: r[%d]=%x,%d\r\n",

@@ -12,6 +12,7 @@
 int DebugVisible = 1;
 int DebugMode = DBG_STOP;
 DWORD MemDebug = 0x8c0000e0;
+DWORD BreakPoint = 0xffffffff;
 
 SDL_Surface *DebugWindow;
 SDL_Surface *DebugDest;

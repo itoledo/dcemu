@@ -1097,7 +1097,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		case 0xa05f80d8: 				// FRAMETOTAL (2D) (Total number of frame cycles)
 		{
 			dw = *(DWORD *) p;
-			logmsg(LOG_PVR, "pvr_write: [SPG_VBLANK]\r\n");
+			logxmsg(LOG_PVR, "pvr_write: [SPG_VBLANK]\r\n");
 			logxmsg(LOG_PVR, "pvr_write: número de scanlines por frame: %d\r\n", MSB(dw));
 			logxmsg(LOG_PVR, "pvr_write: número de clocks por scanline: %d\r\n", LSB(dw));
 		}
@@ -1397,6 +1397,12 @@ void ram_write(unsigned long direccion, void * p, size_t size)
 
 void memread(unsigned long direccion, void * target, size_t size)
 {
+	if (mem_hash_read[direccion >> 24] == NULL) 
+	{
+		logmsg("memread: mem_hash_read is NULL for bank %02x\r\n", (direccion >> 24));
+		return;
+	}
+
 	(*mem_hash_read[direccion >> 24]) (direccion, target, size);
 // #ifdef DEBUG_MEM_READ
 	if (filelogging & FILELOG_MEMREADS)
@@ -1419,6 +1425,12 @@ void memread(unsigned long direccion, void * target, size_t size)
 
 void memwrite(unsigned long direccion, void * source, size_t size)
 {
+	if (mem_hash_write[direccion >> 24] == NULL) 
+	{
+		logmsg("memwrite: mem_hash_write is NULL for bank %02x\r\n", (direccion >> 24));
+		return;
+	}
+	
 	(*mem_hash_write[direccion >> 24]) (direccion, source, size);
 // #ifdef DEBUG_MEM_WRITE
 	if (filelogging & FILELOG_MEMWRITES)
