@@ -132,7 +132,7 @@ Open=1
 Top=0
 CursorCol=1
 CursorRow=35
-TopLine=7
+TopLine=6
 LeftChar=1
 [Editor_19]
 Open=0
@@ -146,7 +146,7 @@ Open=1
 Top=0
 CursorCol=1
 CursorRow=130
-TopLine=102
+TopLine=101
 LeftChar=1
 [Editor_21]
 Open=0
@@ -160,7 +160,7 @@ Open=1
 Top=0
 CursorCol=1
 CursorRow=230
-TopLine=202
+TopLine=200
 LeftChar=1
 [Editor_23]
 Open=0
@@ -174,7 +174,7 @@ Open=1
 Top=0
 CursorCol=1
 CursorRow=734
-TopLine=706
+TopLine=705
 LeftChar=1
 [Editor_25]
 Open=0
@@ -188,7 +188,7 @@ Open=1
 Top=0
 CursorCol=1
 CursorRow=151
-TopLine=123
+TopLine=121
 LeftChar=1
 [Editor_27]
 Open=0
@@ -202,7 +202,7 @@ Open=1
 Top=0
 CursorCol=1
 CursorRow=585
-TopLine=557
+TopLine=555
 LeftChar=1
 [Editor_29]
 Open=0
@@ -302,3 +302,6 @@ CursorCol=62
 CursorRow=4
 TopLine=1
 LeftChar=1
+[Editor_43]
+Open=0
+Top=0

@@ -88,5 +88,8 @@ $(BIN): $(OBJ)
 ./obj/iso.o: iso.c
 	$(CC) -c iso.c -o ./obj/iso.o $(CFLAGS)
 
+./obj/scramble.o: scramble.c
+	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)
+
 dcemu_private.res: dcemu_private.rc 
 	$(WINDRES) -i dcemu_private.rc -I rc -o dcemu_private.res -O coff 

@@ -1,7 +1,7 @@
 [Project]
 FileName=dcemu.dev
 Name=dcemu
-UnitCount=43
+UnitCount=44
 Type=0
 Ver=1
 ObjFiles=
@@ -10,7 +10,7 @@ Libs=D:\lib_sdl\SDL-1.2.7\lib;D:\lib_sdl\SDL_image-1.2.3\lib
 PrivateResource=dcemu_private.rc
 ResourceIncludes=
 MakeIncludes=
-Compiler=-Wall_@@_-fomit-frame-pointer_@@_-Iinclude/_@@_
+Compiler=-Wall_@@_-Iinclude/_@@_
 CppCompiler=
 Linker=-Llib/_@@_-lmingw32_@@_-lopengl32_@@_-lglu32_@@_-lSDLmain_@@_-lSDL_@@_-lSDL_image_@@_-liso9660_@@_-lcdio_@@_-lwinmm_@@_-mwindows_@@_
 IsCpp=0
@@ -471,6 +471,16 @@ BuildCmd=
 FileName=iso.h
 CompileCpp=0
 Folder=
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit44]
+FileName=scramble.c
+CompileCpp=0
+Folder=dcemu
 Compile=1
 Link=1
 Priority=1000
