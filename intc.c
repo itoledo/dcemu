@@ -53,9 +53,10 @@ bool intc(DWORD irq)
 	SSR = SR;
 	SPC = PC;
 	SGR = R(15);
-	SET_BIT(SR, SR_BL);
+	UpdateSR(SR | SR_BL | SR_MD | SR_RB);
+/*	SET_BIT(SR, SR_BL);
 	SET_BIT(SR, SR_MD);
-	SET_BIT(SR, SR_RB);
+	SET_BIT(SR, SR_RB); */
 
 	PC = VBR + 0x600;
 //	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];

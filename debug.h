@@ -16,13 +16,15 @@
 #define LOG_OPCODE2(param, string, arg1, arg2)			{ case param: sprintf(buffer, "%-9.7s " string, opcodes[op].opdesc, arg1, arg2); break; }
 #define LOG_OPCODE3(param, string, arg1, arg2, arg3)	{ case param: sprintf(buffer, "%-9.7s " string, opcodes[op].opdesc, arg1, arg2, arg3); break; }
 
-extern int DebugVisible;
-extern int DebugMode;
-extern DWORD MemDebug;
-extern DWORD BreakPoint;
+extern	int DebugVisible;
+extern	int DebugMode;
+extern	DWORD MemDebug;
+extern	DWORD BreakPoint;
 
-void DebugUpdate(SDL_Surface * DebugDest);
-int DebugInit(SDL_Surface *screenptr);
+extern	SDL_Surface *DebugWindow;
+
+void DebugUpdate(void);
+int DebugInit(void);
 void DebugShow(void);
 void DebugHide(void);
 void DebugPrintf (int which, char * fmt, ...);

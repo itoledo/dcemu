@@ -11,7 +11,8 @@ OPCODE(lds213) // LDS Rm, FPSCR : Rm -> FPSCR (0100mmmm 01101010)
 	short m = (arg >> 8) & 0x0F;
 
 //	FPSCR = R(m);
-	memcpy(&FPSCR, &R(m), sizeof(DWORD));
+	UpdateFPSCR(R(m));
+//	memcpy(&FPSCR, &R(m), sizeof(DWORD));
 
 #ifdef DEBUG_FLOAT_CONTROL
 	logmsg("lds213: FPSCR=%x, r[%d]=%x\r\n", FPSCR, m, R(m));
@@ -34,8 +35,10 @@ OPCODE(lds214) // LDS Rm, FPUL : Rm -> FPUL (0100mmmm 01011010)
 OPCODE(ldsl215) // LDS.L @Rm+, FPSCR : (Rm) -> FPSCR, Rm + 4 -> Rm (0100mmmm 01100110)
 {
 	short m = (arg >> 8) & 0x0F;
+	DWORD fpscr;
 
-	ReadMemoryL(R(m), &FPSCR);
+	ReadMemoryL(R(m), &fpscr);
+	UpdateFPSCR(fpscr);
 
 	R(m) += 4;
 

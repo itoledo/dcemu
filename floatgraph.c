@@ -178,10 +178,11 @@ OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 
 OPCODE(frchg232) // FRCHG (1111101111111101)
 {
-    if (IS_SET(FPSCR, FPSCR_FR))
+/*    if (IS_SET(FPSCR, FPSCR_FR))
         REMOVE_BIT(FPSCR, FPSCR_FR);
     else
-        SET_BIT(FPSCR, FPSCR_FR);
+        SET_BIT(FPSCR, FPSCR_FR); */
+    UpdateFPSCR(FPSCR ^ FPSCR_FR);
 
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("frchg232: fr=%d\r\n", IS_SET(FPSCR, FPSCR_FR) ? 1 : 0);

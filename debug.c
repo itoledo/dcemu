@@ -7,9 +7,12 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "debug.h"
+#include <SDL.h>
+#include <SDL_opengl.h>
 #include "graficos.h"
 #include "BFont.h"
 #include <time.h>
+#include "main.h"
 
 int DebugVisible = 1;
 int DebugMode = DBG_STOP;
@@ -21,7 +24,7 @@ SDL_Surface *DebugWindow;
 
 BFont_Info *DebugFont;
 
-int DebugInit(SDL_Surface *Screen)
+int DebugInit(void)
 {
 //	DebugDest = Screen;
 
@@ -31,7 +34,7 @@ int DebugInit(SDL_Surface *Screen)
 //	BFont_SetFontColor(DebugFont, 0xff, 0xff, 0xff);
 	
 	if (DebugWindow == NULL) 
-		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, Screen->w, Screen->h, Screen->format->BitsPerPixel, 0, 0, 0, 0);
+		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, 640, 480, 16, 0, 0, 0, 0);
 
 	if (DebugWindow == NULL)
  		return 1;
@@ -51,7 +54,7 @@ void DebugHide(void)
 	DebugVisible = 0;
 }
 
-void DebugUpdate(SDL_Surface * DebugDest)
+void DebugUpdate(void)
 {
 	char buf[100];
 	char buf2[100];
@@ -60,11 +63,16 @@ void DebugUpdate(SDL_Surface * DebugDest)
 	int x, y;
 	WORD opcode;
 	BYTE b;
-	Uint32 color_black = SDL_MapRGBA(DebugDest->format, 0x0, 0x0, 0x0, 0x0);
-	Uint32 color_white = SDL_MapRGBA(DebugDest->format, 0xff, 0xff, 0xff, 0x0);
+	Uint32 color_black = SDL_MapRGBA(DebugWindow->format, 0x0, 0x0, 0x0, 0x0);
+	Uint32 color_white = SDL_MapRGBA(DebugWindow->format, 0xff, 0xff, 0xff, 0x0);
+	extern int filelogging;
 
 	if (DebugVisible) 
  	{
+#if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
+		filelogging &= ~(FILELOG_MEMREADS | FILELOG_MEMWRITES);
+#endif
+
    		SDL_FillRect(DebugWindow, NULL, color_black);
    		
    		// Populate Debug Window
@@ -192,7 +200,10 @@ void DebugUpdate(SDL_Surface * DebugDest)
         	BFont_PutStringFont(DebugWindow, DebugFont, 10 + ((y / 4) * 125), 350 + ((y % 4) * 12), buf);
     	}
 
-		SDL_BlitSurface(DebugWindow, NULL, DebugDest, NULL);
+//		SDL_BlitSurface(DebugWindow, NULL, DebugDest, NULL);
+#if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
+		filelogging |= (FILELOG_MEMREADS | FILELOG_MEMWRITES);
+#endif
 	}
 }
 

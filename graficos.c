@@ -30,6 +30,9 @@ int pvr_dstblendmode;
 int pvr_framebufferdisplay = true;
 int screenbits = 16;
 int screenwidth = 320; // en unidades de 32 bits
+int screenancho = 640; // ancho en pixeles
+float screentexwidth = 1024.0f;
+float screentexheight = 512.0f;
 int screenheight = 480;
 int screenformat = FRAMEBUFFER_RGB565;
 int framebuffer_size = 640*480*2;
@@ -43,7 +46,6 @@ Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
 }
 
 DWORD pvr_registered = 0;
-#define MAX_TEXTURE_COUNT 10
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
         ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
 #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
@@ -979,8 +981,24 @@ int screeninit(void)
 //	if (!screen)
 	{
 //		screen = SDL_SetVideoMode(640, 480, 32 /* 32 */, SDL_OPENGLBLIT);
-		int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
-		screen = SDL_SetVideoMode(ancho, screenheight, 32 /* 32 */, SDL_OPENGLBLIT);
+		screenancho = screenwidth * ((screenbits == 32) ? 1 : 2);
+
+		if (screenancho > 512)
+			screentexwidth = 1024.0f;
+		else
+		if (screenancho > 256)
+			screentexwidth = 512.0f;
+
+		if (screenheight > 512)
+			screentexheight = 1024.0f;
+		else
+		if (screenheight > 256)
+			screentexheight = 512.0f;
+		else
+		if (screenheight > 128)
+			screentexheight = 256.0f;
+
+		screen = SDL_SetVideoMode(screenancho, screenheight, 32 /* 32 */, SDL_OPENGLBLIT);
 		if (screen == NULL)
 		{
 			logxmsg(LOG_PVR, "screen == NULL!!!!\n");
@@ -990,7 +1008,7 @@ int screeninit(void)
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
 //		glViewport(0, 0, 640, 480);
-		glViewport(0, 0, ancho, screenheight);
+		glViewport(0, 0, screenancho, screenheight);
 		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);		// This Will Clear The Background Color To Black
 		glClearDepth(1.0);				// Enables Clearing Of The Depth Buffer
 		glDepthFunc(GL_LESS);				// The Type Of Depth Test To Do
@@ -1005,7 +1023,7 @@ int screeninit(void)
 		glLoadIdentity();
 //		glOrtho(0, width, height, 0, 0.1, 100.0);
 //		glOrtho(0, 640, 480, 0, 0, 1024.0);
-		glOrtho(0, ancho, screenheight, 0, 0, 1024.0);
+		glOrtho(0, screenancho, screenheight, 0, 0, 1024.0);
 
 //		glScalef(1.0/640.0,1.0/480.0,1.0);
 //		glTranslatef(-320.0f, -240.0f, -1.0f);
@@ -1016,9 +1034,13 @@ int screeninit(void)
 		glEnable(GL_TEXTURE_2D);
 		glEnable(GL_BLEND);
 		glGenTextures(1, &pvr_textures[0]);
+		glGenTextures(1, &pvr_textures[1]);
 		glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+		glBindTexture(GL_TEXTURE_2D, pvr_textures[1]);
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);	// Linear Filtering
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);	// Linear Filtering
 		
 		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
 		{
@@ -1097,13 +1119,13 @@ SDL_Surface * draw_backscreen()
 	memcpy(backscreen->pixels, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1), framebuffer_size);
 	SDL_UnlockSurface(backscreen); */
 	SDL_Surface * tmp;
-	int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
+//	int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
 	tmp = SDL_CreateRGBSurfaceFrom(
  			get_memory_pointer(0xA5000000 + pvr_fb_r_sof1),
-    		ancho,
+    		screenancho,
       		screenheight,
         	screenbits,
-			ancho * (screenbits / 8),
+			screenancho * (screenbits / 8),
          	mask[screenformat].rmask,
          	mask[screenformat].gmask,
          	mask[screenformat].bmask,

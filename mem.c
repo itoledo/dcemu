@@ -1244,7 +1244,7 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		case 4:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(DWORD *) p); break;
 	} */
 
-	if (addr < VIDEO_SIZE)
+//	if (addr < VIDEO_SIZE)
 		memcpy(&video_mem[addr], p, size);
 	
 /*	if (addr < framebuffer_size)
@@ -1252,7 +1252,7 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		SDL_LockSurface(backscreen);
 		memcpy(backscreen->pixels + addr, p, size);
 		SDL_UnlockSurface(backscreen); */
-		refresh_screen = true;
+//		refresh_screen = true;
 /*	} */
 }
 
@@ -1281,7 +1281,7 @@ void regmap_read(unsigned long direccion, void * p, size_t size)
         break;
         }
     } */
-
+    
 #ifdef DEBUG_MEM_REGISTERS
 	if (logmemreg)
 	switch(size)
@@ -1390,7 +1390,7 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 		break;
 	}
 
-// #ifdef DEBUG_MEM_REGISTERS
+#ifdef DEBUG_MEM_REGISTERS
 //	if (logmemreg)
 	switch(size)
 	{
@@ -1406,7 +1406,7 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 			logxmsg(LOG_MEM, "regmap_write: dir %8x, dword %x\r\n", direccion, *(DWORD *) p);
 			break;
 	}
-// #endif
+#endif
 }
 
 void ram_read(unsigned long direccion, void * p, size_t size)
@@ -1457,7 +1457,7 @@ void memread(unsigned long direccion, void * target, size_t size)
 
 	(*mem_hash_read[direccion >> 24]) (direccion, target, size);
 #ifdef DEBUG_MEM_READ
-//	if (filelogging & FILELOG_MEMREADS)
+	if (filelogging & FILELOG_MEMREADS)
 	switch(size)
 	{
 		case 1:
@@ -1485,7 +1485,7 @@ void memwrite(unsigned long direccion, void * source, size_t size)
 	
 	(*mem_hash_write[direccion >> 24]) (direccion, source, size);
 #ifdef DEBUG_MEM_WRITE
-//	if (filelogging & FILELOG_MEMWRITES)
+	if (filelogging & FILELOG_MEMWRITES)
 	switch(size)
 	{
 		case 1:

@@ -124,10 +124,10 @@ void opcode_log(int pos, WORD arg)
 void query_cache(WORD arg) // función interna
 {
 	int i=oplist[arg];
-	if (i ==-1) 
+/*	if (i ==-1) 
 	{
 		return;
-	}
+	} */
 	if (opcodes[i].restriccion)
 	{
 		// no importa i ya que hay que buscar el opcode igual, de acuerdo a las restricciones
@@ -180,41 +180,74 @@ void RedibujarPantalla()
 
 	if (pvr_framebufferdisplay == true)
 	{
-		bs = draw_backscreen();
+/*		bs = draw_backscreen();
 		if (DebugVisible)
 			DebugUpdate(bs);
 		if (pausa == true)
 			DrawDebugInlineInfo(bs);
-		SDL_BlitSurface(bs, NULL, screen, NULL);
-		SDL_Flip(screen);
-/*		SDL_BlitSurface(backscreen, NULL, glscreen, NULL);
-		SDL_BlitSurface(glscreen, NULL, screen, NULL);
-		SDL_Flip(screen); */
-		glRasterPos2f(0, 0);
-//		SDL_LockSurface(backscreen);
-//		SDL_LockSurface(glscreen);
+		SDL_BlitSurface(bs, NULL, screen, NULL); */
+//		SDL_Flip(screen);
 
-//		glDrawPixels(640, 480, GL_RGBA /* RGBA */ , GL_UNSIGNED_BYTE, screen->pixels);
-		int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
-		glDrawPixels(ancho, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
+//		glRasterPos2f(0, 0); */
+//		glDrawPixels(ancho, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
 
+/*		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR); */
 
-/*		switch(screenbits)
+		if (DebugVisible)
 		{
-			case 16:
-			glDrawPixels(screenwidth, screenheight, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, screen->pixels);
+			DebugUpdate();
+			SDL_BlitSurface(DebugWindow, NULL, screen, NULL);
+			SDL_Flip(screen);
+			SDL_GL_SwapBuffers();
+  			return;
+		}
+
+		glBindTexture(GL_TEXTURE_2D, pvr_textures[1]);
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, screenancho);
+		switch(screenformat)
+		{
+			case FRAMEBUFFER_ARGB0555:
+			{
+		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_5_5_1, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
+			}
 			break;
 			
-			case 32:
-			glDrawPixels(640, 480, GL_RGB, GL_UNSIGNED_BYTE, screen->pixels);
+			case FRAMEBUFFER_RGB565:
+			{
+		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
+			}
 			break;
 			
-			default:
-			logxmsg(LOG_PVR, "screenbits: %d?\n", screenbits);
+			case FRAMEBUFFER_RGB888:
+			{
+				// FIXME?
+		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
+			}
 			break;
-		} */
-//		SDL_UnlockSurface(backscreen);
-//		SDL_UnlockSurface(glscreen);
+			
+			case FRAMEBUFFER_ARGB0888:
+			{
+		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, screentexwidth, screentexheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
+			}
+			break;
+		}
+//		glEnable(GL_BLEND);
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_BLEND);
+//		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+//		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glBegin(GL_QUADS);
+		glTexCoord2f(0.0f, screenheight / screentexheight); glVertex3f(0.0f, (float) screenheight, -1.0f);
+		glTexCoord2f(screenancho / screentexwidth, screenheight / screentexheight); glVertex3f((float) screenancho, (float) screenheight, -1.0f);
+		glTexCoord2f(screenancho / screentexwidth, 0.0f); glVertex3f((float) screenancho, 0.0f, -1.0f);
+		glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, 0.0f, -1.0f);
+		glEnd();
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		glEnable(GL_BLEND);
+		glEnable(GL_DEPTH_TEST);
+		// fin textura 1024
+
 		SDL_GL_SwapBuffers();
 	}
 
@@ -276,35 +309,35 @@ Uint32 TimerCallback(Uint32 interval, void * param)
 	return 250; /* 1000 */
 }
 
-void dma_check()
+inline void dma_check()
 {
 	if (*DMAOR & DME)
 	{
-/*		fprintf(fp, "DMA activado\r\n");
-		fprintf(fp, "SAR0: %08x SAR1:%08x SAR2:%08x SAR3:%08x\r\n",
+/*		logxmsg(LOG_MEM, "DMA activado\n");
+		logxmsg(LOG_MEM, "SAR0: %08x SAR1:%08x SAR2:%08x SAR3:%08x\n",
 			*SAR0, *SAR1, *SAR2, *SAR3);
-		fprintf(fp, "DAR0: %08x DAR1:%08x DAR2:%08x DAR3:%08x\r\n",
+		logxmsg(LOG_MEM, "DAR0: %08x DAR1:%08x DAR2:%08x DAR3:%08x\n",
 			*DAR0, *DAR1, *DAR2, *DAR3); */
 		if (IS_SET_REG(CHCR0, DE))
 		{
-//			logmsg("DMA: canal 0 activado, SAR0: %x, DAR0: %x, DMATCR0: %x\r\n", *SAR0, *DAR0, *DMATCR0);
+			logxmsg(LOG_MEM, "DMA: canal 0 activado, SAR0: %x, DAR0: %x, DMATCR0: %x\r\n", *SAR0, *DAR0, *DMATCR0);
 		}
 		if (IS_SET_REG(CHCR1, DE))
 		{
-//			logmsg("DMA: canal 1 activado, SAR1: %x, DAR1: %x, DMATCR1: %x\r\n", *SAR1, *DAR1, *DMATCR1);
+			logxmsg(LOG_MEM, "DMA: canal 1 activado, SAR1: %x, DAR1: %x, DMATCR1: %x\r\n", *SAR1, *DAR1, *DMATCR1);
 		}
 		if (IS_SET_REG(CHCR2, DE))
 		{
-//			logmsg("DMA: canal 2 activado, SAR2: %x, DAR2: %x, DMATCR2: %x\r\n", *SAR2, *DAR2, *DMATCR2);
+			logxmsg(LOG_MEM, "DMA: canal 2 activado, SAR2: %x, DAR2: %x, DMATCR2: %x\r\n", *SAR2, *DAR2, *DMATCR2);
 		}
 		if (IS_SET_REG(CHCR3, DE))
 		{
-//			logmsg("DMA: canal 3 activado, SAR3: %x, DAR3: %x, DMATCR3: %x\r\n", *SAR3, *DAR3, *DMATCR3);
+			logxmsg(LOG_MEM, "DMA: canal 3 activado, SAR3: %x, DAR3: %x, DMATCR3: %x\r\n", *SAR3, *DAR3, *DMATCR3);
 		}
 	}
 }
 
-void timer_check()
+inline void timer_check()
 {
     if (*TSTR & 8)
     {
@@ -342,6 +375,7 @@ void main_loop(void)
 {
 	WORD instr;
 	SDL_Event event;
+	int cnt = 0;
 	DWORD valor;
 	
 	for (;;)
@@ -415,13 +449,14 @@ void main_loop(void)
 								}
 								logmsg("seeking a %d, %x\n", secstart * 2048, secstart * 2048);
 								fseek(fp,secstart*2048, 0);
-								targetmem = malloc(sizeof(char) * 2048);
+								targetmem = malloc(sizeof(char) * 2048 * secnum);
 								while (idx < 2048 * secnum)
 								{
 									targetmem[idx++] = (c = fgetc(fp));
 								}
 								fclose(fp);
 								memwrite(targetaddr, &targetmem[0], 2048 * secnum);
+								free(targetmem);
 							}
 							break;
 
@@ -531,12 +566,10 @@ void main_loop(void)
 
 			(*PC_func) ();
 
-			instrucciones++;
-
 			check_ints();
 
-			if (PC == BreakPoint)
-				DebugMode = DBG_STOP;
+/*			if (PC == BreakPoint)
+				DebugMode = DBG_STOP; */
 				
 			if (DebugMode == DBG_STEP)
 			{
@@ -545,9 +578,17 @@ void main_loop(void)
 				RedibujarPantalla();
 			}
    	
-			if (instrucciones % 16000 == 0) // cada 10 opcodes revisamos los eventos
+			instrucciones++;
+
+//			if ((instrucciones % 3333333) == 0) // cada 200 mhz / 60 revisamos eventos / redibujamos pantalla
+			if ((++cnt) == 3333333)
+			{
+   				cnt = 0;
 				break; // salimos de este ciclo y vamos al siguiente
+			}						
 		}
+
+		RedibujarPantalla();
 
 		while (SDL_PollEvent(&event))
 		{
@@ -725,9 +766,9 @@ void main_loop(void)
 				case SDL_QUIT:
 				return;
 
-				case SDL_USEREVENT:
+/*				case SDL_USEREVENT:
 				RedibujarPantalla();
-				break;
+				break; */
 
 #ifdef JOYSTICK
 				case SDL_JOYAXISMOTION:
@@ -941,7 +982,7 @@ int main(int argc, char *argv[])
 	WORD wvalor;
 	DWORD dwvalor;
 
-	SDL_TimerID timer_id;
+//	SDL_TimerID timer_id;
 
 	//FILE * fp; 
 
@@ -951,7 +992,8 @@ int main(int argc, char *argv[])
 #ifdef _DEBUG
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE
 #else
-	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER
+//	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER
+	if ( SDL_Init( SDL_INIT_VIDEO
 #endif
 #ifdef JOYSTICK
 		| SDL_INIT_JOYSTICK
@@ -1048,7 +1090,7 @@ int main(int argc, char *argv[])
 //	PC = 0x8c0000e0;
 	str_PC = get_memory_pointer(PC);
 	
-	if (DebugInit(screen))
+	if (DebugInit())
  	{
 		fprintf(stderr, "No se pudo crear pantallas para debug\r\n");
 		return 1;
@@ -1057,7 +1099,7 @@ int main(int argc, char *argv[])
 //	DebugShow();
 //	ConsolePrintf(0, "%s", "test");
 	
-	logmsg("añadiendo timer\n");
+/*	logmsg("añadiendo timer\n");
 
 	timer_id = SDL_AddTimer(20, TimerCallback, NULL);
 
@@ -1065,7 +1107,7 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stderr, "No se pudo crear timer: %s\r\n", SDL_GetError());
 		return 1;
-	}
+	} */
 
 	if ( SDL_MUSTLOCK(screen) )
 	{
@@ -1079,6 +1121,7 @@ int main(int argc, char *argv[])
 	inicializar_fonts();
 #endif	
 
+#ifdef BIOS_HACKS
 	// HACK!
  	dwvalor = HACK_BASE + HACK_ROMFONT;	memwrite(SYSCALL_ROMFONT, &dwvalor, sizeof(DWORD));
 	dwvalor = HACK_BASE + HACK_GDROM;	memwrite(SYSCALL_GDROM, &dwvalor, sizeof(DWORD));
@@ -1110,6 +1153,7 @@ int main(int argc, char *argv[])
 
 	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_UNKNOWN, &wvalor, 2);
 	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_UNKNOWN + 2, &wvalor, 2);
+#endif // BIOS_HACKS
 
 	start_time = time(NULL);
 
@@ -1126,11 +1170,16 @@ int main(int argc, char *argv[])
 	logmsg("llamando a main_loop\n");
 
 	atexit(exitproc);
+
+#if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
+	filelogging |= FILELOG_MEMREADS | FILELOG_MEMWRITES;
+#endif
+
 	main_loop();
 
-	SDL_RemoveTimer(timer_id);
+//	SDL_RemoveTimer(timer_id);
 
-	fprintf(logfp, "PC:%lx VBR:%lx\r\n", PC, VBR);
+	fprintf(logfp, "PC:%lx VBR:%lx spd:%d", PC, VBR, instrucciones/(time(NULL) - start_time));
 
 	fclose(logfp);
 	fclose(serialfp);

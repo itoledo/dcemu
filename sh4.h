@@ -9,6 +9,9 @@ typedef short bool;
 #define true 1
 #define false 0
 
+void UpdateSR(DWORD newSR);
+void UpdateFPSCR(DWORD newFPSCR);
+
 // CPU Registers
 extern float float_registers[32];
 extern DWORD registers[];
@@ -142,8 +145,10 @@ extern unsigned long FPSCR; // Floating Point Status/Control Register
 extern unsigned long delayslot;
 extern unsigned long NEXTPC;
 
+/*
+#define R(n)		(registers[((n) > 7) ? ((n) + 8) : ((IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB)) ? ((n) + 8) : (n))])
 #define R_BANK(n)	(registers[((n) > 7) ? ((n) + 8) : ((IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB)) ? ((n)) : (n + 8))])
-#define FR(n) (float_registers[(FPSCR & FPSCR_FR) ? ((n) + 16) : (n)])
+#define FR(n)		(float_registers[(FPSCR & FPSCR_FR) ? ((n) + 16) : (n)])
 #define FR_index(n) ((FPSCR & FPSCR_FR) ? ((n) + 16) : (n))
 #define DR(n) (FR((n)*2))
 #define DR_index(z) (FR_index((z)*2))
@@ -151,6 +156,18 @@ extern unsigned long NEXTPC;
 #define XF_index(n) ((FPSCR & FPSCR_FR) ? (n) : ((n) + 16))
 #define XD(n) (XF((n)*2))
 #define XD_index(n) (XF_index((n)*2))
+*/
+
+#define	R(n)		(registers[n])
+#define R_BANK(n)	(registers[n+16])
+#define FR(n)		(float_registers[n])
+#define FR_index(n)	(n)
+#define DR(n)		(FR((n)*2))
+#define DR_index(z) (FR_index((z)*2))
+#define XF(n)		(float_registers[n+16])
+#define XF_index(n)	((n)+16)
+#define XD(n)		(XF((n)*2))
+#define XD_index(n)	(XF_index((n)*2))
 
 // FPSCR
 #define FPSCR_PR        (1<<19)
@@ -187,10 +204,6 @@ extern unsigned long NEXTPC;
 #define SignExtend8(c) (((c) & 0x80) ? (0xFFFFFF00 | (c)) : (c))
 #define SignExtend16(c) (((c) & 0x8000) ? (0xFFFF0000 | (c)) : (c))
 #define SignExtend12(c) (((c) & 0x0800) ? (0xFFFFF000 | (c)) : (c))
-
-// #define R(n)		(registers[((n) > 7) ? ((n) + 8) : (IS_SET(SR, SR_MD) ? (n) : (IS_SET(SR, SR_RB) ? ((n) + 8) : (n)))])
-#define R(n)		(registers[((n) > 7) ? ((n) + 8) : ((IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB)) ? ((n) + 8) : (n))])
-// #define R(n)		(registers[(n)])
 
 #define OPCODE(instr) void instr (WORD arg)
 #define COPY_REG(a, b) ((DWORD) (a) = (DWORD) (b))

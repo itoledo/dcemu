@@ -208,3 +208,60 @@ void PC_f_nextpc(void)
 	str_PC = get_memory_pointer(PC);
 }
 
+inline void swap_floatregisters(void)
+{
+    float tempr[16];
+
+	memcpy(&tempr[0], &float_registers[16], sizeof(float)*16);
+	memcpy(&float_registers[16], &float_registers[0], sizeof(float)*16);
+	memcpy(&float_registers[0], &tempr[0], sizeof(float)*16);
+}
+
+inline void swap_registers(void)
+{
+	DWORD tempr[8];
+	
+	memcpy(&tempr[0], &registers[16], sizeof(DWORD)*8);
+	memcpy(&registers[16], &registers[0], sizeof(DWORD)*8);
+	memcpy(&registers[0], &tempr[0], sizeof(DWORD)*8);
+}
+
+void UpdateFPSCR(DWORD newFPSCR)
+{
+	if (FPSCR & FPSCR_FR)
+	{
+ 		if (newFPSCR & FPSCR_FR)
+ 			;
+		else
+			swap_floatregisters();
+		FPSCR = newFPSCR;
+		return;
+	}			
+
+	if (newFPSCR & FPSCR_FR)
+		swap_floatregisters();
+	FPSCR = newFPSCR;
+}
+
+void UpdateSR(DWORD newSR)
+{
+	// veamos cómo estamos ahora
+//	if (IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB))
+	if ((SR & (SR_MD | SR_RB)) == (SR_MD | SR_RB))
+	{
+//		if (IS_SET(newSR, SR_MD) && IS_SET(newSR, SR_RB))
+		if ((newSR & (SR_MD | SR_RB)) == (SR_MD | SR_RB))
+			;
+		else
+			swap_registers();
+		SR = newSR;
+		return;
+	}
+	
+//	if (IS_SET(newSR, SR_MD) && IS_SET(newSR, SR_RB))
+	if ((newSR & (SR_MD | SR_RB)) == (SR_MD | SR_RB))
+		swap_registers();
+
+	SR = newSR;	
+}
+

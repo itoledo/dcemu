@@ -32,13 +32,16 @@ OPCODE(clrt115)	// CLRT (0000000000001000)
 
 OPCODE(sleep116)
 {
+	// al entrar al sleepmode, se activan las ints
+	REMOVE_BIT(SR, SR_MD);
 }
 
 OPCODE(ldc116) // LDC Rm, SR : Rm -> SR (0100mmmm 00001110)
 {
 	short m = (arg >> 8) & 0x0F;
 
-	SR = R(m);
+//	SR = R(m);
+	UpdateSR(R(m));
 
 #ifdef DEBUG_SYSCONTROL
 	logmsg("ldc116: R%d=%x -> SR=%x\r\n", m, R(m), SR);
@@ -71,8 +74,10 @@ OPCODE(ldc123) // LDC Rm, Rn_BANK (0100mmmm 1nnn1110)
 OPCODE(ldcl122) // LDC.L @Rm+, SR (0100mmmm 00000111)
 {
 	short m = (arg >> 8) & 0x0F;
+	DWORD newSR;
 
-	ReadMemoryL(R(m), &SR);
+	ReadMemoryL(R(m), &newSR);
+	UpdateSR(newSR);
 
 	R(m) += 4;
 
@@ -274,7 +279,8 @@ OPCODE(rte143) // RTE (00000000 00101011)
 {
 	extern bool inside_int;
 
-	SR = SSR;
+//	SR = SSR;
+	UpdateSR(SSR);
 	delayslot = SPC;
 	PC_func = PC_f_delayslot;
 	inside_int = false;
@@ -520,9 +526,11 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 	SSR = SR;
 	*TRA = (imm << 2);
 	*EXPEVT = 0x160;
-	SET_BIT(SR, SR_MD);
+
+	UpdateSR(SR | SR_MD | SR_RB | SR_BL);
+/*	SET_BIT(SR, SR_MD);
 	SET_BIT(SR, SR_RB);
-	SET_BIT(SR, SR_BL);
+	SET_BIT(SR, SR_BL); */
 	
 	NEXTPC = VBR + 0x0100;
 	PC_func = PC_f_nextpc;
