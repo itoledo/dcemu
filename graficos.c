@@ -87,22 +87,24 @@ void register_texture(int usize, int vsize, DWORD memorypos, void * data)
 {
 }
 
-void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
+void * texture_find_or_create(int usize, int vsize, DWORD memorypos, int * index)
 {
 	Uint16 * q, * v;
-	int i, j;
+	int j;
+	register int i;
 
 	for (i = 0; i < cur_tex_count; i++)
 	{
-		if (cached_textures[i].usize == usize
-		&&  cached_textures[i].vsize == vsize
-		&&  cached_textures[i].memorypos == memorypos)
+		if (cached_textures[i].memorypos == memorypos
+ 		&&	cached_textures[i].usize == usize
+		&&  cached_textures[i].vsize == vsize)
 		{
 //			logxmsg(LOG_PVR, "texture_find_or_create: retornando textura ya procesada\n");
+			*index = i;
 			return cached_textures[i].data;
 		}
 	}
-	
+
 	logxmsg(LOG_PVR, "texture_find_or_create: creando textura %d\n", cur_tex_count);
 
 	// si llegamos aquí, la textura no está.
@@ -129,6 +131,7 @@ void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
 			*(q++) = v[TWIDOUT(j,i)];
 		}
 		
+    *index = cur_tex_count;
 	return cached_textures[cur_tex_count++].data;
 }
 
@@ -621,6 +624,8 @@ void ta_check(DWORD addr)
 
 					Uint16 * v = (Uint16 *) &video_mem[pvr_texture_surface];
 					Uint16 * newtex = v;
+					int index = -1;
+					static int lastindex = -1;
 #ifndef TEXTURE_CACHING
 					bool mustfree = false;
 #endif
@@ -628,7 +633,7 @@ void ta_check(DWORD addr)
 					if (pvr_texture_twiddled)
 					{
 #ifdef TEXTURE_CACHING
-						newtex = texture_find_or_create(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface);
+						newtex = texture_find_or_create(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface, &index);
 #else
 						int i,j;
 						Uint16 * q;
@@ -665,8 +670,9 @@ void ta_check(DWORD addr)
 //					glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_BLEND);
 //					glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
 //					logxmsg(LOG_PVR, "Haciendo BindTexture y TexImage2D\n");
-					if (pvr_texture_pixelformat != -1)
+					if (pvr_texture_pixelformat != -1 && lastindex != index)
 					{
+						lastindex = index;
 						glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, pvr_texture_size_usize, pvr_texture_size_vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, newtex);
 						glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
 					}
