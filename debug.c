@@ -11,7 +11,7 @@
 
 int DebugVisible = 1;
 int DebugMode = DBG_STOP;
-DWORD MemDebug = 0x8c008300;
+DWORD MemDebug = 0x8c0000e0;
 
 SDL_Surface *DebugWindow;
 SDL_Surface *DebugDest;
@@ -93,7 +93,7 @@ void DebugUpdate(void)
 		{
 			memread(PC + (y*2), &opcode, 2);
 			disasm(PC + (y*2), &buf2[0]);
-			sprintf(buf, "H'%08x: %04x  ", PC + (y * 2), opcode);
+			sprintf(buf, "H'%08x: %04x  ", (unsigned int) PC + (y * 2), opcode);
 			strcat(buf, buf2);
    			BFont_PutStringFont(DebugWindow, DebugFont, 10, 30 + (y * 12), buf);
    		}
@@ -102,7 +102,7 @@ void DebugUpdate(void)
    		BFont_PutStringFont(DebugWindow, DebugFont, 240, 10, "----- MEMORY DUMP -----");
 		for (y = 0; y < 20; y++)
 		{
-			sprintf(buf, "H'%08x: ", MemDebug + (y * 16));
+			sprintf(buf, "H'%08x: ", (unsigned int) MemDebug + (y * 16));
 			strcpy(buf3, "");
 			for (x=0; x<16; x++)
 			{
@@ -123,38 +123,38 @@ void DebugUpdate(void)
    		BFont_PutStringFont(DebugWindow, DebugFont, 10, 280, "----- REGISTERS DUMP -----");
    		for (y = 0; y < 16; y++)
    		{
-        	sprintf(buf, "R%-2d : %08x", y, R(y));
+        	sprintf(buf, "R%-2d : %08x", y, (unsigned int) R(y));
         	BFont_PutStringFont(DebugWindow, DebugFont, 10 + ((y / 4) * 75), 300 + ((y % 4) * 12), buf);
     	}
 
-    	sprintf(buf, "SR  : %08x", SR);
+    	sprintf(buf, "SR  : %08x", (unsigned int) SR);
     	BFont_PutStringFont(DebugWindow, DebugFont, 315, 300, buf);
-    	sprintf(buf, "SSR : %08x", SSR);
+    	sprintf(buf, "SSR : %08x", (unsigned int) SSR);
         BFont_PutStringFont(DebugWindow, DebugFont, 315, 312, buf);
-    	sprintf(buf, "SPC : %08x", SPC);
+    	sprintf(buf, "SPC : %08x", (unsigned int) SPC);
         BFont_PutStringFont(DebugWindow, DebugFont, 315, 324, buf);
-    	sprintf(buf, "GBR : %08x", GBR);
+    	sprintf(buf, "GBR : %08x", (unsigned int) GBR);
         BFont_PutStringFont(DebugWindow, DebugFont, 315, 336, buf);
 
-    	sprintf(buf, "MACH: %08x", MACH);
+    	sprintf(buf, "MACH: %08x", (unsigned int) MACH);
     	BFont_PutStringFont(DebugWindow, DebugFont, 395, 300, buf);
-    	sprintf(buf, "MACL: %08x", MACL);
+    	sprintf(buf, "MACL: %08x", (unsigned int) MACL);
         BFont_PutStringFont(DebugWindow, DebugFont, 395, 312, buf);
-    	sprintf(buf, "PR  : %08x", PR);
+    	sprintf(buf, "PR  : %08x", (unsigned int) PR);
         BFont_PutStringFont(DebugWindow, DebugFont, 395, 324, buf);
-    	sprintf(buf, "PC  : %08x", PC);
+    	sprintf(buf, "PC  : %08x", (unsigned int) PC);
         BFont_PutStringFont(DebugWindow, DebugFont, 395, 336, buf);
 
-    	sprintf(buf, "VBR : %08x", VBR);
+    	sprintf(buf, "VBR : %08x", (unsigned int) VBR);
     	BFont_PutStringFont(DebugWindow, DebugFont, 475, 300, buf);
-    	sprintf(buf, "SGR : %08x", SGR);
+    	sprintf(buf, "SGR : %08x", (unsigned int) SGR);
         BFont_PutStringFont(DebugWindow, DebugFont, 475, 312, buf);
-    	sprintf(buf, "DBR : %08x", DBR);
+    	sprintf(buf, "DBR : %08x", (unsigned int) DBR);
         BFont_PutStringFont(DebugWindow, DebugFont, 475, 324, buf);
 
-    	sprintf(buf, "FPSCR: %08x", FPSCR);
+    	sprintf(buf, "FPSCR: %08x", (unsigned int) FPSCR);
         BFont_PutStringFont(DebugWindow, DebugFont, 555, 300, buf);
-    	sprintf(buf, "FPUL : %08x", FPUL);
+    	sprintf(buf, "FPUL : %08x", (unsigned int) FPUL);
         BFont_PutStringFont(DebugWindow, DebugFont, 555, 312, buf);
 
 

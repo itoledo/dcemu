@@ -1,61 +1,33 @@
 [Editors]
-<<<<<<< dcemu.layout
-Focused=29
-Order=13,32,28,29
-=======
-Focused=1
-Order=6,39,37,0,1,35,33,34,2,5,12,38,11,4,7,36,3
->>>>>>> 1.3
+Focused=2
+Order=1,2,37,3,32,13,21,24
 [Editor_0]
 Open=0
 Top=0
-<<<<<<< dcemu.layout
 CursorCol=26
 CursorRow=19
 TopLine=22
-=======
-CursorCol=51
-CursorRow=744
-TopLine=737
->>>>>>> 1.3
 LeftChar=1
 [Editor_1]
-Open=0
+Open=1
 Top=0
 CursorCol=1
-<<<<<<< dcemu.layout
-CursorRow=1
-TopLine=1
-=======
-CursorRow=274
-TopLine=261
->>>>>>> 1.3
+CursorRow=1002
+TopLine=969
 LeftChar=1
 [Editor_2]
-Open=0
-Top=0
-<<<<<<< dcemu.layout
-CursorCol=4
-CursorRow=153
-TopLine=136
-=======
+Open=1
 CursorCol=1
-CursorRow=540
-TopLine=1
->>>>>>> 1.3
+CursorRow=284
+TopLine=278
 LeftChar=1
+Top=1
 [Editor_3]
-Open=0
+Open=1
 Top=0
-<<<<<<< dcemu.layout
 CursorCol=34
 CursorRow=70
-TopLine=46
-=======
-CursorCol=21
-CursorRow=11
-TopLine=1
->>>>>>> 1.3
+TopLine=22
 LeftChar=1
 [Editor_4]
 Open=0
@@ -93,7 +65,7 @@ CursorRow=8
 TopLine=1
 LeftChar=1
 [Editor_9]
-Open=1
+Open=0
 Top=0
 CursorCol=1
 CursorRow=62
@@ -123,12 +95,12 @@ LeftChar=1
 [Editor_13]
 Open=1
 Top=0
-CursorCol=2
-CursorRow=3
-TopLine=1
+CursorCol=11
+CursorRow=48
+TopLine=23
 LeftChar=1
 [Editor_14]
-Open=1
+Open=0
 Top=0
 CursorCol=1
 CursorRow=509
@@ -177,10 +149,10 @@ CursorRow=38
 TopLine=1
 LeftChar=1
 [Editor_21]
-Open=0
+Open=1
 Top=0
-CursorCol=19
-CursorRow=11
+CursorCol=11
+CursorRow=13
 TopLine=1
 LeftChar=1
 [Editor_22]
@@ -200,9 +172,9 @@ LeftChar=1
 [Editor_24]
 Open=1
 Top=0
-CursorCol=2
-CursorRow=194
-TopLine=181
+CursorCol=4
+CursorRow=649
+TopLine=634
 LeftChar=1
 [Editor_25]
 Open=0
@@ -226,15 +198,15 @@ CursorRow=10
 TopLine=1
 LeftChar=1
 [Editor_28]
-Open=1
+Open=0
 Top=0
 CursorCol=5
 CursorRow=1
 TopLine=1
 LeftChar=1
 [Editor_29]
-Open=1
-Top=1
+Open=0
+Top=0
 CursorCol=1
 CursorRow=1
 TopLine=1
@@ -256,8 +228,8 @@ LeftChar=1
 [Editor_32]
 Open=1
 Top=0
-CursorCol=2
-CursorRow=6
+CursorCol=13
+CursorRow=21
 TopLine=1
 LeftChar=1
 [Editor_33]
@@ -271,8 +243,8 @@ LeftChar=1
 Open=0
 Top=0
 CursorCol=1
-CursorRow=117
-TopLine=93
+CursorRow=13
+TopLine=1
 LeftChar=1
 [Editor_35]
 Open=0
@@ -289,11 +261,11 @@ CursorRow=1
 TopLine=1
 LeftChar=1
 [Editor_37]
-Open=0
+Open=1
 Top=0
-CursorCol=1
-CursorRow=129
-TopLine=105
+CursorCol=49
+CursorRow=157
+TopLine=133
 LeftChar=1
 [Editor_38]
 Open=0

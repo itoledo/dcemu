@@ -646,7 +646,7 @@ OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 {
 	short m = (arg >> 9) & 0x07;
 	double x;
-	signed long y;
+	//signed long y;
 	
 //	memcpy(&x, &DR(m), sizeof(float)*2);
 	extract_double(&x, DR_index(m));

@@ -188,9 +188,9 @@ static SDL_Rect upper_screen;
 
 void RedibujarPantalla()
 {
-	char buf[512], buf2[128];
+	char buf[512]; //, buf2[128];
 	SDL_Rect rc;
-	int i;
+	//int i;
 
 /*	if (pause == false)
 	{
@@ -953,14 +953,14 @@ int cargar_archivo( char * fname, void * target)
 int main(int argc, char *argv[])
 {
 //	long idx, cnt = 0;
- 	long i, j, tam;
+ 	long i, tam; // , j;
 //	short c;
 	WORD wvalor;
 	DWORD dwvalor;
 
 	SDL_TimerID timer_id;
 
-	FILE * fp; 
+	//FILE * fp; 
 
 	inicializar_logs();
 
@@ -1060,11 +1060,8 @@ int main(int argc, char *argv[])
 	}
 
 //	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-	PC = 0x8c008300;
-//	PC = 0;
-//	str_PC = &memoria[mem_n_base + ip_bs1_offset];
-//	str_PC = &memoria[0xc008300];
-//	str_PC = &bios_mem[0];
+//	PC = 0x8c008300;
+	PC = 0x00000000;
 	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit(screen))

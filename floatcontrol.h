@@ -10,4 +10,4 @@ OPCODE(sts218); 	// STS FPUL, Rn : FPUL -> Rn (0000nnnn 01011010)
 OPCODE(stsl219); 	// STS.L FPSCR, @-Rn : Rn - 4 -> Rn, FPSCR -> (Rn) (0100nnnn 01100010)
 OPCODE(stsl220); 	// STS.L FPUL, @-Rn (0100nnnn 01010010)
 
-#endif _FLOATCONTROL_H_
+#endif // _FLOATCONTROL_H_

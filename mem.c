@@ -229,7 +229,7 @@ void regmem_setup(void)
 
 void mem_hash_setup(void)
 {
-	int i;
+	int i, i2;
 	
 	for (i = 0; i < 0xFF; i++)
 	{
@@ -238,14 +238,56 @@ void mem_hash_setup(void)
   		mem_zone[i] = NULL;
 	}
 
-	mem_zone[0x0C] = &memoria[0];
-	mem_zone[0x7E] = &stack_mem[0];
-	mem_zone[0x80] = &bios_mem[0];
-	mem_zone[0x8C] = &memoria[0];
-	mem_zone[0xA4] = &video_mem[0];	// ?
-	mem_zone[0xA5] = &video_mem[0];
-	mem_zone[0xAC] = &memoria[0];
+	// -------------------------------------------------------------------------------
+	// Inicializacion para traz las zonas de la memoria para 
+ 	// la traduccion de logico a física. 
+  	// Utilizado por las funciones que tienen acceso a memoria	
+	// -------------------------------------------------------------------------------
+	// 00 - 7f = User or Privil. Mode, Cacheable, MMU Available
+	// 80 - 9f = Privil. Mode only, Cacheable, No MMU
+	// a0 - bf = Privil. Mode only, Non-Cacheable, No MMU
+	// c0 - df = Privil. Mode only, Cacheable, MMU Available
+	// e0 - ff = Privil. Mode only, Non-Cacheable, No MMU
+	// -------------------------------------------------------------------------------
+	mem_zone[0x00] = &bios_mem[0];		// BIOS. Also contains system control regs
+	// 01 = External Device
+	// 02 = ** Unused **				// copy of System control regs
+	// 03 = Copy of 01
+	mem_zone[0x04] = &video_mem[0];		// 64-Bit Acc (TA or PVR)
+	mem_zone[0x05] = &video_mem[0]; 	// 32-Bit Acc (TA or PVR)
+	mem_zone[0x06] = mem_zone[0x04];
+	mem_zone[0x07] = mem_zone[0x05];
+	// 08 thru 0b = ** Unused **
+	mem_zone[0x0c] = &memoria[0];		// SDRAM
+	mem_zone[0x0d] = mem_zone[0x0c];
+	mem_zone[0x0e] = mem_zone[0x0c];
+	mem_zone[0x0f] = mem_zone[0x0d];
+	// 10 = TA (write only)
+	// 11 = video mem (32/64 bit acc - write only) (Thru TA)
+	mem_zone[0x12] = mem_zone[0x10];
+	mem_zone[0x13] = mem_zone[0x11];
+	// 14 thru 17 = Ext Device
+	// 18 thru 1b = ** Unused **
+	// 1c thru 1f = SH4 Internal Area
+	mem_zone[0x1E] = &stack_mem[0];		// Hmm, this is a cheat!
 
+	mem_zone[0x80] = &bios_mem[0];		// Is this Valid?!?!?!?
+	//mem_zone[0x8C] = &memoria[0];
+	//mem_zone[0xA4] = &video_mem[0];		// 64-Bit Acc
+	//mem_zone[0xA5] = &video_mem[0];		// 32-Bit Acc
+	//mem_zone[0xAC] = &memoria[0];
+
+	// cree una copia de los bloques que repiten
+	// Nota: aqui debemos copiar ciertos bloques usando una repeticion
+	// Copy 01 thru 1f -> 21 thru 3f, 41 thru 5f, 61 thru 7f
+	for (i = 0x01; i < 0x20; i++)
+	{
+		for (i2 = 0x20; i2 <= 0xc0; i2 += 0x20)
+			mem_zone[i | i2] = mem_zone[i];
+	}
+ 	
+	// Inicializacion de la tabla de funciones tenía acceso 
+ 	// a bloques de la memoria	
 	mem_hash_write[0x10] = ta_write;
 
 	mem_hash_read[0x00] = bios_read;

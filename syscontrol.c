@@ -15,7 +15,7 @@ void dump_llamadas()
 	for (i = 0; opcodes[i].opdesc; i++)
 		if (opcodes[i].llamadas > 0)
 		{
-			fprintf(fp, "%03d %10d %s\r\n", i, opcodes[i].llamadas, opcodes[i].opdesc);
+			fprintf(fp, "%03d %10u %s\r\n", i, opcodes[i].llamadas, opcodes[i].opdesc);
 		}
 
 	fclose(fp);
