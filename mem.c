@@ -26,7 +26,7 @@ mem_access_write_t mem_write_error;
 mem_access_write_t pvr_write;
 mem_access_write_t sq_write;
 mem_access_write_t ta_write;
-mem_access_write_t bios_write;
+// mem_access_write_t bios_write;
 
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
@@ -247,8 +247,8 @@ void mem_hash_setup(void)
 
 	mem_hash_read[0x00] = bios_read;
 	mem_hash_read[0x80] = bios_read;
-	mem_hash_write[0x00] = bios_write;
-	mem_hash_write[0x80] = bios_write;
+//	mem_hash_write[0x00] = bios_write;
+//	mem_hash_write[0x80] = bios_write;
 
 	// video mem
 	mem_hash_read[0xA4] = video_read;
@@ -533,10 +533,10 @@ void bios_read(unsigned long direccion, void * p, size_t size)
 	memcpy(p, &bios_mem[direccion % 0x20000000], size);
 }
 
-void bios_write(unsigned long direccion, void * p, size_t size)
+/* void bios_write(unsigned long direccion, void * p, size_t size)
 {
 	memcpy(&bios_mem[direccion % 0x20000000], p, size);
-}
+} */
 
 void ta_write(unsigned long direccion, void * p, size_t size)
 {

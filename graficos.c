@@ -1,6 +1,7 @@
 #include "main.h"
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include "options.h"
 
 SDL_Surface *screen;
 SDL_Surface *backscreen;

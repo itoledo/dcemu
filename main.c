@@ -16,6 +16,7 @@
 #include "main.h"
 #include "math.h"
 #include <SDL.h>
+#include <SDL_opengl.h>
 #ifdef TTF
 #include <SDL_ttf.h>
 #else
@@ -204,11 +205,12 @@ void RedibujarPantalla()
 	if (pausa == true)
 	{
 		time_t dif = time(NULL) - start_time;
-		int cnt = OPMAXCNT, idx = ultopcnt - 1;
+//		int cnt = OPMAXCNT, idx = ultopcnt - 1;
 		SDL_Surface * letras;
 
 		rc.x = 0;
-		rc.h = 20 * 11;
+//		rc.h = 20 * 11;
+		rc.h = 20 * 1;
 		rc.w = screenwidth;
 		rc.y = 0;
 
@@ -226,7 +228,7 @@ void RedibujarPantalla()
 		BFont_PutStringFont(backscreen, font, 0, 0, buf);
 #endif
 
-		if (idx == -1)
+/*		if (idx == -1)
 		  idx = OPMAXCNT - 1;
 		while(cnt > 0)
 		{
@@ -268,7 +270,7 @@ void RedibujarPantalla()
 			rc.w = letras->w;
 			rc.y = 18;
 			SDL_BlitSurface(letras, NULL, backscreen, &rc);
-		}
+		} */
 		refresh_screen = true;
 	}
 
@@ -288,6 +290,8 @@ void RedibujarPantalla()
 		SDL_BlitSurface(backscreen, NULL, screen, NULL);
 		DebugUpdate();
 		SDL_Flip(screen);
+		glRasterPos2f(0, 0);
+		glDrawPixels(screenwidth, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
 		SDL_GL_SwapBuffers();
 #endif
 
@@ -306,7 +310,7 @@ Uint32 TimerCallback(Uint32 interval, void * param)
 
 	SDL_PushEvent(&e);
 
-	return 25; /* 1000 */
+	return 250; /* 1000 */
 }
 
 void dma_check()
