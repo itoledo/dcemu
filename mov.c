@@ -422,6 +422,13 @@ OPCODE(mova34) // MOVA @(disp, PC), R0 : disp x 4 + PC & 0xFFFFFFFC + 4 -> R0 (1
 
 	R(0) = disp;
 
+/*
+//	disp *= 4;
+//	disp += ((PC + 4) & 0xFFFFFFFC);
+
+	R(0) = ((PC & 0xFFFFFFFC) + 4 + (disp << 2));
+*/
+
 #ifdef DEBUG_MOV_MOVA
 	logmsg("mova: r[0]=%x\r\n", disp);
 #endif

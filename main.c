@@ -389,6 +389,7 @@ void main_loop(void)
 	WORD instr;
 	SDL_Event event;
 	DWORD valor;
+	char buf[100];
 	
 	for (;;)
 	{
@@ -396,16 +397,22 @@ void main_loop(void)
 		{
 			if (DebugMode == DBG_STOP)
 				break;
-				
+			
+#ifdef PRINT_ASM
+	disasm(PC, &buf[0]);
+	logmsg("TRACE: %s\r\n", buf);
+#endif	
 			instr = *(WORD *) str_PC;
 
-/*			if (PC == HACK_BASE + HACK_ROMFONT)
+/*			
+			if (PC == HACK_BASE + HACK_ROMFONT)
 			{
 				logmsg("HACK_ROMFONT\r\n");
 				R(0) = mem_base + 1024*1024*5;
 				rts112(instr);
 			}
-			else */
+			else  
+*/
 			if (PC == HACK_BASE + HACK_GDROM)
 			{
 				logmsg("HACK_GDROM: r6=%x, r7=%x\r\n", R(6), R(7));

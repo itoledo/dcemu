@@ -11,8 +11,8 @@
 
 int DebugVisible = 1;
 int DebugMode = DBG_STOP;
-DWORD MemDebug = 0x8c0000e0;
-DWORD BreakPoint = 0xffffffff;
+DWORD MemDebug = 0x8c000000;
+DWORD BreakPoint = 0x8c00b940;
 
 SDL_Surface *DebugWindow;
 SDL_Surface *DebugDest;
@@ -158,7 +158,29 @@ void DebugUpdate(void)
     	sprintf(buf, "FPUL : %08x", (unsigned int) FPUL);
         BFont_PutStringFont(DebugWindow, DebugFont, 555, 312, buf);
 
-
+    	sprintf(buf, "Status Register (SR) :-", (unsigned int) FPUL);
+        BFont_PutStringFont(DebugWindow, DebugFont, 510, 350, buf);
+    	sprintf(buf, "T: %1x", ((SR & 0x01)));
+        BFont_PutStringFont(DebugWindow, DebugFont, 510, 362, buf);
+    	sprintf(buf, "S: %1x", ((SR >> 1) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 540, 362, buf);
+    	sprintf(buf, "Q: %1x", ((SR >> 8) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 570, 362, buf);
+    	sprintf(buf, "M: %1x", ((SR >> 9) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 600, 362, buf);
+    	sprintf(buf, "FD: %1x", ((SR >> 15) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 510, 374, buf);
+    	sprintf(buf, "BL: %1x", ((SR >> 28) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 540, 374, buf);
+    	sprintf(buf, "RB: %1x", ((SR >> 29) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 570, 374, buf);
+    	sprintf(buf, "MD: %1x", ((SR >> 30) & 0x01));
+        BFont_PutStringFont(DebugWindow, DebugFont, 600, 374, buf);
+    	sprintf(buf, "IMASK: %1x%1x%1x%1x (%x)", 
+     		((SR >> 7) & 0x01), ((SR >> 6) & 0x01), ((SR >> 5) & 0x01),
+       		((SR >> 4) & 0x01), ((SR >> 4) & 0x0f));
+        BFont_PutStringFont(DebugWindow, DebugFont, 510, 386, buf);
+        
    		for (y = 0; y < 16; y++)
    		{
         	sprintf(buf, "FR%-2d : %+10.8e", y, FR(y));

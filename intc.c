@@ -77,7 +77,7 @@ void check_ints()
 
 	intdelay++;
 
-	if (intdelay == 150000)
+	if (intdelay == 50000)
 	{
 		DWORD dw = 0;
 
