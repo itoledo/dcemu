@@ -459,16 +459,19 @@ void ta_check(DWORD addr)
 
 					Uint16 * v = (Uint16 *) &video_mem[pvr_texture_surface];
 					Uint16 * newtex = v;
-//					bool mustfree = false;
+#ifndef TEXTURE_CACHING
+					bool mustfree = false;
+#endif
 
 					if (pvr_texture_twiddled)
 					{
-/*						int i,j;
-						Uint16 * q; */
-
+#ifdef TEXTURE_CACHING
 						newtex = texture_find_or_create(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface);
+#else
+						int i,j;
+						Uint16 * q;
 
-/*						newtex = malloc(sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize);
+						newtex = malloc(sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize);
 #ifdef DEBUG_VERTEX
 						if (newtex == NULL)
 						{
@@ -489,7 +492,8 @@ void ta_check(DWORD addr)
 #endif
 								*(q++) = v[TWIDOUT(j,i)];
 							}
-						mustfree = true; */
+						mustfree = true;
+#endif // TEXTURE_CACHING
 					}
 //					{
 //						q[i] = 0x001F; // blue
@@ -504,8 +508,10 @@ void ta_check(DWORD addr)
 						glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, pvr_texture_size_usize, pvr_texture_size_vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, newtex);
 						glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
 					}
-/*					if (mustfree)
-						free(newtex); */
+#ifndef TEXTURE_CACHING
+					if (mustfree)
+						free(newtex);
+#endif
 //					logxmsg(LOG_PVR, "textura: %04x %04x %04x\n", p[0], p[1], p[2]);
 				}
 				glBegin(GL_TRIANGLE_STRIP);
