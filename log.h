@@ -25,6 +25,7 @@ struct opcode_log_str
     opcode_log_params params;
 };
 
+// typedef __fastcall void opcode_f (WORD);
 typedef void opcode_f (WORD);
 
 extern char lastop[128];

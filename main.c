@@ -173,6 +173,15 @@ void RedibujarPantalla()
 	if (pvr_framebufferdisplay == true)
 	{
 		logxmsg(LOG_PVR, "RedibujarPantalla()\n");
+		if (DebugVisible)
+		{
+			DebugUpdate();
+			SDL_BlitSurface(DebugWindow, NULL, screen, NULL);
+			SDL_Flip(screen);
+			SDL_GL_SwapBuffers();
+			return;
+		}
+		DibujarFramebuffer();
 /*		bs = draw_backscreen();
 		if (DebugVisible)
 			DebugUpdate(bs);
@@ -188,62 +197,6 @@ void RedibujarPantalla()
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR); */
 
 //	    limpiar_pantalla();
-
-		if (DebugVisible)
-		{
-			DebugUpdate();
-			SDL_BlitSurface(DebugWindow, NULL, screen, NULL);
-			SDL_Flip(screen);
-			SDL_GL_SwapBuffers();
-  			return;
-		}
-
-		glBindTexture(GL_TEXTURE_2D, pvr_textures[1]);
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, screenancho);
-		switch(screenformat)
-		{
-			case FRAMEBUFFER_ARGB0555:
-			{
-		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_5_5_1, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-			}
-			break;
-			
-			case FRAMEBUFFER_RGB565:
-			{
-		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-			}
-			break;
-			
-			case FRAMEBUFFER_RGB888:
-			{
-				// FIXME?
-		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-			}
-			break;
-			
-			case FRAMEBUFFER_ARGB0888:
-			{
-		  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, screentexwidth, screentexheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-			}
-			break;
-		}
-//		glEnable(GL_BLEND);
-		glDisable(GL_DEPTH_TEST);
-		glDisable(GL_BLEND);
-//		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-//		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		glBegin(GL_QUADS);
-		glTexCoord2f(0.0f, screenheight / screentexheight); glVertex3f(0.0f, (float) screenheight, -1.0f);
-		glTexCoord2f(screenancho / screentexwidth, screenheight / screentexheight); glVertex3f((float) screenancho, (float) screenheight, -1.0f);
-		glTexCoord2f(screenancho / screentexwidth, 0.0f); glVertex3f((float) screenancho, 0.0f, -1.0f);
-		glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, 0.0f, -1.0f);
-		glEnd();
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-		glEnable(GL_BLEND);
-		glEnable(GL_DEPTH_TEST);
-		// fin textura 1024
-
-		SDL_GL_SwapBuffers();
 	}
 
 /*
@@ -1038,8 +991,8 @@ int main(int argc, char *argv[])
  	dwvalor = HACK_BASE + HACK_UNKNOWN; memwrite(SYSCALL_UNKNOWN, &dwvalor, sizeof(DWORD));
 
 //	vamos a hacer esto:
-//		HACK_BASE		:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
-//		HACK_BASE + 2	:	RTS
+//		HACK_BASE       :	RTS
+//		HACK_BASE + 2	:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
 // 		HACK_BASE + 4	:	<POSICION DEL FONT EN LA MEMORIA>
  
  	wvalor = 0xD000;		memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);

@@ -9,6 +9,7 @@ typedef short bool;
 #define true 1
 #define false 0
 
+// __fastcall void ejecutar_instruccion(DWORD instr);
 void ejecutar_instruccion(DWORD instr);
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
@@ -207,6 +208,7 @@ extern unsigned long NEXTPC;
 #define SignExtend16(c) (((c) & 0x8000) ? (0xFFFF0000 | (c)) : (c))
 #define SignExtend12(c) (((c) & 0x0800) ? (0xFFFFF000 | (c)) : (c))
 
+// #define OPCODE(instr) __fastcall void instr (WORD arg)
 #define OPCODE(instr) void instr (WORD arg)
 #define COPY_REG(a, b) ((DWORD) (a) = (DWORD) (b))
 

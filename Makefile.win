@@ -1,18 +1,18 @@
 # Project: dcemu
 # Makefile created by Dev-C++ 4.9.8.9
 
-CPP  = g++.exe
-CC   = gcc.exe
+CPP  = g++.exe -D__DEBUG__
+CC   = gcc.exe -D__DEBUG__
 WINDRES = windres.exe
 RES  = dcemu_private.res
 OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o $(RES)
 LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o $(RES)
-LIBS =  -L"D:/Dev-Cpp/lib" -L"D:/lib_sdl/SDL-1.2.7/lib" -L"D:/lib_sdl/SDL_image-1.2.3/lib" -mwindows -Llib/ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lwinmm -mwindows -march=athlon-xp -m3dnow 
+LIBS =  -L"D:/Dev-Cpp/lib" -L"D:/lib_sdl/SDL-1.2.7/lib" -L"D:/lib_sdl/SDL_image-1.2.3/lib" -mwindows -Llib/ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lwinmm -mwindows  -lgmon -pg -g3 
 INCS =  -I"D:/Dev-Cpp/include"  -I"D:/lib_sdl/SDL-1.2.7/include/SDL"  -I"D:/lib_sdl/SDL_image-1.2.3/include" 
 CXXINCS =  -I"D:/Dev-Cpp/include/c++"  -I"D:/Dev-Cpp/include/c++/mingw32"  -I"D:/Dev-Cpp/include/c++/backward"  -I"D:/Dev-Cpp/include"  -I"D:/lib_sdl/SDL-1.2.7/include/SDL"  -I"D:/lib_sdl/SDL_image-1.2.3/include" 
 BIN  = dcemu.exe
-CXXFLAGS = $(CXXINCS)  -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
-CFLAGS = $(INCS)-Wall -fomit-frame-pointer -Iinclude/   -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
+CXXFLAGS = $(CXXINCS)  -pg -g3
+CFLAGS = $(INCS)-Wall -Iinclude/   -pg -g3
 
 .PHONY: all all-before all-after clean clean-custom
 

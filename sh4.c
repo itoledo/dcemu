@@ -4,6 +4,7 @@
 #include "main.h" // para definición de BIOS_SIZE
 #include "sh4.h"
 #include "options.h"
+#include "branch.h"
 
 extern FILE * logfp, * serialfp, * memfp;
 extern unsigned char * memoria;
@@ -93,6 +94,7 @@ unsigned long FPSCR = 0x0004001; // Floating Point Status/Control Register
 unsigned long delayslot = 0;
 unsigned long NEXTPC = 0;
 
+// __fastcall void ejecutar_instruccion(DWORD instr)
 void ejecutar_instruccion(DWORD instr)
 {
 	DWORD valor;

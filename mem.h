@@ -27,8 +27,8 @@ void dump_registers();
 void memread(unsigned long direccion, void * target, size_t size);
 void memwrite(unsigned long direccion, void * source, size_t size);
 #else
-#define memread(direccion, target, size)    (*mem_hash_read[direccion >> 24]) (direccion, target, size)
-#define memwrite(direccion, source, size)   (*mem_hash_write[direccion >> 24]) (direccion, source, size)
+#define memread(direccion, target, size)    (*mem_hash_read[(direccion) >> 24]) ((direccion), (target), (size))
+#define memwrite(direccion, source, size)   (*mem_hash_write[(direccion) >> 24]) ((direccion), (source), (size))
 #endif
 
 #ifdef MEMORY_MACROS

@@ -32,6 +32,7 @@ extern	int		pvr_listdone;
 
 int screeninit(void);
 SDL_Surface * draw_backscreen(void);
+void DibujarFramebuffer();
 void limpiar_pantalla();
 
 // callbacks

@@ -397,7 +397,13 @@ void video_read(unsigned long direccion, void * p, size_t size)
 		logxmsg(LOG_MEM, "video_read: dir %x\r\n", direccion);
 #endif
 	
-	memcpy(p, &video_mem[addr], size);
+//	memcpy(p, &video_mem[addr], size);
+    switch(size)
+    {
+        case 1:		*(BYTE *)p = *(BYTE *) &video_mem[addr];		break;
+        case 2:		*(WORD *)p = *(WORD *) &video_mem[addr];		break;
+        case 4:		*(DWORD *)p = *(DWORD *) &video_mem[addr];	break;
+    }
 
 /*	if (addr >= 0x04000000 && addr <= 0x07FFFFFF)
 	{
@@ -1323,7 +1329,14 @@ void video_write(unsigned long direccion, void * p, size_t size)
 	} */
 
 //	if (addr < VIDEO_SIZE)
-		memcpy(&video_mem[addr], p, size);
+	switch(size)
+	{
+     	case 1:		*(BYTE *) &video_mem[addr] = *(BYTE *) p;	break;
+     	case 2:		*(WORD *) &video_mem[addr] = *(WORD *) p;	break;
+     	case 4:		*(DWORD *) &video_mem[addr] = *(DWORD *) p;	break;
+	}
+
+//	memcpy(&video_mem[addr], p, size);
 	
 /*	if (addr < framebuffer_size)
 	{
