@@ -3,6 +3,8 @@
 #include <SDL_opengl.h>
 #include "options.h"
 
+#define TEXTURE_CACHING
+
 SDL_Surface *screen;
 SDL_Surface *backscreen;
 // SDL_Surface *glscreen;
@@ -20,6 +22,10 @@ int pvr_texture_twiddled;
 int pvr_listtype;
 int pvr_registering = -1;
 int pvr_listdone = 0;
+int pvr_srcblend;
+int pvr_dstblend;
+int pvr_srcblendmode;
+int pvr_dstblendmode;
 pcon_func * pvr_texture_pixelconvert;
 
 Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
@@ -294,6 +300,35 @@ void ta_check(DWORD addr)
 				int d_calc_exact = (p1 >> 20) & 0x1;
 			} */
 
+//			switch((pvr_srcblend = (p[2] >> 29) & 0x7)) // srcblend
+			switch((p[2] >> 29) & 0x7) // srcblend
+			{
+				case 0:		pvr_srcblend = GL_ZERO;			logxmsg(LOG_PVR, "srcblend: zero\n");	break;
+				case 1:		pvr_srcblend = GL_ONE;			logxmsg(LOG_PVR, "srcblend: one\n");	break;
+				case 2:		pvr_srcblend = GL_DST_COLOR;	logxmsg(LOG_PVR, "srcblend: dst colour\n");	break;
+				case 3:		pvr_srcblend = GL_ONE_MINUS_DST_COLOR;	logxmsg(LOG_PVR, "srcblend: inverse dst colour\n");	break;
+				case 4:		pvr_srcblend = GL_SRC_ALPHA;	logxmsg(LOG_PVR, "srcblend: src alpha\n"); break;
+				case 5:		pvr_srcblend = GL_ONE_MINUS_SRC_ALPHA;	logxmsg(LOG_PVR, "srcblend: inverse src alpha\n");	break;
+				case 6:		pvr_srcblend = GL_DST_ALPHA;	logxmsg(LOG_PVR, "srcblend: dst alpha\n");	break;
+				case 7:		pvr_srcblend = GL_ONE_MINUS_DST_ALPHA;	logxmsg(LOG_PVR, "srcblend: inverse dst alpha\n");	break;
+			}
+			
+//			switch((pvr_dstblend = (p[2] >> 26) & 0x7)) // dstblend
+			switch((p[2] >> 26) & 0x7) // dstblend
+			{
+				case 0:		pvr_dstblend = GL_ZERO;			logxmsg(LOG_PVR, "dstblend: zero\n");	break;
+				case 1:		pvr_dstblend = GL_ONE;			logxmsg(LOG_PVR, "dstblend: one\n");	break;
+				case 2:		pvr_dstblend = GL_DST_COLOR;	logxmsg(LOG_PVR, "dstblend: dst colour\n");	break;
+				case 3:		pvr_dstblend = GL_ONE_MINUS_DST_COLOR;	logxmsg(LOG_PVR, "dstblend: inverse dst colour\n");	break;
+				case 4:		pvr_dstblend = GL_SRC_ALPHA;	logxmsg(LOG_PVR, "dstblend: src alpha\n"); break;
+				case 5:		pvr_dstblend = GL_ONE_MINUS_SRC_ALPHA;	logxmsg(LOG_PVR, "dstblend: inverse src alpha\n");	break;
+				case 6:		pvr_dstblend = GL_DST_ALPHA;	logxmsg(LOG_PVR, "dstblend: dst alpha\n");	break;
+				case 7:		pvr_dstblend = GL_ONE_MINUS_DST_ALPHA;	logxmsg(LOG_PVR, "dstblend: inverse dst alpha\n");	break;
+			}
+			
+			pvr_srcblendmode = (p[2] >> 25) & 0x1;
+			pvr_dstblendmode = (p[2] >> 24) & 0x1;
+
 			if (texture == 1)
 			{
 				DWORD p3 = p[3];
@@ -514,6 +549,7 @@ void ta_check(DWORD addr)
 #endif
 //					logxmsg(LOG_PVR, "textura: %04x %04x %04x\n", p[0], p[1], p[2]);
 				}
+				glBlendFunc(pvr_srcblend, pvr_dstblend);
 				glBegin(GL_TRIANGLE_STRIP);
 				vertexstart = false;
 			}
@@ -844,6 +880,7 @@ int screeninit(int width, int height, int bpp)
 //		glPixelZoom(1.0, -1.0);
 
 		glEnable(GL_TEXTURE_2D);
+		glEnable(GL_BLEND);
 		glGenTextures(1, &pvr_textures[0]);
 		glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
