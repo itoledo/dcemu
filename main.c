@@ -402,6 +402,7 @@ void main_loop(void)
 	disasm(PC, &buf[0]);
 	logmsg("TRACE: %s\r\n", buf);
 #endif	
+
 			instr = *(WORD *) str_PC;
 
 /*			
@@ -849,6 +850,8 @@ void main_loop(void)
 			}
 		}
 	}
+
+	logmsg("saliendo de main_loop\n");
 }
 
 PC_f * PC_func;
@@ -1078,9 +1081,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-//	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
 //	PC = 0x8c008300;
-	PC = 0x00000000;
+//	PC = 0x00000000;
 	str_PC = get_memory_pointer(PC);
 	
 	if (DebugInit(screen))

@@ -28,8 +28,74 @@ Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
 }
 
 DWORD pvr_registered;
-GLuint pvr_textures[10];
+#define MAX_TEXTURE_COUNT 10
+#define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
+        ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
+#define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
+struct cached_texture
+{
+	int		usize;		// tamaño horizontal
+	int		vsize;		// tamaño vertical
+	DWORD	memorypos;	// posición en memoria de la textura
+	void *	data;		// datos de la textura 'twiddled'
+};
+
+typedef struct cached_texture cached_texture;
+cached_texture cached_textures[MAX_TEXTURE_COUNT];
+int cur_tex_count = 0;
+
+GLuint pvr_textures[MAX_TEXTURE_COUNT];
+
 bool vertexstart = true;
+
+void register_texture(int usize, int vsize, DWORD memorypos, void * data)
+{
+}
+
+void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
+{
+	Uint16 * q, * v;
+	int i, j;
+
+	for (i = 0; i < cur_tex_count; i++)
+	{
+		if (cached_textures[i].usize == usize
+		&&  cached_textures[i].vsize == vsize
+		&&  cached_textures[i].memorypos == memorypos)
+		{
+//			logxmsg(LOG_PVR, "texture_find_or_create: retornando textura ya procesada\n");
+			return cached_textures[i].data;
+		}
+	}
+	
+	logxmsg(LOG_PVR, "texture_find_or_create: creando textura %d\n", cur_tex_count);
+
+	// si llegamos aquí, la textura no está.
+	if (cached_textures[cur_tex_count].data != NULL)
+		free(cached_textures[cur_tex_count].data);
+
+	cached_textures[cur_tex_count].usize = usize;
+	cached_textures[cur_tex_count].vsize = vsize;
+	cached_textures[cur_tex_count].memorypos = memorypos;
+	q = cached_textures[cur_tex_count].data = (void *) malloc(sizeof(Uint16) * usize * vsize);
+	v = (Uint16 *) get_memory_pointer(memorypos | 0xA5000000);
+	
+	// ahora al twiddle
+	for (i = 0; i < vsize; i++)
+		for (j = 0; j < usize; j++)
+		{
+/* #ifdef DEBUG_VERTEX
+			if (TWIDOUT(j,i) > sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize)
+			{
+				logmsg("TWIDOUT!!!\n");
+				exit(1);
+			}
+#endif */
+			*(q++) = v[TWIDOUT(j,i)];
+		}
+		
+	return cached_textures[cur_tex_count++].data;
+}
 
 void cb_renderstart(DWORD addr, void * p, size_t size)
 {
@@ -38,6 +104,7 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 
 	logxmsg(LOG_PVR, "cb_renderstart\n");
 	pvr_listdone = 0;
+	cur_tex_count = 0;
 
 	// dejemos todo listo para la siguiente pantalla
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -388,20 +455,19 @@ void ta_check(DWORD addr)
 #define DETWIDTAB(x) ( (x&1)|((x&4)>>1)|((x&16)>>2)|((x&64)>>3)|((x&256)>>4)| \
         ((x&1024)>>5)|((x&4096)>>6)|((x&16384)>>7)|((x&65536)>>8)|((x&262144)>>9) )
 #define DETWIDOUT(x, y) ( DETWIDTAB((y)) | (DETWIDTAB((x)) >> 1) )
-#define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
-        ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
-#define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
 
 					Uint16 * v = (Uint16 *) &video_mem[pvr_texture_surface];
 					Uint16 * newtex = v;
-					bool mustfree = false;
+//					bool mustfree = false;
 
 					if (pvr_texture_twiddled)
 					{
-						int i,j;
-						Uint16 * q;
+/*						int i,j;
+						Uint16 * q; */
 
-						newtex = malloc(sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize);
+						newtex = texture_find_or_create(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface);
+
+/*						newtex = malloc(sizeof(Uint16) * pvr_texture_size_usize * pvr_texture_size_vsize);
 #ifdef DEBUG_VERTEX
 						if (newtex == NULL)
 						{
@@ -422,13 +488,7 @@ void ta_check(DWORD addr)
 #endif
 								*(q++) = v[TWIDOUT(j,i)];
 							}
-						mustfree = true;
-						
-/*						FILE * fp = fopen("logs/textura.raw", "wb");
-						
-						fwrite(v, 2, pvr_texture_size_usize * pvr_texture_size_vsize, fp);
-						
-						fclose(fp); */
+						mustfree = true; */
 					}
 //					{
 //						q[i] = 0x001F; // blue
@@ -443,8 +503,8 @@ void ta_check(DWORD addr)
 						glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, pvr_texture_size_usize, pvr_texture_size_vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, newtex);
 						glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
 					}
-					if (mustfree)
-						free(newtex);
+/*					if (mustfree)
+						free(newtex); */
 //					logxmsg(LOG_PVR, "textura: %04x %04x %04x\n", p[0], p[1], p[2]);
 				}
 				glBegin(GL_TRIANGLE_STRIP);
@@ -722,6 +782,7 @@ void ReadPixelN(Uint32 pos, void * data, size_t size)
 int screeninit(int width, int height, int bpp)
 {
 	Uint32 rmask, gmask, bmask, amask;
+	int i;
 
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
     rmask = 0xff000000;
@@ -780,6 +841,11 @@ int screeninit(int width, int height, int bpp)
 		glBindTexture(GL_TEXTURE_2D, pvr_textures[0]);
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
 		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+		
+		for (i = 0; i < MAX_TEXTURE_COUNT; i++)
+		{
+			cached_textures[i].data = NULL;
+		}
 	}
 #else
 	screen = SDL_SetVideoMode(width, height, bpp, SDL_HWSURFACE | SDL_DOUBLEBUF);

@@ -1201,7 +1201,8 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		case 4:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(DWORD *) p); break;
 	} */
 
-	memcpy(&video_mem[addr], p, size);
+	if (addr < video_size)
+		memcpy(&video_mem[addr], p, size);
 	
 	if (addr < framebuffer_size)
 	{

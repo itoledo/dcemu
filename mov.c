@@ -96,7 +96,7 @@ OPCODE(movl6) // MOV.L Rm,@Rn: Rm -> (Rn) (0010nnnnmmmm0010)
 #endif
 }
 
-OPCODE(movb7) // MOV.B @Rm,Rn: (Rm) -> sign extension -> Rn (0110nnnnmmmm0000)
+OPCODE(movb7) // MOV.B @Rm, Rn: (Rm) -> sign extension -> Rn (0110nnnnmmmm0000)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;

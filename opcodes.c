@@ -152,7 +152,7 @@ struct st_cmd opcodes[] =
 	{ 0x404E, 0xF0FF, "LDC",	OP_T_RM_SPC,			NOIMP	}, // 120
 	{ 0x403A, 0xF0FF, "LDC",    OP_T_RM_SGR,            NOIMP   }, // INSERTADA
 	{ 0x40FA, 0xF0FF, "LDC",	OP_T_RM_DBR,			ldc122	},
-	{ 0x408E, 0xF08F, "LDC",	OP_T_RM_RN_BANK,		NOIMP	}, // REVISAR
+	{ 0x408E, 0xF08F, "LDC",	OP_T_RM_RN_BANK,		ldc123	}, // REVISAR
 	{ 0x4007, 0xF0FF, "LDC.L",	OP_T_AT_RM_PLUS_SR,		ldcl122	},
 	{ 0x4017, 0xF0FF, "LDC.L",	OP_T_AT_RM_PLUS_GBR,	ldcl123	},
 	{ 0x4027, 0xF0FF, "LDC.L",	OP_T_AT_RM_PLUS_VBR,	ldcl124	},

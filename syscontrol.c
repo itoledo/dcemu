@@ -56,6 +56,18 @@ OPCODE(ldc118) // LDC Rm, VBR : Rm -> VBR (0100mmmm 00101110)
 #endif
 }
 
+OPCODE(ldc123) // LDC Rm, Rn_BANK (0100mmmm 1nnn1110)
+{
+	short m = (arg >> 8) & 0x0F;
+	short n = (arg >> 4) & 0x07;
+	
+	COPY_REG(R_BANK(n), R(m));
+
+#ifdef DEBUG_SYSCONTROL
+	logmsg("ldc123: R(%d)=R(%d)_BANK\n", m, n);
+#endif
+}
+
 OPCODE(ldcl122) // LDC.L @Rm+, SR (0100mmmm 00000111)
 {
 	short m = (arg >> 8) & 0x0F;
