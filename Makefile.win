@@ -1,18 +1,19 @@
 # Project: dcemu
-# Makefile created by Dev-C++ 4.9.8.10
+# Makefile created by Dev-C++ 4.9.9.2
 
-CPP  = g++.exe
-CC   = gcc.exe
+CPP  = g++.exe -D__DEBUG__
+CC   = gcc.exe -D__DEBUG__
 WINDRES = windres.exe
-RES  = dcemu_private.res
+RES  = ./obj/dcemu_private.res
 OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o $(RES)
 LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o $(RES)
-LIBS =  -L"D:/Dev-Cpp/lib" -L"D:/lib_sdl/SDL-1.2.7/lib" -L"D:/lib_sdl/SDL_image-1.2.3/lib" -mwindows -Llib/ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lwinmm -mwindows -march=athlon-xp -m3dnow 
-INCS =  -I"D:/Dev-Cpp/include"  -I"D:/lib_sdl/SDL-1.2.7/include/SDL"  -I"D:/lib_sdl/SDL_image-1.2.3/include" 
-CXXINCS =  -I"D:/Dev-Cpp/include/c++"  -I"D:/Dev-Cpp/include/c++/mingw32"  -I"D:/Dev-Cpp/include/c++/backward"  -I"D:/Dev-Cpp/include"  -I"D:/lib_sdl/SDL-1.2.7/include/SDL"  -I"D:/lib_sdl/SDL_image-1.2.3/include" 
+LIBS =  -L"lib" -mwindows -Llib/ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lwinmm -mwindows  -g3 
+INCS =  -I"include" 
+CXXINCS =  -I"include/c++/3.3.1/mingw32"  -I"include/c++/3.3.1"  -I"lib/gcc/mingw32/3.4.2/include"  -I"include/c++/3.4.2/backward"  -I"include/c++/3.4.2/mingw32"  -I"include/c++/3.4.2"  -I"include" 
 BIN  = dcemu.exe
-CXXFLAGS = $(CXXINCS)  -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
-CFLAGS = $(INCS)-Wall -fomit-frame-pointer -Iinclude/   -fexpensive-optimizations -O2 -march=athlon-xp -m3dnow
+CXXFLAGS = $(CXXINCS)   -O1 -g3
+CFLAGS = $(INCS) -Wall -Iinclude/   -O1 -g3
+RM = rm -f
 
 .PHONY: all all-before all-after clean clean-custom
 
@@ -20,7 +21,7 @@ all: all-before dcemu.exe all-after
 
 
 clean: clean-custom
-	rm -f $(OBJ) $(BIN)
+	${RM} $(OBJ) $(BIN)
 
 $(BIN): $(OBJ)
 	$(CC) $(LINKOBJ) -o "dcemu.exe" $(LIBS)
@@ -91,5 +92,5 @@ $(BIN): $(OBJ)
 ./obj/scramble.o: scramble.c
 	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)
 
-dcemu_private.res: dcemu_private.rc 
-	$(WINDRES) -i dcemu_private.rc -I rc -o dcemu_private.res -O coff 
+./obj/dcemu_private.res: dcemu_private.rc 
+	$(WINDRES) -i dcemu_private.rc --input-format=rc -o ./obj/dcemu_private.res -O coff 

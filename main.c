@@ -15,8 +15,8 @@
 // #include "windows.h"
 #include "main.h"
 #include "math.h"
-#include <SDL.h>
-#include <SDL_opengl.h>
+#include <SDL/SDL_opengl.h>
+// #include <SDL_thread.h>
 #ifdef TTF
 #include <SDL_ttf.h>
 #else
@@ -60,7 +60,7 @@ SDL_Color color_blanco = { 0xff, 0xff, 0xff, 0x00 };
 SDL_Color color_negro = {0x00, 0x00, 0x00, 0 };
 #endif
 time_t start_time;
-long instrucciones = 0;
+unsigned long instrucciones = 0;
 bool logging = true;
 int filelogging = 0;
 bool logmem = FALSE;
@@ -72,43 +72,8 @@ char lastop[128];
 bool pausa = false;
 WORD joystick = 0xFFFF;
 SDL_Joystick * js;
-bool refresh_screen = true;
 
 void timer_check();
-
-/*
-void opcode_log(int pos, WORD arg)
-{
-	if (pos < 0)
-	{
-		logmsg("pos < 0");
-		fflush(logfp);
-		abort();
-	}
-
-	ultop[ultopcnt].func = ((pos < 0) ? NULL : opcodes[pos].logfunc);
-	ultop[ultopcnt].params.pos = pos;
-	ultop[ultopcnt].params.arg = arg;
-	ultop[ultopcnt].params.PC = PC;
-
-#ifdef PRINT_ASM
-
-#elif FULL_DEBUG_FROM
-	if (PC >= FULL_DEBUG_FROM && PC <= FULL_DEBUG_TO)
-#else
-	if (filelogging & FILELOG_OPCODES)
-#endif
-	{
-		if (ultop[ultopcnt].func)
-			(*ultop[ultopcnt].func) (&ultop[ultopcnt].params);
-		logmsg("%s\r\n", lastop);
-	}
-
-	ultopcnt++;
-
-	ultopcnt %= OPMAXCNT;
-}
-*/
 
 void query_cache(WORD arg) // función interna
 {
@@ -178,9 +143,9 @@ void RedibujarPantalla()
 		if (DebugVisible)
 		{
 			DebugUpdate();
-			SDL_BlitSurface(DebugWindow, NULL, screen, NULL);
-			SDL_Flip(screen);
-			SDL_GL_SwapBuffers();
+//			SDL_BlitSurface(DebugWindow, NULL, screen, NULL);
+//			SDL_Flip(screen);
+			DibujarGL(DebugWindow);
 			return;
 		}
 		DibujarFramebuffer();
@@ -241,7 +206,6 @@ void RedibujarPantalla()
 		SDL_FreeSurface(cscreen);
 #endif
 
-		refresh_screen = false;
 	} */
 }
 
@@ -260,7 +224,30 @@ Uint32 TimerCallback(Uint32 interval, void * param)
 
 	timer_check();
 
-	return 10;
+	return 1;
+}
+
+Uint32 VBlankCallback(Uint32 interval, void * param)
+{
+//	logmsg("VBlankCallback: %d\n", pvr_scanline);
+	pvr_scanline++;
+
+	if (pvr_scanline == pvr_spg_vblank_int_out)
+	{
+		logxmsg(LOG_INTC, "VBlankCallback: llamando SCANINT1\n");
+		intc_add(ASIC_EVT_PVR_SCANINT1, 0);
+	}
+	else
+	if (pvr_scanline == pvr_spg_vblank_int_in)
+	{
+		logxmsg(LOG_INTC, "VBlankCallback: llamando SCANINT2\n");
+		intc_add(ASIC_EVT_PVR_SCANINT2, 0);
+	}
+
+//	pvr_scanline %= 0x1FF;
+	pvr_scanline %= pvr_spg_load_vcount;
+
+	return 1;
 }
 
 void dma_check()
@@ -295,48 +282,54 @@ void dma_check()
 
 void timer_check()
 {
-    if (*TSTR & 8)
-    {
-        if ((long) (*TCNT2) < 0) // underflow
-        {
-                *TCNT2 = *TCOR2;
-                *TCR2 |= TMU_TCR_UNF;
+//	while (timer_running)
+	{
+//	    SDL_mutexP(regmap_mutex);
+	    if (*TSTR & 8)
+	    {
+	        if ((long) (*TCNT2) < 0) // underflow
+	        {
+	                *TCNT2 = *TCOR2;
+	                *TCR2 |= TMU_TCR_UNF;
 #ifdef TMU_INT
-//                if ((*TCR2 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
-                	intc(EXC_TMU2_TUNI2);
+//	                if ((*TCR2 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+    	            	intc(EXC_TMU2_TUNI2);
 #endif
-        }
-        else
-				*TCNT2 = *TCNT2 - 1;
-    }
-    if (*TSTR & 2)
-    {
-        if ((long) (*TCNT1) < 0) // underflow
-        {
-                *TCNT1 = *TCOR1;
-                *TCR1 |= TMU_TCR_UNF;
+	   	     }
+   		     else
+					*TCNT2 = *TCNT2 - 1;
+	   	 }
+	    if (*TSTR & 2)
+	    {
+	        if ((long) (*TCNT1) < 0) // underflow
+	        {
+	                *TCNT1 = *TCOR1;
+	                *TCR1 |= TMU_TCR_UNF;
 #ifdef TMU_INT
 //                if ((*TCR1 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
 	                intc(EXC_TMU1_TUNI1);
 #endif
-        }
-        else
+	        }
+	        else
 				*TCNT1 = *TCNT1 - 1;
-    }
-    if ((*TSTR) & 1)
-    {
-        if ((long) (*TCNT0) < 0) // underflow
-        {
-                (*TCNT0) = *TCOR0;
-                (*TCR0) |= TMU_TCR_UNF;
+	    }
+	    if ((*TSTR) & 1)
+	    {
+	        if ((long) (*TCNT0) < 0) // underflow
+	        {
+	                (*TCNT0) = *TCOR0;
+	                (*TCR0) |= TMU_TCR_UNF;
 #ifdef TMU_INT
  //               if ((*TCR0 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
-	                intc(EXC_TMU0_TUNI0);
+		                intc(EXC_TMU0_TUNI0);
 #endif
-        }
-        else
-            *TCNT0 = *TCNT0 - 1;
-    }
+	        }
+	        else
+	            *TCNT0 = *TCNT0 - 1;
+	    }
+//	    SDL_mutexV(regmap_mutex);
+//	    SDL_Delay(10);
+	}
 }
 
 void main_loop(void)
@@ -371,8 +364,8 @@ void main_loop(void)
 /*			if (timer_cnt++ == 10)
 			{ */
 
-/*			if (*TSTR)
-				timer_check(); */
+//			if (*TSTR)
+				timer_check();
 
 /*				timer_cnt = 0;
 			} */
@@ -384,7 +377,6 @@ void main_loop(void)
 			if (DebugMode == DBG_STEP)
 			{
 				DebugMode = DBG_STOP;
-				refresh_screen = true;
 				RedibujarPantalla();
 			}
    	
@@ -413,7 +405,7 @@ void main_loop(void)
    				cnt = 0;
    				pvr_scanline = 0;
 				break; // salimos de este ciclo y vamos al siguiente
-			}						
+			}
 		}
 
 		if (pvr_3dscene)
@@ -616,13 +608,11 @@ void main_loop(void)
 
 					case SDLK_KP_PLUS:
 					MemDebug += 0x140;
-					refresh_screen = true;
 					RedibujarPantalla();
 					break;
 					
 					case SDLK_KP_MINUS:
 					MemDebug -= 0x140;
-					refresh_screen = true;
 					RedibujarPantalla();
 					break;
 					
@@ -851,8 +841,8 @@ int main(int argc, char *argv[])
 //	short c;
 	WORD wvalor;
 	DWORD dwvalor;
-
-	SDL_TimerID timer_id;
+//	SDL_TimerID vblank_id;
+//	SDL_Thread * timer_thread;
 
 	//FILE * fp; 
 
@@ -970,13 +960,25 @@ int main(int argc, char *argv[])
 	
 	logmsg("añadiendo timer\n");
 
-	timer_id = SDL_AddTimer(20, TimerCallback, NULL);
+/*	timer_id = SDL_AddTimer(10, TimerCallback, NULL);
 
 	if (timer_id == NULL)
 	{
 		fprintf(stderr, "No se pudo crear timer: %s\r\n", SDL_GetError());
 		return 1;
-	}
+	} */
+	
+//	regmap_mutex = SDL_CreateMutex();
+	
+//	timer_thread = SDL_CreateThread(timer_check, NULL);
+
+/*	vblank_id = SDL_AddTimer(10, VBlankCallback, NULL);
+
+	if (vblank_id == NULL)
+	{
+		fprintf(stderr, "No se pudo crear timer: %s\r\n", SDL_GetError());
+		return 1;
+	} */
 
 	if ( SDL_MUSTLOCK(screen) )
 	{
@@ -1046,9 +1048,14 @@ int main(int argc, char *argv[])
 
 	main_loop();
 
-	SDL_RemoveTimer(timer_id);
+//	SDL_RemoveTimer(timer_id);
+//	SDL_RemoveTimer(vblank_id);
+	
+//	timer_running = 0;
+//	SDL_WaitThread(timer_thread, NULL);
+//	SDL_DestroyMutex(regmap_mutex);
 
-	fprintf(logfp, "PC:%lx VBR:%lx spd:%d", PC, VBR, instrucciones/(time(NULL) - start_time));
+	fprintf(logfp, "PC:%lx VBR:%lx spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
 
 	fclose(logfp);
 	fclose(serialfp);

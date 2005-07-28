@@ -11,7 +11,12 @@ extern	int		pvr_framebufferdisplay;
 extern	int 	pvr_scanline;
 extern	DWORD	pvr_fb_r_ctrl;
 extern	DWORD	pvr_fb_r_sof1;
+
+// sync pulse generator
+extern	DWORD	pvr_spg_load;
+extern	DWORD	pvr_spg_load_vcount;
 extern	DWORD	pvr_spg_vblank_int;
+
 extern	DWORD	pvr_isp_backgnd_t;
 extern	DWORD 	pvr_param_base;
 extern	DWORD 	pvr_region_base;
@@ -33,6 +38,7 @@ extern	int		pvr_listdone;
 int screeninit(void);
 SDL_Surface * draw_backscreen(void);
 void DibujarFramebuffer();
+void DibujarGL(SDL_Surface * sfc);
 void limpiar_pantalla();
 
 // callbacks

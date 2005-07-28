@@ -1,8 +1,8 @@
 /*
-    $Id: types.h,v 1.16 2004/05/11 02:15:57 rocky Exp $
+    $Id: types.h,v 1.31 2005/03/21 10:43:08 rocky Exp $
 
     Copyright (C) 2000 Herbert Valerio Riedel <hvr@gnu.org>
-    Copyright (C) 2002, 2003, 2004 Rocky Bernstein <rocky@panix.com>
+    Copyright (C) 2002, 2003, 2004, 2005 Rocky Bernstein <rocky@panix.com>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -30,6 +30,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
+
+#ifndef LIBCDIO_CONFIG_H
+#include <cdio/cdio_config.h>
+#endif
 
   /* provide some C99 definitions */
 
@@ -102,15 +106,9 @@ extern "C" {
   /* ISO/IEC 9899:1999 <stdbool.h> missing -- enabling workaround */
   
 # ifndef __cplusplus
-  typedef enum
-    {
-      false = 0,
-      true = 1
-    } _Bool;
-  
-#  define false   false
-#  define true    true
-#  define bool _Bool
+#  define false   0
+#  define true    1
+#  define bool uint8_t
 # endif
 #endif
   
@@ -179,18 +177,29 @@ extern "C" {
     One CD-ROMs addressing scheme especially used in audio formats
     (Red Book) is an address by minute, sector and frame which
     BCD-encoded in three bytes. An alternative format is an lba_t.
+
+    Note: the fields in this structure are BCD encoded. Use
+    cdio_to_bcd8() or cdio_from_bcd8() to convert an integer into or
+    out of this format. The format specifier %x (not %d) can be used
+    if you need to format or print values in this structure.
     
     @see lba_t
   */
   PRAGMA_BEGIN_PACKED
-  struct msf_rec {
-    uint8_t m, s, f;
+  struct msf_s {
+    uint8_t m, s, f; /* BCD encoded! */
   } GNUC_PACKED;
   PRAGMA_END_PACKED
   
-  typedef struct msf_rec msf_t;
+  typedef struct msf_s msf_t;
 
 #define msf_t_SIZEOF 3
+  
+  typedef enum  {
+    nope  = 0,
+    yep   = 1,
+    dunno = 2
+  } bool_3way_t;
   
   /* type used for bit-fields in structs (1 <= bits <= 8) */
 #if defined(__GNUC__)
@@ -211,20 +220,30 @@ extern "C" {
    */
   typedef int32_t lba_t;
   
-  /*! The type of a Logical Sector Number. Note that an lba lsn be negative
-    and the MMC3 specs allow for a conversion of a negative lba
+  /*! The type of a Logical Sector Number. Note that an lba can be negative
+    and the MMC3 specs allow for a conversion of a negative lba.
 
     @see msf_t
   */
   typedef int32_t lsn_t;
   
-  /*! The type of an track number 0..99. */
+  /* Address in either MSF or logical format */
+  union cdio_cdrom_addr		
+  {
+    msf_t	msf;
+    lba_t	lba;
+  };
+
+  /*! The type of a track number 0..99. */
   typedef uint8_t track_t;
   
+  /*! The type of a session number 0..99. */
+  typedef uint8_t session_t;
+  
   /*! 
-    Constant for invalid track number
+    Constant for invalid session number
   */
-#define CDIO_INVALID_TRACK   0xFF
+#define CDIO_INVALID_SESSION   0xFF
   
   /*! 
     Constant for invalid LBA. It is 151 less than the most negative
@@ -238,75 +257,43 @@ extern "C" {
   */
 #define CDIO_INVALID_LSN    CDIO_INVALID_LBA
 
-typedef int cdio_fs_anal_t;
+  /*! 
+    Number of ASCII bytes in a media catalog number (MCN).
+  */
+#define CDIO_MCN_SIZE       13
 
-/*! The type of an drive capability bit mask. See below for values*/
-  typedef uint32_t cdio_drive_cap_t;
+  /*! 
+    Type to hold ASCII bytes in a media catalog number (MCN).
+    We include an extra 0 byte so these can be used as C strings.
+  */
+  typedef char cdio_mcn_t[CDIO_MCN_SIZE+1];
   
-/*!
-  \brief Drive types returned by cdio_get_drive_cap()
 
-  Most are copied from the GNU/Linux the uniform CD-ROM driver header
-  linux/cdrom.h>  NOTE: Setting a bit here means the presence of
-  a capability.
-*/ 
+  /*! 
+    Number of ASCII bytes in International Standard Recording Codes (ISRC)
+  */
+#define CDIO_ISRC_SIZE       12
 
-#define CDIO_DRIVE_CAP_CLOSE_TRAY     0x00001 /**< caddy systems can't 
-                                                   close... */
-#define CDIO_DRIVE_CAP_OPEN_TRAY      0x00002 /**< but can eject.  */
-#define CDIO_DRIVE_CAP_LOCK	      0x00004 /**< disable manual eject */
-#define CDIO_DRIVE_CAP_SELECT_SPEED   0x00008 /**< programmable speed */
-#define CDIO_DRIVE_CAP_SELECT_DISC    0x00010 /**< select disc from juke-box */
-#define CDIO_DRIVE_CAP_MULTI_SESSION  0x00020 /**< read sessions>1 */
-#define CDIO_DRIVE_CAP_MCN	      0x00040 /**< Medium Catalog Number */
-#define CDIO_DRIVE_CAP_MEDIA_CHANGED  0x00080 /**< media changed */
-#define CDIO_DRIVE_CAP_CD_AUDIO	      0x00100 /**< drive can play CD audio */
-#define CDIO_DRIVE_CAP_RESET          0x00200 /**< hard reset device */
-#define CDIO_DRIVE_CAP_IOCTLS         0x00400 /**< driver has non-standard 
-                                                   ioctls */
-#define CDIO_DRIVE_CAP_DRIVE_STATUS   0x00800 /**< driver implements drive 
-                                               status */
-#define CDIO_DRIVE_CAP_GENERIC_PACKET 0x01000 /**< driver implements generic 
-                                                   packets */
-#define CDIO_DRIVE_CAP_CD_R	      0x02000 /**< drive can write CD-R */
-#define CDIO_DRIVE_CAP_CD_RW	      0x04000 /**< drive can read CD-RW */
-#define CDIO_DRIVE_CAP_DVD	      0x08000 /**< drive can read DVD */
-#define CDIO_DRIVE_CAP_DVD_R	      0x10000 /**< drive can write DVD-R */
-#define CDIO_DRIVE_CAP_DVD_RAM	      0x20000 /**< drive can write DVD-RAM */
+  /*! 
+    Type to hold ASCII bytes in a media catalog number (MCN).
+    We include an extra 0 byte so these can be used as C strings.
+  */
+  typedef char cdio_isrc_t[CDIO_ISRC_SIZE+1];
 
-/**<  These are not taken by GNU/Linux cdrom.h (yet) */
-#define CDIO_DRIVE_CAP_ERROR          0x00000 /**< Error */
-#define CDIO_DRIVE_CAP_FILE	      0x40000 /**< drive is really a file, i.e
-                                                   a CD file image */
-#define CDIO_DRIVE_CAP_UNKNOWN        0x80000 /**< Dunno. It can be on if we
-					        have only partial information 
-                                                or are not completely certain
-                                          */
-/**< Masks derived from above... */
-#define CDIO_DRIVE_CAP_CD_WRITER \
-   (CDIO_DRIVE_CAP_CD_R|CDIO_DRIVE_CAP_CD_RW) 
-/**< Has some sort of CD writer ability */
+  typedef int cdio_fs_anal_t;
 
-#define CDIO_DRIVE_CAP_CD \
-   (CDIO_DRIVE_CAP_CD_AUDIO|CDIO_DRIVE_CAP_CD_WRITER)
-/**< Has some sort of CD ability */
-
-#define CDIO_DRIVE_CAP_DVD_WRITER \
-   (CDIO_DRIVE_CAP_DVD_R|CDIO_DRIVE_CAP_DVD_RAM)
-/**< Has some sort of DVD writer ability */
-
-/*! 
-  track flags
-  Q Sub-channel Control Field (4.2.3.3)
-*/
-typedef enum {
-  CDIO_TRACK_FLAG_NONE = 		0x00,	/**< no flags set */
-  CDIO_TRACK_FLAG_PRE_EMPHASIS =	0x01,	/**< audio track recorded with
-                                                     pre-emphasis */
-  CDIO_TRACK_FLAG_COPY_PERMITTED =	0x02,	/**< digital copy permitted */
-  CDIO_TRACK_FLAG_DATA =		0x04,	/**< data track */
-  CDIO_TRACK_FLAG_FOUR_CHANNEL_AUDIO =	0x08,	/**< 4 audio channels */
-  CDIO_TRACK_FLAG_SCMS =			0x10	/**< SCMS (5.29.2.7) */
+  /*! 
+    track flags
+    Q Sub-channel Control Field (4.2.3.3)
+  */
+  typedef enum {
+    CDIO_TRACK_FLAG_NONE = 		 0x00,	/**< no flags set */
+    CDIO_TRACK_FLAG_PRE_EMPHASIS =	 0x01,	/**< audio track recorded with
+                                                   pre-emphasis */
+    CDIO_TRACK_FLAG_COPY_PERMITTED =	 0x02,	/**< digital copy permitted */
+    CDIO_TRACK_FLAG_DATA =		 0x04,	/**< data track */
+    CDIO_TRACK_FLAG_FOUR_CHANNEL_AUDIO = 0x08,  /**< 4 audio channels */
+  CDIO_TRACK_FLAG_SCMS =		 0x10	/**< SCMS (5.29.2.7) */
 } cdio_track_flag;
 
 #ifdef __cplusplus

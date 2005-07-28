@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-typedef int ssize_t; // falta en mingw32
+// typedef int ssize_t; // falta en mingw32
 
 #include <cdio/config.h>
 #include <cdio/cdio.h>

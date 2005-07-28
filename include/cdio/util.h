@@ -1,7 +1,8 @@
 /*
-    $Id: util.h,v 1.2 2003/11/18 03:35:19 rocky Exp $
+    $Id: util.h,v 1.8 2005/04/27 23:31:47 rocky Exp $
 
     Copyright (C) 2000 Herbert Valerio Riedel <hvr@gnu.org>
+    Copyright (C) 2004, 2005 Rocky Bernstein <rocky@panix.com>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -41,38 +42,45 @@
 #undef  CLAMP
 #define CLAMP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))
 
-static inline unsigned
-_cdio_len2blocks (unsigned len, int blocksize)
+static inline uint32_t
+_cdio_len2blocks (uint32_t i_len, uint16_t i_blocksize)
 {
-  unsigned blocks;
+  uint32_t i_blocks;
 
-  blocks = len / blocksize;
-  if (len % blocksize)
-    blocks++;
+  i_blocks = i_len / (uint32_t) i_blocksize;
+  if (i_len % i_blocksize)
+    i_blocks++;
 
-  return blocks;
+  return i_blocks;
 }
 
 /* round up to next block boundary */
 static inline unsigned 
-_cdio_ceil2block (unsigned offset, int blocksize)
+_cdio_ceil2block (unsigned offset, uint16_t i_blocksize)
 {
-  return _cdio_len2blocks (offset, blocksize) * blocksize;
+  return _cdio_len2blocks (offset, i_blocksize) * i_blocksize;
 }
 
-static inline unsigned 
-_cdio_ofs_add (unsigned offset, unsigned length, int blocksize)
+static inline unsigned int
+_cdio_ofs_add (unsigned offset, unsigned length, uint16_t i_blocksize)
 {
-  if (blocksize - (offset % blocksize) < length)
-    offset = _cdio_ceil2block (offset, blocksize);
+  if (i_blocksize - (offset % i_blocksize) < length)
+    offset = _cdio_ceil2block (offset, i_blocksize);
 
   offset += length;
 
   return offset;
 }
 
-void *
-_cdio_malloc (size_t size);
+static inline const char *
+_cdio_bool_str (bool b)
+{
+  return b ? "yes" : "no";
+}
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 void *
 _cdio_memdup (const void *mem, size_t count);
@@ -92,16 +100,26 @@ _cdio_strlenv(char **str_array);
 char **
 _cdio_strsplit(const char str[], char delim);
 
-static inline const char *
-_cdio_bool_str (bool b)
-{
-  return b ? "yes" : "no";
+uint8_t cdio_to_bcd8(uint8_t n);
+uint8_t cdio_from_bcd8(uint8_t p);
+
+#if defined(__GNUC__) && __GNUC__ >= 3
+static inline __attribute__((deprecated))
+uint8_t to_bcd8(uint8_t n) {
+  return cdio_to_bcd8(n);
 }
+static inline __attribute__((deprecated))
+uint8_t from_bcd8(uint8_t p) {
+  return cdio_from_bcd8(p);
+}
+#else
+#define to_bcd8 cdio_to_bcd8
+#define from_bcd8 cdio_from_bcd8
+#endif
 
-/* BCD */
-
-uint8_t  to_bcd8(uint8_t n);
-uint8_t  from_bcd8(uint8_t p);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __CDIO_UTIL_H__ */
 

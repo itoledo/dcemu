@@ -7,6 +7,7 @@
 #include "intc.h"
 
 #define DWREF(p) (*(DWORD *)(p))
+// extern SDL_mutex * regmap_mutex; // en main.c
 
 DWORD SQ0[8];
 DWORD SQ1[8];
@@ -1105,7 +1106,6 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				screenbits = 16;
 			}
 			screeninit();
-			refresh_screen = true;
 		}
 		break;
 
@@ -1224,6 +1224,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			logxmsg(LOG_PVR, "SPG_LOAD: vcount = %x, hcount = %x\n",
    				(dw >> 16) & 0x3ff,
    				dw & 0x3ff);
+			pvr_spg_load = dw;
+			pvr_spg_load_vcount = (dw >> 16) & 0x3ff;
 		}
 		break;
 
@@ -1346,7 +1348,6 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		SDL_LockSurface(backscreen);
 		memcpy(backscreen->pixels + addr, p, size);
 		SDL_UnlockSurface(backscreen); */
-//		refresh_screen = true;
 /*	} */
 }
 
@@ -1397,7 +1398,9 @@ void regmap_read(unsigned long direccion, void * p, size_t size)
 
 void regmap_write(unsigned long direccion, void * p, size_t size)
 {
+//	SDL_mutexP(regmap_mutex);
 	memcpy(&regmem[direccion & 0x00FFFFFF], p, size);
+//	SDL_mutexV(regmap_mutex);
 	
 /*    if ((direccion & 0x00FF0000) == 0xD80000)
     {

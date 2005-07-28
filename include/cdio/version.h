@@ -1,10 +1,12 @@
-/* $Id: version.h.in,v 1.4 2004/03/20 12:43:13 rocky Exp $ */
+/* $Id: version.h.in,v 1.6 2005/01/29 20:54:20 rocky Exp $ */
 /** \file version.h 
- *  \brief  A file simply containing the library version number.
+ *
+ *  \brief A file containing the libcdio package version
+ *  number (75) and OS build name. 
  */
 
 /*! CDIO_VERSION can as a string in programs to show what version is used. */
-#define CDIO_VERSION "0.69cvs"
+#define CDIO_VERSION "0.75 i686-pc-mingw32"
 
 /*! LIBCDIO_VERSION_NUM  can be used for testing in the C preprocessor */
-#define LIBCDIO_VERSION_NUM 69
+#define LIBCDIO_VERSION_NUM 75

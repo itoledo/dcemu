@@ -6,9 +6,9 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include "main.h"
 #include "debug.h"
-#include <SDL.h>
-#include <SDL_opengl.h>
+#include <SDL/SDL_opengl.h>
 #include "graficos.h"
 #include "BFont.h"
 #include <time.h>
@@ -34,7 +34,8 @@ int DebugInit(void)
 //	BFont_SetFontColor(DebugFont, 0xff, 0xff, 0xff);
 	
 	if (DebugWindow == NULL) 
-		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, 640, 480, 16, 0, 0, 0, 0);
+//		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, 640, 480, 16, 0, 0, 0, 0);
+		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, 1024, 512, 16, 0, 0, 0, 0);
 
 	if (DebugWindow == NULL)
  		return 1;
@@ -339,7 +340,7 @@ void disasm(DWORD address, char *buffer)
 void DrawDebugInlineInfo(SDL_Surface * surface)
 {
 extern time_t start_time;
-extern long instrucciones;
+extern unsigned long instrucciones;
 
 	char buf[512]; //, buf2[128];
 	SDL_Rect rc;

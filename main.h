@@ -1,7 +1,10 @@
 // main.h
+#ifndef _MAIN_H
+#define _MAIN_H
+
 #include <windows.h>
 #include <stdio.h>
-#include <SDL.h>
+#include <SDL/SDL.h>
 
 // OpenGL
 #include <gl\gl.h>								// Header File For The OpenGL32 Library
@@ -74,8 +77,7 @@ extern unsigned char * ta_mem;
 extern unsigned char * control_mem;	// empezando en 0x005f0000
 extern FILE * logfp, * serialfp, * memfp;
 extern bool pausa;
-extern long instrucciones;
-extern bool refresh_screen;
+extern unsigned long instrucciones;
 
 extern DWORD G2_FIFO;		// G2 FIFO
 #define AICA_FIFO		(0x01)
@@ -138,3 +140,4 @@ struct TOC {
   unsigned int dunno;
 };
 
+#endif // _MAIN_H
