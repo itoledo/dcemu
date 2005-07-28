@@ -1,6 +1,6 @@
 // main.h
-#ifndef _MAIN_H
-#define _MAIN_H
+#ifndef _MAIN_H_
+#define _MAIN_H_
 
 #include <windows.h>
 #include <stdio.h>

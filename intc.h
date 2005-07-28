@@ -1,3 +1,6 @@
+#ifndef _INTC_H_
+#define _INTC_H_
+
 bool intc(DWORD irq);
 void check_ints();
 bool intc_check();
@@ -29,3 +32,4 @@ extern bool maple_dma;
 // #define ASIC_EVT_PVR_PRIMOUTOFMEM       0x0202
 // #define ASIC_EVT_PVR_MATOUTOFMEM        0x0203
 
+#endif // _INTC_H

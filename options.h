@@ -1,7 +1,7 @@
 #ifndef _OPTIONS_H_
 #define _OPTIONS_H_
 
-#define APPTITLE 	"DCEMU - DreamCast Emulator for Windows 21-JUN-2004"
+#define APPTITLE 	"DCEMU - DreamCast Emulator for Windows " __DATE__
 #define OPENGL
 
 // Usar funcciones o macros para accesar la memoria

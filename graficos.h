@@ -1,3 +1,6 @@
+#ifndef _GRAFICOS_H
+#define _GRAFICOS_H
+
 #define MAX_TEXTURE_COUNT 10
 
 extern	int		screenbits;
@@ -49,3 +52,4 @@ extern	SDL_Surface *screen;
 // extern	SDL_Surface *backscreen;
 // extern	SDL_Surface *glscreen;
 
+#endif // _GRAFICOS_H
