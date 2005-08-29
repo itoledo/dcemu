@@ -4,6 +4,7 @@
 #include "options.h"
 #include "graficos.h"
 #include "intc.h"
+#include "gui.h"
 
 #define TEXTURE_CACHING
 
@@ -1267,6 +1268,8 @@ SDL_Surface * draw_backscreen()
 
 void DibujarFramebuffer()
 {
+	glEnable(GL_TEXTURE_2D);
+	
 	glBindTexture(GL_TEXTURE_2D, background_texture);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, screenancho);
 	switch(screenformat)
@@ -1310,10 +1313,79 @@ void DibujarFramebuffer()
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 	glEnable(GL_BLEND);
 	glEnable(GL_DEPTH_TEST);
+	glDisable(GL_TEXTURE_2D);
 	// fin textura 1024
+
+	gui_refresh();
 
 	logxmsg(LOG_PVR, "DibujarFramebuffer: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
+}
+
+int glinit(void)
+{
+	int i;
+
+	logxmsg(LOG_PVR, "glinit: entrando");
+
+	SDL_GL_SetAttribute( SDL_GL_RED_SIZE, 8 );
+    SDL_GL_SetAttribute( SDL_GL_GREEN_SIZE, 8 );
+    SDL_GL_SetAttribute( SDL_GL_BLUE_SIZE, 8 );
+	SDL_GL_SetAttribute( SDL_GL_ALPHA_SIZE, 8);
+    SDL_GL_SetAttribute( SDL_GL_BUFFER_SIZE, 32 );
+    SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
+
+	outputscreen = SDL_SetVideoMode(800, 600, 32, SDL_HWSURFACE|SDL_OPENGL|SDL_HWACCEL);
+	
+	if (outputscreen == NULL)
+	{
+		logxmsg(LOG_PVR, "screeninit: outputscreen = NULL!!!!\n");
+		exit(1);
+	}
+
+    SDL_WM_SetCaption(APPTITLE, NULL);
+    SDL_WM_SetIcon(SDL_LoadBMP("dcemu.bmp"), NULL);
+	SDL_EnableUNICODE(1);
+
+	gui_init();
+
+	logxmsg(LOG_PVR, "glinit: seteando viewport a %dx%d\n", 800, 600);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glViewport(0, 0, 800, 600);
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);		// This Will Clear The Background Color To Black
+	glClearDepth(1.0);				// Enables Clearing Of The Depth Buffer
+	glDepthFunc(GL_LESS);				// The Type Of Depth Test To Do
+	glEnable(GL_DEPTH_TEST);			// Enables Depth Testing
+	glShadeModel(GL_SMOOTH);			// Enables Smooth Color Shading
+
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();				// Reset The Projection Matrix
+//		gluPerspective(45.0f,(GLfloat)width/(GLfloat)height,1.0f,100.0f);	// Calculate The Aspect Ratio Of The Window
+
+	glEnable(GL_TEXTURE_2D);
+	glEnable(GL_BLEND);
+
+    glGenTextures(MAX_TEXTURE_COUNT, pvr_textures);
+    glGenTextures(1, &background_texture);
+/*		glGenTextures(1, &pvr_textures[0]);
+	glGenTextures(1, &pvr_textures[1]); */
+	glBindTexture(GL_TEXTURE_2D, background_texture);
+	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
+	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+	for (i = 0; i < MAX_TEXTURE_COUNT; i++)
+	{
+		glBindTexture(GL_TEXTURE_2D, pvr_textures[i]);
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
+		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
+	}
+
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);			// Clear The Screen And The Depth Buffer
+
+	logxmsg(LOG_PVR, "glinit: saliendo");
+	
+	return 0;
 }
 
 // parametros globales:
@@ -1327,8 +1399,6 @@ int screeninit(void)
 	Uint32 rmask, gmask, bmask, amask;
 	Uint32 glrmask, glgmask, glbmask, glamask;
 	int asize, rsize, gsize, bsize;
-	int i;
-	static bool textures_created = false;
 
 	logxmsg(LOG_PVR, "screeninit: entrando a screeninit()\n");
 
@@ -1427,13 +1497,6 @@ int screeninit(void)
 		break;
 	}
 
-	SDL_GL_SetAttribute( SDL_GL_RED_SIZE, 8 );
-    SDL_GL_SetAttribute( SDL_GL_GREEN_SIZE, 8 );
-    SDL_GL_SetAttribute( SDL_GL_BLUE_SIZE, 8 );
-	SDL_GL_SetAttribute( SDL_GL_ALPHA_SIZE, 8);
-    SDL_GL_SetAttribute( SDL_GL_BUFFER_SIZE, 32 );
-    SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
-
 	screenancho = screenwidth * ((screenbits == 32) ? 1 : 2);
 
 	// definamos el tamaño de la textura
@@ -1452,14 +1515,8 @@ int screeninit(void)
 	if (screenheight > 128)
 		screentexheight = 256.0f;
 
-//	screen = SDL_SetVideoMode(screenancho, screenheight, 32 /* 32 */, SDL_SWSURFACE|SDL_OPENGL|SDL_GL_DOUBLEBUFFER|SDL_HWACCEL); // SDL_OPENGLBLIT);
-	outputscreen = SDL_SetVideoMode(800, 600, 32, SDL_OPENGL);
-	
-	if (outputscreen == NULL)
-	{
-		logxmsg(LOG_PVR, "screeninit: outputscreen = NULL!!!!\n");
-		exit(1);
-	}
+	if (screen != NULL)
+		SDL_FreeSurface(screen);
 
 	screen = SDL_CreateRGBSurface(SDL_HWSURFACE, screenancho, screenheight, 32, rmask, gmask, bmask, amask);
 
@@ -1469,22 +1526,7 @@ int screeninit(void)
 		exit(1);
 	}
 
-	logxmsg(LOG_PVR, "screeninit: seteando viewport a %dx%d\n", screenancho, screenheight);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-//	glViewport(0, 0, 640, 480);
-//	glViewport(0, 0, screenancho, screenheight);
-	glViewport(0, 0, 800, 600);
-	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);		// This Will Clear The Background Color To Black
-	glClearDepth(1.0);				// Enables Clearing Of The Depth Buffer
-	glDepthFunc(GL_LESS);				// The Type Of Depth Test To Do
-	glEnable(GL_DEPTH_TEST);			// Enables Depth Testing
-	glShadeModel(GL_SMOOTH);			// Enables Smooth Color Shading
-	
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();				// Reset The Projection Matrix
-//		gluPerspective(45.0f,(GLfloat)width/(GLfloat)height,1.0f,100.0f);	// Calculate The Aspect Ratio Of The Window
-	
+	logxmsg(LOG_PVR, "screeninit: glOrtho %dx%d", screenancho, screenheight);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 //		glOrtho(0, width, height, 0, 0.1, 100.0);
@@ -1497,36 +1539,6 @@ int screeninit(void)
 //		glOrtho(0, (GLdouble)width, (GLdouble)height, 0.0, 0.1, 100.0);
 //		glPixelZoom(1.0, -1.0);
 
-	glEnable(GL_TEXTURE_2D);
-	glEnable(GL_BLEND);
-
-    glGenTextures(MAX_TEXTURE_COUNT, pvr_textures);
-    glGenTextures(1, &background_texture);
-/*		glGenTextures(1, &pvr_textures[0]);
-	glGenTextures(1, &pvr_textures[1]); */
-	glBindTexture(GL_TEXTURE_2D, background_texture);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
-	for (i = 0; i < MAX_TEXTURE_COUNT; i++)
-	{
-		glBindTexture(GL_TEXTURE_2D, pvr_textures[i]);
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);	// Linear Filtering
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);	// Linear Filtering
-	}
-
-	textures_created = true;
-
-	if (screen == NULL)
-	{
-		fprintf(stderr, "screeninit: no se pudo abrir pantalla.\n");
-		return 1;
-	}
-
-    SDL_WM_SetCaption(APPTITLE, NULL);
-    SDL_WM_SetIcon(SDL_LoadBMP("dcemu.bmp"), NULL);
-
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);			// Clear The Screen And The Depth Buffer
-
 	logxmsg(LOG_PVR, "screeninit: saliendo\n");
 
 	return 0;
@@ -1534,60 +1546,29 @@ int screeninit(void)
 
 void DibujarGL(SDL_Surface * sfc)
 {
+	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, background_texture);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, sfc->w);
 
-/*	switch(sfc->format->BitsPerPixel)
-	{
-  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_5_5_1, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-	}
-	break;
-
-		case FRAMEBUFFER_RGB565:
-		{
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
-
-		case FRAMEBUFFER_RGB888:
-		{
-			// FIXME?
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
-
-		case FRAMEBUFFER_ARGB0888:
-		{
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, screentexwidth, screentexheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
-	} */
-	
 	SDL_LockSurface(sfc);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1024, 512, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, sfc->pixels);
 	SDL_UnlockSurface(sfc);
-//	glEnable(GL_BLEND);
+
 	glDisable(GL_DEPTH_TEST);
 	glDisable(GL_BLEND);
-//	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-//	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glBegin(GL_QUADS);
-	glTexCoord2f(0.0f, 480.0 / screentexheight); glVertex3f(0.0f, (float) screenheight, -1.0f);
-	glTexCoord2f(640.0 / screentexwidth, 480.0 / screentexheight); glVertex3f((float) screenancho, (float) screenheight, -1.0f);
-	glTexCoord2f(640.0 / screentexwidth, 0.0f); glVertex3f((float) screenancho, 0.0f, -1.0f);
+	glTexCoord2f(0.0f, 480.0 / 512.0); glVertex3f(0.0f, (float) screenheight, -1.0f);
+	glTexCoord2f(640.0 / 1024.0, 480.0 / 512.0); glVertex3f((float) screenancho, (float) screenheight, -1.0f);
+	glTexCoord2f(640.0 / 1024.0, 0.0f); glVertex3f((float) screenancho, 0.0f, -1.0f);
 	glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, 0.0f, -1.0f);
 	glEnd();
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-	glEnable(GL_BLEND);
-	glEnable(GL_DEPTH_TEST);
 	// fin textura 1024
 
-/*	glRasterPos3f(0, 0, -1.0f);
-	SDL_LockSurface(sfc);
-	glDrawPixels(640, 480, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, sfc->pixels); */
-//	glDrawPixels(640, 480, GL_RED, GL_UNSIGNED_SHORT, sfc->pixels);
-//	SDL_UnlockSurface(sfc);
-
+	glDisable(GL_TEXTURE_2D);
+	glEnable(GL_BLEND);
+	glEnable(GL_DEPTH_TEST);
+	
 	logxmsg(LOG_PVR, "DibujarGL: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
 //	glFlush();

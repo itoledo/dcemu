@@ -38,6 +38,7 @@ extern	int		pvr_listdone;
 #define FRAMEBUFFER_RGB888		2
 #define FRAMEBUFFER_ARGB0888	3
 
+int glinit(void);
 int screeninit(void);
 SDL_Surface * draw_backscreen(void);
 void DibujarFramebuffer();
@@ -49,7 +50,5 @@ void cb_tastart(DWORD addr, void * p, size_t size);
 void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);
 
 extern	SDL_Surface *screen;
-// extern	SDL_Surface *backscreen;
-// extern	SDL_Surface *glscreen;
 
 #endif // _GRAFICOS_H

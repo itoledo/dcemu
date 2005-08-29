@@ -33,6 +33,7 @@
 #include "debug.h"
 #include "graficos.h"
 #include "iso.h"
+#include "gui.h"
 
 DWORD snd_dbg;			// ...
 
@@ -75,6 +76,33 @@ SDL_Joystick * js;
 
 void timer_check();
 
+#ifdef OI
+void query_cache(WORD arg) // función interna
+{
+	register int i = oplist[arg];
+	int r = op_c_rec(i);
+	int field=0;
+	if(r)
+	{
+		switch(r)
+			{
+			 	case REQ_PR_0:
+						if (IS_SET(FPSCR, FPSCR_PR))
+							field=1;
+				break;
+	
+				case REQ_SZ_0:
+						if (IS_SET(FPSCR, FPSCR_SZ))
+							field=1;
+				break;
+			}
+		if(field)
+			i = op_r_mask(i);
+		else i = op_mask(i);
+	}
+	((opcodes[i].funcion) (( arg )));
+}
+#elif OC
 void query_cache(WORD arg) // función interna
 {
 	register int i = oplist[arg];
@@ -130,8 +158,7 @@ void query_cache(WORD arg) // función interna
 	else
 		((opcodes[i].funcion) (( arg )));
 }
-
-static SDL_Rect upper_screen;
+#endif
 
 void RedibujarPantalla()
 {
@@ -334,10 +361,10 @@ void timer_check()
 
 void main_loop(void)
 {
-	WORD instr;
 	SDL_Event event;
 	int cnt = 0;
-	DWORD valor;
+//	WORD instr;
+//	DWORD valor;
 //	int timer_cnt = 0;
 	
 	for (;;)
@@ -501,8 +528,9 @@ void main_loop(void)
 					break;
 					
 					case SDLK_l: // empezar el log en archivo
-					filelogging++;
-					filelogging %= 3;
+/*					filelogging++;
+					filelogging %= 3; */
+					gui_setvisiblelog(!gui_isvisiblelog());
 					break;
 					
 					case SDLK_m: // logmem
@@ -709,6 +737,10 @@ void main_loop(void)
 				}
 				break;
 #endif // JOYSTICK
+
+				default:
+				gui_event(event);
+				break;
 			}
 		}
 	}
@@ -878,12 +910,11 @@ int main(int argc, char *argv[])
 
 	joystick = 0xFFFF;
 
-	upper_screen.x = upper_screen.y = 0;
-	upper_screen.w = 640;
-	upper_screen.h = 22;
-
 //	screen = SDL_SetVideoMode(320, 240, 16, SDL_DOUBLEBUF);
 
+	if (glinit() != 0)
+		return 1;
+	
 	screeninit();
 
 //	SDL_SetAlpha(screen, SDL_RLEACCEL, 128);

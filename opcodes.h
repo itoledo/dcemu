@@ -21,6 +21,14 @@ extern int opcode_primer_restriccion;
 #define REQ_PR_0_SZ_1	3
 #define REQ_PR_1_SZ_0	4
 
+#ifdef OI
+#define op_mask(op) (0xFF & op)
+#define op_r_mask(op) ((op >> 8) & 0xFF)
+#define op_c_rec(op) ((op >> 28) & 0xF)
+#define insert_op(o,a)(o |= (a << 8))
+#define insert_rec(o,r)(o |= (r << 28))
+#endif
+
 /*
 opcode_log_f OP_T_UNK;
 opcode_log_f OP_T_IMM_RN;

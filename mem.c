@@ -5,6 +5,7 @@
 #include "opcodes.h"
 #include "graficos.h"
 #include "intc.h"
+#include "gui.h"
 
 #define DWREF(p) (*(DWORD *)(p))
 // extern SDL_mutex * regmap_mutex; // en main.c
@@ -1457,7 +1458,9 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 		case 0xe8000c:  // SCFTDR2, Transmit FIFO Data Register
   		{
   			logmsg( "SCFTDR2: %x, '%c'\r\n", *SCFTDR2, *SCFTDR2);
-			fprintf(serialfp, "%c", *SCFTDR2);
+			// fprintf(serialfp, "%c", *SCFTDR2);
+			fputc(*SCFTDR2, serialfp);
+			gui_addlogchar(*SCFTDR2);
 			fflush(serialfp);
     	}
      	break;

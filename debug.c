@@ -17,7 +17,6 @@
 int DebugVisible = 1;
 int DebugMode = DBG_STOP;
 DWORD MemDebug = 0x8c000000;
-DWORD BreakPoint = 0x8c00b940;
 
 SDL_Surface *DebugWindow;
 // SDL_Surface *DebugDest;
@@ -200,7 +199,7 @@ void DebugUpdate(void)
         	sprintf(buf, "FR%-2d : %+10.8e", y, FR(y));
         	BFont_PutStringFont(DebugWindow, DebugFont, 10 + ((y / 4) * 125), 350 + ((y % 4) * 12), buf);
     	}
-
+    	
 //		SDL_BlitSurface(DebugWindow, NULL, DebugDest, NULL);
 #if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
 		filelogging |= (FILELOG_MEMREADS | FILELOG_MEMWRITES);

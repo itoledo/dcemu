@@ -352,6 +352,33 @@ int find_opcode(DWORD mempos)
 	return ret;
 }
 
+#ifdef OI
+void initopcodes()
+{
+	int i;int i2;//int fb;
+
+	for (i2 = 0; i2<65536; i2++)
+	{
+		oplist[i2]=238;
+	}
+
+	for (i = 0; opcodes[i].opdesc; i++)
+	{
+		for (i2 = 0; i2<65536; i2++)
+		{
+			if ((i2 & opcodes[i].mask) == opcodes[i].op)
+			{
+			   if(oplist[i2] != 238)
+				{
+					insert_rec(oplist[i2],opcodes[oplist[i2]].restriccion);
+					insert_op(oplist[i2],i);
+				}
+			   else oplist[i2] = i;
+			}
+		}
+	}
+}
+#elif OC
 void initopcodes()
 {
 	int i;int i2;//int fb;
@@ -394,4 +421,4 @@ void initopcodes()
 		}
 	}
 }
-
+#endif
