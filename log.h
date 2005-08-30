@@ -36,8 +36,8 @@ extern short ultopcnt;
 
 struct st_cmd
 {
-	const long		op;
-	const long		mask;
+	const DWORD		op;
+	const DWORD		mask;
 	const char *	opdesc;
 	const int		params;
 //	opcode_log_f *	logfunc;

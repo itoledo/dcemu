@@ -57,6 +57,7 @@ int inicializar_logs()
     unlink("logs/serial.txt");
     unlink("logs/pvr.txt");
     unlink("logs/intc.txt");
+    unlink("logs/repetidos.txt");
 	
 	logfp = fopen("logs/disasm.txt", "w");
 

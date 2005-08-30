@@ -343,7 +343,7 @@ OPCODE(rte143) // RTE (00000000 00101011)
 /*	delayslot = SPC;
 	PC_func = PC_f_delayslot; */
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 	PC = SPC;
 	inside_int = false;
 

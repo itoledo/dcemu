@@ -87,8 +87,12 @@ void gui_refresh()
 {
 	gui->logic();
 	glDisable(GL_TEXTURE_2D);
+//	glDisable(GL_DEPTH_TEST);
+//	glPushAttrib(GL_TEXTURE_BIT);
 	gui->draw();
+//	glPopAttrib();
 	glEnable(GL_TEXTURE_2D);
+//	glEnable(GL_DEPTH_TEST);
 }
 
 void gui_addlog(char * str)

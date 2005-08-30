@@ -1,8 +1,38 @@
+#ifndef _OPCODES_H_
+#define _OPCODES_H_
+
 int find_opcode(DWORD mempos);
 void initopcodes();
 
-extern int oplist[65536];
-extern int opcode_primer_restriccion;
+// extern int oplist[65536];
+// extern int opcode_primer_restriccion;
+extern short * oplist;
+extern short oplist_pr0_sz0[65536];
+extern short oplist_pr0_sz1[65536];
+extern short oplist_pr1_sz0[65536];
+extern short oplist_pr1_sz1[65536];
+
+extern int idx_NOIMP;
+
+// opcodes con restricción
+/* extern int idx_FADD;
+extern int idx_FSUB;
+extern int idx_FMUL;
+extern int idx_FDIV;
+extern int idx_FCMPEQ;
+extern int idx_FCMPGT;
+extern int idx_FMOVA0MN;
+extern int idx_FMOVMA0N;
+extern int idx_FMOVAMN;
+extern int idx_FMOVAMPN;
+extern int idx_FMOVMAN;
+extern int idx_FMOVMAMN;
+extern int idx_FMOVMN;
+extern int idx_FLOAT;
+extern int idx_FTRC;
+extern int idx_FNEG;
+extern int idx_FABS;
+extern int idx_FSQRT; */
 
 #define LSB(arg) (arg & 0xFF)
 #define MSB(arg) ((arg >> 8) & 0xFF)
@@ -20,14 +50,6 @@ extern int opcode_primer_restriccion;
 #define REQ_SZ_0		2
 #define REQ_PR_0_SZ_1	3
 #define REQ_PR_1_SZ_0	4
-
-#ifdef OI
-#define op_mask(op) (0xFF & op)
-#define op_r_mask(op) ((op >> 8) & 0xFF)
-#define op_c_rec(op) ((op >> 28) & 0xF)
-#define insert_op(o,a)(o |= (a << 8))
-#define insert_rec(o,r)(o |= (r << 28))
-#endif
 
 /*
 opcode_log_f OP_T_UNK;
@@ -255,3 +277,5 @@ opcode_log_f OP_T_XMTRX_FVN;
 #define OP_T_FVM_FVN			108	// FVm, FVn
 #define OP_T_XMTRX_FVN			109	// XMTRX, FVn
 #define OP_T_AT_RM_PLUS_SGR		110	// @Rm+, SGR
+
+#endif // _OPCODES_H_

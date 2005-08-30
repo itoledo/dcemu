@@ -36,7 +36,7 @@ OPCODE(bra) // BRA label (1010dddd dddddddd)
 	PC_func = PC_f_delayslot; */
 
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = disp;
 
@@ -54,7 +54,7 @@ OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 	PC_func = PC_f_delayslot; */
 	
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = target;
 
@@ -77,7 +77,7 @@ OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 
 	PC += 2;
 
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = disp;
 
@@ -100,7 +100,7 @@ OPCODE(bsrf109) // BSRF Rn (0000nnnn 00000011)
 	PC_func = PC_f_delayslot; */
 	
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = target;
 
@@ -121,7 +121,7 @@ OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 	PC_func = PC_f_delayslot; */
 
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = target;
 
@@ -144,7 +144,7 @@ OPCODE(jsr111) // JSR @Rn (0100nnnn 00001011)
 	PC_func = PC_f_delayslot; */
 
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = target;
 
@@ -160,7 +160,7 @@ OPCODE(rts112) // RTS (00000000 00001011)
 	DWORD target = PR;
 
 	PC += 2;
-	ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 	PC = target;
 
@@ -187,7 +187,7 @@ OPCODE(bfs) // 10001111dddddddd
 		DWORD nextpc =SignExtend8(arg & 0x00FF)*2 + PC + 4;
 
 		PC += 2;
-		ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+		ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 		PC = nextpc;
 
@@ -232,7 +232,7 @@ OPCODE(bts105) // 10001101 dddddddd
 		DWORD nextpc = SignExtend8(arg & 0xFF)*2 + PC + 4;
 
 		PC += 2;
-  		ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+  		ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
   		
   		PC = nextpc;
 

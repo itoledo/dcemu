@@ -5,6 +5,8 @@
 #include "sh4.h"
 #include "options.h"
 #include "branch.h"
+#include "opcodes.h"
+#include "floatsimple.h"
 
 extern FILE * logfp, * serialfp, * memfp;
 extern unsigned char * memoria;
@@ -95,7 +97,7 @@ unsigned long delayslot = 0;
 unsigned long NEXTPC = 0;
 
 #ifndef MACRO_REPLACEMENTS
-void ejecutar_instruccion(DWORD instr)
+void ejecutar_instruccion(WORD instr)
 {
 //	DWORD valor;
 
@@ -273,7 +275,8 @@ void ejecutar_instruccion(DWORD instr)
 			} */
 /*			else
 			{ */
-				query_cache (instr);
+			//	query_cache (instr);
+				(opcodes[oplist[instr]].funcion) (instr);
 //			cache_call++;
 //			}
 }
@@ -416,6 +419,23 @@ void swap_registers(void)
 
 void UpdateFPSCR(DWORD newFPSCR)
 {
+	// aquí hacemos el swap de los registros float
+	// y revisamos si hay cambio en FPSCR_PR o FPSCR_SZ
+
+/*	if ((FPSCR ^ newFPSCR) & (FPSCR_PR | FPSCR_SZ)) // algún cambio?
+	{ */
+		// determinemos qué cambio se hizo
+		// nos fijamos en newFPSCR
+		
+		switch(newFPSCR & (FPSCR_PR|FPSCR_SZ))
+		{
+			case 0:					oplist = oplist_pr0_sz0; break;
+			case FPSCR_SZ:			oplist = oplist_pr0_sz1; break;
+			case FPSCR_PR:			oplist = oplist_pr1_sz0; break;
+			case FPSCR_PR|FPSCR_SZ:	oplist = oplist_pr1_sz1; break;
+		}
+//	}
+
 	if (FPSCR & FPSCR_FR)
 	{
  		if (newFPSCR & FPSCR_FR)

@@ -76,164 +76,30 @@ SDL_Joystick * js;
 
 void timer_check();
 
-#ifdef OI
-void query_cache(WORD arg) // función interna
+/* void query_cache(WORD arg)
 {
-	register int i = oplist[arg];
-	int r = op_c_rec(i);
-	int field=0;
-	if(r)
-	{
-		switch(r)
-			{
-			 	case REQ_PR_0:
-						if (IS_SET(FPSCR, FPSCR_PR))
-							field=1;
-				break;
-	
-				case REQ_SZ_0:
-						if (IS_SET(FPSCR, FPSCR_SZ))
-							field=1;
-				break;
-			}
-		if(field)
-			i = op_r_mask(i);
-		else i = op_mask(i);
-	}
-	((opcodes[i].funcion) (( arg )));
-}
-#elif OC
-void query_cache(WORD arg) // función interna
-{
-	register int i = oplist[arg];
-/*	if (i ==-1) 
-	{
-		return;
-	} */
-	if (opcodes[i].restriccion)
-	{
-		// no importa i ya que hay que buscar el opcode igual, de acuerdo a las restricciones
-		for (i = opcode_primer_restriccion; opcodes[i].opdesc; i++)
-		{
-			if ((arg & opcodes[i].mask) == opcodes[i].op)
-			{
-//				if (opcodes[i].restriccion)
-				{
-//					bool cont = false;
-					switch(opcodes[i].restriccion)
-					{
-					case REQ_PR_0:
-						if (IS_SET(FPSCR, FPSCR_PR))
-//							cont = true;
-                              continue;
-						break;
-	
-					case REQ_SZ_0:
-						if (IS_SET(FPSCR, FPSCR_SZ))
-//							cont = true;
-                              continue;
-						break;
-	
-					case REQ_PR_0_SZ_1:
-						if (IS_SET(FPSCR, FPSCR_PR) || !IS_SET(FPSCR, FPSCR_SZ))
-//							cont = true;
-                              continue;
-						break;
-	
-					case REQ_PR_1_SZ_0:
-						if (!IS_SET(FPSCR, FPSCR_PR) || IS_SET(FPSCR, FPSCR_SZ))
-//							cont = true;
-                              continue;
-						break;
-					}
-//					if (cont)
-//						continue;
-				}
-				((opcodes[i].funcion) (( arg )));
-//				break;
-                return;
-			}
-		}
-	}
-	else
-		((opcodes[i].funcion) (( arg )));
-}
-#endif
+	(opcodes[oplist[arg]].funcion) (arg);
+} */
 
 void RedibujarPantalla()
 {
-	SDL_Surface * bs;
-
+	logxmsg(LOG_PVR, "RedibujarPantalla()\n");
+	if (DebugVisible)
+	{
+		DebugUpdate();
+		DibujarGL(DebugWindow);
+		return;
+	}
 	if (pvr_framebufferdisplay == true)
 	{
-		logxmsg(LOG_PVR, "RedibujarPantalla()\n");
-		if (DebugVisible)
-		{
-			DebugUpdate();
-//			SDL_BlitSurface(DebugWindow, NULL, screen, NULL);
-//			SDL_Flip(screen);
-			DibujarGL(DebugWindow);
-			return;
-		}
+		logxmsg(LOG_PVR, "RedibujarPantalla: SDL_GL_SwapBuffers\n");
 		DibujarFramebuffer();
-/*		bs = draw_backscreen();
-		if (DebugVisible)
-			DebugUpdate(bs);
-		if (pausa == true)
-			DrawDebugInlineInfo(bs);
-		SDL_BlitSurface(bs, NULL, screen, NULL); */
-//		SDL_Flip(screen);
-
-//		glRasterPos2f(0, 0); */
-//		glDrawPixels(ancho, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
-
-/*		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR); */
-
-//	    limpiar_pantalla();
+		gui_refresh();
+		SDL_GL_SwapBuffers();
+		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 	}
-
-/*
-	if ((refresh_screen) || (DebugVisible))
-	{
-		SDL_Surface * cscreen;
-		
-		draw_backscreen();
-#ifndef OPENGL
-		SDL_BlitSurface(backscreen, NULL, screen, NULL);
-		DebugUpdate();
-		SDL_Flip(screen);
-#else
-//		SDL_BlitSurface(backscreen, NULL, glscreen, NULL);
-//		glRasterPos2f(0, 0);
-//		SDL_LockSurface(glscreen);
-//		glDrawPixels(screenwidth, screenheight, GL_RGB, GL_BYTE, glscreen->pixels);
-//		SDL_UnlockSurface(glscreen);
-//		SDL_GL_SwapBuffers();
-
-//		SDL_BlitSurface(backscreen, NULL, screen, NULL);
-//		cscreen = SDL_ConvertSurface(backscreen, glscreen->format, SDL_HWSURFACE);
-
-		if (pvr_framebufferdisplay == true)
-		{
-			cscreen = SDL_DisplayFormat(backscreen);
-			SDL_BlitSurface(cscreen, NULL, screen, NULL);
-			DebugUpdate();
-			SDL_Flip(screen);
-			glRasterPos2f(0, 0);
-			glDrawPixels(640, 480, GL_RGB */ /* RGBA */ /* , GL_UNSIGNED_BYTE, screen->pixels);
-		}
-
-//		glDrawPixels(screenwidth, screenheight, GL_RGBA, GL_UNSIGNED_BYTE, screen->pixels);
-*/
-/*		SDL_LockSurface(cscreen);
-		glDrawPixels(640, 480, GL_RGBA, GL_UNSIGNED_BYTE, cscreen->pixels);
-		SDL_UnlockSurface(cscreen); */
-/*		SDL_GL_SwapBuffers();
-		SDL_FreeSurface(cscreen);
-#endif
-
-	} */
+	else
+		gui_refresh();
 }
 
 Uint32 TimerCallback(Uint32 interval, void * param)
@@ -381,7 +247,7 @@ void main_loop(void)
 
 //			instr = *(WORD *) str_PC;
 
-			ejecutar_instruccion(*(DWORD *) get_memory_pointer(PC));
+			ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
 
 //			(*PC_func) ();
 
@@ -632,6 +498,7 @@ void main_loop(void)
 
                     case SDLK_F12:
 					DebugVisible = 1 - (DebugVisible);
+					glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 					break;
 
 					case SDLK_KP_PLUS:

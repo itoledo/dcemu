@@ -4,6 +4,8 @@
 #include <windows.h>
 #include "log.h"
 #include "mem.h"
+#include "options.h"
+#include "opcodes.h"
 
 typedef short bool;
 #define true 1
@@ -11,9 +13,10 @@ typedef short bool;
 
 // __fastcall void ejecutar_instruccion(DWORD instr);
 #ifndef MACRO_REPLACEMENTS
-void ejecutar_instruccion(DWORD instr);
+void ejecutar_instruccion(WORD instr);
 #else
-#define ejecutar_instruccion(instr) (query_cache(instr))
+// #define ejecutar_instruccion(instr) (query_cache(instr))
+#define ejecutar_instruccion(instr) ((opcodes[oplist[instr]].funcion) (instr))
 #endif
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);

@@ -10,10 +10,8 @@
 #define BIOS_HACKS		// para tratar de correr la bios
 #define USE_BIOS_FONT
 // #define PRINT_ASM
-// #define OC // use the old cpu core
-#define OI // use the new core
 #define LOGGING
-#define MACRO_REPLACEMENTS
+#define MACRO_REPLACEMENTS // ???
 // #define JOYSTICK
 // #define ASM_DEBUG
 

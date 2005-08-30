@@ -11,8 +11,13 @@
 #include "floatgraph.h"
 #include "opcodes.h"
 
-int oplist[65536];
-int opcode_primer_restriccion = 0;
+// int oplist[65536];
+// int opcode_primer_restriccion = 0;
+short * oplist;
+short oplist_pr0_sz0[65536];
+short oplist_pr0_sz1[65536];
+short oplist_pr1_sz0[65536];
+short oplist_pr1_sz1[65536];
 
 struct st_cmd opcodes[] =
 {
@@ -352,63 +357,69 @@ int find_opcode(DWORD mempos)
 	return ret;
 }
 
-#ifdef OI
-void initopcodes()
+void checkopcodes()
 {
-	int i;int i2;//int fb;
+	int i, i2, cnt, first;
+	
+	// revisamos la lista de opcodes por repeticiones, para solucionarlas...
+	// queremos eliminar el chequeo de restricciones en el intérprete
 
-	for (i2 = 0; i2<65536; i2++)
+	for (i = 0; i < 65536; i++)
 	{
-		oplist[i2]=238;
-	}
-
-	for (i = 0; opcodes[i].opdesc; i++)
-	{
-		for (i2 = 0; i2<65536; i2++)
+		cnt = 0;
+		first = 0;
+		for (i2 = 0; opcodes[i2].opdesc; i2++)
 		{
-			if ((i2 & opcodes[i].mask) == opcodes[i].op)
+			if ((opcodes[i2].mask & i) == opcodes[i2].op)
 			{
-			   if(oplist[i2] != 238)
+				// match, lo marcamos
+				cnt++;
+				if (cnt == 1)
+					first = i2;
+				else
 				{
-					insert_rec(oplist[i2],opcodes[oplist[i2]].restriccion);
-					insert_op(oplist[i2],i);
+                	FILE * f = fopen("logs/repetidos.txt", "a");
+                	fprintf(f, "opcode 0x%x marca 2 o mas resultados: primero %d 0x%x %s 0x%04x 0x%04x, actual %d 0x%x %s 0x%04x 0x%04x\r\n",
+                		i,
+							first, first, opcodes[first].opdesc, opcodes[first].op, opcodes[first].mask,
+							i2, i2, opcodes[i2].opdesc, opcodes[i2].op, opcodes[i2].mask);
+               		fclose(f);
 				}
-			   else oplist[i2] = i;
 			}
 		}
 	}
 }
-#elif OC
-void initopcodes()
+
+int idx_NOIMP;
+
+int findopcode(DWORD op, DWORD mask)
 {
-	int i;int i2;//int fb;
-	int noimp;
+	int i;
 
 	for (i = 0; opcodes[i].opdesc; i++)
-		if (opcodes[i].op == 0 && opcodes[i].mask == 0xFFFF) // NOIMP
-			break;
+		if (opcodes[i].op == op && opcodes[i].mask == mask)
+			return i;
+	
+	fprintf(stderr, "findopcode: opcode 0x%x / mask 0x%x no encontrado!\n", op, mask);
+	return -1;
+}
 
-	if (!opcodes[i].opdesc)
-	{
-		fprintf(stderr, "opcode NOIMP no encontrado!\n");
-		abort();
-	}
+void initopcodes()
+{
+	int i; int i2;
+	// a armar las 4 listas
 
-	noimp = i;
+	idx_NOIMP		= findopcode(0x0000, 0xFFFF);
 
 	for (i2 = 0; i2<65536; i2++)
 	{
-		oplist[i2]=noimp;
+		oplist_pr0_sz0[i2] = idx_NOIMP;
+		oplist_pr0_sz1[i2] = idx_NOIMP;
+		oplist_pr1_sz0[i2] = idx_NOIMP;
+		oplist_pr1_sz1[i2] = idx_NOIMP;
 	}
 
-	for (i = 0; opcodes[i].opdesc; i++)
-	{
-	    if (opcodes[i].restriccion)
-	    {
-	        opcode_primer_restriccion = i;
-	        break;
-	    }
-    }
+//	checkopcodes();
 
 	for (i = 0; opcodes[i].opdesc; i++)
 	{
@@ -416,9 +427,36 @@ void initopcodes()
 		{
 			if ((i2 & opcodes[i].mask) == opcodes[i].op)
 			{
-				oplist[i2]=i;
+				switch(opcodes[i].restriccion)
+				{
+					case REQ_PR_0:
+						oplist_pr0_sz0[i2] = i;
+						oplist_pr0_sz1[i2] = i;
+						break;
+						
+					case REQ_SZ_0:
+						oplist_pr0_sz0[i2] = i;
+						oplist_pr1_sz0[i2] = i;
+						break;
+						
+					case REQ_PR_0_SZ_1:
+						oplist_pr0_sz1[i2] = i;
+						break;
+					
+					case REQ_PR_1_SZ_0:
+						oplist_pr1_sz0[i2] = i;
+						break;
+					
+					default:
+						oplist_pr0_sz0[i2] = i;
+						oplist_pr0_sz1[i2] = i;
+						oplist_pr1_sz0[i2] = i;
+						oplist_pr1_sz1[i2] = i;
+						break;
+				}
 			}
 		}
 	}
+	
+	oplist = oplist_pr0_sz0;
 }
-#endif
