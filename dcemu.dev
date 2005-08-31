@@ -1,7 +1,7 @@
 [Project]
 FileName=dcemu.dev
 Name=dcemu
-UnitCount=46
+UnitCount=48
 Type=0
 Ver=1
 ObjFiles=
@@ -25,7 +25,7 @@ CommandLine=
 IncludeVersionInfo=0
 SupportXPThemes=0
 CompilerSet=0
-CompilerSettings=0000001000100001010000
+CompilerSettings=00000010000100010100pd
 UseCustomMakefile=0
 CustomMakefile=
 
@@ -519,6 +519,26 @@ BuildCmd=
 
 [Unit50]
 FileName=SDLImage.cpp
+CompileCpp=0
+Folder=
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit47]
+FileName=glops.c
+CompileCpp=0
+Folder=
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit48]
+FileName=glops.h
 CompileCpp=0
 Folder=
 Compile=1

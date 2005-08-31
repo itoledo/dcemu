@@ -5,14 +5,14 @@ CPP  = g++.exe -D__DEBUG__
 CC   = gcc.exe -D__DEBUG__
 WINDRES = windres.exe
 RES  = ./obj/dcemu_private.res
-OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o $(RES)
-LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o $(RES)
-LIBS =  -L"lib" -mwindows -Llib/win32 -lstdc++ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lguichan_opengl -lguichan_sdl -lguichan -lwinmm -mwindows  -g3 
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o $(RES)
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o $(RES)
+LIBS =  -L"lib" -mwindows -Llib/win32 -lstdc++ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lguichan_opengl -lguichan_sdl -lguichan -lwinmm -mwindows  -g3 -march=athlon-xp -m3dnow 
 INCS =  -I"include" 
 CXXINCS =  -I"include/c++/3.3.1/mingw32"  -I"include/c++/3.3.1"  -I"lib/gcc/mingw32/3.4.2/include"  -I"include/c++/3.4.2/backward"  -I"include/c++/3.4.2/mingw32"  -I"include/c++/3.4.2"  -I"include" 
 BIN  = dcemu.exe
-CXXFLAGS = $(CXXINCS)   -fexceptions -O1 -g3
-CFLAGS = $(INCS) -Wall -Iinclude   -fexceptions -O1 -g3
+CXXFLAGS = $(CXXINCS)   -fexceptions -O2 -g3 -march=athlon-xp -m3dnow
+CFLAGS = $(INCS) -Wall -Iinclude   -fexceptions -O2 -g3 -march=athlon-xp -m3dnow
 RM = rm -f
 
 .PHONY: all all-before all-after clean clean-custom
@@ -26,74 +26,77 @@ clean: clean-custom
 $(BIN): $(OBJ)
 	$(CC) $(LINKOBJ) -o "dcemu.exe" $(LIBS)
 
-./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   graficos.h intc.h gui.h
+./obj/graficos.o: graficos.c
 	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
 
-./obj/main.o: main.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h BFont.h   branch.h intc.h debug.h graficos.h iso.h gui.h
+./obj/main.o: main.c
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
 
-./obj/mem.o: mem.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h intc.h   graficos.h gui.h
+./obj/mem.o: mem.c
 	$(CC) -c mem.c -o ./obj/mem.o $(CFLAGS)
 
-./obj/log.o: log.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h gui.h
+./obj/log.o: log.c
 	$(CC) -c log.c -o ./obj/log.o $(CFLAGS)
 
-./obj/BFont.o: BFont.c BFont.h
+./obj/BFont.o: BFont.c
 	$(CC) -c BFont.c -o ./obj/BFont.o $(CFLAGS)
 
-./obj/reg.o: reg.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h
+./obj/reg.o: reg.c
 	$(CC) -c reg.c -o ./obj/reg.o $(CFLAGS)
 
-./obj/intc.o: intc.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h intc.h
+./obj/intc.o: intc.c
 	$(CC) -c intc.c -o ./obj/intc.o $(CFLAGS)
 
-./obj/arith.o: arith.c sh4.h log.h mem.h options.h opcodes.h
+./obj/arith.o: arith.c
 	$(CC) -c arith.c -o ./obj/arith.o $(CFLAGS)
 
-./obj/branch.o: branch.c sh4.h log.h mem.h options.h opcodes.h
+./obj/branch.o: branch.c
 	$(CC) -c branch.c -o ./obj/branch.o $(CFLAGS)
 
-./obj/dcopcodes.o: dcopcodes.c main.h options.h reg.h log.h sh4.h mem.h   opcodes.h iso.h
+./obj/dcopcodes.o: dcopcodes.c
 	$(CC) -c dcopcodes.c -o ./obj/dcopcodes.o $(CFLAGS)
 
-./obj/floatcontrol.o: floatcontrol.c sh4.h log.h mem.h options.h opcodes.h
+./obj/floatcontrol.o: floatcontrol.c
 	$(CC) -c floatcontrol.c -o ./obj/floatcontrol.o $(CFLAGS)
 
-./obj/floatgraph.o: floatgraph.c main.h options.h reg.h log.h sh4.h mem.h   opcodes.h
+./obj/floatgraph.o: floatgraph.c
 	$(CC) -c floatgraph.c -o ./obj/floatgraph.o $(CFLAGS)
 
-./obj/floatsimple.o: floatsimple.c main.h options.h reg.h log.h sh4.h mem.h   opcodes.h floatsimple.h floatgraph.h
+./obj/floatsimple.o: floatsimple.c
 	$(CC) -c floatsimple.c -o ./obj/floatsimple.o $(CFLAGS)
 
-./obj/logic.o: logic.c sh4.h log.h mem.h options.h opcodes.h
+./obj/logic.o: logic.c
 	$(CC) -c logic.c -o ./obj/logic.o $(CFLAGS)
 
-./obj/mov.o: mov.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h
+./obj/mov.o: mov.c
 	$(CC) -c mov.c -o ./obj/mov.o $(CFLAGS)
 
-./obj/shift.o: shift.c sh4.h log.h mem.h options.h opcodes.h
+./obj/shift.o: shift.c
 	$(CC) -c shift.c -o ./obj/shift.o $(CFLAGS)
 
-./obj/syscontrol.o: syscontrol.c sh4.h log.h mem.h options.h opcodes.h
+./obj/syscontrol.o: syscontrol.c
 	$(CC) -c syscontrol.c -o ./obj/syscontrol.o $(CFLAGS)
 
-./obj/opcodes.o: opcodes.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   mov.h branch.h logic.h arith.h shift.h syscontrol.h floatsimple.h   floatcontrol.h dcopcodes.h floatgraph.h
+./obj/opcodes.o: opcodes.c
 	$(CC) -c opcodes.c -o ./obj/opcodes.o $(CFLAGS)
 
-./obj/sh4.o: sh4.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h branch.h   floatsimple.h
+./obj/sh4.o: sh4.c
 	$(CC) -c sh4.c -o ./obj/sh4.o $(CFLAGS)
 
-./obj/debug.o: debug.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   debug.h graficos.h BFont.h
+./obj/debug.o: debug.c
 	$(CC) -c debug.c -o ./obj/debug.o $(CFLAGS)
 
-./obj/iso.o: iso.c include/cdio/config.h include/cdio/cdio.h   include/cdio/version.h include/cdio/types.h include/cdio/cdio_config.h   include/cdio/sector.h include/cdio/device.h include/cdio/disc.h   include/cdio/read.h include/cdio/cdtext.h include/cdio/track.h   include/cdio/iso9660.h include/cdio/ds.h include/cdio/xa.h   include/cdio/rock.h include/cdio/cd_types.h iso.h
+./obj/iso.o: iso.c
 	$(CC) -c iso.c -o ./obj/iso.o $(CFLAGS)
 
-./obj/scramble.o: scramble.c 
+./obj/scramble.o: scramble.c
 	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)
 
-./obj/gui.o: gui.cpp gui.h
+./obj/gui.o: gui.cpp
 	$(CPP) -c gui.cpp -o ./obj/gui.o $(CXXFLAGS)
+
+./obj/glops.o: glops.c
+	$(CC) -c glops.c -o ./obj/glops.o $(CFLAGS)
 
 ./obj/dcemu_private.res: dcemu_private.rc 
 	$(WINDRES) -i dcemu_private.rc --input-format=rc -o ./obj/dcemu_private.res -O coff 

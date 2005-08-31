@@ -5,7 +5,7 @@
 #include "options.h"
 #include "gui.h"
 
-FILE * logfp, * serialfp, * memfp, * pvrfp, * intcfp;
+FILE * logfp, * serialfp, * memfp, * pvrfp, * intcfp, * glopfp;
 
 void logmsg (char * fmt, ...)
 {
@@ -38,6 +38,7 @@ void logxmsg (int tipo, char * fmt, ...)
 		case LOG_MEM:	fp = memfp;	break;
 		case LOG_PVR:	fp = pvrfp; break;
 		case LOG_INTC:	fp = intcfp;	break;
+		case LOG_GLOP:	fp = glopfp;	break;
 		default:		fp = logfp; break;
 	}
   
@@ -58,6 +59,7 @@ int inicializar_logs()
     unlink("logs/pvr.txt");
     unlink("logs/intc.txt");
     unlink("logs/repetidos.txt");
+    unlink("logs/glop.txt");
 	
 	logfp = fopen("logs/disasm.txt", "w");
 
@@ -96,6 +98,14 @@ int inicializar_logs()
 	if (!intcfp)
 	{
 		fprintf(stderr, "No se pudo abrir intc.txt");
+		return 1;
+	}
+
+	glopfp = fopen("logs/glop.txt", "w");
+
+	if (!glopfp)
+	{
+		fprintf(stderr, "No se pudo abrir glop.txt");
 		return 1;
 	}
 

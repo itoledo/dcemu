@@ -6,8 +6,9 @@
 #define LOG_MEM			1
 #define LOG_PVR			2
 #define LOG_INTC		3
+#define LOG_GLOP		4
 
-extern FILE * logfp, * serialfp, * memfp, * pvrfp, * intcfp;
+extern FILE * logfp, * serialfp, * memfp, * pvrfp, * intcfp, * glopfp;
 
 struct opcode_log_params
 {

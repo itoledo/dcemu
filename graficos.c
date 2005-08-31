@@ -5,6 +5,7 @@
 #include "graficos.h"
 #include "intc.h"
 #include "gui.h"
+#include "glops.h"
 
 #define TEXTURE_CACHING
 
@@ -81,6 +82,7 @@ struct cached_texture
 	DWORD	memorypos;	// posición en memoria de la textura
 	void *	data;		// datos de la textura 'twiddled'
  	GLuint	texture;
+ 	bool	twiddled;
 };
 
 typedef struct cached_texture cached_texture;
@@ -91,6 +93,15 @@ GLuint pvr_textures[MAX_TEXTURE_COUNT];
 GLuint background_texture;
 
 bool vertexstart = true;
+
+void limpiar_texturas()
+{
+	int i;
+	for (i = 0; i < cur_tex_count; i++)
+		if (cached_textures[i].twiddled == true)
+			free(cached_textures[i].data);
+	cur_tex_count = 0;
+}
 
 void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 {
@@ -105,7 +116,8 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
     		&&  cached_textures[i].memorypos == memorypos)
     		{
           		logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
-    			glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
+          		GLOP_BINDTEXTURE(GL_TEXTURE_2D, cached_textures[i].texture);
+//    			glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
     			return;
     		}
     	}
@@ -129,25 +141,31 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
     		{
     			*(q++) = v[TWIDOUT(j,i)];
     		}
+    	cached_textures[cur_tex_count].twiddled = true;
 	}
 	else
+	{
 		cached_textures[cur_tex_count].data = v;
+		cached_textures[cur_tex_count].twiddled = false;
+	}
 //		memcpy(q, v, usize * vsize * sizeof(Uint16)); */
 
-    glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
-    if (glGetError() != GL_NO_ERROR)
-    	logxmsg(LOG_PVR, "get_texture: error en glBindTexture\n");
+//    glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
+	GLOP_BINDTEXTURE(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
+/*    if (glGetError() != GL_NO_ERROR)
+    	logxmsg(LOG_PVR, "get_texture: error en glBindTexture\n"); */
     logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x\n", usize, vsize, memorypos | 0xA5000000);
-    glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, usize, vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
-    if (glGetError() != GL_NO_ERROR)
-    	logxmsg(LOG_PVR, "get_texture: error en glTexImage2D\n");
+//    glTexImage2D(GL_TEXTURE_2D, 0, pvr_texture_components, usize, vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
+	GLOP_TEXIMAGE2D(GL_TEXTURE_2D, 0, pvr_texture_components, usize, vsize, 0, pvr_texture_pixelformat, pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
+/*    if (glGetError() != GL_NO_ERROR)
+    	logxmsg(LOG_PVR, "get_texture: error en glTexImage2D\n"); */
 
-	FILE * fp = fopen("texture.raw", "wb");
+/*	FILE * fp = fopen("texture.raw", "wb");
 	fwrite(cached_textures[cur_tex_count].data, usize * vsize, sizeof(Uint16), fp);
-	fclose(fp);
+	fclose(fp); */
 
-    if (twiddled)
-    	free(cached_textures[cur_tex_count].data);
+/*    if (twiddled)
+    	free(cached_textures[cur_tex_count].data); */
 
     cur_tex_count++;
 
@@ -202,18 +220,19 @@ void * texture_find_or_create(int usize, int vsize, DWORD memorypos)
 void limpiar_pantalla()
 {
 	// dejemos todo listo para la siguiente pantalla
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+//	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	GLOP_CLEAR(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }    
 
 typedef struct pvr_bkg_poly {
-        DWORD          flags1, flags2;
-        DWORD          dummy;
-        float           x1, y1, z1;
-        DWORD          argb1;
-        float           x2, y2, z2;
-        DWORD          argb2;
-        float           x3, y3, z3;
-        DWORD          argb3;
+        DWORD	flags1, flags2;
+        DWORD	dummy;
+        float	x1, y1, z1;
+        DWORD	argb1;
+        float	x2, y2, z2;
+        DWORD	argb2;
+        float	x3, y3, z3;
+        DWORD 	argb3;
 } pvr_bkg_poly_t;
 
 void cb_renderstart(DWORD addr, void * p, size_t size)
@@ -239,6 +258,10 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 {
 	DWORD dw;
 
+//	DibujarFramebuffer();
+	glop_process();
+	gui_refresh();
+
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
 	pvr_framebufferdisplay = false;
@@ -247,7 +270,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 	logxmsg(LOG_PVR, "cb_tastart\n");
 	pvr_listdone = 0;
-	cur_tex_count = 0;
+	limpiar_texturas();
+//	cur_tex_count = 0;
 
 	// ???
 	memread(0xa05f8128, &dw, sizeof(DWORD)); // leer TA_ISP_BASE
@@ -680,8 +704,10 @@ void ta_check(DWORD addr)
         			logxmsg(LOG_PVR, "llamando a get_texture(%d, %d, %d, %d)\n", pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface, pvr_texture_twiddled);
      				get_texture(pvr_texture_size_usize, pvr_texture_size_vsize, pvr_texture_surface, pvr_texture_twiddled);
 				}
-				glBlendFunc(pvr_srcblend, pvr_dstblend);
-				glBegin(GL_TRIANGLE_STRIP);
+//				glBlendFunc(pvr_srcblend, pvr_dstblend);
+				GLOP_BLENDFUNC(pvr_srcblend, pvr_dstblend);
+//				glBegin(GL_TRIANGLE_STRIP);
+				GLOP_BEGIN(GL_TRIANGLE_STRIP);
 				vertexstart = false;
 			}
 
@@ -722,8 +748,10 @@ void ta_check(DWORD addr)
 					logxmsg(LOG_PVR, "vertex tipo 0: color=%f,%f,%f,%f coords=%f,%f,%f\n",
 						r, g, b, a, datos[0], datos[1], datos[2]);
 #endif
-					glColor4f(r, g, b, a);
-					glVertex3f(datos[0], datos[1], datos[2] - 100);
+//					glColor4f(r, g, b, a);
+					GLOP_COLOR4F(r, g, b, a);
+//					glVertex3f(datos[0], datos[1], datos[2] - 100);
+					GLOP_VERTEX3F(datos[0], datos[1], datos[2] - 100);
 				}
 				break;
 
@@ -737,8 +765,10 @@ void ta_check(DWORD addr)
 					logxmsg(LOG_PVR, "vertex tipo 1: color %f %f %f %f\n", datos[4], datos[5], datos[6], datos[3]);
 					logxmsg(LOG_PVR, "posición: %f %f %f\n", datos[0], datos[1], datos[2]);
 #endif
-					glColor4f(datos[4], datos[5], datos[6], datos[3]);
-					glVertex3f(datos[0], datos[1], datos[2] - 100);
+//					glColor4f(datos[4], datos[5], datos[6], datos[3]);
+					GLOP_COLOR4F(datos[4], datos[5], datos[6], datos[3]);
+//					glVertex3f(datos[0], datos[1], datos[2] - 100);
+					GLOP_VERTEX3F(datos[0], datos[1], datos[2] - 100);
 				}
 				break;
 				
@@ -763,9 +793,12 @@ void ta_check(DWORD addr)
 					logxmsg(LOG_PVR, "seteando texturas en %fx%f\n", coords[3], coords[4]);
 					logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
 #endif
-					glColor4f(r, g, b, a);
-					glTexCoord2f(coords[3], coords[4]);
-					glVertex3f(coords[0], coords[1], coords[2] - 100);
+//					glColor4f(r, g, b, a);
+					GLOP_COLOR4F(r, g, b, a);
+//					glTexCoord2f(coords[3], coords[4]);
+					GLOP_TEXCOORD2F(coords[3], coords[4]);
+//					glVertex3f(coords[0], coords[1], coords[2] - 100);
+					GLOP_VERTEX3F(coords[0], coords[1], coords[2] - 100);
 				}
 				break;
 
@@ -783,9 +816,12 @@ void ta_check(DWORD addr)
 					logxmsg(LOG_PVR, "seteando texturas en %fx%f\n", coords[3], coords[4]);
 					logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
 #endif
-					glColor4f(colores[1], colores[2], colores[3], colores[0]);
-					glTexCoord2f(coords[3], coords[4]);
-					glVertex3f(coords[0], coords[1], coords[2] - 100);
+//					glColor4f(colores[1], colores[2], colores[3], colores[0]);
+					GLOP_COLOR4F(colores[1], colores[2], colores[3], colores[0]);
+//					glTexCoord2f(coords[3], coords[4]);
+					GLOP_TEXCOORD2F(coords[3], coords[4]);
+//					glVertex3f(coords[0], coords[1], coords[2] - 100);
+					GLOP_VERTEX3F(coords[0], coords[1], coords[2] - 100);
 				}
 				break;
 			}
@@ -795,7 +831,8 @@ void ta_check(DWORD addr)
 #ifdef DEBUG_VERTEX
     			logxmsg(LOG_PVR, "VERTEX: end-of-strip\n");
 #endif
-    			glEnd();
+//    			glEnd();
+				GLOP_END();
 	    		pvr_registering = -1;
     			vertexstart = true;
 //    			SDL_GL_SwapBuffers();
@@ -1055,7 +1092,7 @@ void DibujarFramebuffer()
 	glDisable(GL_BLEND);
 //	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 //	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-#define PROFUNDIDAD (-100.0f)
+#define PROFUNDIDAD (-1000.0f)
 	glBegin(GL_QUADS);
 	glTexCoord2f(0.0f, screenheight / screentexheight); glVertex3f(0.0f, (float) screenheight, PROFUNDIDAD);
 	glTexCoord2f(screenancho / screentexwidth, screenheight / screentexheight); glVertex3f((float) screenancho, (float) screenheight, PROFUNDIDAD);

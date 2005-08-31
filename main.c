@@ -98,8 +98,8 @@ void RedibujarPantalla()
 		SDL_GL_SwapBuffers();
 		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 	}
-	else
-		gui_refresh();
+/*	else
+		gui_refresh(); */
 }
 
 Uint32 TimerCallback(Uint32 interval, void * param)
@@ -175,9 +175,6 @@ void dma_check()
 
 void timer_check()
 {
-//	while (timer_running)
-	{
-//	    SDL_mutexP(regmap_mutex);
 	    if (*TSTR & 8)
 	    {
 	        if ((long) (*TCNT2) < 0) // underflow
@@ -206,7 +203,7 @@ void timer_check()
 	        else
 				*TCNT1 = *TCNT1 - 1;
 	    }
-	    if ((*TSTR) & 1)
+	    if (*TSTR & 1)
 	    {
 	        if ((long) (*TCNT0) < 0) // underflow
 	        {
@@ -220,9 +217,6 @@ void timer_check()
 	        else
 	            *TCNT0 = *TCNT0 - 1;
 	    }
-//	    SDL_mutexV(regmap_mutex);
-//	    SDL_Delay(10);
-	}
 }
 
 void main_loop(void)
@@ -231,7 +225,7 @@ void main_loop(void)
 	int cnt = 0;
 //	WORD instr;
 //	DWORD valor;
-//	int timer_cnt = 0;
+	int timer_cnt = 0;
 	
 	for (;;)
 	{
@@ -253,15 +247,15 @@ void main_loop(void)
 
 //			dma_check();
 
-//			if (timer_cnt++ == 195) // 781.25
-/*			if (timer_cnt++ == 10)
-			{ */
-
-//			if (*TSTR)
+			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
+			// por lo que en un segundo tenemos 781250 ticks.
+			// la CPU corre a 200 MHz -> cada 256 opcodes tenemos un tick.
+			if (timer_cnt++ == 256)
+			{
 				timer_check();
+				timer_cnt = 0;
+			}
 
-/*				timer_cnt = 0;
-			} */
 			check_ints();
 
 /*			if (PC == BreakPoint)
