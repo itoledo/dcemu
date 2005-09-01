@@ -1333,7 +1333,7 @@ int screeninit(void)
 
 void DibujarGL(SDL_Surface * sfc)
 {
-	glPushAttrib(GL_TEXTURE_BIT);
+//	glPushAttrib(GL_TEXTURE_BIT);
 
 	glEnable(GL_TEXTURE_2D);
 		
@@ -1359,7 +1359,7 @@ void DibujarGL(SDL_Surface * sfc)
 	glEnable(GL_BLEND);
 	glEnable(GL_DEPTH_TEST);
 	
-	glPopAttrib();
+//	glPopAttrib();
 
 	logxmsg(LOG_PVR, "DibujarGL: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();

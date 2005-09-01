@@ -507,26 +507,6 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit49]
-FileName=SDLImage.hpp
-CompileCpp=0
-Folder=
-Compile=1
-Link=1
-Priority=1000
-OverrideBuildCmd=0
-BuildCmd=
-
-[Unit50]
-FileName=SDLImage.cpp
-CompileCpp=0
-Folder=
-Compile=1
-Link=1
-Priority=1000
-OverrideBuildCmd=0
-BuildCmd=
-
 [Unit47]
 FileName=glops.c
 CompileCpp=0
@@ -539,6 +519,16 @@ BuildCmd=
 
 [Unit48]
 FileName=glops.h
+CompileCpp=0
+Folder=
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit51]
+FileName=pctimer.cpp
 CompileCpp=0
 Folder=
 Compile=1

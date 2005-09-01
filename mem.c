@@ -1427,6 +1427,12 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 
 	switch(direccion & 0x00FFFFFF)
 	{
+		case 0xD80004: // TSTR, Timer Start Register
+		{
+			logxmsg(LOG_INTC, "TSTR: %02x\n", *(BYTE *)TSTR);
+		}
+		break;
+		
 		case 0xe80000: // SCSMR2, Serial Mode Register
 		{
 			CHECK_BIT(SCSMR2, CHR);
@@ -1440,7 +1446,7 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 		
 		case 0xe80004: // SCBRR2, Bit Rate Register
 		{
-			logmsg( "SCBRR2: %x\r\n", *SCBRR2);
+			logmsg( "SCBRR2: %x\n", *SCBRR2);
 		}
 		break;
 

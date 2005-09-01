@@ -13,11 +13,13 @@ extern	int		pvr_listdone;
 static	DWORD	pending_ints = 0;
 DWORD	intc_queuemask = 0;
 
-#undef DEBUG_INTC
-
 bool intc(DWORD irq)
 {
 	BYTE v;
+
+#ifdef DEBUG_INTC
+	logxmsg(LOG_INTC, "intc: irq %04x\n", irq);
+#endif
 
 	if (IS_SET(SR, SR_BL) || VBR == 0)
 	{
@@ -119,6 +121,7 @@ struct pending_ints_str
 
 PENDING_INT * last_int;
 PENDING_INT * int_list;
+int interrupt_queue = 0;
 
 void intc_add(DWORD inttoadd, int cnt)
 {
@@ -129,6 +132,8 @@ void intc_add(DWORD inttoadd, int cnt)
      	logxmsg(LOG_INTC, "descartando int %x\n", inttoadd);
 		return; // descartamos si ya existe una
 	}
+
+	interrupt_queue++;
 
 	tmp = malloc(sizeof(PENDING_INT));
 	tmp->pending_int = inttoadd;
@@ -142,7 +147,7 @@ void intc_add(DWORD inttoadd, int cnt)
 /*	pending_ints |= inttoadd; */
 	SET_BIT(ASIC_ACK_A, inttoadd);
 	intc_queuemask |= inttoadd;
-	logxmsg(LOG_INTC, "añadiendo int %x, total %x\n", inttoadd, intc_queuemask);
+	logxmsg(LOG_INTC, "añadiendo int %x, total %x, count %d\n", inttoadd, intc_queuemask, interrupt_queue);
 }
 
 void intc_delete(PENDING_INT * int2del)
@@ -155,12 +160,15 @@ void intc_delete(PENDING_INT * int2del)
 		int_list = int_list->next;
 		last_int = int_list;
 		free(int2del);
+		interrupt_queue--;
 	}
+	else
     for (tmp = int_list; tmp; tmp = tmp_next)
     {
         tmp_next = tmp->next;
         if (tmp->next == int2del)
         {
+			interrupt_queue--;
             tmp->next = int2del->next;
             if (last_int == int2del)
             	last_int = tmp;

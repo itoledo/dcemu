@@ -102,24 +102,6 @@ void RedibujarPantalla()
 		gui_refresh(); */
 }
 
-Uint32 TimerCallback(Uint32 interval, void * param)
-{
-/*	SDL_Event e;
-	
-	e.type = SDL_USEREVENT;
-	e.user.code = 1; */
-/*	e.user.data1 = NULL;
-	e.user.data2 = NULL; */
-
-/*	SDL_PushEvent(&e);
-
-	return 250; */ /* 1000 */
-
-	timer_check();
-
-	return 1;
-}
-
 Uint32 VBlankCallback(Uint32 interval, void * param)
 {
 //	logmsg("VBlankCallback: %d\n", pvr_scanline);
@@ -173,22 +155,25 @@ void dma_check()
 
 #define TMU_INT
 
-void timer_check()
+void timer_check(void)
 {
-	    if (*TSTR & 8)
+	    if (*TSTR & 4)
 	    {
 	        if ((long) (*TCNT2) < 0) // underflow
 	        {
 	                *TCNT2 = *TCOR2;
 	                *TCR2 |= TMU_TCR_UNF;
 #ifdef TMU_INT
-//	                if ((*TCR2 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+					if ((*TCR2 & TMU_TCR_UNIE))
     	            	intc(EXC_TMU2_TUNI2);
 #endif
 	   	     }
    		     else
-					*TCNT2 = *TCNT2 - 1;
+   		     {
+					(*TCNT2)--;
+			}
 	   	 }
+
 	    if (*TSTR & 2)
 	    {
 	        if ((long) (*TCNT1) < 0) // underflow
@@ -196,13 +181,16 @@ void timer_check()
 	                *TCNT1 = *TCOR1;
 	                *TCR1 |= TMU_TCR_UNF;
 #ifdef TMU_INT
-//                if ((*TCR1 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+				if ((*TCR1 & TMU_TCR_UNIE))
 	                intc(EXC_TMU1_TUNI1);
 #endif
 	        }
 	        else
-				*TCNT1 = *TCNT1 - 1;
+   		     {
+					(*TCNT1)--;
+			}
 	    }
+
 	    if (*TSTR & 1)
 	    {
 	        if ((long) (*TCNT0) < 0) // underflow
@@ -210,12 +198,14 @@ void timer_check()
 	                (*TCNT0) = *TCOR0;
 	                (*TCR0) |= TMU_TCR_UNF;
 #ifdef TMU_INT
- //               if ((*TCR0 & TMU_TCR_UNIE) && PC_func == PC_f_normal) // generar ints?
+ 					if ((*TCR0 & TMU_TCR_UNIE))
 		                intc(EXC_TMU0_TUNI0);
 #endif
 	        }
 	        else
-	            *TCNT0 = *TCNT0 - 1;
+   		     {
+					(*TCNT0)--;
+			}
 	    }
 }
 
@@ -225,8 +215,8 @@ void main_loop(void)
 	int cnt = 0;
 //	WORD instr;
 //	DWORD valor;
-	int timer_cnt = 0;
-	
+//	int timer_cnt = 0;
+
 	for (;;)
 	{
 		for (;;)
@@ -249,12 +239,9 @@ void main_loop(void)
 
 			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
 			// por lo que en un segundo tenemos 781250 ticks.
-			// la CPU corre a 200 MHz -> cada 256 opcodes tenemos un tick.
-			if (timer_cnt++ == 256)
-			{
+			// cada 1 ms -> 781,25 ticks.
+			if (instrucciones % 50 == 0)
 				timer_check();
-				timer_cnt = 0;
-			}
 
 			check_ints();
 
@@ -270,7 +257,8 @@ void main_loop(void)
 			instrucciones++;
 
 //			if ((instrucciones % 3333333) == 0) // cada 200 mhz / 60 revisamos eventos / redibujamos pantalla
-			if ((cnt % (3333333 / 0x1FF)) == 0)
+//			if ((cnt % (3333333 / 0x1FF)) == 0)
+			if (cnt % (500000 / 0x1FF) == 0)
 			{
 				pvr_scanline++;
 				
@@ -287,7 +275,7 @@ void main_loop(void)
 				}
 			}
 
-			if ((++cnt) == 3333333)
+			if ((++cnt) == 500000)
 			{
    				cnt = 0;
    				pvr_scanline = 0;
@@ -295,41 +283,41 @@ void main_loop(void)
 			}
 		}
 
-		if (pvr_3dscene)
+/*		if (pvr_3dscene)
 		{
 //			if (!(pvr_listdone & (1 << 4)) && pvr_registered & (1 << 4))
 			if (pvr_registered & (1 << 4))
 			{
        			logxmsg(LOG_INTC, "añadiendo intc para PT\n");
-				intc_add(pvr_lists[4], 0);
+				intc_add(ASIC_EVT_PVR_PTDONE, 0);
 			}
 //			if (!(pvr_listdone & (1 << 3)) && pvr_registered & (1 << 3))
 			if (pvr_registered & (1 << 3))
 			{
        			logxmsg(LOG_INTC, "añadiendo intc para TRANSMOD\n");
-				intc_add(pvr_lists[3], 0);
+				intc_add(ASIC_EVT_PVR_TRANSMODDONE, 0);
 			}
 //			if (!(pvr_listdone & (1 << 2)) && pvr_registered & (1 << 2))
 			if (pvr_registered & (1 << 2))
 			{
        			logxmsg(LOG_INTC, "añadiendo intc para TRANSPOLY\n");
-				intc_add(pvr_lists[2], 0);
+				intc_add(ASIC_EVT_PVR_TRANSDONE, 0);
 			}
 //			if (!(pvr_listdone & (1 << 1)) && pvr_registered & (1 << 1))
 			if (pvr_registered & (1 << 1))
 			{
        			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEMOD\n");
-				intc_add(pvr_lists[1], 0);
+				intc_add(ASIC_EVT_PVR_OPAQUEMODDONE, 0);
 			}
 //			if (!(pvr_listdone & (1 << 0)) && pvr_registered & (1 << 0))
 			if (pvr_registered & (1 << 0))
 			{
        			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEPOLY\n");
-				intc_add(pvr_lists[0], 0);
+				intc_add(ASIC_EVT_PVR_OPAQUEDONE, 0);
 			}
 //			intc_add(ASIC_EVT_PVR_RENDERDONE, 0);
 		}
-
+*/
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 //		intc_check(ASIC_EVT_PVR_VBLINT);
@@ -849,16 +837,6 @@ int main(int argc, char *argv[])
 
 //	DebugShow();
 //	ConsolePrintf(0, "%s", "test");
-	
-	logmsg("añadiendo timer\n");
-
-/*	timer_id = SDL_AddTimer(10, TimerCallback, NULL);
-
-	if (timer_id == NULL)
-	{
-		fprintf(stderr, "No se pudo crear timer: %s\r\n", SDL_GetError());
-		return 1;
-	} */
 	
 //	regmap_mutex = SDL_CreateMutex();
 	
