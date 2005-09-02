@@ -103,6 +103,29 @@ void limpiar_texturas()
 	cur_tex_count = 0;
 }
 
+/* (c) Dan Potter */
+unsigned short * twiddled;
+unsigned short * detwiddled;
+int ptr;
+int imgsize;
+
+/* Linear read: used for decoding */
+unsigned short read_pixel() {
+	return twiddled[ptr++];
+}
+
+void subdivide_and_move(int x1, int y1, int size, int op) {
+	if (size == 1) {
+		detwiddled[y1*imgsize+x1] = read_pixel();
+	} else {
+		int ns = size/2;
+		subdivide_and_move(x1, y1, ns, op);
+		subdivide_and_move(x1, y1+ns, ns, op);
+		subdivide_and_move(x1+ns, y1, ns, op);
+		subdivide_and_move(x1+ns, y1+ns, ns, op);
+	}
+}
+
 void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 {
 	Uint16 * q, * v;
@@ -136,11 +159,31 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled)
 	{
 		cached_textures[cur_tex_count].data = (void *) malloc(sizeof(Uint16) * usize * vsize);
 		q = cached_textures[cur_tex_count].data;
+/*		twiddled = v;
+		detwiddled = cached_textures[cur_tex_count].data;
+		ptr = 0;
+		imgsize = usize;
+		subdivide_and_move(0, 0, usize, 0); */
+		
+#define MIN(a, b) ( (a)<(b)? (a):(b) )
+		int min, mask, yout;
+		
+		min = MIN(usize, vsize);
+		mask = min - 1;
+		
     	for (i = 0; i < vsize; i++)
+	   	{
+//			yout = ((vsize-1) - i);
+//			yout = i;
     		for (j = 0; j < usize; j++)
     		{
-    			*(q++) = v[TWIDOUT(j,i)];
+//				*(q++) = v[i*usize + j];
+//				*(q++) = v[TWIDOUT(j,i)];
+//				q[TWIDOUT(j&mask,yout&mask) + (j/min + yout/min)*min*min] = v[i*usize + j];
+//				q[i*usize + j] = v[TWIDOUT(j&mask,yout&mask) + (j/min + yout/min)*min*min];
+				*(q++) = v[TWIDOUT(j&mask,i&mask) + (j/min + i/min)*min*min];
     		}
+		}
     	cached_textures[cur_tex_count].twiddled = true;
 	}
 	else
@@ -589,9 +632,11 @@ void ta_check(DWORD addr)
 
 					case 2:
 				    logxmsg(LOG_PVR, "texture: ARGB4444\n");
-				    pvr_texture_pixelformat = GL_RGBA;
-				    pvr_texture_pixelconvert = pcon_argb4444_to_rgba4444;
-				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_EXT;
+				    pvr_texture_pixelformat = GL_BGRA_EXT;
+/*				    pvr_texture_pixelconvert = pcon_argb4444_to_rgba4444;
+				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_EXT; */
+//				    pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4;
+					pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_REV;
      				pvr_texture_components = 4;
      				break;
 
@@ -1062,12 +1107,14 @@ void DibujarFramebuffer()
 	{
 		case FRAMEBUFFER_ARGB0555:
 		{
+			logxmsg(LOG_PVR, "DibujarFramebuffer: ARGB0555\n");
 	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_5_5_1, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
 		}
 		break;
 
 		case FRAMEBUFFER_RGB565:
 		{
+			logxmsg(LOG_PVR, "DibujarFramebuffer: RGB565\n");
 	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
 		}
 		break;
@@ -1075,13 +1122,15 @@ void DibujarFramebuffer()
 		case FRAMEBUFFER_RGB888:
 		{
 			// FIXME?
+			logxmsg(LOG_PVR, "DibujarFramebuffer: RGB888\n");
 	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
 		}
 		break;
 
 		case FRAMEBUFFER_ARGB0888:
 		{
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, screentexwidth, screentexheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
+			logxmsg(LOG_PVR, "DibujarFramebuffer: ARGB0888\n");
+	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_BGRA_EXT, GL_UNSIGNED_INT_8_8_8_8_REV, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
 		}
 		break;
 	}

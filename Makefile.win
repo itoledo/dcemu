@@ -26,76 +26,76 @@ clean: clean-custom
 $(BIN): $(OBJ)
 	$(CC) $(LINKOBJ) -o "dcemu.exe" $(LIBS)
 
-./obj/graficos.o: graficos.c
+./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   graficos.h intc.h gui.h glops.h
 	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
 
-./obj/main.o: main.c
+./obj/main.o: main.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h BFont.h   branch.h intc.h debug.h graficos.h iso.h gui.h
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
 
-./obj/mem.o: mem.c
+./obj/mem.o: mem.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h intc.h   graficos.h gui.h
 	$(CC) -c mem.c -o ./obj/mem.o $(CFLAGS)
 
-./obj/log.o: log.c
+./obj/log.o: log.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h gui.h
 	$(CC) -c log.c -o ./obj/log.o $(CFLAGS)
 
-./obj/BFont.o: BFont.c
+./obj/BFont.o: BFont.c BFont.h
 	$(CC) -c BFont.c -o ./obj/BFont.o $(CFLAGS)
 
-./obj/reg.o: reg.c
+./obj/reg.o: reg.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h
 	$(CC) -c reg.c -o ./obj/reg.o $(CFLAGS)
 
-./obj/intc.o: intc.c
+./obj/intc.o: intc.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h intc.h
 	$(CC) -c intc.c -o ./obj/intc.o $(CFLAGS)
 
-./obj/arith.o: arith.c
+./obj/arith.o: arith.c sh4.h log.h mem.h options.h opcodes.h
 	$(CC) -c arith.c -o ./obj/arith.o $(CFLAGS)
 
-./obj/branch.o: branch.c
+./obj/branch.o: branch.c sh4.h log.h mem.h options.h opcodes.h
 	$(CC) -c branch.c -o ./obj/branch.o $(CFLAGS)
 
-./obj/dcopcodes.o: dcopcodes.c
+./obj/dcopcodes.o: dcopcodes.c main.h options.h reg.h log.h sh4.h mem.h   opcodes.h iso.h
 	$(CC) -c dcopcodes.c -o ./obj/dcopcodes.o $(CFLAGS)
 
-./obj/floatcontrol.o: floatcontrol.c
+./obj/floatcontrol.o: floatcontrol.c sh4.h log.h mem.h options.h opcodes.h
 	$(CC) -c floatcontrol.c -o ./obj/floatcontrol.o $(CFLAGS)
 
-./obj/floatgraph.o: floatgraph.c
+./obj/floatgraph.o: floatgraph.c main.h options.h reg.h log.h sh4.h mem.h   opcodes.h
 	$(CC) -c floatgraph.c -o ./obj/floatgraph.o $(CFLAGS)
 
-./obj/floatsimple.o: floatsimple.c
+./obj/floatsimple.o: floatsimple.c main.h options.h reg.h log.h sh4.h mem.h   opcodes.h floatsimple.h floatgraph.h
 	$(CC) -c floatsimple.c -o ./obj/floatsimple.o $(CFLAGS)
 
-./obj/logic.o: logic.c
+./obj/logic.o: logic.c sh4.h log.h mem.h options.h opcodes.h
 	$(CC) -c logic.c -o ./obj/logic.o $(CFLAGS)
 
-./obj/mov.o: mov.c
+./obj/mov.o: mov.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h
 	$(CC) -c mov.c -o ./obj/mov.o $(CFLAGS)
 
-./obj/shift.o: shift.c
+./obj/shift.o: shift.c sh4.h log.h mem.h options.h opcodes.h
 	$(CC) -c shift.c -o ./obj/shift.o $(CFLAGS)
 
-./obj/syscontrol.o: syscontrol.c
+./obj/syscontrol.o: syscontrol.c sh4.h log.h mem.h options.h opcodes.h
 	$(CC) -c syscontrol.c -o ./obj/syscontrol.o $(CFLAGS)
 
-./obj/opcodes.o: opcodes.c
+./obj/opcodes.o: opcodes.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   mov.h branch.h logic.h arith.h shift.h syscontrol.h floatsimple.h   floatcontrol.h dcopcodes.h floatgraph.h
 	$(CC) -c opcodes.c -o ./obj/opcodes.o $(CFLAGS)
 
-./obj/sh4.o: sh4.c
+./obj/sh4.o: sh4.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h branch.h   floatsimple.h
 	$(CC) -c sh4.c -o ./obj/sh4.o $(CFLAGS)
 
-./obj/debug.o: debug.c
+./obj/debug.o: debug.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   debug.h graficos.h BFont.h
 	$(CC) -c debug.c -o ./obj/debug.o $(CFLAGS)
 
-./obj/iso.o: iso.c
+./obj/iso.o: iso.c include/cdio/config.h include/cdio/cdio.h   include/cdio/version.h include/cdio/types.h include/cdio/cdio_config.h   include/cdio/sector.h include/cdio/device.h include/cdio/disc.h   include/cdio/read.h include/cdio/cdtext.h include/cdio/track.h   include/cdio/iso9660.h include/cdio/ds.h include/cdio/xa.h   include/cdio/rock.h include/cdio/cd_types.h iso.h
 	$(CC) -c iso.c -o ./obj/iso.o $(CFLAGS)
 
-./obj/scramble.o: scramble.c
+./obj/scramble.o: scramble.c 
 	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)
 
-./obj/gui.o: gui.cpp
+./obj/gui.o: gui.cpp gui.h
 	$(CPP) -c gui.cpp -o ./obj/gui.o $(CXXFLAGS)
 
-./obj/glops.o: glops.c
+./obj/glops.o: glops.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   glops.h
 	$(CC) -c glops.c -o ./obj/glops.o $(CFLAGS)
 
 ./obj/dcemu_private.res: dcemu_private.rc 
