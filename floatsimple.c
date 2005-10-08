@@ -591,7 +591,7 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 		memcpy(&y, &z, sizeof(float)*2);
 	} */
 
-	(double) y = (double) y + (double)x;
+	y = y + x;
 
 	put_double(DR_index(n), &y);
 //    memcpy(&DR(n), &y, sizeof(float)*2);

@@ -1,7 +1,7 @@
 #ifndef _OPTIONS_H_
 #define _OPTIONS_H_
 
-#define APPTITLE 	"DCEMU - DreamCast Emulator for Windows " __DATE__
+#define APPTITLE 	"DCEMU - DreamCast Emulator for LINUX " __DATE__
 #define OPENGL
 
 // Usar funcciones o macros para accesar la memoria
@@ -10,8 +10,9 @@
 #define BIOS_HACKS		// para tratar de correr la bios
 #define USE_BIOS_FONT
 // #define PRINT_ASM
-#define LOGGING
+// #define LOGGING
 #define MACRO_REPLACEMENTS // ???
+// #define NI
 // #define JOYSTICK
 // #define ASM_DEBUG
 

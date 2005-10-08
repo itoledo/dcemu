@@ -19,9 +19,11 @@ unsigned char * regmem;
 unsigned char * bios_mem;
 unsigned char * ta_mem;
 unsigned char * control_mem;
+unsigned char * sound_mem;
+
 BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
-char * mem_zone[0x100]; // para las zonas de memoria
+unsigned char * mem_zone[0x100]; // para las zonas de memoria
 
 mem_access_read_t video_read;
 mem_access_read_t ram_read;
@@ -82,7 +84,7 @@ int inicializar_memoria()
 		return 1;
 	}
 
-	bios_mem = (unsigned char *) malloc(sizeof(unsigned char) * BIOS_SIZE); // 4 MB
+	bios_mem = (unsigned char *) malloc(sizeof(unsigned char) * BIOS_SIZE); // 2 MB
 
 	if (!bios_mem)
 	{
@@ -105,6 +107,16 @@ int inicializar_memoria()
 		fprintf(stderr, "No se pudo crear control_mem.\r\n");
 		return 1;
 	}
+
+
+	sound_mem = (unsigned char *) malloc(sizeof(unsigned char) * SOUND_SIZE); // 2 MB
+
+	if (!sound_mem)
+	{
+		fprintf(stderr, "No se pudo crear bios_mem.\r\n");
+		return 1;
+	}
+	
 	
 	return 0;
 }

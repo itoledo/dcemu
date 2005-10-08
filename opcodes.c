@@ -11,13 +11,13 @@
 #include "floatgraph.h"
 #include "opcodes.h"
 
-// int oplist[65536];
-// int opcode_primer_restriccion = 0;
+
 short * oplist;
-short oplist_pr0_sz0[65536];
-short oplist_pr0_sz1[65536];
+short oplist_pr0_sz0[65536]; 
+short oplist_pr0_sz1[65536]; 
 short oplist_pr1_sz0[65536];
 short oplist_pr1_sz1[65536];
+
 
 struct st_cmd opcodes[] =
 {

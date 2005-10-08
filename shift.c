@@ -136,7 +136,7 @@ OPCODE(shad90) // SHAD Rm, Rn (0100nnnn mmmm1100)
 	else // right shift
 	if (amount != 0)
 	{
-		(signed) R(n) >>= (32 - amount); // IMPORTANTE!!!!!!
+		 R(n) = ((signed) R(n)) >> (32 - amount); // IMPORTANTE!!!!!!
 	}
 	else
 	if ((signed) R(n) < 0)

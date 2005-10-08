@@ -7,11 +7,10 @@
 #include "gui.h"
 #include "glops.h"
 
+
 #define TEXTURE_CACHING
 
 SDL_Surface *screen;
-// SDL_Surface *backscreen;
-// SDL_Surface *glscreen;
 SDL_Surface *outputscreen;
 
 typedef Uint16 pcon_func(Uint16 src);
@@ -797,6 +796,7 @@ void ta_check(DWORD addr)
 					GLOP_COLOR4F(r, g, b, a);
 //					glVertex3f(datos[0], datos[1], datos[2] - 100);
 					GLOP_VERTEX3F(datos[0], datos[1], datos[2] - 100);
+
 				}
 				break;
 
@@ -1376,6 +1376,8 @@ int screeninit(void)
 //		glPixelZoom(1.0, -1.0);
 
 	logxmsg(LOG_PVR, "screeninit: saliendo\n");
+
+	init_sOglP();
 
 	return 0;
 }

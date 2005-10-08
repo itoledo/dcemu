@@ -22,6 +22,7 @@ gcn::Window *window;
 gcn::Icon* debugIcon; 
 gcn::ScrollArea * scrollArea;
 gcn::TextBox * textBox;
+gcn::Label * label;
 
 extern "C" {
 
@@ -71,6 +72,12 @@ void gui_init()
 		window->setContent(scrollArea);
 		window->resizeToContent();
 		top->add(window, 40, 40);
+
+
+		label = new gcn::Label("Fps :");
+		label->setPosition(280, 220);
+		// Add the label to the top container
+		top->add(label);
 	}
 	catch (...)
 	{
@@ -119,6 +126,7 @@ void gui_addlogchar(char c)
 void gui_setvisiblelog(bool vis)
 {
 	window->setVisible(vis);
+	
 }
 
 bool gui_isvisiblelog()

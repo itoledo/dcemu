@@ -64,7 +64,7 @@ time_t start_time;
 unsigned long instrucciones = 0;
 bool logging = true;
 int filelogging = 0;
-bool logmem = FALSE;
+bool logmem = false;
 bool logvideomem = false;
 bool logmemreg = false;
 short ultopcnt = 0;
@@ -73,6 +73,7 @@ char lastop[128];
 bool pausa = false;
 WORD joystick = 0xFFFF;
 SDL_Joystick * js;
+int fps=0;
 
 void timer_check();
 
@@ -98,8 +99,6 @@ void RedibujarPantalla()
 		SDL_GL_SwapBuffers();
 		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 	}
-/*	else
-		gui_refresh(); */
 }
 
 Uint32 VBlankCallback(Uint32 interval, void * param)
@@ -256,8 +255,6 @@ void main_loop(void)
    	
 			instrucciones++;
 
-//			if ((instrucciones % 3333333) == 0) // cada 200 mhz / 60 revisamos eventos / redibujamos pantalla
-//			if ((cnt % (3333333 / 0x1FF)) == 0)
 			if (cnt % (500000 / 0x1FF) == 0)
 			{
 				pvr_scanline++;
@@ -279,7 +276,9 @@ void main_loop(void)
 			{
    				cnt = 0;
    				pvr_scanline = 0;
+				fps++;
 				break; // salimos de este ciclo y vamos al siguiente
+
 			}
 		}
 
@@ -322,6 +321,8 @@ void main_loop(void)
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 //		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
+
+		
 
 		while (SDL_PollEvent(&event))
 		{
@@ -816,13 +817,13 @@ int main(int argc, char *argv[])
 	logmsg("cargando 1st_read.bin\n");
 
 //	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
-	if ((tam = cargar_archivo("1st_read.bin", get_memory_pointer(mem_base + mem_offset))) < 0)
+	if ((tam = cargar_archivo(argv[1], get_memory_pointer(mem_base + mem_offset))) < 0)
 	{
 		fprintf(stderr, "No se pudo abrir 1st_read.bin");
 		return 1;
 	}
 
-	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+ 	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
 //	PC = 0x8c008300;
 //	PC = 0x00000000;
 //	PC = 0x8c0000e0;

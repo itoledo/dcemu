@@ -5,11 +5,12 @@
 
 #define VIDEO_SIZE		(8 * 1024 * 1024)
 #define MEM_SIZE		(16 * 1024 * 1024)
-#define BIOS_SIZE		(4*1024*1024) // 2 Megabytes
+#define SOUND_SIZE		(2*1024*1024) // 2 Megabytes
+#define BIOS_SIZE		(2*1024*1024) // 2 Megabytes
 #define TA_SIZE			(512)
 #define CONTROL_SIZE	(0x10000)
 
-extern char * mem_zone[0x100]; // para las zonas de memoria
+extern unsigned char * mem_zone[0x100]; // para las zonas de memoria
 #define get_memory_pointer(addr) (&mem_zone[(addr) >> 24][(addr) & 0xFFFFFF])
 
 typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);

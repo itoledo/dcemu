@@ -49,6 +49,18 @@ void limpiar_pantalla();
 void cb_tastart(DWORD addr, void * p, size_t size);
 void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);
 
+// i really don't know why i need to export this in Linux and in Dev C++ it works oh well
+
+#if defined (__GNUC__)
+void cb_renderstart(DWORD addr, void * p, size_t size);
+void cb_param_base(DWORD addr, void * p, size_t size);
+void cb_region_base(DWORD addr, void * p, size_t size);
+void cb_fb_w_ctrl(DWORD addr, void * p, size_t size);
+void cb_ppblocksize(DWORD addr, void * p, size_t size);
+void cb_fb_r_sof1(DWORD addr, void * p, size_t size);
+#endif
+
+
 extern	SDL_Surface *screen;
 
 #endif // _GRAFICOS_H

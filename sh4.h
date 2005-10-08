@@ -1,7 +1,11 @@
 #ifndef _SH4_H_
 #define _SH4_H_
 
+#if defined (WIN32)
 #include <windows.h>
+#elif (__GNUC__)
+#include <string.h>
+#endif
 #include "log.h"
 #include "mem.h"
 #include "options.h"
@@ -15,8 +19,7 @@ typedef short bool;
 #ifndef MACRO_REPLACEMENTS
 void ejecutar_instruccion(WORD instr);
 #else
-// #define ejecutar_instruccion(instr) (query_cache(instr))
-#define ejecutar_instruccion(instr) ((opcodes[oplist[instr]].funcion) (instr))
+#define ejecutar_instruccion(instr) (opcodes[oplist[instr]].funcion (instr))
 #endif
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
@@ -217,7 +220,7 @@ extern unsigned long NEXTPC;
 
 // #define OPCODE(instr) __fastcall void instr (WORD arg)
 #define OPCODE(instr) void instr (WORD arg)
-#define COPY_REG(a, b) ((DWORD) (a) = (DWORD) (b))
+#define COPY_REG(a, b) ((a) =(b))
 
 typedef void PC_f(void);
 extern PC_f * PC_func;

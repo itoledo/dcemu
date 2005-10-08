@@ -429,7 +429,7 @@ void UpdateFPSCR(DWORD newFPSCR)
 		
 		switch(newFPSCR & (FPSCR_PR|FPSCR_SZ))
 		{
-			case 0:					oplist = oplist_pr0_sz0; break;
+			case 0:				oplist = oplist_pr0_sz0; break;
 			case FPSCR_SZ:			oplist = oplist_pr0_sz1; break;
 			case FPSCR_PR:			oplist = oplist_pr1_sz0; break;
 			case FPSCR_PR|FPSCR_SZ:	oplist = oplist_pr1_sz1; break;
