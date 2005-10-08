@@ -1,8 +1,8 @@
 CPP  = g++
 CC   = gcc
 
-OBJ  = ./obj/graficos.o ./obj/special.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
-LINKOBJ  = ./obj/graficos.o ./obj/special.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
 
 
 LIBS =  `sdl-config --libs` -lSDLmain -lSDL -lSDL_image -lcdio -lGL -lguichan_opengl -lguichan_sdl -lguichan
@@ -27,9 +27,6 @@ $(BIN): $(OBJ)
 
 ./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   graficos.h intc.h gui.h
 	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
-
-./obj/special.o:special.h
-	$(CC) -c special.c -o ./obj/special.o $(CFLAGS)
 
 ./obj/main.o: main.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h BFont.h special.h  branch.h intc.h debug.h graficos.h iso.h gui.h
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
