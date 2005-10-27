@@ -25,7 +25,7 @@ CommandLine=
 IncludeVersionInfo=0
 SupportXPThemes=0
 CompilerSet=0
-CompilerSettings=00000010000100010100pd
+CompilerSettings=0000001000010000010000
 UseCustomMakefile=0
 CustomMakefile=
 

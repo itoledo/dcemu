@@ -128,6 +128,9 @@
 /* Define to 1 if you have the `rand' function. */
 #define HAVE_RAND 1
 
+/* Define 1 if you want ISO-9660 Rock-Ridge extension support. */
+#define HAVE_ROCK 1
+
 /* Define to 1 if you have the `snprintf' function. */
 #define HAVE_SNPRINTF 1
 
@@ -167,6 +170,12 @@
 /* Define to 1 if you have the <sys/types.h> header file. */
 #define HAVE_SYS_TYPES_H 1
 
+/* Define this <sys/stat.h> defines S_ISLNK() */
+/* #undef HAVE_S_ISLNK */
+
+/* Define this <sys/stat.h> defines S_ISSOCK() */
+/* #undef HAVE_S_ISSOCK */
+
 /* Define if struct tm has the tm_gmtoff member. */
 /* #undef HAVE_TM_GMTOFF */
 
@@ -185,12 +194,3 @@
 /* Define to 1 if you have the `vsnprintf' function. */
 #define HAVE_VSNPRINTF 1
 
-/* Define 1 if you have MinGW CD-ROM support */
-#define HAVE_WIN32_CDROM 1
-
-/* Define as const if the declaration of iconv() needs const. */
-/* #undef ICONV_CONST */
-
-/* Is set when libcdio's config.h has been included. Applications wishing to
-   sue their own config.h values (such as set by the application's configure
-   script can define this before including any of libcdio's headers. */

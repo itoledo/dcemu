@@ -2,8 +2,8 @@
 #define _LOG_H_
 
 #include <stdio.h>
+
 #if defined(__GNUC__)
-#include "lnxdefs.h"
 #include <stdarg.h>
 #endif
 

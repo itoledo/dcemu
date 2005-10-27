@@ -21,7 +21,12 @@ int iso_init()
 {
     cdio_fs_anal_t fs;
     cdio_iso_analysis_t ia;
+/*    cdio_drive_read_cap_t readcap;
+    cdio_drive_write_cap_t writecap;
+    cdio_drive_misc_cap_t misccap; */
     char * s;
+    lsn_t lsn_ult_sesion;
+    int i;
     
 /*	iso9660_stat_t * statbuf;
 
@@ -42,6 +47,13 @@ int iso_init()
 		return 1;
 	}		
 
+/*	cdio_get_drive_cap(cdio, &readcap, &writecap, &misccap);
+	
+	if (misccap & CDIO_DRIVE_CAP_MISC_MULTI_SESSION)
+	{
+		fprintf(stderr, "multi sesión\n");
+	} */
+
 	fprintf(stderr,
  		"primera pista: %d\n"
 		"número de pistas: %d\n"
@@ -55,15 +67,20 @@ int iso_init()
     			cdio_get_track_lba(cdio, 1));
 
 	fs = cdio_guess_cd_type(cdio, 0, 1, &ia);
-	
+		
 	switch(CDIO_FSTYPE(fs))
 	{
 	    case CDIO_FS_ISO_9660:	s = "iso9660";	break;
 	    case CDIO_FS_AUDIO:		s = "audio";	break;
 	    default:				s = "unknown";	break;
-	}    
-
-	fprintf(stderr, "formato filesystem: %d %s\n", CDIO_FSTYPE(fs), s);
+	}
+		
+	fprintf(stderr, "formato filesystem %d: %d %s\n", 1, CDIO_FSTYPE(fs), s);
+		
+	if (fs & CDIO_FS_ANAL_MULTISESSION)
+	{
+		fprintf(stderr, "multisesion\n");
+	}
 
 	// test
 /*	FILE * fp;
@@ -73,6 +90,15 @@ int iso_init()
 	fp = fopen("dump.raw", "wb");
 	fwrite(target, sizeof(char), 2048*2049, fp);
 	fclose(fp); */
+
+/*	if (cdio_get_last_session(cdio, &lsn_ult_sesion))
+	{
+		fprintf(stderr, "cdio_get_last_session: error\n");
+	}
+	else
+	{
+		fprintf(stderr, "lsn ultima sesion: %d\n", lsn_ult_sesion);
+	} */
 
 	return 0;
 }
@@ -90,7 +116,7 @@ int iso_get_mode()
     {
         case TRACK_FORMAT_AUDIO:	fmt = -1;	break;
         case TRACK_FORMAT_CDI:		fmt = -1;	break;
-        case TRACK_FORMAT_XA:		fmt = 2;	break;
+        case TRACK_FORMAT_XA:		fmt = 2;	break; // era 2
         case TRACK_FORMAT_DATA:		fmt = 1;	break;
         case TRACK_FORMAT_PSX:		fmt = -1;	break;
         default:					fmt = -1;	break;
@@ -102,6 +128,8 @@ int iso_get_mode()
 	    fmt = 1; // dejémoslo en modo1
 	}
 	
+	fprintf(stderr, "cdio_get_track_format: %d\n", fmt);
+
 	return fmt;
 }    
     
@@ -109,18 +137,29 @@ int iso_read_sector(char * target, int secstart, int secnum)
 {
 	int ret = 0, i;
 	char buf[ISO_BLOCKSIZE];
+//	char fname[128];
  
-	fprintf(stderr, "leyendo sectores, inicio %d, secnum %d\n", secstart - 150, secnum);
+	fprintf(stderr, "leyendo sectores, secstart %d, inicio %d, secnum %d\n", secstart, secstart - 150, secnum);
 
 	for (i = 0; i < secnum; i++)
 	{
-		ret = cdio_read_mode1_sector(cdio, buf, secstart - 150 + i, false);
+//		ret = cdio_read_mode1_sector(cdio, buf, secstart - 150 + i, false);
+//		ret = cdio_read_mode1_sector(cdio, buf, secstart + i, false);
+		ret = cdio_read_data_sectors(cdio, buf, secstart - 150 + i, CDIO_CD_FRAMESIZE, 1);
 	
 		if (ret != 0)
 			fprintf(stderr, "error al tratar de leer sector %d\n", secstart - 150 + i);
 
 		memcpy(target, buf, ISO_BLOCKSIZE);
 		target += ISO_BLOCKSIZE;
+		
+/*		sprintf(fname, "sector%d.bin", secstart + i);
+		FILE * fp = fopen(fname, "wb");
+		if (fp)
+		{
+			fwrite(buf, sizeof(char), ISO_BLOCKSIZE, fp);
+			fclose(fp);
+		} */
 	}
 
 	return ret;

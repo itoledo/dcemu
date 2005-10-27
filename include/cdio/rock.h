@@ -1,5 +1,5 @@
 /*
-    $Id: rock.h,v 1.8 2005/02/22 10:42:50 rocky Exp $
+    $Id: rock.h,v 1.10 2005/09/15 06:36:01 rocky Exp $
 
     Copyright (C) 2005 Rocky Bernstein <rocky@panix.com>
 
@@ -32,6 +32,20 @@
 #define __CDIO_ROCK_H__
 
 #include <cdio/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
+/* MSYS 1.0.10 with MinGW 3.4.2 (and perhaps others) don't have
+   S_ISSOCK() or S_ISLNK() macros, so we'll roll our own. */
+#if !defined(HAVE_S_ISSOCK) && !defined(S_ISSOCK)
+#define S_ISSOCK(st_mode) ((((st_mode)) & 0170000) == (0140000))
+#endif
+
+#if !defined(HAVE_S_ISLNK) && !defined(S_ISLNK)
+#define S_ISLNK(st_mode) ((((st_mode)) & 0170000) == (0010000))
+#endif
 
 /*! An enumeration for some of the ISO_ROCK_* #defines below. This isn't
   really an enumeration one would really use in a program it is to
@@ -357,6 +371,10 @@ const char *iso9660_get_rock_attr_str(posix_mode_t st_mode);
 extern iso_rock_nm_flag_t iso_rock_nm_flag;
 extern iso_rock_sl_flag_t iso_rock_sl_flag;
 extern iso_rock_tf_flag_t iso_rock_tf_flag;
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /* __ISO_ROCK_H__ */
 

@@ -533,10 +533,10 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		case 0xa05f6c18: // MAPLE State
 		{
 			memcpy(p, &MAPLE_STATE, size);
-//			logmsg( "pvr_read: MAPLE_STATE: %x\r\n", MAPLE_STATE);
+			logmsg( "pvr_read: MAPLE_STATE: %x\r\n", MAPLE_STATE);
 			if (MAPLE_STATE & 0x1)
 			{
-//				logmsg( "MAPLE_STATE:Desactivando DMA\r\n");
+				logmsg( "MAPLE_STATE:Desactivando DMA\r\n");
 				REMOVE_BIT(MAPLE_STATE, 0x1);
 			}
 		}
@@ -966,7 +966,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 		// INICIO REGISTROS PVR
 
-		case 0xa05f8012: // RENDERFORMAT, "alpha config"
+/*		case 0xa05f8012: // RENDERFORMAT, "alpha config"
 		{
 			DWORD dw = *(DWORD *) p;
 			char * s_RENDERFORMAT[] = {
@@ -990,11 +990,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
        			{ 4, 4, 4, 4, 16 } };
    			int idx;
 
-			logmsg("0xa05f8008: RENDERFORMAT=%x\n", *(DWORD *)p);
+			logxmsg(LOG_PVR, "0xa05f8008: RENDERFORMAT=%x\n", *(DWORD *)p);
 			if (dw & 0x1000)
-				logmsg("dither enable\n");
+				logxmsg(LOG_PVR, "dither enable\n");
 			idx = dw & 0x07;
-			logmsg("formato: %s\n", s_RENDERFORMAT[idx]);
+			logxmsg(LOG_PVR, "formato: %s\n", s_RENDERFORMAT[idx]);
 			SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, m_RENDERFORMAT[0][idx]);
 			SDL_GL_SetAttribute(SDL_GL_RED_SIZE, m_RENDERFORMAT[1][idx]);
 			SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, m_RENDERFORMAT[2][idx]);
@@ -1002,7 +1002,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, m_RENDERFORMAT[4][idx]);
 			SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 		}
-		break;
+		break; */
 
 #define PVR_WRITE_1(dir, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} break; }
 #define PVR_WRITE_CB_1(dir, callback, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} callback(direccion, p, size); break; }

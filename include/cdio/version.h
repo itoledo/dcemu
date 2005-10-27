@@ -2,11 +2,11 @@
 /** \file version.h 
  *
  *  \brief A file containing the libcdio package version
- *  number (75) and OS build name. 
+ *  number (76) and OS build name. 
  */
 
 /*! CDIO_VERSION can as a string in programs to show what version is used. */
-#define CDIO_VERSION "0.75 i686-pc-mingw32"
+#define CDIO_VERSION "0.76 i686-pc-mingw32"
 
 /*! LIBCDIO_VERSION_NUM  can be used for testing in the C preprocessor */
-#define LIBCDIO_VERSION_NUM 75
+#define LIBCDIO_VERSION_NUM 76

@@ -1,5 +1,5 @@
 /*
-  $Id: cdda.h,v 1.21 2005/04/30 07:15:51 rocky Exp $
+  $Id: cdda.h,v 1.23 2005/09/21 01:41:32 rocky Exp $
 
   Copyright (C) 2004, 2005 Rocky Bernstein <rocky@panix.com>
   Copyright (C) 2001 Xiph.org
@@ -30,7 +30,18 @@
 #define _CDDA_INTERFACE_H_
 
 #include <cdio/cdio.h>
-#include <cdio/paranoia.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
+/** cdrom_paranoia is an opaque structure which is used in all of the
+    library operations.
+ */
+typedef struct cdrom_paranoia_s cdrom_paranoia_t;
+typedef struct cdrom_drive_s   cdrom_drive_t;
+
+/** For compatibility. cdrom_drive_t is depricated, use cdrom_drive_t instead. */
 
 extern enum paranoia_cdda_enums {
   CDDA_MESSAGE_FORGETIT = 0,
@@ -177,18 +188,19 @@ extern enum paranoia_jitter_enums {
 extern cdrom_drive_t *cdio_cddap_find_a_cdrom(int messagedest, 
 					      char **ppsz_message);
 
-/** Returns a paranoia CD-ROM drive object with a CD-DA in it.  
+/** Returns a paranoia CD-ROM drive object with a CD-DA in it or NULL
+    if there was an error.
     @see cdio_cddap_identify_cdio
  */
 extern cdrom_drive_t *cdio_cddap_identify(const char *psz_device, 
 					  int messagedest, 
 					  char **ppsz_message);
 
-/** Returns a paranoia CD-ROM drive object with a CD-DA in it.  In
-    contrast to cdio_cddap_identify, we start out with an initialized
-    p_cdio object. For example you may have used that for other
-    purposes such as to get CDDB/CD-Text information.  @see
-    cdio_cddap_identify
+/** Returns a paranoia CD-ROM drive object with a CD-DA in it or NULL
+    if there was an error.  In contrast to cdio_cddap_identify, we
+    start out with an initialized p_cdio object. For example you may
+    have used that for other purposes such as to get CDDB/CD-Text
+    information.  @see cdio_cddap_identify
  */
 cdrom_drive_t *cdio_cddap_identify_cdio(CdIo_t *p_cdio, 
 					int messagedest, char **ppsz_messages);
@@ -372,7 +384,13 @@ const char *strerror_tr[]={
 #define cdda_track_preemp       cdio_cddap_track_preemp
 #define cdda_disc_firstsector   cdio_cddap_disc_firstsector
 #define cdda_disc_lastsector    cdio_cddap_disc_lastsector
+#define cdrom_drive              cdrom_drive_t
+
 #endif /*DO_NOT_WANT_PARANOIA_COMPATIBILITY*/
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /*_CDDA_INTERFACE_H_*/
 

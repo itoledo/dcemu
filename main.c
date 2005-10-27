@@ -813,13 +813,15 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	char * ejecutable = argv[1] ? argv[1] : "1st_read.bin";
+
 	// a cargar 1st_read.bin
-	logmsg("cargando 1st_read.bin\n");
+	logmsg("cargando %s\n", ejecutable);
 
 //	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
-	if ((tam = cargar_archivo(argv[1], get_memory_pointer(mem_base + mem_offset))) < 0)
+	if ((tam = cargar_archivo(ejecutable, get_memory_pointer(mem_base + mem_offset))) < 0)
 	{
-		fprintf(stderr, "No se pudo abrir 1st_read.bin");
+		fprintf(stderr, "No se pudo abrir %s\n", ejecutable);
 		return 1;
 	}
 
