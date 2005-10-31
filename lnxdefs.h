@@ -4,7 +4,8 @@
 
 typedef unsigned short WORD;
 typedef unsigned int DWORD;
-typedef unsigned char BYTE;  
+typedef unsigned char BYTE; 
+typedef unsigned int INT32; 
 
 #define true 1
 #define false 0

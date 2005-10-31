@@ -11,8 +11,8 @@ INCS = `sdl-config --cflags`
 CXXINCS = `sdl-config --cflags`  
 
 BIN  = dcemu
-CXXFLAGS = $(CXXINCS)   -fexceptions -O1 -ggdb
-CFLAGS = $(INCS) -Wall -Iinclude   -fexceptions -O1 -ggdb
+CXXFLAGS = $(CXXINCS) -O1
+CFLAGS = $(INCS) -Wall -Iinclude  -O1
 
 .PHONY: all all-before all-after clean clean-custom
 
@@ -28,7 +28,7 @@ $(BIN): $(OBJ)
 ./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h   graficos.h intc.h gui.h
 	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
 
-./obj/main.o: main.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h BFont.h special.h  branch.h intc.h debug.h graficos.h iso.h gui.h
+./obj/main.o: main.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h BFont.h branch.h intc.h debug.h graficos.h iso.h gui.h
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
 
 ./obj/mem.o: mem.c main.h options.h reg.h log.h sh4.h mem.h opcodes.h intc.h   graficos.h gui.h

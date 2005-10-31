@@ -5,6 +5,7 @@
 
 #if defined(__GNUC__)
 #include <stdarg.h>
+#include "lnxdefs.h"
 #endif
 
 #define LOG_MEM			1
