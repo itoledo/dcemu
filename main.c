@@ -234,7 +234,7 @@ void main_loop(void)
 
 //			(*PC_func) ();
 
-//			dma_check();
+			dma_check();
 
 			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
 			// por lo que en un segundo tenemos 781250 ticks.
