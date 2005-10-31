@@ -1432,6 +1432,7 @@ void DibujarFramebuffer()
 //	glClear(GL_DEPTH_BUFFER_BIT);
 //	glEnable(GL_DEPTH_TEST);
 	glDisable(GL_BLEND);
+	glDisable(GL_DEPTH_TEST);
 //	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 //	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 #define PROFUNDIDAD (-1000.0f)
@@ -1445,6 +1446,7 @@ void DibujarFramebuffer()
 	glEnable(GL_BLEND);
 //	glEnable(GL_DEPTH_TEST);
 	glDisable(GL_TEXTURE_2D);
+	glEnable(GL_DEPTH_TEST);
 	// fin textura 1024
 
 //	logxmsg(LOG_PVR, "DibujarFramebuffer: SDL_GL_SwapBuffers\n");
