@@ -72,6 +72,8 @@ struct opcode_log_str ultop[OPMAXCNT];
 char lastop[128];
 bool pausa = false;
 WORD joystick = 0xFFFF;
+unsigned char ltrig = TRIGGER_OFF, rtrig = TRIGGER_OFF;
+unsigned char joyx = JOYSTICK_NEUTRAL, joyy = JOYSTICK_NEUTRAL;
 SDL_Joystick * js;
 int fps=0;
 
@@ -376,6 +378,30 @@ void main_loop(void)
 					REMOVE_BIT(joystick, CONT_START);
 					break;
 					
+					case SDLK_q: // LEFT
+					ltrig = TRIGGER_ON;
+					break;
+
+					case SDLK_e: // RIGHT
+					rtrig = TRIGGER_ON;
+					break;
+
+					case SDLK_y: // joystick up
+					joyy = JOYSTICK_UP;
+					break;
+					
+					case SDLK_h: // joystick down
+					joyy = JOYSTICK_DOWN;
+					break;
+					
+					case SDLK_g: // joystick left
+					joyx = JOYSTICK_LEFT;
+					break;
+					
+					case SDLK_j: // joystick right
+					joyx = JOYSTICK_RIGHT;
+					break;
+
 					case SDLK_l: // empezar el log en archivo
 /*					filelogging++;
 					filelogging %= 3; */
@@ -416,9 +442,9 @@ void main_loop(void)
 						pausa = true;
 					break;
 					
-					case SDLK_i: // generar int?
+/*					case SDLK_i: // generar int?
 					intc(0);
-					break;
+					break; */
 						
 					default:
 					break;
@@ -465,6 +491,24 @@ void main_loop(void)
 
 					case SDLK_z: // START
 					SET_BIT(joystick, CONT_START);
+					break;
+
+					case SDLK_q: // LEFT
+					ltrig = TRIGGER_OFF;
+					break;
+
+					case SDLK_e: // RIGHT
+					rtrig = TRIGGER_OFF;
+					break;
+					
+					case SDLK_y: // joystick up
+					case SDLK_h: // joystick down
+					joyy = JOYSTICK_NEUTRAL;
+					break;
+					
+					case SDLK_g: // joystick left
+					case SDLK_j: // joystick right
+					joyx = JOYSTICK_NEUTRAL;
 					break;
 
                     case SDLK_F9:
@@ -684,33 +728,6 @@ void inicializar_fonts()
 #endif
 }
 
-int cargar_archivo( char * fname, void * target)
-{
-	FILE * fp;
-	char c;
-	int cnt = 0;
-	char * p = (char *) target;
-
-	// a cargar ip.bin
-	fp = fopen(fname, "rb");
-
-	if (!fp)
-	{
-		fprintf(stderr, "No se pudo abrir %s\r\n", fname);
-		return -1;
-	}
-	
-	for (c = fgetc(fp); !feof(fp); c = fgetc(fp))
-	{
-		*(p++) = c;
-		cnt++;
-	}
-
-	fclose(fp);
-	
-	return cnt;
-}
-
 void exitproc(void)
 {
 	logmsg("Exited with PC = %08x", PC);
@@ -787,12 +804,6 @@ int main(int argc, char *argv[])
 	if (inicializar_memoria())
 		return 1;
 
-	if (iso_init())
-	{
- 		fprintf(stderr, "No se pudo cargar ISO.");
-		return 1;
-	}
-
 	// a configurar las tablas de memoria, etc.
 	mem_hash_setup();
 	regmem_setup();
@@ -803,26 +814,60 @@ int main(int argc, char *argv[])
 		return 1; 
 //*/
 
-	// a cargar ip.bin
-	logmsg("cargando ip.bin\n");
-
-//	if (cargar_archivo("ip.bin", &memoria[mem_n_base + ip_offset]) < 0)
-	if (cargar_archivo("ip.bin", get_memory_pointer(mem_base + ip_offset)) < 0)
-	{
-		fprintf(stderr, "No se pudo abrir ip.bin");
-		return 1;
-	}
-
+	// determinemos qué vamos a cargar
 	char * ejecutable = argv[1] ? argv[1] : "1st_read.bin";
 
-	// a cargar 1st_read.bin
-	logmsg("cargando %s\n", ejecutable);
-
-//	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
-	if ((tam = cargar_archivo(ejecutable, get_memory_pointer(mem_base + mem_offset))) < 0)
+	if (strncmp(&ejecutable[strlen(ejecutable) - 4], ".bin", 4) == 0)
 	{
-		fprintf(stderr, "No se pudo abrir %s\n", ejecutable);
-		return 1;
+		if (iso_init(NULL))
+		{
+	 		fprintf(stderr, "No se pudo inicializar ISO.\n");
+			return 1;
+		}
+
+		// a cargar ip.bin
+		logmsg("cargando ip.bin\n");
+	
+	//	if (cargar_archivo("ip.bin", &memoria[mem_n_base + ip_offset]) < 0)
+		if (cargar_archivo("ip.bin", get_memory_pointer(mem_base + ip_offset)) < 0)
+		{
+			fprintf(stderr, "No se pudo abrir ip.bin.\n");
+			return 1;
+		}
+	
+		// a cargar 1st_read.bin
+		logmsg("cargando %s\n", ejecutable);
+	
+	//	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
+		if ((tam = cargar_archivo(ejecutable, get_memory_pointer(mem_base + mem_offset))) < 0)
+		{
+			fprintf(stderr, "No se pudo abrir %s.\n", ejecutable);
+			return 1;
+		}
+	}
+	else
+	{
+		// leamos la ISO
+		if (iso_init(ejecutable))
+		{
+			fprintf(stderr, "No se pudo cargar ISO.\n");
+			return 1;
+		}
+		
+		if (cargar_archivo_iso("ip.bin", false, get_memory_pointer(mem_base + ip_offset)) <= 0)
+		{
+			fprintf(stderr, "No se pudo abrir ip.bin.\n");
+			return 1;
+		}
+
+		// busquemos el ejecutable
+		if ((tam = cargar_archivo_iso("1st_read.bin", true, get_memory_pointer(mem_base + mem_offset))) <= 0)
+		{
+			fprintf(stderr, "No se pudo abrir %s.\n", ejecutable);
+			return 1;
+		}
+		
+		fprintf(stderr, "leidos %d bytes\n", tam);
 	}
 
 //  	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;

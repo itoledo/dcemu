@@ -2,7 +2,7 @@
 #ifndef _MAIN_H_
 #define _MAIN_H_
 
-#if defined(WIN32)
+#ifdef WIN32
 #include <windows.h>
 #else
 #include "lnxdefs.h"
@@ -20,7 +20,7 @@
 #if defined(__GNUC__) 
 #include <GL/gl.h>								// Header File For The OpenGL32 Library
 #include <GL/glu.h>								// Header File For The GLu32 Library
-#include "lnxdefs.h"
+// #include "lnxdefs.h"
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -109,6 +109,17 @@ extern DWORD snd_dbg;			// ...
 
 // joystick
 extern WORD joystick;
+extern unsigned char ltrig, rtrig;
+extern unsigned char joyx, joyy;
+
+#define TRIGGER_ON		0xFF
+#define TRIGGER_OFF		0x00
+
+#define JOYSTICK_UP		0x00
+#define JOYSTICK_DOWN	0xFF
+#define JOYSTICK_LEFT	0x00
+#define JOYSTICK_RIGHT	0xFF
+#define JOYSTICK_NEUTRAL	128
 
 #define CONT_C  		(1<<0)
 #define CONT_B  		(1<<1)

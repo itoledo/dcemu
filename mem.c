@@ -906,12 +906,12 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							cont_cond_t ct;
 							
 							ct.buttons = joystick; // CONT_START
-							ct.rtrig = 0;
-							ct.ltrig = 0;
-							ct.joyx = 0;
-							ct.joyy = 0;
-							ct.joy2x = 0;
-							ct.joy2y = 0;
+							ct.rtrig = rtrig;
+							ct.ltrig = ltrig;
+							ct.joyx = joyx;
+							ct.joyy = joyy;
+							ct.joy2x = 128;
+							ct.joy2y = 128;
 
 							paquete[0] = 0x08 | // data transfer (response)
 								((sendadr << 8) & 0xFF00) |

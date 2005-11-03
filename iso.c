@@ -12,12 +12,13 @@
 #include <cdio/cd_types.h>
 
 #include "iso.h"
+#include "scramble.h"
 
 iso9660_t * iso;
 CdIo * cdio;
 char * sDevice;
 
-int iso_init()
+int iso_init(char * sDevice)
 {
     cdio_fs_anal_t fs;
     cdio_iso_analysis_t ia;
@@ -37,7 +38,8 @@ int iso_init()
 		
 	cdio_init();
 	
-	fprintf(stderr, "cdio_get_default_device: %s\n", sDevice = cdio_get_default_device(NULL));
+	if (sDevice == NULL)
+		fprintf(stderr, "cdio_get_default_device: %s\n", sDevice = cdio_get_default_device(NULL));
 
 	cdio = cdio_open(sDevice, DRIVER_UNKNOWN);
 	
@@ -165,3 +167,99 @@ int iso_read_sector(char * target, int secstart, int secnum)
 	return ret;
 }
 
+int cargar_archivo( char * fname, void * target)
+{
+	FILE * fp;
+	char c;
+	int cnt = 0;
+	char * p = (char *) target;
+
+	// a cargar ip.bin
+	fp = fopen(fname, "rb");
+
+	if (!fp)
+	{
+		fprintf(stderr, "No se pudo abrir %s\r\n", fname);
+		return -1;
+	}
+	
+	for (c = fgetc(fp); !feof(fp); c = fgetc(fp))
+	{
+		*(p++) = c;
+		cnt++;
+	}
+
+	fclose(fp);
+	
+	return cnt;
+}
+
+int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
+{
+	unsigned char * archivo;
+	CdioList_t * list;
+	CdioListNode_t *entnode;
+	iso9660_stat_t * ptr;
+	lsn_t lsn = 0;
+	uint32_t size = 0;
+	uint32_t secsize = 0;
+
+	list = iso9660_fs_readdir(cdio, "/", false);
+	
+	if (list == NULL)
+	{
+		fprintf(stderr, "No se pudo abrir directorio.\n");
+		return -1;
+	}
+	
+	if (mempos == NULL)
+	{
+		fprintf(stderr, "mempos == NULL?\n");
+		return -1;
+	}
+	
+	_CDIO_LIST_FOREACH(entnode, list)
+	{
+      char filename[4096];
+      iso9660_stat_t *p_statbuf = (iso9660_stat_t *) _cdio_list_node_data (entnode);
+      iso9660_name_translate(p_statbuf->filename, filename);
+      
+      // acá tenemos el nombre del archivo, ahora deberemos leerlo.
+      if (!strcmp(filename, fname))
+      {
+			lsn = p_statbuf->lsn;
+			secsize = p_statbuf->secsize;
+			size = p_statbuf->size;
+	  }
+
+//      free(p_statbuf);
+	}
+	
+	_cdio_list_free(list, true);
+	
+	// necesitamos el lsn y el size
+	if (size > 0)
+	{
+		fprintf(stderr, "leyendo %s desde lsn %d, %d sectores, %d bytes por sector.\n", fname, lsn, secsize, ISO_BLOCKSIZE);
+		if (cdio_read_data_sectors(cdio, mempos, lsn, ISO_BLOCKSIZE, secsize) == DRIVER_OP_SUCCESS)
+			fprintf(stderr, "archivo leido exitosamente.\n");
+		if (scrambled)
+		{
+			FILE * fp = fopen("scrambled.bin", "wb");
+			if (!fp)
+			{
+				fprintf(stderr, "no se pudo guardar scrambled.bin\n");
+				return -1;
+			}
+			fwrite(mempos, sizeof(char), size, fp);
+			fclose(fp);
+
+			fprintf(stderr, "haciendo descrambling\n");
+			descramble("scrambled.bin", "descrambled.bin");
+
+			return cargar_archivo("descrambled.bin", mempos);
+		}
+	}
+
+	return size;
+}
