@@ -32,8 +32,12 @@
 #include "intc.h"
 #include "debug.h"
 #include "graficos.h"
-#include "iso.h"
 #include "gui.h"
+#include "console.h"
+#include "controller.h"
+#include "file.h"
+#include "medium.h"
+#include "config.h"
 
 DWORD snd_dbg;			// ...
 
@@ -71,18 +75,9 @@ short ultopcnt = 0;
 struct opcode_log_str ultop[OPMAXCNT];
 char lastop[128];
 bool pausa = false;
-WORD joystick = 0xFFFF;
-unsigned char ltrig = TRIGGER_OFF, rtrig = TRIGGER_OFF;
-unsigned char joyx = JOYSTICK_NEUTRAL, joyy = JOYSTICK_NEUTRAL;
-SDL_Joystick * js;
-int fps=0;
+
 
 void timer_check();
-
-/* void query_cache(WORD arg)
-{
-	(opcodes[oplist[arg]].funcion) (arg);
-} */
 
 void RedibujarPantalla()
 {
@@ -278,397 +273,26 @@ void main_loop(void)
 			{
    				cnt = 0;
    				pvr_scanline = 0;
-				fps++;
 				break; // salimos de este ciclo y vamos al siguiente
 
 			}
 		}
 
-/*		if (pvr_3dscene)
-		{
-//			if (!(pvr_listdone & (1 << 4)) && pvr_registered & (1 << 4))
-			if (pvr_registered & (1 << 4))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para PT\n");
-				intc_add(ASIC_EVT_PVR_PTDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 3)) && pvr_registered & (1 << 3))
-			if (pvr_registered & (1 << 3))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para TRANSMOD\n");
-				intc_add(ASIC_EVT_PVR_TRANSMODDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 2)) && pvr_registered & (1 << 2))
-			if (pvr_registered & (1 << 2))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para TRANSPOLY\n");
-				intc_add(ASIC_EVT_PVR_TRANSDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 1)) && pvr_registered & (1 << 1))
-			if (pvr_registered & (1 << 1))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEMOD\n");
-				intc_add(ASIC_EVT_PVR_OPAQUEMODDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 0)) && pvr_registered & (1 << 0))
-			if (pvr_registered & (1 << 0))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEPOLY\n");
-				intc_add(ASIC_EVT_PVR_OPAQUEDONE, 0);
-			}
-//			intc_add(ASIC_EVT_PVR_RENDERDONE, 0);
-		}
-*/
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 //		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
-
-		
-
-		while (SDL_PollEvent(&event))
-		{
-			switch(event.type)
+		if (control->handle(event))
 			{
-				case SDL_KEYDOWN:
-				{
-					logmsg("keydown\r\n");
-					switch(event.key.keysym.sym)
-					{
-					case SDLK_LEFT:
-//						logging = true;
-					REMOVE_BIT(joystick, CONT_DPAD_LEFT);
-					break;
-	
-					case SDLK_RIGHT:
-					REMOVE_BIT(joystick, CONT_DPAD_RIGHT);
-/*					    G2_FIFO = 0x20;
-						logging = false; */
-					break;
-	
-					case SDLK_UP:
-/*						if (pause)
-							pause = false;
-						else
-							pause = true; */
-					REMOVE_BIT(joystick, CONT_DPAD_UP);
-					break;
-	
-					case SDLK_DOWN:
-					REMOVE_BIT(joystick, CONT_DPAD_DOWN);
-					break;
-					
-					case SDLK_a: // BOTON X
-					REMOVE_BIT(joystick, CONT_X);
-					break;
-					
-					case SDLK_s: // BOTON A
-					REMOVE_BIT(joystick, CONT_A);
-					break;
-					
-					case SDLK_d: // BOTON B
-					REMOVE_BIT(joystick, CONT_B);
-					break;
-					
-					case SDLK_w: // BOTON W
-					REMOVE_BIT(joystick, CONT_Y);
-					break;
-
-					case SDLK_z: // START
-					REMOVE_BIT(joystick, CONT_START);
-					break;
-					
-					case SDLK_q: // LEFT
-					ltrig = TRIGGER_ON;
-					break;
-
-					case SDLK_e: // RIGHT
-					rtrig = TRIGGER_ON;
-					break;
-
-					case SDLK_y: // joystick up
-					joyy = JOYSTICK_UP;
-					break;
-					
-					case SDLK_h: // joystick down
-					joyy = JOYSTICK_DOWN;
-					break;
-					
-					case SDLK_g: // joystick left
-					joyx = JOYSTICK_LEFT;
-					break;
-					
-					case SDLK_j: // joystick right
-					joyx = JOYSTICK_RIGHT;
-					break;
-
-					case SDLK_l: // empezar el log en archivo
-/*					filelogging++;
-					filelogging %= 3; */
-					gui_setvisiblelog(!gui_isvisiblelog());
-					break;
-					
-					case SDLK_m: // logmem
-					if ((filelogging & (FILELOG_MEMREADS | FILELOG_MEMWRITES)) == 0)
-					{
-						logmsg("activando filelog memoria\n");
-						SET_BIT(filelogging, FILELOG_MEMREADS | FILELOG_MEMWRITES);
-					}
-					else
-					{
-						REMOVE_BIT(filelogging, FILELOG_MEMREADS | FILELOG_MEMWRITES);
-						logmsg("desactivando filelog memoria\n");
-					}
-					break;
-
-					case SDLK_v: // logmem
-					if (logvideomem)
-						logvideomem = false;
-					else
-						logvideomem = true;
-					break;
-
-					case SDLK_r: // logmem
-					if (logmemreg)
-						logmemreg = false;
-					else
-						logmemreg = true;
-					break;
-
-					case SDLK_p: // pausa
-					if (pausa)
-						pausa = false;
-					else
-						pausa = true;
-					break;
-					
-/*					case SDLK_i: // generar int?
-					intc(0);
-					break; */
-						
-					default:
-					break;
-					}
-				}
-				break;
-				
-				case SDL_KEYUP:
-				{
-					logmsg("keyup\r\n");
-					switch(event.key.keysym.sym)
-					{
-					case SDLK_LEFT:
-					SET_BIT(joystick, CONT_DPAD_LEFT);
-					break;
-	
-					case SDLK_RIGHT:
-					SET_BIT(joystick, CONT_DPAD_RIGHT);
-					break;
-	
-					case SDLK_UP:
-					SET_BIT(joystick, CONT_DPAD_UP);
-					break;
-	
-					case SDLK_DOWN:
-					SET_BIT(joystick, CONT_DPAD_DOWN);
-					break;
-					
-					case SDLK_a: // BOTON X
-					SET_BIT(joystick, CONT_X);
-					break;
-					
-					case SDLK_s: // BOTON A
-					SET_BIT(joystick, CONT_A);
-					break;
-					
-					case SDLK_d: // BOTON B
-					SET_BIT(joystick, CONT_B);
-					break;
-					
-					case SDLK_w: // BOTON W
-					SET_BIT(joystick, CONT_Y);
-					break;
-
-					case SDLK_z: // START
-					SET_BIT(joystick, CONT_START);
-					break;
-
-					case SDLK_q: // LEFT
-					ltrig = TRIGGER_OFF;
-					break;
-
-					case SDLK_e: // RIGHT
-					rtrig = TRIGGER_OFF;
-					break;
-					
-					case SDLK_y: // joystick up
-					case SDLK_h: // joystick down
-					joyy = JOYSTICK_NEUTRAL;
-					break;
-					
-					case SDLK_g: // joystick left
-					case SDLK_j: // joystick right
-					joyx = JOYSTICK_NEUTRAL;
-					break;
-
-                    case SDLK_F9:
-					DebugMode = DBG_STEP;
-					break;
-
-                    case SDLK_F10:
-					DebugMode = DBG_STOP;
-					break;
-
-                    case SDLK_F11:
-					DebugMode = DBG_RUN;
-					break;
-
-                    case SDLK_F12:
-					DebugVisible = 1 - (DebugVisible);
-					glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-					break;
-
-					case SDLK_KP_PLUS:
-					MemDebug += 0x140;
-					RedibujarPantalla();
-					break;
-					
-					case SDLK_KP_MINUS:
-					MemDebug -= 0x140;
-					RedibujarPantalla();
-					break;
-					
-					default:
-					break;
-					}
-
-				}
-				break;
-
-				case SDL_QUIT:
+				fprintf(stderr,"Quitting main loop\n");
 				return;
-
-/*				case SDL_USEREVENT:
-				RedibujarPantalla();
-				break; */
-
-#ifdef JOYSTICK
-				case SDL_JOYAXISMOTION:
-				{
-					if ((event.jaxis.value < -3200) || (event.jaxis.value > 3200))
-					{
-						if (event.jaxis.axis == 0) // izq/der
-						{
-							if (event.jaxis.value < 0)
-							{
-								SET_BIT(joystick, CONT_DPAD_RIGHT);
-								REMOVE_BIT(joystick, CONT_DPAD_LEFT);
-							}
-							else
-							{
-								SET_BIT(joystick, CONT_DPAD_LEFT);
-								REMOVE_BIT(joystick, CONT_DPAD_RIGHT);
-							}
-						}
-						if (event.jaxis.axis == 1) // up/down
-						{
-							if (event.jaxis.value < 0)
-							{
-								SET_BIT(joystick, CONT_DPAD_DOWN);
-								REMOVE_BIT(joystick, CONT_DPAD_UP);
-							}
-							else
-							{
-								SET_BIT(joystick, CONT_DPAD_UP);
-								REMOVE_BIT(joystick, CONT_DPAD_DOWN);
-							}
-						}
-					}
-					else
-					{
-						if (event.jaxis.axis == 0) // izq/der
-						{
-							SET_BIT(joystick,CONT_DPAD_LEFT|CONT_DPAD_RIGHT);
-						}
-						else
-						if (event.jaxis.axis == 1) // arr/aba
-						{
-							SET_BIT(joystick,CONT_DPAD_UP|CONT_DPAD_DOWN);
-						}
-					}
-				}
-				break;
-				
-				case SDL_JOYBUTTONDOWN:
-				{
-					logmsg("btdown: %d\r\n", event.jbutton.button);
-					switch(event.jbutton.button)
-					{
-						case 0:	REMOVE_BIT(joystick, CONT_Y); break;
-						case 1: REMOVE_BIT(joystick, CONT_B); break;
-						case 2: REMOVE_BIT(joystick, CONT_A); break;
-						case 3: REMOVE_BIT(joystick, CONT_X); break;
-						case 4: REMOVE_BIT(joystick, CONT_Y); break;
-						case 5: REMOVE_BIT(joystick, CONT_Z); break;
-						case 6: REMOVE_BIT(joystick, CONT_START); break;
-					}
-				}
-				break;
-
-				case SDL_JOYBUTTONUP:
-				{
-					logmsg("btup: %d\r\n", event.jbutton.button);
-					switch(event.jbutton.button)
-					{
-						case 0:	SET_BIT(joystick, CONT_Y); break;
-						case 1: SET_BIT(joystick, CONT_B); break;
-						case 2: SET_BIT(joystick, CONT_A); break;
-						case 3: SET_BIT(joystick, CONT_X); break;
-						case 4: SET_BIT(joystick, CONT_Y); break;
-						case 5: SET_BIT(joystick, CONT_Z); break;
-						case 6: SET_BIT(joystick, CONT_START); break;
-					}
-				}
-				break;
-#endif // JOYSTICK
-
-				default:
-				gui_event(event);
-				break;
 			}
-		}
 	}
 
 	logmsg("saliendo de main_loop\n");
 }
 
 PC_f * PC_func;
-
-int cargar_bios()
-{
-	FILE * fp;
-	int idx;
-	short c;
-
-	// a cargar ip.bin
-	fp = fopen("bios/bios.bin", "rb");
-
-	if (!fp)
-	{
-		fprintf(stderr, "No se pudo abrir BIOS!\r\n");
-		return 1;
-	}
-	
-	idx = 0;
-
-	for (c = fgetc(fp); c != EOF && !feof(fp); c = fgetc(fp))
-		bios_mem[idx++] = c;
-
-	fclose(fp);
-
-	fprintf(stderr, "Cargados %x bytes de BIOS.\r\n", idx);
-	return 0;
-}
 
 void inicializar_fonts()
 {
@@ -728,10 +352,32 @@ void inicializar_fonts()
 #endif
 }
 
+
+void closeALL()
+{
+	fprintf(logfp, "PC:%lx VBR:%lx spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
+
+	SDL_Quit( );
+
+	fclose(logfp);
+	fclose(serialfp);
+	
+	free(memoria);
+	free(video_mem);
+	free(regmem);
+
+#ifdef TTF
+	TTF_CloseFont(font);
+#endif
+	
+	hook->close();
+}
+
 void exitproc(void)
 {
 	logmsg("Exited with PC = %08x", PC);
 }
+
 
 int main(int argc, char *argv[])
 {
@@ -745,6 +391,11 @@ int main(int argc, char *argv[])
 
 	//FILE * fp; 
 
+	if (dcemu_init(argc,argv))
+	{
+		return -1;
+	}
+
 	inicializar_logs();
 
     /* initialize SDL */
@@ -754,28 +405,12 @@ int main(int argc, char *argv[])
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER
 //	if ( SDL_Init( SDL_INIT_VIDEO
 #endif
-#ifdef JOYSTICK
-		| SDL_INIT_JOYSTICK
-#endif // JOYSTICK
 		) < 0 )
 	{
 		fprintf( stderr, "Video initialization failed: %s\n",
 			SDL_GetError( ) );
 		SDL_Quit( );
 	}
-
-#ifdef JOYSTICK
-	if (SDL_NumJoysticks() < 1)
-	{
-		fprintf(stderr, "No se encontraron joysticks.\r\n");
-		SDL_Quit();
-	}
-
-	SDL_JoystickEventState(SDL_ENABLE);
-	js = SDL_JoystickOpen(0);
-#endif
-
-	joystick = 0xFFFF;
 
 //	screen = SDL_SetVideoMode(320, 240, 16, SDL_DOUBLEBUF);
 
@@ -808,66 +443,17 @@ int main(int argc, char *argv[])
 	mem_hash_setup();
 	regmem_setup();
 	initopcodes();
-///*	
-	logmsg("cargando bios (bios.bin)\n");
-    if (cargar_bios())
-		return 1; 
-//*/
 
-	// determinemos qué vamos a cargar
-	char * ejecutable = argv[1] ? argv[1] : "1st_read.bin";
-
-	if (strncmp(&ejecutable[strlen(ejecutable) - 4], ".bin", 4) == 0)
+	if (LoadConfig())
 	{
-		if (iso_init(NULL))
-		{
-	 		fprintf(stderr, "No se pudo inicializar ISO.\n");
-			return 1;
-		}
-
-		// a cargar ip.bin
-		logmsg("cargando ip.bin\n");
-	
-	//	if (cargar_archivo("ip.bin", &memoria[mem_n_base + ip_offset]) < 0)
-		if (cargar_archivo("ip.bin", get_memory_pointer(mem_base + ip_offset)) < 0)
-		{
-			fprintf(stderr, "No se pudo abrir ip.bin.\n");
-			return 1;
-		}
-	
-		// a cargar 1st_read.bin
-		logmsg("cargando %s\n", ejecutable);
-	
-	//	if ((tam = cargar_archivo("1st_read.bin", &memoria[mem_n_base + mem_offset])) < 0)
-		if ((tam = cargar_archivo(ejecutable, get_memory_pointer(mem_base + mem_offset))) < 0)
-		{
-			fprintf(stderr, "No se pudo abrir %s.\n", ejecutable);
-			return 1;
-		}
+		closeALL();
+		return -1;
 	}
-	else
-	{
-		// leamos la ISO
-		if (iso_init(ejecutable))
-		{
-			fprintf(stderr, "No se pudo cargar ISO.\n");
-			return 1;
-		}
-		
-		if (cargar_archivo_iso("ip.bin", false, get_memory_pointer(mem_base + ip_offset)) <= 0)
-		{
-			fprintf(stderr, "No se pudo abrir ip.bin.\n");
-			return 1;
-		}
 
-		// busquemos el ejecutable
-		if ((tam = cargar_archivo_iso("1st_read.bin", true, get_memory_pointer(mem_base + mem_offset))) <= 0)
-		{
-			fprintf(stderr, "No se pudo abrir %s.\n", ejecutable);
-			return 1;
-		}
-		
-		fprintf(stderr, "leidos %d bytes\n", tam);
+	if(loadSys())
+	{
+		closeALL();
+		return -1;	
 	}
 
 //  	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
@@ -880,23 +466,9 @@ int main(int argc, char *argv[])
 	if (DebugInit())
  	{
 		fprintf(stderr, "No se pudo crear pantallas para debug\r\n");
+		closeALL();
 		return 1;
 	}
-
-//	DebugShow();
-//	ConsolePrintf(0, "%s", "test");
-	
-//	regmap_mutex = SDL_CreateMutex();
-	
-//	timer_thread = SDL_CreateThread(timer_check, NULL);
-
-/*	vblank_id = SDL_AddTimer(10, VBlankCallback, NULL);
-
-	if (vblank_id == NULL)
-	{
-		fprintf(stderr, "No se pudo crear timer: %s\r\n", SDL_GetError());
-		return 1;
-	} */
 
 	if ( SDL_MUSTLOCK(screen) )
 	{
@@ -956,14 +528,22 @@ int main(int argc, char *argv[])
 	negc68(0x0000);
 	dump_registers(); */
 
-	logmsg("llamando a main_loop\n");
+	if(medium_run())
+	{
+		fprintf(stderr,"Couldn't start emulation");
+		closeALL();
+		return -1;
+	};
 
-	atexit(exitproc);
+	control->init(); // init the controller subsystem
+
+
+	logmsg("llamando a main_loop\n");
 
 #if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
 	filelogging |= FILELOG_MEMREADS | FILELOG_MEMWRITES;
 #endif
-
+	
 	main_loop();
 
 //	SDL_RemoveTimer(timer_id);
@@ -972,21 +552,8 @@ int main(int argc, char *argv[])
 //	timer_running = 0;
 //	SDL_WaitThread(timer_thread, NULL);
 //	SDL_DestroyMutex(regmap_mutex);
-
-	fprintf(logfp, "PC:%lx VBR:%lx spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
-
-	fclose(logfp);
-	fclose(serialfp);
 	
-	free(memoria);
-	free(video_mem);
-	free(regmem);
-
-#ifdef TTF
-	TTF_CloseFont(font);
-#endif
-
-	SDL_Quit( );
+	closeALL();
 
 	return 0;
 }

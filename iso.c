@@ -1,265 +1,192 @@
 #include <stdio.h>
-// #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
-
-// typedef int ssize_t; // falta en mingw32
+#include <unistd.h> // for unlink
 
 #include <cdio/config.h>
 #include <cdio/cdio.h>
 #include <cdio/iso9660.h>
 #include <cdio/cd_types.h>
 
+#if defined(POSX)
+#include "lnxdefs.h"
+#endif
+#include "mem.h"
 #include "iso.h"
-#include "scramble.h"
+#include "file.h"
 
-iso9660_t * iso;
-CdIo * cdio;
-char * sDevice;
+/* The code in this file oads an iso file with Mode 1 sectors.Basically a non bootable iso */
 
-int iso_init(char * sDevice)
+
+iso9660_t * p_iso;
+iso9660_stat_t *p_statbuf;
+DWORD valor=0;
+
+int searchIso(char * file,iso9660_t * p_iso,char * output)
 {
-    cdio_fs_anal_t fs;
-    cdio_iso_analysis_t ia;
-/*    cdio_drive_read_cap_t readcap;
-    cdio_drive_write_cap_t writecap;
-    cdio_drive_misc_cap_t misccap; */
-    char * s;
-    lsn_t lsn_ult_sesion;
-    int i;
-    
-/*	iso9660_stat_t * statbuf;
+  FILE *p_outfd;
+  int i;
+  
+  p_statbuf = iso9660_ifs_stat_translate (p_iso, file);
 
-	iso = iso9660_open("dc.iso");
-	
-	if (iso == NULL)
-		return 1; */
-		
-	cdio_init();
-	
-	if (sDevice == NULL)
-		fprintf(stderr, "cdio_get_default_device: %s\n", sDevice = cdio_get_default_device(NULL));
-
-	cdio = cdio_open(sDevice, DRIVER_UNKNOWN);
-	
-	if (!cdio)
-	{
-		fprintf(stderr, "cdio_open: cdio NULL\n");
-		return 1;
-	}		
-
-/*	cdio_get_drive_cap(cdio, &readcap, &writecap, &misccap);
-	
-	if (misccap & CDIO_DRIVE_CAP_MISC_MULTI_SESSION)
-	{
-		fprintf(stderr, "multi sesión\n");
-	} */
-
-	fprintf(stderr,
- 		"primera pista: %d\n"
-		"número de pistas: %d\n"
-		"formato: %s\n"
-		"lsn: %d\n"
-		"lba: %d\n",
-    			cdio_get_first_track_num(cdio),
-    			cdio_get_num_tracks(cdio),
-    			track_format2str[cdio_get_track_format(cdio, 1)],
-    			cdio_get_track_lsn(cdio, 1),
-    			cdio_get_track_lba(cdio, 1));
-
-	fs = cdio_guess_cd_type(cdio, 0, 1, &ia);
-		
-	switch(CDIO_FSTYPE(fs))
-	{
-	    case CDIO_FS_ISO_9660:	s = "iso9660";	break;
-	    case CDIO_FS_AUDIO:		s = "audio";	break;
-	    default:				s = "unknown";	break;
-	}
-		
-	fprintf(stderr, "formato filesystem %d: %d %s\n", 1, CDIO_FSTYPE(fs), s);
-		
-	if (fs & CDIO_FS_ANAL_MULTISESSION)
-	{
-		fprintf(stderr, "multisesion\n");
-	}
-
-	// test
-/*	FILE * fp;
-	char * target;
-	target = (char *) malloc(sizeof(char) * 2048 * 2049);
-	iso_read_sector(target, 27 + 150, 2049);
-	fp = fopen("dump.raw", "wb");
-	fwrite(target, sizeof(char), 2048*2049, fp);
-	fclose(fp); */
-
-/*	if (cdio_get_last_session(cdio, &lsn_ult_sesion))
-	{
-		fprintf(stderr, "cdio_get_last_session: error\n");
-	}
-	else
-	{
-		fprintf(stderr, "lsn ultima sesion: %d\n", lsn_ult_sesion);
-	} */
-
-	return 0;
-}
-
-int iso_get_lba()
-{
-    return cdio_get_track_lba(cdio, 1);
-}
-
-int iso_get_mode()
-{
-    int fmt;
-
-    switch(cdio_get_track_format(cdio, 1))
+  if (NULL == p_statbuf) 
     {
-        case TRACK_FORMAT_AUDIO:	fmt = -1;	break;
-        case TRACK_FORMAT_CDI:		fmt = -1;	break;
-        case TRACK_FORMAT_XA:		fmt = 2;	break; // era 2
-        case TRACK_FORMAT_DATA:		fmt = 1;	break;
-        case TRACK_FORMAT_PSX:		fmt = -1;	break;
-        default:					fmt = -1;	break;
-	}	
-	
-	if (fmt == -1)
-	{
-	    fprintf(stderr, "error en formato de pista 1: %s\n", track_format2str[cdio_get_track_format(cdio, 1)]);
-	    fmt = 1; // dejémoslo en modo1
-	}
-	
-	fprintf(stderr, "cdio_get_track_format: %d\n", fmt);
+      fprintf(stderr, 
+	      "Could not get ISO-9660 file information for file %s\n",
+	      file);
+      iso9660_close(p_iso);
+      return 2;
+    }
 
-	return fmt;
+  if (!(p_outfd = fopen (output, "wb")))
+    {
+      perror ("fopen()");
+      free(p_statbuf);
+      iso9660_close(p_iso);
+      return 3;
+    }
+
+  /* Copy the blocks from the ISO-9660 filesystem to the local filesystem. */
+  for (i = 0; i < p_statbuf->size; i += ISO_BLOCKSIZE)
+    {
+      char buf[ISO_BLOCKSIZE];
+
+      memset (buf, 0, ISO_BLOCKSIZE);
+      
+      if ( ISO_BLOCKSIZE != iso9660_iso_seek_read (p_iso, buf, p_statbuf->lsn 
+						   + (i / ISO_BLOCKSIZE),
+						   1) )
+      {
+	fprintf(stderr, "Error reading ISO 9660 file at lsn %lu\n",
+		(long unsigned int) p_statbuf->lsn + (i / ISO_BLOCKSIZE));
+	 	free(p_statbuf);
+ 		fclose(p_outfd);
+		// an incomplete file is of no use to us so
+		unlink(output);
+	return -1;
+      }
+      
+      
+      fwrite (buf, ISO_BLOCKSIZE, 1, p_outfd);
+      
+      if (ferror (p_outfd))
+	{
+	  perror ("fwrite()");
+		return -1;
+	}
+    }
+  
+  fflush (p_outfd);
+
+  /* Make sure the file size has the exact same byte size. Without the
+     truncate below, the file will a multiple of ISO_BLOCKSIZE.
+   */
+  if (ftruncate (fileno (p_outfd), p_statbuf->size))
+    perror ("ftruncate()");
+
+ 	
+ // cleaning up
+ free(p_statbuf);
+ fclose(p_outfd);
+
+ return 0;
+}
+
+
+/* Opens the iso reads the ip.bin and the boot file and loads them :) */
+int iso_init(char * iso)
+{
+  int i;
+  iso9660_t *p_iso;
+  p_iso = iso9660_open (iso);
+  if (NULL == p_iso) {
+    fprintf(stderr, "Sorry, couldn't open ISO 9660 image %s\n", iso);
+    return 1;
+  }
+  if(searchIso("IP.BIN",p_iso,"strap.temp"))
+	{
+		fprintf(stderr,"Couldn't find file IP.BIN");
+		return -1;
+	}
+  // loading the ip.bin	
+  load_bootstrap("strap.temp",get_memory_pointer(mem_base + ip_offset));
+  printf("Boot file %s\n",IP_STRUCT[BOOT]);
+  if(searchIso(IP_STRUCT[BOOT],p_iso,"boot.temp"))
+	{
+		fprintf(stderr,"Couldn't find file %s",IP_STRUCT[BOOT]);
+		unlink("ip.bin");
+		return -1;
+	}
+  //loading the boot file
+ load_exec("boot.temp",get_memory_pointer(mem_base + mem_offset));
+ // all ok cleaning up
+ unlink("strap.temp");
+ unlink("boot.temp");
+ return 0;
+}
+
+/*  Should fill up the toc */
+int iso_get_info()
+{
+// no idea what should go here 
+ return 0;
+}
+
+/* cleaning up */
+int closeIso()
+{
+  if(!iso9660_close(p_iso))
+	{
+		fprintf(stderr,"Could not close iso.Probably still in use\n");
+		return 1;
+	}
+ free(p_statbuf);
+ return 0;
+}
+
+/* setup the sector info */
+int iso_getSectorMode(DWORD address)
+{
+	valor = 8192;
+	WriteMemoryL(address + 4, &valor);
+//	valor = 2048; // mode 2
+	valor = 1024; // mode 1 iso
+	WriteMemoryL(address + 8, &valor);
+	valor = 2048; // sector size in bytes
+	WriteMemoryL(address + 12, &valor);
+
+	return 1; // assuming mode 1 isos
 }    
-    
+
+/* setup  the status */    
+int iso_get_status(DWORD address)
+{	
+	valor = 2; // drive is in standby
+	WriteMemoryL(address, &valor);
+//	valor = 0x80; // GD-ROM
+	valor = 0x10; // CD-ROM
+	WriteMemoryL(address + 4, &valor);
+}
+
+
+/* reading the sector stuff */
 int iso_read_sector(char * target, int secstart, int secnum)
 {
-	int ret = 0, i;
-	char buf[ISO_BLOCKSIZE];
-//	char fname[128];
- 
-	fprintf(stderr, "leyendo sectores, secstart %d, inicio %d, secnum %d\n", secstart, secstart - 150, secnum);
+ int i;
+fprintf(stderr, "leyendo sectores, inicio %d, secnum %d\n", secstart - 150, secnum);
+ for (i = 0; i < secnum; i += ISO_BLOCKSIZE)
+    {
+      char buf[ISO_BLOCKSIZE];
 
-	for (i = 0; i < secnum; i++)
-	{
-//		ret = cdio_read_mode1_sector(cdio, buf, secstart - 150 + i, false);
-//		ret = cdio_read_mode1_sector(cdio, buf, secstart + i, false);
-		ret = cdio_read_data_sectors(cdio, buf, secstart - 150 + i, CDIO_CD_FRAMESIZE, 1);
-	
-		if (ret != 0)
-			fprintf(stderr, "error al tratar de leer sector %d\n", secstart - 150 + i);
-
-		memcpy(target, buf, ISO_BLOCKSIZE);
-		target += ISO_BLOCKSIZE;
-		
-/*		sprintf(fname, "sector%d.bin", secstart + i);
-		FILE * fp = fopen(fname, "wb");
-		if (fp)
-		{
-			fwrite(buf, sizeof(char), ISO_BLOCKSIZE, fp);
-			fclose(fp);
-		} */
-	}
-
-	return ret;
-}
-
-int cargar_archivo( char * fname, void * target)
-{
-	FILE * fp;
-	char c;
-	int cnt = 0;
-	char * p = (char *) target;
-
-	// a cargar ip.bin
-	fp = fopen(fname, "rb");
-
-	if (!fp)
-	{
-		fprintf(stderr, "No se pudo abrir %s\r\n", fname);
-		return -1;
-	}
-	
-	for (c = fgetc(fp); !feof(fp); c = fgetc(fp))
-	{
-		*(p++) = c;
-		cnt++;
-	}
-
-	fclose(fp);
-	
-	return cnt;
-}
-
-int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
-{
-	unsigned char * archivo;
-	CdioList_t * list;
-	CdioListNode_t *entnode;
-	iso9660_stat_t * ptr;
-	lsn_t lsn = 0;
-	uint32_t size = 0;
-	uint32_t secsize = 0;
-
-	list = iso9660_fs_readdir(cdio, "/", false);
-	
-	if (list == NULL)
-	{
-		fprintf(stderr, "No se pudo abrir directorio.\n");
-		return -1;
-	}
-	
-	if (mempos == NULL)
-	{
-		fprintf(stderr, "mempos == NULL?\n");
-		return -1;
-	}
-	
-	_CDIO_LIST_FOREACH(entnode, list)
-	{
-      char filename[4096];
-      iso9660_stat_t *p_statbuf = (iso9660_stat_t *) _cdio_list_node_data (entnode);
-      iso9660_name_translate(p_statbuf->filename, filename);
+      memset (buf, 0, ISO_BLOCKSIZE);
       
-      // acá tenemos el nombre del archivo, ahora deberemos leerlo.
-      if (!strcmp(filename, fname))
+      if ( ISO_BLOCKSIZE != iso9660_iso_seek_read (p_iso, buf, secstart - 150 + i ,1) )
       {
-			lsn = p_statbuf->lsn;
-			secsize = p_statbuf->secsize;
-			size = p_statbuf->size;
-	  }
-
-//      free(p_statbuf);
-	}
-	
-	_cdio_list_free(list, true);
-	
-	// necesitamos el lsn y el size
-	if (size > 0)
-	{
-		fprintf(stderr, "leyendo %s desde lsn %d, %d sectores, %d bytes por sector.\n", fname, lsn, secsize, ISO_BLOCKSIZE);
-		if (cdio_read_data_sectors(cdio, mempos, lsn, ISO_BLOCKSIZE, secsize) == DRIVER_OP_SUCCESS)
-			fprintf(stderr, "archivo leido exitosamente.\n");
-		if (scrambled)
-		{
-			FILE * fp = fopen("scrambled.bin", "wb");
-			if (!fp)
-			{
-				fprintf(stderr, "no se pudo guardar scrambled.bin\n");
-				return -1;
-			}
-			fwrite(mempos, sizeof(char), size, fp);
-			fclose(fp);
-
-			fprintf(stderr, "haciendo descrambling\n");
-			descramble("scrambled.bin", "descrambled.bin");
-
-			return cargar_archivo("descrambled.bin", mempos);
-		}
-	}
-
-	return size;
+		fprintf(stderr, "error al tratar de leer sector %d\n", secstart - 150 + i);
+      }
+     
+	memcpy(target, buf, ISO_BLOCKSIZE);
+	target += ISO_BLOCKSIZE;
+}
 }

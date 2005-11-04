@@ -7,6 +7,7 @@
 #define MEM_SIZE		(16 * 1024 * 1024)
 #define SOUND_SIZE		(2*1024*1024) // 2 Megabytes
 #define BIOS_SIZE		(2*1024*1024) // 2 Megabytes
+#define FLASH_SIZE		(256*1024) // 256 kbytes
 #define TA_SIZE			(512)
 #define CONTROL_SIZE	(0x10000)
 
@@ -51,5 +52,37 @@ extern void WriteMemoryL(unsigned long direccion, DWORD * valor);
 extern void WriteMemoryB(unsigned long direccion, BYTE * valor);
 extern void WriteMemoryF(unsigned long direccion, float * valor);
 #endif // MEMORY_MACROS
+
+
+// constantes
+#define mem_base		0x8C000000
+#define mem_n_base		0x0C000000
+#define mem_offset		0x00010000
+#define ip_offset		0x00008000
+#define ip_bs1_offset	0x0000B800
+#define ip_bs2_offset	0x0000E000
+#define mem_ram_base	0x0C000000
+#define mem_n_ram_base	0x0C000000
+#define mem_ram_size	0x01000000
+#define CACHE_SIZE		(4096 * 1024) // 1024 kb
+
+#define video_base		0xa5000000
+#define n_video_base	0x05000000
+
+#define HACK_BASE		0x8C000100
+#define HACK_ROMFONT	0x000
+#define HACK_GDROM		0x100
+#define HACK_SYSINFO	0x200
+#define HACK_FLASHROM	0x300
+#define HACK_UNKNOWN	0x400
+
+#define FONT_BASE		(mem_base + 1024*1024*5)
+#define FONT_N_BASE		(mem_n_base + 1024*1024*5)
+
+#define SYSCALL_SYSINFO		0x8C0000B0
+#define SYSCALL_ROMFONT		0x8C0000B4
+#define SYSCALL_FLASHROM	0x8C0000B8
+#define SYSCALL_GDROM		0x8C0000BC
+#define SYSCALL_UNKNOWN		0x8C0000E0
 
 #endif // _MEM_H_

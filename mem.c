@@ -6,6 +6,7 @@
 #include "graficos.h"
 #include "intc.h"
 #include "gui.h"
+#include "controller.h"
 
 #define DWREF(p) (*(DWORD *)(p))
 // extern SDL_mutex * regmap_mutex; // en main.c
@@ -19,7 +20,7 @@ unsigned char * regmem;
 unsigned char * bios_mem;
 unsigned char * ta_mem;
 unsigned char * control_mem;
-unsigned char * sound_mem;
+unsigned char * flash_mem;
 
 BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
@@ -108,15 +109,13 @@ int inicializar_memoria()
 		return 1;
 	}
 
+	flash_mem = (unsigned char *) malloc(sizeof(unsigned char) * FLASH_SIZE); // 256ks
 
-	sound_mem = (unsigned char *) malloc(sizeof(unsigned char) * SOUND_SIZE); // 2 MB
-
-	if (!sound_mem)
+	if (!flash_mem)
 	{
-		fprintf(stderr, "No se pudo crear bios_mem.\r\n");
+		fprintf(stderr, "No se pudo crear flash_mem.\r\n");
 		return 1;
 	}
-	
 	
 	return 0;
 }
@@ -850,7 +849,6 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					if (tam > 0)
 					{
 						DWORD * paquete;
-						maple_devinfo_t devinfo;
 						int recadr, sendadr;
 						
 						paquete = (DWORD *) malloc(sizeof(DWORD) * tam);
@@ -878,17 +876,6 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						else
 						if ((paquete[0] & 0xFF) == 1) // Request Device Info
 						{
-							// tenemos que guardar el deviceinfo!
-							devinfo.func = (1 << 24); // controlador
-							devinfo.function_data[0] = 0;
-							devinfo.function_data[1] = 0;
-							devinfo.function_data[2] = 0;
-							devinfo.area_code = 0;
-							devinfo.connector_direction = 0;
-							strcpy(devinfo.product_name, "Controlador DC");
-							strcpy(devinfo.product_license, "SEGA");
-							devinfo.standby_power = 0;
-							devinfo.max_power = 0;
 							// a hacer el paquete de respuesta
 							paquete[0] = 0x05 | // device info (response)
 								((sendadr << 8) & 0xFF00) |
@@ -897,22 +884,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
 							memwrite(td2, &paquete[0], sizeof(DWORD));
 //							logmsg( "Escribiendo devinfo en %x\r\n", td2 + 4);
-							memwrite(td2 + 4, &devinfo, sizeof(maple_devinfo_t));
+							memwrite(td2 + 4, &(control->dev_info), sizeof(maple_devinfo_t));
 						}
 						else
 						if ((paquete[0] & 0xFF) == 9) // MAPLE_COMMAND_GETCOND
 						{
-							// recibe FUNC
-							cont_cond_t ct;
-							
-							ct.buttons = joystick; // CONT_START
-							ct.rtrig = rtrig;
-							ct.ltrig = ltrig;
-							ct.joyx = joyx;
-							ct.joyy = joyy;
-							ct.joy2x = 128;
-							ct.joy2y = 128;
-
 							paquete[0] = 0x08 | // data transfer (response)
 								((sendadr << 8) & 0xFF00) |
 								((((recadr == 0x20) ? 0x20 : 1) << 16) & 0xFF0000) |
@@ -923,7 +899,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							dw = (1 << 24); // MAPLE_FUNC_CONTROLLER
 							memwrite(td2 + 4, &dw, sizeof(DWORD));
 //							logmsg( "Escribiendo cont_cond en %x\r\n", td2 + 8);
-							memwrite(td2 + 8, &ct, sizeof(cont_cond_t));
+							memwrite(td2 + 8, &(control->cond), sizeof(cont_cond_t));
 						}
 						else
 						{

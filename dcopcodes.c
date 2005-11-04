@@ -2,7 +2,7 @@
 #include "sh4.h"
 #include "opcodes.h"
 #include <math.h>
-#include "iso.h"
+#include "medium.h"
 
 #define PI 3.1415926535
 
@@ -60,7 +60,7 @@ void hack_gdrom()
 
 					logmsg("read sector: start=%x, num=%x, addr=%x\n", secstart, secnum, targetaddr);
 					targetmem = malloc(sizeof(char) * 2048 * secnum);
-					iso_read_sector(&targetmem[0], secstart, secnum);
+					hook->read(&targetmem[0], secstart, secnum);
 					memwrite(targetaddr, &targetmem[0], 2048 * secnum);
 					free(targetmem);
 				}
@@ -79,7 +79,7 @@ void hack_gdrom()
 		        	// a llenar un TOC "mula"
 //					        	toc.entry[0] = 0x40002DB4; // CTRL = 4, LBA = 11700
 //					        	toc.entry[0] = 0x40000000; // CTRL = 4, LBA = 0
-					toc.entry[0] = 0x40000000 | iso_get_lba();
+					toc.entry[0] = 0x40000000 | hook->getCdInfo();
 		        	toc.first = 0x00010000;
 		        	toc.last  = 0x00010000;
 		        	toc.dunno = 0;
@@ -107,12 +107,7 @@ void hack_gdrom()
 
 			case 4: // GDROM_CHECK_DRIVE
 			logmsg("GDROM_CHECK_DRIVE\r\n");
-//			valor = 7; // lid closed, no disc
-			valor = 2; // drive is in standby
-			WriteMemoryL(R(4), &valor);
-//			valor = 0x80; // GD-ROM
-			valor = 0x10; // CD-ROM
-			WriteMemoryL(R(4) + 4, &valor);
+			hook->getStatus(R(4));
 			R(0) = 0;
 			break;
 
@@ -122,13 +117,7 @@ void hack_gdrom()
 			logmsg("valor: %x\r\n", valor);
 			if (valor == 0)
 			{
-				valor = 8192;
-				WriteMemoryL(R(4) + 4, &valor);
-//				valor = 2048; // mode 2
-				valor = 1024 * iso_get_mode();
-				WriteMemoryL(R(4) + 8, &valor);
-				valor = 2048; // sector size in bytes
-				WriteMemoryL(R(4) + 12, &valor);
+				hook->getSectorMode(R(4));
 			}
 			else
 				logmsg("GDROM_SECTOR_MODE: valor != 0 no implementado\n");
