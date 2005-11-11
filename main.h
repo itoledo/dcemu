@@ -41,7 +41,7 @@ extern int filelogging;
 
 #define CHECK_BIT(reg,bit) { if (*reg & bit) logmsg(#reg ": " #bit " activado\r\n"); else logmsg(#reg ": " #bit " desactivado\r\n"); }
 
-// extern unsigned char * str_PC;
+// extern BYTE * str_PC;
 
 // graficos.cpp
 // extern void PutPixel(Uint32 pos, Uint32 pixel);
@@ -53,16 +53,16 @@ extern bool logmem;
 extern bool logmemreg;
 extern bool logvideomem;
 
-extern unsigned char * memoria;
-extern unsigned char * video_mem;
-extern unsigned char * regmem;
-extern unsigned char * bios_mem;
-extern unsigned char * flash_mem;
-extern unsigned char * ta_mem;
-extern unsigned char * control_mem;	// empezando en 0x005f0000
+extern BYTE * memoria;
+extern BYTE * video_mem;
+extern BYTE * regmem;
+extern BYTE * bios_mem;
+extern BYTE * flash_mem;
+extern BYTE * ta_mem;
+extern BYTE * control_mem;	// empezando en 0x005f0000
 extern FILE * logfp, * serialfp, * memfp;
 extern bool pausa;
-extern unsigned long instrucciones;
+extern DWORD instrucciones;
 
 extern DWORD G2_FIFO;		// G2 FIFO
 #define AICA_FIFO		(0x01)

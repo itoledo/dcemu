@@ -11,7 +11,7 @@
 #define TA_SIZE			(512)
 #define CONTROL_SIZE	(0x10000)
 
-extern unsigned char * mem_zone[0x100]; // para las zonas de memoria
+extern BYTE * mem_zone[0x100]; // para las zonas de memoria
 #define get_memory_pointer(addr) (&mem_zone[(addr) >> 24][(addr) & 0xFFFFFF])
 
 typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
@@ -44,7 +44,7 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 #define WriteMemoryL(a,b) memwrite(a, b, sizeof(DWORD))
 #else
 extern void ReadMemoryF(unsigned long direccion, float * valor);
-extern void ReadMemoryB(unsigned long direccion, unsigned char * valor);
+extern void ReadMemoryB(unsigned long direccion, BYTE * valor);
 extern void ReadMemoryL(unsigned long direccion, DWORD * valor);
 extern void ReadMemoryW(unsigned long direccion, WORD * valor);
 extern void WriteMemoryW(unsigned long direccion, WORD * valor);

@@ -173,23 +173,23 @@ void DebugUpdate(void)
 
     	sprintf(buf, "Status Register (SR) :-");
         BFont_PutStringFont(DebugWindow, DebugFont, 510, 350, buf);
-    	sprintf(buf, "T: %1x", ((SR & 0x01)));
+    	sprintf(buf, "T: %x", ((SR & 0x01)));
         BFont_PutStringFont(DebugWindow, DebugFont, 510, 362, buf);
-    	sprintf(buf, "S: %1x", ((SR >> 1) & 0x01));
+    	sprintf(buf, "S: %x", ((SR >> 1) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 540, 362, buf);
-    	sprintf(buf, "Q: %1x", ((SR >> 8) & 0x01));
+    	sprintf(buf, "Q: %x", ((SR >> 8) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 570, 362, buf);
-    	sprintf(buf, "M: %1x", ((SR >> 9) & 0x01));
+    	sprintf(buf, "M: %x", ((SR >> 9) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 600, 362, buf);
-    	sprintf(buf, "FD: %1x", ((SR >> 15) & 0x01));
+    	sprintf(buf, "FD: %x", ((SR >> 15) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 510, 374, buf);
-    	sprintf(buf, "BL: %1x", ((SR >> 28) & 0x01));
+    	sprintf(buf, "BL: %x", ((SR >> 28) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 540, 374, buf);
-    	sprintf(buf, "RB: %1x", ((SR >> 29) & 0x01));
+    	sprintf(buf, "RB: %x", ((SR >> 29) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 570, 374, buf);
-    	sprintf(buf, "MD: %1x", ((SR >> 30) & 0x01));
+    	sprintf(buf, "MD: %x", ((SR >> 30) & 0x01));
         BFont_PutStringFont(DebugWindow, DebugFont, 600, 374, buf);
-    	sprintf(buf, "IMASK: %1x%1x%1x%1x (%x)", 
+    	sprintf(buf, "IMASK: %x%x%x%x (%x)", 
      		((SR >> 7) & 0x01), ((SR >> 6) & 0x01), ((SR >> 5) & 0x01),
        		((SR >> 4) & 0x01), ((SR >> 4) & 0x0f));
         BFont_PutStringFont(DebugWindow, DebugFont, 510, 386, buf);
@@ -219,7 +219,7 @@ void disasm(DWORD address, char *buffer)
 	if (op != 0xffff) {
 		switch(opcodes[op].params) 
 		{
-			LOG_OPCODE2(OP_T_AT_DISP_PC_RN, "@(%lx), R%d", LSB(opcode)*4 + (address & 0xFFFFFFFC) + 4, BYTE2(opcode))
+			LOG_OPCODE2(OP_T_AT_DISP_PC_RN, "@(%x), R%d", LSB(opcode)*4 + (address & 0xFFFFFFFC) + 4, BYTE2(opcode))
 			LOG_OPCODE1(OP_T_AT_RN, "@R%d", BYTE2(opcode))
 			LOG_OPCODE2(OP_T_IMM_RN, "#%x, R%d", LSB(opcode), BYTE2(opcode))
 			LOG_OPCODE2(OP_T_RM_RN, "R%d, R%d", BYTE3(opcode), BYTE2(opcode))
@@ -241,8 +241,8 @@ void disasm(DWORD address, char *buffer)
 			LOG_OPCODE0(OP_T_NA)
 			LOG_OPCODE2(OP_T_AT_RM_PLUS_AT_RN_PLUS, "@R%d+, @R%d+", BYTE3(opcode), BYTE2(opcode))
 			LOG_OPCODE1(OP_T_IMM_AT_R0_GBR, "#%x, @(R0, GBR)", LSB(opcode))
-			LOG_OPCODE1(OP_T_LABEL8, "%lx", SignExtend8(LSB(opcode))*2 + (address) + 4)
-			LOG_OPCODE1(OP_T_LABEL12, "%lx", SignExtend12(BYTES234(opcode))*2 + (address) + 4)
+			LOG_OPCODE1(OP_T_LABEL8, "%x", SignExtend8(LSB(opcode))*2 + (address) + 4)
+			LOG_OPCODE1(OP_T_LABEL12, "%x", SignExtend12(BYTES234(opcode))*2 + (address) + 4)
 			LOG_OPCODE1(OP_T_RM_SR, "R%d, SR", BYTE2(opcode))
 			LOG_OPCODE1(OP_T_RM_GBR, "R%d, GBR", BYTE2(opcode))
 			LOG_OPCODE1(OP_T_RM_VBR, "R%d, VBR", BYTE2(opcode))
@@ -339,7 +339,7 @@ void disasm(DWORD address, char *buffer)
 void DrawDebugInlineInfo(SDL_Surface * surface)
 {
 extern time_t start_time;
-extern unsigned long instrucciones;
+extern DWORD instrucciones;
 
 	char buf[512]; //, buf2[128];
 	SDL_Rect rc;
@@ -352,9 +352,9 @@ extern unsigned long instrucciones;
 
 	SDL_FillRect(surface, &rc, 0x00000000);
 
-	sprintf(buf, "PC: %08lx t:%d spd:%d SR:%08x", //, %08x,%08x,%08x %s",
+	sprintf(buf, "PC: %08x t:%d spd:%d SR:%08x", //, %08x,%08x,%08x %s",
 			PC, 
-			dif, (dif > 0) ? instrucciones/dif : 0, SR);
+			(int)dif, (dif > 0) ? instrucciones/dif : 0, SR);
 	BFont_PutStringFont(surface, DebugFont, 0, 0, buf);
 }
 

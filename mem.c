@@ -14,17 +14,17 @@
 DWORD SQ0[8];
 DWORD SQ1[8];
 
-unsigned char * memoria;
-unsigned char * video_mem;
-unsigned char * regmem;
-unsigned char * bios_mem;
-unsigned char * ta_mem;
-unsigned char * control_mem;
-unsigned char * flash_mem;
+BYTE * memoria;
+BYTE * video_mem;
+BYTE * regmem;
+BYTE * bios_mem;
+BYTE * ta_mem;
+BYTE * control_mem;
+BYTE * flash_mem;
 
 BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
-unsigned char * mem_zone[0x100]; // para las zonas de memoria
+BYTE * mem_zone[0x100]; // para las zonas de memoria
 
 mem_access_read_t video_read;
 mem_access_read_t ram_read;
@@ -46,13 +46,13 @@ mem_access_write_t ignore_write;
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
 
-unsigned char * control_mem;	// empezando en 0x005f0000, 64 kbytes
+BYTE * control_mem;	// empezando en 0x005f0000, 64 kbytes
 
 int inicializar_memoria()
 {
 	logmsg("creando memoria\n");
 
-	memoria = (unsigned char *) malloc(sizeof(char) * MEM_SIZE); // 16 megabytes
+	memoria = (BYTE *) malloc(sizeof(char) * MEM_SIZE); // 16 megabytes
 
 	if (!memoria)
 	{
@@ -67,7 +67,7 @@ int inicializar_memoria()
 
 	logmsg("creando memoria de video\n");
 	
-	video_mem = (unsigned char *) malloc(sizeof(unsigned char) * VIDEO_SIZE); // 8 megabytes
+	video_mem = (BYTE *) malloc(sizeof(BYTE) * VIDEO_SIZE); // 8 megabytes
 
 	if (!video_mem)
 	{
@@ -77,7 +77,7 @@ int inicializar_memoria()
 
 	logmsg("creando memoria de registros\n");
 
-	regmem = (unsigned char *) malloc(sizeof(unsigned char) * 0x00FFFFFF); // 16 megabytes
+	regmem = (BYTE *) malloc(sizeof(BYTE) * 0x00FFFFFF); // 16 megabytes
 
 	if (!regmem)
 	{
@@ -85,7 +85,7 @@ int inicializar_memoria()
 		return 1;
 	}
 
-	bios_mem = (unsigned char *) malloc(sizeof(unsigned char) * BIOS_SIZE); // 2 MB
+	bios_mem = (BYTE *) malloc(sizeof(BYTE) * BIOS_SIZE); // 2 MB
 
 	if (!bios_mem)
 	{
@@ -93,7 +93,7 @@ int inicializar_memoria()
 		return 1;
 	}
 	
-	ta_mem = (unsigned char *) malloc(sizeof(unsigned char) * TA_SIZE);
+	ta_mem = (BYTE *) malloc(sizeof(BYTE) * TA_SIZE);
 
 	if (!ta_mem)
 	{
@@ -101,7 +101,7 @@ int inicializar_memoria()
 		return 1;
 	}
 	
-	control_mem = (unsigned char *) malloc(sizeof(unsigned char) * CONTROL_SIZE);
+	control_mem = (BYTE *) malloc(sizeof(BYTE) * CONTROL_SIZE);
 
 	if (!control_mem)
 	{
@@ -109,7 +109,7 @@ int inicializar_memoria()
 		return 1;
 	}
 
-	flash_mem = (unsigned char *) malloc(sizeof(unsigned char) * FLASH_SIZE); // 256ks
+	flash_mem = (BYTE *) malloc(sizeof(BYTE) * FLASH_SIZE); // 256ks
 
 	if (!flash_mem)
 	{
@@ -147,7 +147,7 @@ void dump_registers()
 
 	for (i = 0; i < 24; i++)
 	{
-		sprintf(buf, "r%d=%lx ", i, registers[i]);
+		sprintf(buf, "r%d=%x ", i, registers[i]);
 		strcat(buf2, buf);
 	}
 	
@@ -155,17 +155,17 @@ void dump_registers()
 
 	for (i = 0; i < 32; i++)
 	{
-		sprintf(buf, "FR%d=%lx ", i, float_to_dword(float_registers[i]));
+		sprintf(buf, "FR%d=%x ", i, float_to_dword(float_registers[i]));
 		strcat(buf2, buf);
 	}
     strcat(buf2, "\r\n");
-	sprintf(buf, "T=%d, FPUL=%lx,%f MACL=%lx,%ld MACH=%lx,%ld\r\n", IS_SR_T() ? 1 : 0,
+	sprintf(buf, "T=%d, FPUL=%x,%f MACL=%x,%ld MACH=%x,%ld\r\n", IS_SR_T() ? 1 : 0,
  		(DWORD) FPUL, (float) FPUL,
  		(DWORD) MACL, (signed long) MACL,
 		(DWORD) MACH, (signed long) MACH);
 	strcat(buf2, buf);
 	
-	sprintf(buf, "SR=%08lx MD:%d RB:%d\n", SR, IS_SET(SR,SR_MD) ? 1 : 0, IS_SET(SR,SR_RB) ? 1 : 0);
+	sprintf(buf, "SR=%08x MD:%d RB:%d\n", SR, IS_SET(SR,SR_MD) ? 1 : 0, IS_SET(SR,SR_RB) ? 1 : 0);
 	strcat(buf2, buf);
 	
 	logmsg(buf2);
@@ -1649,7 +1649,7 @@ void ReadMemoryF(unsigned long direccion, float * valor)
 	memread(direccion, valor, sizeof(DWORD));
 }
 
-void ReadMemoryB(unsigned long direccion, unsigned char * valor)
+void ReadMemoryB(unsigned long direccion, BYTE * valor)
 {
 /*	unsigned long realdir = direccion % 0x20000000;
 

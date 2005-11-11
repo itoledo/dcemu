@@ -9,19 +9,19 @@
 #include "floatsimple.h"
 
 extern FILE * logfp, * serialfp, * memfp;
-extern unsigned char * memoria;
+extern BYTE * memoria;
 
 // unsigned char *str_PC;
 
 DWORD registers[24];
 float float_registers[32];
-unsigned long SR = 0x700000F0; // Status Register
-unsigned long SSR = 0; // Saved Status Register
-unsigned long SPC = 0; // Saved Program Counter
-unsigned long GBR = 0; // Global Base Register
-unsigned long VBR = 0; // Vector Base Register
-unsigned long SGR = 0; // Saved General Register 15
-unsigned long DBR = 0; // Debug Base Register
+DWORD SR = 0x700000F0; // Status Register
+DWORD SSR = 0; // Saved Status Register
+DWORD SPC = 0; // Saved Program Counter
+DWORD GBR = 0; // Global Base Register
+DWORD VBR = 0; // Vector Base Register
+DWORD SGR = 0; // Saved General Register 15
+DWORD DBR = 0; // Debug Base Register
 
 DWORD *		PTEL;		// Page Table Entry Low register
 DWORD *		CCR;		// Cache Control Register
@@ -87,14 +87,14 @@ WORD *		SCFDR2;		// FIFO Data Count Register
 WORD *		SCSPTR2;		// Serial Port Register
 WORD *		SCLSR2;		// Line Status Register
 
-unsigned long MACH = 0; // Multiply-And-Accumulate register High
-unsigned long MACL = 0; // Multiply-And-Accumulate register Low
+DWORD MACH = 0; // Multiply-And-Accumulate register High
+DWORD MACL = 0; // Multiply-And-Accumulate register Low
 DWORD FPUL = 0;
-unsigned long PR = 0;   // Procedure Register
-unsigned long PC = 0xA0000000;   // Program Counter
-unsigned long FPSCR = 0x0004001; // Floating Point Status/Control Register
-unsigned long delayslot = 0;
-unsigned long NEXTPC = 0;
+DWORD PR = 0;   // Procedure Register
+DWORD PC = 0xA0000000;   // Program Counter
+DWORD FPSCR = 0x0004001; // Floating Point Status/Control Register
+DWORD delayslot = 0;
+DWORD NEXTPC = 0;
 
 #ifndef MACRO_REPLACEMENTS
 void ejecutar_instruccion(WORD instr)

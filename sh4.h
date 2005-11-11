@@ -3,7 +3,7 @@
 
 #if defined (WIN32)
 #include <windows.h>
-#elif (__GNUC__)
+#elif (POSX)
 #include <string.h>
 #endif
 #include "log.h"
@@ -27,13 +27,13 @@ void UpdateFPSCR(DWORD newFPSCR);
 // CPU Registers
 extern float float_registers[32];
 extern DWORD registers[];
-extern unsigned long SR; 	// Status Register
-extern unsigned long SSR; 	// Saved Status Register
-extern unsigned long SPC; 	// Saved Program Counter
-extern unsigned long GBR; 	// Global Base Register
-extern unsigned long VBR; 	// Vector Base Register
-extern unsigned long SGR; 	// Saved General Register 15
-extern unsigned long DBR; 	// Debug Base Register
+extern DWORD SR; 	// Status Register
+extern DWORD SSR; 	// Saved Status Register
+extern DWORD SPC; 	// Saved Program Counter
+extern DWORD GBR; 	// Global Base Register
+extern DWORD VBR; 	// Vector Base Register
+extern DWORD SGR; 	// Saved General Register 15
+extern DWORD DBR; 	// Debug Base Register
 							
 extern DWORD *	PTEL;		// Page Table Entry Low register
 							
@@ -148,15 +148,15 @@ extern  DWORD *	TCPR2;
 #define TMU_TCR_UNIE	(1 << 5)
 /*** FIN TMU ***/
 
-extern unsigned long MACH; // Multiply-And-Accumulate register High
-extern unsigned long MACL; // Multiply-And-Accumulate register Low
+extern DWORD MACH; // Multiply-And-Accumulate register High
+extern DWORD MACL; // Multiply-And-Accumulate register Low
 extern DWORD FPUL;
 // extern float FPUL;
-extern unsigned long PR;   // Procedure Register
-extern unsigned long PC;   // Program Counter
-extern unsigned long FPSCR; // Floating Point Status/Control Register
-extern unsigned long delayslot;
-extern unsigned long NEXTPC;
+extern DWORD PR;   // Procedure Register
+extern DWORD PC;   // Program Counter
+extern DWORD FPSCR; // Floating Point Status/Control Register
+extern DWORD delayslot;
+extern DWORD NEXTPC;
 
 /*
 #define R(n)		(registers[((n) > 7) ? ((n) + 8) : ((IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB)) ? ((n) + 8) : (n))])

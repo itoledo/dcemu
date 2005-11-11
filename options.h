@@ -24,7 +24,7 @@
 
 // #define DEBUG_MOV
 // #define DEBUG_MOV_MOVA
-// #define DEBUG_BRANCH
+// // #define DEBUG_BRANCH
 // #define DEBUG_BRANCH_JSR
 // #define DEBUG_ARITH
 // #define DEBUG_ARITH_CMP
