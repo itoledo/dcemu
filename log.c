@@ -18,7 +18,9 @@ void logmsg (char * fmt, ...)
 	va_end (args);
  
 	fprintf(logfp, "%8lx: %s", PC, buf);
+#ifdef LOG_FFLUSH
 	fflush(logfp);
+#endif
 #endif
 }
 
@@ -43,7 +45,9 @@ void logxmsg (int tipo, char * fmt, ...)
 	}
   
 	fprintf(fp, "%8lx: %s", PC, buf);
+#ifdef LOG_FFLUSH
 	fflush(fp);
+#endif
 #endif
 }
 

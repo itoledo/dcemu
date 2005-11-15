@@ -11,7 +11,7 @@ LIBS =  -L"lib" -mwindows -Llib/win32 -lstdc++ -lmingw32 -lopengl32 -lglu32 -lSD
 INCS =  -I"include" 
 CXXINCS =  -I"include/c++/3.3.1/mingw32"  -I"include/c++/3.3.1"  -I"lib/gcc/mingw32/3.4.2/include"  -I"include/c++/3.4.2/backward"  -I"include/c++/3.4.2/mingw32"  -I"include/c++/3.4.2"  -I"include" 
 BIN  = dcemu.exe
-CXXFLAGS = $(CXXINCS)   -fexceptions -fexpensive-optimizations -O2
+CXXFLAGS = $(CXXINCS) -Wall   -fexceptions -fexpensive-optimizations -O2
 CFLAGS = $(INCS) -Wall -Iinclude   -fexceptions -fexpensive-optimizations -O2
 RM = rm -f
 

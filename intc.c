@@ -1,6 +1,8 @@
 #include "main.h"
 #include "intc.h"
 
+// #define INT_QUEUE
+
 #define SR_GET_IMASK() ((SR >> 4) & 0xF)
 
 bool inside_int = false;
@@ -110,6 +112,7 @@ bool intc(DWORD irq)
 	return true;
 }
 
+#ifdef INT_QUEUE
 typedef struct pending_ints_str PENDING_INT;
 
 struct pending_ints_str
@@ -122,9 +125,11 @@ struct pending_ints_str
 PENDING_INT * last_int;
 PENDING_INT * int_list;
 int interrupt_queue = 0;
+#endif
 
 void intc_add(DWORD inttoadd, int cnt)
 {
+#ifdef INT_QUEUE
 	PENDING_INT * tmp;
 
 	if (intc_queuemask & inttoadd)
@@ -148,8 +153,19 @@ void intc_add(DWORD inttoadd, int cnt)
 	SET_BIT(ASIC_ACK_A, inttoadd);
 	intc_queuemask |= inttoadd;
 	logxmsg(LOG_INTC, "añadiendo int %x, total %x, count %d\n", inttoadd, intc_queuemask, interrupt_queue);
+#else
+	if (intc_queuemask & inttoadd)
+	{
+     	logxmsg(LOG_INTC, "descartando int %x\n", inttoadd);
+		return; // descartamos si ya existe una
+	}
+	SET_BIT(ASIC_ACK_A, inttoadd);
+	intc_queuemask |= inttoadd;
+	logxmsg(LOG_INTC, "añadiendo int %x, total %x\n", inttoadd, intc_queuemask);
+#endif
 }
 
+#ifdef INT_QUEUE
 void intc_delete(PENDING_INT * int2del)
 {
     PENDING_INT * tmp, * tmp_next;
@@ -177,6 +193,7 @@ void intc_delete(PENDING_INT * int2del)
 		}
 	}
 }
+#endif
 
 bool intc_check(DWORD intcheck)
 {
@@ -202,6 +219,7 @@ bool intc_check(DWORD intcheck)
 
 void check_ints()
 {
+#ifdef INT_QUEUE
 //    char * s;
 	PENDING_INT * pint, * pint_next;
     
@@ -406,5 +424,30 @@ void check_ints()
 		}
 		return;
 	} */
+#else
+	if (intc_queuemask == 0)
+ 		return;
+
+ 	if (intc_queuemask & ASIC_IRQ9_A
+ 	&&  intc(EXC_IRQ9))
+ 	{
+		REMOVE_BIT(intc_queuemask, ASIC_IRQ9_A);
+      	return;
+	}
+
+ 	if (intc_queuemask & ASIC_IRQB_A
+ 	&&  intc(EXC_IRQB))
+ 	{
+		REMOVE_BIT(intc_queuemask, ASIC_IRQB_A);
+      	return;
+	}
+
+ 	if (intc_queuemask & ASIC_IRQD_A
+ 	&&  intc(EXC_IRQD))
+ 	{
+		REMOVE_BIT(intc_queuemask, ASIC_IRQD_A);
+      	return;
+	}
+#endif
 }
 

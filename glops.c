@@ -15,7 +15,7 @@ typedef struct pntr pntr;
 
 list gop_list;
 
-#define DEBUG_GLOP
+// #define DEBUG_GLOP
 
 char * enable(GLenum bit)
 {

@@ -105,7 +105,8 @@ void RedibujarPantalla()
 
 Uint32 VBlankCallback(Uint32 interval, void * param)
 {
-//	logmsg("VBlankCallback: %d\n", pvr_scanline);
+	logmsg("VBlankCallback: %d\n", pvr_scanline);
+	
 	pvr_scanline++;
 
 	if (pvr_scanline == pvr_spg_vblank_int_out)
@@ -257,10 +258,12 @@ void main_loop(void)
    	
 			instrucciones++;
 
-			if (cnt % (500000 / 0x1FF) == 0)
+//			if (cnt % (500000 / 0x1FF) == 0)
+			if (++cnt == 978) // 978)
 			{
 				pvr_scanline++;
-				
+   				cnt = 0;
+   				
 				if (pvr_scanline == pvr_spg_vblank_int_out)
 				{
         			logxmsg(LOG_PVR, "llamando SCANINT1\n");
@@ -272,16 +275,17 @@ void main_loop(void)
         			logxmsg(LOG_PVR, "llamando SCANINT2\n");
     				intc_add(ASIC_EVT_PVR_SCANINT2, 0);
 				}
+
+//				if ((++cnt) == 500000)
+				if (pvr_scanline >= pvr_spg_load_vcount) // valor máximo que puede tomar
+				{
+	   				pvr_scanline = 0;
+//	   				cnt = 0;
+					fps++;
+					break; // salimos de este ciclo y vamos al siguiente
+				}
 			}
 
-			if ((++cnt) == 500000)
-			{
-   				cnt = 0;
-   				pvr_scanline = 0;
-				fps++;
-				break; // salimos de este ciclo y vamos al siguiente
-
-			}
 		}
 
 /*		if (pvr_3dscene)
@@ -323,8 +327,6 @@ void main_loop(void)
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 //		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
-
-		
 
 		while (SDL_PollEvent(&event))
 		{
@@ -816,6 +818,8 @@ int main(int argc, char *argv[])
 
 	// determinemos qué vamos a cargar
 	char * ejecutable = argv[1] ? argv[1] : "1st_read.bin";
+	
+	fprintf(stderr, "usando %s como parametro.\n", ejecutable);
 
 	if (strncmp(&ejecutable[strlen(ejecutable) - 4], ".bin", 4) == 0)
 	{
@@ -856,8 +860,13 @@ int main(int argc, char *argv[])
 		
 		if (cargar_archivo_iso("ip.bin", false, get_memory_pointer(mem_base + ip_offset)) <= 0)
 		{
-			fprintf(stderr, "No se pudo abrir ip.bin.\n");
-			return 1;
+			fprintf(stderr, "No se pudo abrir ip.bin. Cargando desde el bootstrap.\n");
+
+			if (cargar_ip_bin(get_memory_pointer(mem_base + ip_offset)) <= 0)
+			{
+				fprintf(stderr, "No se pudo cargar ip.bin desde bootstrap.\n");
+				return 1;
+			}
 		}
 
 		// busquemos el ejecutable

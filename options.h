@@ -16,7 +16,8 @@
 #define BIOS_HACKS		// para tratar de correr la bios
 #define USE_BIOS_FONT
 // #define PRINT_ASM
-// #define LOGGING
+#define LOGGING
+// #define LOG_FFLUSH
 #define MACRO_REPLACEMENTS // ???
 // #define NI
 // #define JOYSTICK
