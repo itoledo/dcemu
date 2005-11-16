@@ -17,10 +17,10 @@
 // #include <gl\glaux.h>								// Header File For The GLaux Library
 #endif
 
-#if defined(__GNUC__) 
+#if defined(POSX) 
 #include <GL/gl.h>								// Header File For The OpenGL32 Library
 #include <GL/glu.h>								// Header File For The GLu32 Library
-// #include "lnxdefs.h"
+#include "lnxdefs.h"
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>

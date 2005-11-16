@@ -3,9 +3,9 @@
 
 #include <stdio.h>
 
-#if defined(__GNUC__)
+#if defined(POSX)
 #include <stdarg.h>
-// #include "lnxdefs.h"
+#include "lnxdefs.h"
 #endif
 
 #define LOG_MEM			1
