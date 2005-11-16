@@ -49,7 +49,7 @@ struct st_cmd
 //	opcode_log_f *	logfunc;
 	opcode_f *		funcion;
 	const long		restriccion;
-	DWORD	llamadas;
+	unsigned long	llamadas;
 };
 
 extern struct st_cmd opcodes[];

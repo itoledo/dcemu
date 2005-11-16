@@ -104,7 +104,7 @@ OPCODE(stsl219) // STS.L FPSCR, @-Rn : Rn - 4 -> Rn, FPSCR -> (Rn) (0100nnnn 011
 
 	R(n) -= 4;
 	
-	WriteMemoryL(R(n), (DWORD *) &FPSCR);
+	WriteMemoryL(R(n),&FPSCR);
 
 	PC += 2;
 
@@ -119,7 +119,7 @@ OPCODE(stsl220) // STS.L FPUL, @-Rn (0100nnnn 01010010)
 
 	R(n) -= 4;
 
-	WriteMemoryL(R(n), (DWORD *) &FPUL);
+	WriteMemoryL(R(n), &FPUL);
 
 	PC += 2;
 

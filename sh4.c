@@ -9,12 +9,16 @@
 #include "floatsimple.h"
 
 extern FILE * logfp, * serialfp, * memfp;
-extern BYTE * memoria;
+extern unsigned char * memoria;
 
 // unsigned char *str_PC;
 
 DWORD registers[24];
+#ifdef NRA
+fp_unit float_registers;
+#else
 float float_registers[32];
+#endif
 DWORD SR = 0x700000F0; // Status Register
 DWORD SSR = 0; // Saved Status Register
 DWORD SPC = 0; // Saved Program Counter
@@ -399,6 +403,16 @@ void PC_f_nextpc(void)
 }
 #endif
 
+#ifdef NRA
+void swap_floatregisters(void)
+{
+    float tempr[16];
+
+	memcpy(&tempr[0], &float_registers.xmtrx[16], sizeof(float)*16);
+	memcpy(&float_registers.xmtrx[16], &float_registers.xmtrx[0], sizeof(float)*16);
+	memcpy(&float_registers.xmtrx[0], &tempr[0], sizeof(float)*16);
+}
+#else
 void swap_floatregisters(void)
 {
     float tempr[16];
@@ -407,6 +421,7 @@ void swap_floatregisters(void)
 	memcpy(&float_registers[16], &float_registers[0], sizeof(float)*16);
 	memcpy(&float_registers[0], &tempr[0], sizeof(float)*16);
 }
+#endif
 
 void swap_registers(void)
 {

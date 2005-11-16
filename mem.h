@@ -14,8 +14,8 @@
 extern BYTE * mem_zone[0x100]; // para las zonas de memoria
 #define get_memory_pointer(addr) (&mem_zone[(addr) >> 24][(addr) & 0xFFFFFF])
 
-typedef void mem_access_read_t (unsigned long direccion, void * p, size_t size);
-typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size);
+typedef void mem_access_read_t (DWORD direccion, void * p, size_t size);
+typedef void mem_access_write_t (DWORD direccion, void * p, size_t size);
 extern mem_access_read_t * mem_hash_read[0x100];
 extern mem_access_write_t * mem_hash_write[0x100];
 
@@ -26,8 +26,8 @@ DWORD float_to_dword(float x);
 void dump_registers();
 
 #ifdef MEMORY_FUNCTIONS
-void memread(unsigned long direccion, void * target, size_t size);
-void memwrite(unsigned long direccion, void * source, size_t size);
+void memread(DWORD direccion, void * target, size_t size);
+void memwrite(DWORD direccion, void * source, size_t size);
 #else
 #define memread(direccion, target, size)    (*mem_hash_read[(direccion) >> 24]) ((direccion), (target), (size))
 #define memwrite(direccion, source, size)   (*mem_hash_write[(direccion) >> 24]) ((direccion), (source), (size))
@@ -43,14 +43,14 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 #define WriteMemoryW(a,b) memwrite(a, b, sizeof(WORD))
 #define WriteMemoryL(a,b) memwrite(a, b, sizeof(DWORD))
 #else
-extern void ReadMemoryF(unsigned long direccion, float * valor);
-extern void ReadMemoryB(unsigned long direccion, BYTE * valor);
-extern void ReadMemoryL(unsigned long direccion, DWORD * valor);
-extern void ReadMemoryW(unsigned long direccion, WORD * valor);
-extern void WriteMemoryW(unsigned long direccion, WORD * valor);
-extern void WriteMemoryL(unsigned long direccion, DWORD * valor);
-extern void WriteMemoryB(unsigned long direccion, BYTE * valor);
-extern void WriteMemoryF(unsigned long direccion, float * valor);
+extern void ReadMemoryF(DWORD direccion, float * valor);
+extern void ReadMemoryB(DWORD direccion, BYTE * valor);
+extern void ReadMemoryL(DWORD direccion, DWORD * valor);
+extern void ReadMemoryW(DWORD direccion, WORD * valor);
+extern void WriteMemoryW(DWORD direccion, WORD * valor);
+extern void WriteMemoryL(DWORD direccion, DWORD * valor);
+extern void WriteMemoryB(DWORD direccion, BYTE * valor);
+extern void WriteMemoryF(DWORD direccion, float * valor);
 #endif // MEMORY_MACROS
 
 

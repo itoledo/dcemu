@@ -148,7 +148,43 @@ OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 
 	PC += 2;
 }
+#ifdef NRA
+OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
+{
+	short n = (arg >> 10) & 0x3;
+	float v1, v2, v3, v4;
 
+/* matriz:
+	XF0		XF4		XF8		XF12
+	XF1		XF5		XF9		XF13
+	XF2		XF6		XF10	XF14
+	XF3		XF7		XF11	XF15 */
+
+	v1	=	float_registers.xmtrx[XF_index(0)] * FR(4*n+0) +
+				float_registers.xmtrx[XF_index(4)] * FR(4*n+1) +
+				float_registers.xmtrx[XF_index(8)] * FR(4*n+2) +
+				float_registers.xmtrx[XF_index(12)] * FR(4*n+3);
+	v2 =	float_registers.xmtrx[XF_index(1)] * FR(4*n+0) +
+				float_registers.xmtrx[XF_index(5)] * FR(4*n+1) +
+				float_registers.xmtrx[XF_index(9)] * FR(4*n+2) +
+				float_registers.xmtrx[XF_index(13)] * FR(4*n+3);
+	v3 =	float_registers.xmtrx[XF_index(2)] * FR(4*n+0) +
+				float_registers.xmtrx[XF_index(6)] * FR(4*n+1) +
+				float_registers.xmtrx[XF_index(10)] * FR(4*n+2) +
+				float_registers.xmtrx[XF_index(14)] * FR(4*n+3);
+	v4 =	float_registers.xmtrx[XF_index(3)] * FR(4*n+0) +
+				float_registers.xmtrx[XF_index(7)] * FR(4*n+1) +
+				float_registers.xmtrx[XF_index(11)] * FR(4*n+2) +
+				float_registers.xmtrx[XF_index(15)] * FR(4*n+3);
+
+	FR(4*n+0) = v1;
+	FR(4*n+1) = v2;
+	FR(4*n+2) = v3;
+	FR(4*n+3) = v4;
+
+	PC += 2;
+}
+#else
 OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
 {
 	short n = (arg >> 10) & 0x3;
@@ -184,7 +220,7 @@ OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
 
 	PC += 2;
 }
-
+#endif
 OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 {
    	short n = (arg >> 8) & 0x0F;

@@ -3,7 +3,7 @@
 
 
 typedef unsigned short WORD;
-typedef unsigned int DWORD;
+typedef unsigned long DWORD;
 typedef unsigned char BYTE; 
 typedef unsigned int INT32; 
 

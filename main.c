@@ -65,7 +65,7 @@ SDL_Color color_blanco = { 0xff, 0xff, 0xff, 0x00 };
 SDL_Color color_negro = {0x00, 0x00, 0x00, 0 };
 #endif
 time_t start_time;
-DWORD instrucciones = 0;
+unsigned long instrucciones = 0;
 bool logging = true;
 int filelogging = 0;
 bool logmem = false;
@@ -355,7 +355,7 @@ void inicializar_fonts()
 
 void closeALL()
 {
-	fprintf(logfp, "PC:%x VBR:%x spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
+	fprintf(logfp, "PC:%lx VBR:%lx spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
 
 	SDL_Quit( );
 

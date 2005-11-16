@@ -3,7 +3,7 @@
 
 #if defined (WIN32)
 #include <windows.h>
-#elif (POSX)
+#elif (__GNUC__)
 #include <string.h>
 #endif
 #include "log.h"
@@ -24,8 +24,22 @@ void ejecutar_instruccion(WORD instr);
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
 
+#ifdef NRA
+typedef union fp_unit fp_unit;
+
+union fp_unit
+{
+	float xmtrx [32];
+	DWORD dr [32];
+	float vector [8] [4];
+};
+
 // CPU Registers
+extern fp_unit float_registers;
+#else
 extern float float_registers[32];
+#endif
+
 extern DWORD registers[];
 extern DWORD SR; 	// Status Register
 extern DWORD SSR; 	// Saved Status Register
@@ -170,7 +184,18 @@ extern DWORD NEXTPC;
 #define XD(n) (XF((n)*2))
 #define XD_index(n) (XF_index((n)*2))
 */
-
+#ifdef NRA
+#define	R(n)		(registers[n])
+#define R_BANK(n)	(registers[n+16])
+#define FR(n)		(float_registers.xmtrx[n])
+#define FR_index(n)	(n)
+#define DR(n)		(float_registers.xmtrx[(n)*2])
+#define DR_index(z) (	FR_index((z)*2))
+#define XF(n)		(float_registers.xmtrx[n+16])
+#define XF_index(n)	((n)+16)
+#define XD(n)		(XF((n)*2))
+#define XD_index(n)	(XF_index((n)*2))
+#else
 #define	R(n)		(registers[n])
 #define R_BANK(n)	(registers[n+16])
 #define FR(n)		(float_registers[n])
@@ -181,6 +206,7 @@ extern DWORD NEXTPC;
 #define XF_index(n)	((n)+16)
 #define XD(n)		(XF((n)*2))
 #define XD_index(n)	(XF_index((n)*2))
+#endif
 
 // FPSCR
 #define FPSCR_PR        (1<<19)

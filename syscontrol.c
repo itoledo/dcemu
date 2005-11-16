@@ -253,7 +253,7 @@ OPCODE(ldsl133) // LDS.L @Rm+, MACH (0100mmmm 00000110)
 {
 	short m = (arg >> 8) & 0x0F;
 
-	ReadMemoryL(R(m), (DWORD *) &MACH);
+	ReadMemoryL(R(m),&MACH);
 
 	R(m) += 4;
 
@@ -268,7 +268,7 @@ OPCODE(ldsl134) // LDS.L @Rm+, MACL (0100mmmm 00010110)
 {
 	short m = (arg >> 8) & 0x0F;
 
-	ReadMemoryL(R(m), (DWORD *) &MACL);
+	ReadMemoryL(R(m),&MACL);
 
 	R(m) += 4;
 
@@ -283,7 +283,7 @@ OPCODE(ldsl135) // LDS.L @Rm+, PR : (Rm) -> PR, Rm + 4 -> Rm (0100mmmm 00100110)
 {
 	short m = (arg >> 8) & 0x0F;
 
-	ReadMemoryL(R(m), (DWORD *) &PR);
+	ReadMemoryL(R(m),&PR);
 
 	R(m) += 4;
 
@@ -516,7 +516,7 @@ OPCODE(stcl160) // STC.L SGR, @-Rn (0100nnnn 00110010)
 	
 	R(n) -= 4;
 	
-	WriteMemoryL(R(n), (DWORD *) &SGR);
+	WriteMemoryL(R(n), &SGR);
 
 	PC += 2;
 }
@@ -527,7 +527,7 @@ OPCODE(stcl161) // STC.L DBR, @-Rn (0100nnnn 11110010)
 	
 	R(n) -= 4;
 	
-	WriteMemoryL(R(n), (DWORD *) &DBR);
+	WriteMemoryL(R(n),&DBR);
 
 	PC += 2;
 }
@@ -539,7 +539,7 @@ OPCODE(stcl162) // STC.L Rm_BANK, @-Rn (0100nnnn 1mmm0011)
 	
 	R(n) -= 4;
 	
-	WriteMemoryL(R(n), (DWORD *) &R_BANK(m));
+	WriteMemoryL(R(n),&R_BANK(m));
 	
 	PC += 2;
 

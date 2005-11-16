@@ -7,12 +7,12 @@ WINDRES = windres.exe
 RES  = ./obj/dcemu_private.res
 OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o $(RES)
 LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4.o ./obj/debug.o ./obj/iso.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o $(RES)
-LIBS =  -L"lib" -mwindows -Llib/win32 -lstdc++ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lguichan_opengl -lguichan_sdl -lguichan -lwinmm -mwindows  
-INCS =  -I"include" 
-CXXINCS =  -I"include/c++/3.3.1/mingw32"  -I"include/c++/3.3.1"  -I"lib/gcc/mingw32/3.4.2/include"  -I"include/c++/3.4.2/backward"  -I"include/c++/3.4.2/mingw32"  -I"include/c++/3.4.2"  -I"include" 
+LIBS =  -L"E:/Dev-Cpp/lib" -mwindows -Llib/win32 -lstdc++ -lmingw32 -lopengl32 -lglu32 -lSDLmain -lSDL -lSDL_image -liso9660 -lcdio -lguichan_opengl -lguichan_sdl -lguichan -lwinmm -mwindows  
+INCS =  -I"E:/Dev-Cpp/include"  -I"E:/Dev-Cpp/include/SDL" 
+CXXINCS =  -I"E:/Dev-Cpp/lib/gcc/mingw32/3.4.2/include"  -I"E:/Dev-Cpp/include/c++/3.4.2/backward"  -I"E:/Dev-Cpp/include/c++/3.4.2/mingw32"  -I"E:/Dev-Cpp/include/c++/3.4.2"  -I"E:/Dev-Cpp/include"  -I"E:/Dev-Cpp/include/SDL" 
 BIN  = dcemu.exe
-CXXFLAGS = $(CXXINCS)   -fexceptions -fexpensive-optimizations -O2
-CFLAGS = $(INCS) -Wall -Iinclude   -fexceptions -fexpensive-optimizations -O2
+CXXFLAGS = $(CXXINCS)   -fexceptions -O2
+CFLAGS = $(INCS) -Wall -Iinclude   -fexceptions -O2
 RM = rm -f
 
 .PHONY: all all-before all-after clean clean-custom

@@ -147,7 +147,7 @@ void dump_registers()
 
 	for (i = 0; i < 24; i++)
 	{
-		sprintf(buf, "r%d=%x ", i, registers[i]);
+		sprintf(buf, "r%d=%lx ", i, registers[i]);
 		strcat(buf2, buf);
 	}
 	
@@ -155,17 +155,22 @@ void dump_registers()
 
 	for (i = 0; i < 32; i++)
 	{
-		sprintf(buf, "FR%d=%x ", i, float_to_dword(float_registers[i]));
+		#ifdef NRA
+		sprintf(buf, "FR%d=%x ", i, float_to_dword(float_registers.xmtrx[i]));
 		strcat(buf2, buf);
+		#else
+		sprintf(buf, "FR%d=%x ", i, float_to_dword(float_registers[i]));
+		strcat(buf2, buf);		
+		#endif
 	}
     strcat(buf2, "\r\n");
-	sprintf(buf, "T=%d, FPUL=%x,%f MACL=%x,%ld MACH=%x,%ld\r\n", IS_SR_T() ? 1 : 0,
+	sprintf(buf, "T=%d, FPUL=%lx,%f MACL=%lx,%ld MACH=%lx,%ld\r\n", IS_SR_T() ? 1 : 0,
  		(DWORD) FPUL, (float) FPUL,
  		(DWORD) MACL, (signed long) MACL,
 		(DWORD) MACH, (signed long) MACH);
 	strcat(buf2, buf);
 	
-	sprintf(buf, "SR=%08x MD:%d RB:%d\n", SR, IS_SET(SR,SR_MD) ? 1 : 0, IS_SET(SR,SR_RB) ? 1 : 0);
+	sprintf(buf, "SR=%08lx MD:%d RB:%d\n", SR, IS_SET(SR,SR_MD) ? 1 : 0, IS_SET(SR,SR_RB) ? 1 : 0);
 	strcat(buf2, buf);
 	
 	logmsg(buf2);
@@ -355,13 +360,13 @@ void mem_hash_setup(void)
  	mem_hash_write[0xFF] = regmap_write;
 }
 
-void mem_read_error(unsigned long direccion, void * p, size_t size)
+void mem_read_error(DWORD direccion, void * p, size_t size)
 {
 	logxmsg(LOG_MEM, "mem_read_error: dir %x, tamaño %d\r\n", direccion, size);
 //	dump_registers();
 }
 
-void mem_write_error(unsigned long direccion, void * p, size_t size)
+void mem_write_error(DWORD direccion, void * p, size_t size)
 {
 	switch(size)
 	{
@@ -373,7 +378,7 @@ void mem_write_error(unsigned long direccion, void * p, size_t size)
 //	dump_registers();
 }
 
-void sq_write(unsigned long direccion, void * p, size_t size)
+void sq_write(DWORD direccion, void * p, size_t size)
 {
     short pos;
 
@@ -400,7 +405,7 @@ void sq_write(unsigned long direccion, void * p, size_t size)
     }
 }
 
-void video_read(unsigned long direccion, void * p, size_t size)
+void video_read(DWORD direccion, void * p, size_t size)
 {
 //	long addr = direccion & 0x0FFFFFFF;
 	long addr = direccion & 0x00FFFFFF;
@@ -437,7 +442,7 @@ void video_read(unsigned long direccion, void * p, size_t size)
 		ReadPixelN(direccion - video_base, p, size); */
 }
 
-void pvr_read(unsigned long direccion, void * p, size_t size)
+void pvr_read(DWORD direccion, void * p, size_t size)
 {
 	DWORD dw;
 	switch(direccion)
@@ -634,7 +639,7 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 	}
 }
 
-void bios_read(unsigned long direccion, void * p, size_t size)
+void bios_read(DWORD direccion, void * p, size_t size)
 {
 //	memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
 	if ((direccion & 0x00FF0000) == 0x005F0000)
@@ -646,12 +651,12 @@ void bios_read(unsigned long direccion, void * p, size_t size)
 		memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
 }
 
-/* void bios_write(unsigned long direccion, void * p, size_t size)
+/* void bios_write(DWORD direccion, void * p, size_t size)
 {
 	memcpy(&bios_mem[direccion % 0x20000000], p, size);
 } */
 
-void ta_write(unsigned long direccion, void * p, size_t size)
+void ta_write(DWORD direccion, void * p, size_t size)
 {
 	if (direccion >= 0x10000000 + TA_SIZE)
 	{
@@ -661,7 +666,7 @@ void ta_write(unsigned long direccion, void * p, size_t size)
 		memcpy(&ta_mem[direccion - 0x10000000], p, size);
 }
 
-void pvr_write(unsigned long direccion, void * p, size_t size)
+void pvr_write(DWORD direccion, void * p, size_t size)
 {
 	DWORD dw;
 	bool last;
@@ -1283,7 +1288,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 	}
 }
 
-void video_write(unsigned long direccion, void * p, size_t size)
+void video_write(DWORD direccion, void * p, size_t size)
 { 
 //	memcpy(&video_mem[direccion - video_base], p, size);
 //	PutPixelN(direccion - video_base, p, size);
@@ -1340,7 +1345,7 @@ void video_write(unsigned long direccion, void * p, size_t size)
 /*	} */
 }
 
-void regmap_read(unsigned long direccion, void * p, size_t size)
+void regmap_read(DWORD direccion, void * p, size_t size)
 {
 	memcpy(p, &regmem[direccion & 0x00FFFFFF], size);
 
@@ -1385,7 +1390,7 @@ void regmap_read(unsigned long direccion, void * p, size_t size)
 #endif
 }
 
-void regmap_write(unsigned long direccion, void * p, size_t size)
+void regmap_write(DWORD direccion, void * p, size_t size)
 {
 //	SDL_mutexP(regmap_mutex);
 	memcpy(&regmem[direccion & 0x00FFFFFF], p, size);
@@ -1503,7 +1508,7 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 #endif
 }
 
-void ram_read(unsigned long direccion, void * p, size_t size)
+void ram_read(DWORD direccion, void * p, size_t size)
 {
 //logmsg( "ram_read: dir %8x, size %x\r\n", direccion, (int) size);
 //memcpy(p, &memoria[(direccion & 0x1FFFFFFF)], size);
@@ -1524,15 +1529,15 @@ void ram_read(unsigned long direccion, void * p, size_t size)
     }
 }
 
-void ignore_read(unsigned long direccion, void * p, size_t size)
+void ignore_read(DWORD direccion, void * p, size_t size)
 {
 }
 
-void ignore_write(unsigned long direccion, void * p, size_t size)
+void ignore_write(DWORD direccion, void * p, size_t size)
 {
 }
 
-void ram_write(unsigned long direccion, void * p, size_t size)
+void ram_write(DWORD direccion, void * p, size_t size)
 {
 //logmsg( "ram_write: dir %8x, size %x\r\n", direccion, (int) size);
 //memcpy(&memoria[(direccion % 0x20000000)], p, size);
@@ -1555,7 +1560,7 @@ void ram_write(unsigned long direccion, void * p, size_t size)
 }
 
 #ifdef MEMORY_FUNCTIONS
-void memread(unsigned long direccion, void * target, size_t size)
+void memread(DWORD direccion, void * target, size_t size)
 {
 #ifdef DEBUG_MEM_HASH
 	if (mem_hash_read[direccion >> 24] == NULL) 
@@ -1586,7 +1591,7 @@ void memread(unsigned long direccion, void * target, size_t size)
 #endif
 }
 
-void memwrite(unsigned long direccion, void * source, size_t size)
+void memwrite(DWORD direccion, void * source, size_t size)
 {
 #ifdef DEBUG_MEM_HASH
 	if (mem_hash_write[direccion >> 24] == NULL) 
@@ -1618,9 +1623,9 @@ void memwrite(unsigned long direccion, void * source, size_t size)
 #endif // MEMORY_FUNCTIONS
 
 #ifndef MEMORY_MACROS
-void ReadMemoryF(unsigned long direccion, float * valor)
+void ReadMemoryF(DWORD direccion, float * valor)
 {
-/*	unsigned long realdir = direccion % 0x20000000;
+/*	DWORD realdir = direccion % 0x20000000;
 
 	memid(direccion);
 
@@ -1649,9 +1654,9 @@ void ReadMemoryF(unsigned long direccion, float * valor)
 	memread(direccion, valor, sizeof(DWORD));
 }
 
-void ReadMemoryB(unsigned long direccion, BYTE * valor)
+void ReadMemoryB(DWORD direccion, BYTE * valor)
 {
-/*	unsigned long realdir = direccion % 0x20000000;
+/*	DWORD realdir = direccion % 0x20000000;
 
 	BYTE * addr = (BYTE *) memid(direccion);
 
@@ -1673,9 +1678,9 @@ void ReadMemoryB(unsigned long direccion, BYTE * valor)
 	memread(direccion, valor, sizeof(BYTE));
 }
 
-void ReadMemoryL(unsigned long direccion, DWORD * valor)
+void ReadMemoryL(DWORD direccion, DWORD * valor)
 {
-/*	unsigned long realdir = direccion % 0x20000000;
+/*	DWORD realdir = direccion % 0x20000000;
 
 	DWORD * addr = (DWORD *) memid(direccion);
 
@@ -1698,9 +1703,9 @@ void ReadMemoryL(unsigned long direccion, DWORD * valor)
 	memread(direccion, valor, sizeof(DWORD));
 }
 
-void ReadMemoryW(unsigned long direccion, WORD * valor)
+void ReadMemoryW(DWORD direccion, WORD * valor)
 {
-/*	unsigned long realdir = direccion % 0x20000000;
+/*	DWORD realdir = direccion % 0x20000000;
 
 	WORD * addr = (WORD *) memid(direccion);
 
@@ -1723,11 +1728,11 @@ void ReadMemoryW(unsigned long direccion, WORD * valor)
 	memread(direccion, valor, sizeof(WORD));
 }
 
-void WriteMemoryW(unsigned long direccion, WORD * valor)
+void WriteMemoryW(DWORD direccion, WORD * valor)
 {
 /*	WORD * addr = (WORD *) memid(direccion);
 
-	unsigned long realdir = direccion % 0x20000000;
+	DWORD realdir = direccion % 0x20000000;
 
 #ifdef DEBUG_MEM_WRITE
 	logmsg( "WORD %04x -> %08x\r\n", valor, direccion);
@@ -1750,11 +1755,11 @@ void WriteMemoryW(unsigned long direccion, WORD * valor)
 	memwrite(direccion, valor, sizeof(WORD));
 }
 
-void WriteMemoryL(unsigned long direccion, DWORD * valor)
+void WriteMemoryL(DWORD direccion, DWORD * valor)
 {
 /*	DWORD * addr = (DWORD *) memid(direccion);
 
-	unsigned long realdir = direccion % 0x20000000;
+	DWORD realdir = direccion % 0x20000000;
 
 #ifdef DEBUG_MEM_WRITE
 	logmsg( "DWORD %08x -> %08x\r\n", valor, direccion);
@@ -1775,11 +1780,11 @@ void WriteMemoryL(unsigned long direccion, DWORD * valor)
 	memwrite(direccion, valor, sizeof(DWORD));
 }
 
-void WriteMemoryB(unsigned long direccion, BYTE * valor)
+void WriteMemoryB(DWORD direccion, BYTE * valor)
 {
 /*	BYTE * addr = (BYTE *) memid(direccion);
 
-	unsigned long realdir = direccion % 0x20000000;
+	DWORD realdir = direccion % 0x20000000;
 
 #ifdef DEBUG_MEM_WRITE
 	logmsg( "BYTE %x -> %08x\r\n", valor, direccion);
@@ -1800,7 +1805,7 @@ void WriteMemoryB(unsigned long direccion, BYTE * valor)
 	memwrite(direccion, valor, sizeof(BYTE));
 }
 
-void WriteMemoryF(unsigned long direccion, float * valor)
+void WriteMemoryF(DWORD direccion, float * valor)
 {
 /*	memid(direccion);
 

@@ -10,6 +10,8 @@
 #define APPTITLE 	"DCEMU - DreamCast Emulator for " PLATFORM " - " __DATE__
 #define OPENGL
 
+#define NRA // new Register Acess Mode
+
 // Usar funcciones o macros para accesar la memoria
 #define MEMORY_MACROS
 
@@ -24,14 +26,14 @@
 
 // #define DEBUG_MOV
 // #define DEBUG_MOV_MOVA
-// // #define DEBUG_BRANCH
+// #define DEBUG_BRANCH
 // #define DEBUG_BRANCH_JSR
 // #define DEBUG_ARITH
 // #define DEBUG_ARITH_CMP
 // #define DEBUG_ARITH_DMUL
 // #define DEBUG_SHIFT
-// #define DEBUG_FLOAT_SIMPLE
-// #define DEBUG_FLOAT_GRAPH
+//  #define DEBUG_FLOAT_SIMPLE
+//  #define DEBUG_FLOAT_GRAPH
 // #define DEBUG_SYSCONTROL
 // #define DEBUG_SYSCONTROL_STS
 // #define DEBUG_FLOAT_CONTROL

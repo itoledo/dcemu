@@ -10,7 +10,26 @@ void print_double(double l)
 
 	logmsg("print_double: %08x%08x\r\n", *(x+1), *x);
 }
+#ifdef NRA
+void extract_double(double * dest, short idx)
+{
+	// damos vuelta los bytes
+	DWORD * d = (DWORD *) dest;
 
+	*(d++) = float_registers.dr[idx+1];
+
+	*d = float_registers.dr[idx];
+}
+
+void put_double(short idx, double * src)
+{
+	DWORD * d = (DWORD *) src;
+	
+	float_registers.dr[idx+1] =  *(d++);
+	
+	float_registers.dr[idx] =  *d;
+}
+#else
 void extract_double(double * dest, short idx)
 {
 	// damos vuelta los bytes
@@ -34,6 +53,7 @@ void put_double(short idx, double * src)
 
 	memcpy(&float_registers[idx], &b[0], sizeof(DWORD)*2);
 }
+#endif
 
 OPCODE(fldi0170) // FLDI0 FRn (1111nnnn 10001101)
 {
@@ -561,7 +581,7 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 {
 	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 5) & 0x07;
-	double x, y;
+	double x, y,i,bx,by;
 
 //	memcpy(&x, &DR(m), sizeof(double));
 /*	memcpy(&x, &float_registers[DR_index(m)], sizeof(double)); */
@@ -569,6 +589,8 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 	extract_double(&x, DR_index(m));
 	extract_double(&y, DR_index(n));
 //	memcpy(&y, &DR(n), sizeof(double));
+
+	i = y;	
 
 //	logmsg("fadd201: DR%d,%d, DR%d,%d\r\n", m, DR_index(m), n, DR_index(n));
 
@@ -599,7 +621,7 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
-	logmsg("fadd201: DR%d, DR%d total=%f\r\n", m, n, y);
+		logmsg("fadd201: DR%d, DR%d total=%f Input X - %f , Y - %f.Before X - %f, Y - %f \r\n", m, n, y,x,i,bx,by);
 	dump_registers();
 #endif
 }
