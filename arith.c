@@ -4,7 +4,7 @@
 
 *****************************************************************************/
 
-#include "sh4.h"
+#include "sh4emu.h"
 
 OPCODE(add39) // ADD Rm, Rn : Rn + Rm -> Rn (0011nnnn mmmm1100)
 {
@@ -60,12 +60,12 @@ OPCODE(addc41) // ADDC Rm, Rn (0011nnnn mmmm1110)
 	R(n) = tmp1 + (IS_SR_T() ? 1 : 0);
 	
 	if (tmp0 > tmp1)
-		SET_BIT(SR, SR_T);
+		SET_T
 	else
-		REMOVE_BIT(SR, SR_T);
+		UNSET_T
 
 	if (tmp1 > R(n))
-		SET_BIT(SR, SR_T);
+		SET_T
 
 	PC += 2;
 
@@ -92,10 +92,19 @@ OPCODE(cmpeq43) // CMP/EQ #imm, R0 (10001000 iiiiiiii)
 
 	if (r0 == i) */
 	if (R(0) == i)
+	{
 		SET_T
+		#ifdef _fast_interpreter_
+		in_loop = 0;
+		#endif
+	}
 	else
-		UNSET_T
-
+		{
+			UNSET_T
+			#ifdef _fast_interpreter_
+			type = CMP_LOOP;
+			#endif
+		}
 	PC += 2;
 
 }
@@ -279,7 +288,7 @@ OPCODE(cmpstr51) // CMP/STR Rm, Rn (0010nnnn mmmm1100)
     if (HH == 0)
     	SET_T
 	else
-		UNSET_T;
+		UNSET_T
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/str: r[%d]=%x, r[%d]=%x\r\n", n, R(n), m, R(m));
@@ -294,19 +303,19 @@ OPCODE(div0s53) // DIV0S Rm, Rn (0010nnnn mmmm0111)
 	short m = (arg >> 4) & 0x0F;
 	
 	if (R(n) & 0x80000000)
-		SET_BIT(SR, SR_Q);
+		SET_SH4_BIT(SR_Q);
     else
-		REMOVE_BIT(SR, SR_Q);
+		REMOVE_SH4_BIT(SR_Q);
 
 	if (R(m) & 0x80000000)
-		SET_BIT(SR, SR_M);
+		SET_SH4_BIT(SR_M);
 	else
-		REMOVE_BIT(SR, SR_M);
+		REMOVE_SH4_BIT(SR_M);
 
 	if ((IS_SR_Q() && IS_SR_M()) || (!IS_SR_Q() && !IS_SR_M()))
-		REMOVE_BIT(SR, SR_T);
+		REMOVE_SH4_BIT(SR_T);
 	else
-		SET_BIT(SR, SR_T);
+		SET_SH4_BIT(SR_T);
 
 	PC += 2;
 }
@@ -320,9 +329,9 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
     
     old_q=IS_SR_Q() ? 1 : 0;
     if (R(n) & 0x80000000)
-        SET_BIT(SR, SR_Q);
+        SET_SH4_BIT(SR_Q);
     else
-        REMOVE_BIT(SR, SR_Q);
+        REMOVE_SH4_BIT(SR_Q);
 //    Q=(unsigned char)((0x80000000 & R[n])!=0);
     R(n) <<= 1;
 
@@ -342,18 +351,18 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
             {
                 case 0:
                 if (tmp1)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
 //                Q=tmp1;
                 break;
 
                 case 1:
 //                Q=(unsigned char)(tmp1==0);
                 if (tmp1 == 0)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
                 break;
             }
             break;
@@ -367,17 +376,17 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
                 case 0:
 //                Q=(unsigned char)(tmp1==0);
                 if (tmp1 == 0)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
                 break;
 
                 case 1:
 //                Q=tmp1;
                 if (tmp1)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
                 break;
             }
             break;
@@ -397,17 +406,17 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
                 case 0:
 //                Q=tmp1;
                 if (tmp1)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
                 break;
 
                 case 1:
 //                Q=(unsigned char)(tmp1==0);
                 if (tmp1 == 0)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
                 break;
             }
             break;
@@ -421,16 +430,16 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
                 case 0:
 //                Q=(unsigned char)(tmp1==0);
                 if (tmp1 == 0)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
                 break;
 
                 case 1:
                 if (tmp1)
-                    SET_BIT(SR, SR_Q);
+                    SET_SH4_BIT(SR_Q);
                 else
-                    REMOVE_BIT(SR, SR_Q);
+                    REMOVE_SH4_BIT(SR_Q);
 //                Q=tmp1;
                 break;
             }
@@ -440,9 +449,9 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
     }
 
     if (IS_SR_Q() && IS_SR_M())
-        SET_BIT(SR, SR_T);
+        SET_SH4_BIT(SR_T);
     else
-        REMOVE_BIT(SR, SR_T);
+        REMOVE_SH4_BIT(SR_T);
 //    T=(Q==M);
 
 	PC += 2;
@@ -454,9 +463,9 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
 
 OPCODE(div0u54) // DIV0U (00000000 00011001)
 {
-    REMOVE_BIT(SR, SR_Q);
-    REMOVE_BIT(SR, SR_M);
-    REMOVE_BIT(SR, SR_T);
+    REMOVE_SH4_BIT(SR_Q);
+    REMOVE_SH4_BIT(SR_M);
+    REMOVE_SH4_BIT(SR_T);
 
 	PC += 2;
 }
@@ -512,12 +521,13 @@ OPCODE(dt) // DT Rn (0100nnnn 00010000)
 #ifdef DEBUG_ARITH
 	logmsg("dt: r[%d]=%x\r\n", n, R(n));
 #endif
-
 	if (--R(n))
-		UNSET_T
+		SR_T=0;
 	else
-		SET_T
-
+		SR_T =1;
+	#ifdef _fast_interpreter_
+	dt_value = R(n);
+	#endif
 	PC += 2;
 }
 
@@ -644,11 +654,11 @@ OPCODE(subc70) // SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1010)
 	}
 	else
 	{
-		UNSET_T;
+		UNSET_T
 	}
 	if (tmp1 < R(n))
 	{
-		SET_T;
+		SET_T
 	}
 
 	PC += 2;

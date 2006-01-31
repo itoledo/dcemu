@@ -1,8 +1,5 @@
 #ifndef _DEBUG_H_
 #define _DEBUG_H_
-
-#include "main.h"
-#include "sh4.h"
 #include "opcodes.h"
 #include "mem.h"
 

@@ -1,5 +1,5 @@
 #include "main.h"
-#include "sh4.h"
+#include "sh4emu.h"
 #include "opcodes.h"
 #include <math.h>
 #include "iso.h"

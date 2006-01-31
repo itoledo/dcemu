@@ -23,7 +23,7 @@ bool intc(DWORD irq)
 	logxmsg(LOG_INTC, "intc: irq %04x\n", irq);
 #endif
 
-	if (IS_SET(SR, SR_BL) || VBR == 0)
+	if (IS_SH4_REG_SET(SR_BL) || VBR == 0)
 	{
 #ifdef DEBUG_INTC
  		logxmsg(LOG_INTC, "intc: BL seteado, retornando.\n");
@@ -92,10 +92,11 @@ bool intc(DWORD irq)
 	SSR = SR;
 	SPC = PC;
 	SGR = R(15);
-	UpdateSR(SR | SR_BL | SR_MD | SR_RB);
-/*	SET_BIT(SR, SR_BL);
-	SET_BIT(SR, SR_MD);
-	SET_BIT(SR, SR_RB); */
+	SET_SH4_BIT(SR_BL);
+	SET_SH4_BIT(SR_MD);
+	SET_SH4_BIT(SR_RB);
+	UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN);
+
 
 	PC = VBR + 0x600;
 //	str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base];

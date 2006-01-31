@@ -4,14 +4,15 @@
 
 *****************************************************************************/
 
-#include "sh4.h"
+#include "sh4emu.h"
 
 OPCODE(lds213) // LDS Rm, FPSCR : Rm -> FPSCR (0100mmmm 01101010)
 {
 	short m = (arg >> 8) & 0x0F;
 
 //	FPSCR = R(m);
-	UpdateFPSCR(R(m));
+	FPSCR = R(m);
+	UpdateFPSCR(FPSCR);
 //	memcpy(&FPSCR, &R(m), sizeof(DWORD));
 
 	PC += 2;

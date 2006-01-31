@@ -46,10 +46,6 @@ extern int idx_FSQRT; */
 #define BITS910(arg) ((arg >> 8) & 0x03)
 #define BITS1112(arg) ((arg >> 10) & 0x03)
 
-#define REQ_PR_0		1
-#define REQ_SZ_0		2
-#define REQ_PR_0_SZ_1	3
-#define REQ_PR_1_SZ_0	4
 
 /*
 opcode_log_f OP_T_UNK;

@@ -2,28 +2,22 @@
 #include "floatsimple.h"
 #include "floatgraph.h"
 #include <math.h>
+#include <SIMDx86/math.h>
 
-void print_double(double l)
-{
-	double z = l;
-	DWORD * x = (DWORD *) &z;
-
-	logmsg("print_double: %08x%08x\r\n", *(x+1), *x);
-}
-
-void extract_double(double * dest, short idx)
+#ifdef OLD_RA
+__inline__ void extract_double(double * dest, short idx)
 {
 	// damos vuelta los bytes
 	DWORD b[2];
 	DWORD * d = (DWORD *) dest;
 
-	memcpy(&b[0], &float_registers[idx], sizeof(double));
+	memcpy(&b[0], MTRX[idx], sizeof(double));
 
 	*(d++) = b[1];
 	*d = b[0];
 }
 
-void put_double(short idx, double * src)
+__inline__ void put_double(short idx, double * src)
 {
 	// damos vuelta los bytes
 	DWORD b[2];
@@ -32,8 +26,9 @@ void put_double(short idx, double * src)
 	b[1] = *(d++);
 	b[0] = *d;
 
-	memcpy(&float_registers[idx], &b[0], sizeof(DWORD)*2);
+	memcpy(MTRX[idx], &b[0], sizeof(DWORD)*2);
 }
+#endif
 
 OPCODE(fldi0170) // FLDI0 FRn (1111nnnn 10001101)
 {
@@ -72,11 +67,6 @@ OPCODE(fmovs173) // FMOV.S @Rm, FRn : (Rm) -> FRn (1111nnnn mmmm1000)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-/*	float f;
-
-	ReadMemoryL(R(m), &f);
-
-	FR(n) = (float) f; */
 	
 	memread(R(m), &FR(n), sizeof(DWORD));
 
@@ -91,13 +81,7 @@ OPCODE(fmovs174) // FMOV.S @(R0, Rm), FRn
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-//	float f;
 
-//	ReadMemoryF(R(m) + R(0), &FR(n));
-
-/*	ReadMemoryF(R(m) + R(0), &f);
-	
-	FR(n) = (float) f; */
 	
 	memread(R(m) + R(0), &FR(n), sizeof(float));
 
@@ -134,15 +118,6 @@ OPCODE(fmovs176) // FMOV.S FRm, @Rn : FRm -> (Rn) (1111nnnn mmmm1010)
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
 
-/*	if (IS_SET(FPSCR, FPSCR_SZ))
-	{
-		if (arg & 0x0010)
-			fmov227(arg); // FMOV XDm, @Rn (1111nnnn mmm11010)
-		else
-			logmsg("ERROR: fmovs176 arg\r\n");
-		return;
-	} */
-
 	WriteMemoryF(R(n), &FR(m));
 
 	PC += 2;
@@ -156,19 +131,6 @@ OPCODE(fmovs177) // FMOV.S FRm, @-Rn (1111nnnn mmmm1011)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-
-/*    if (IS_SET(FPSCR, FPSCR_SZ))
-    {
-        if (arg & 0x10) // bit 4 encendido...
-        {
-            fmov228(arg); // FMOV XDm, @-Rn
-        }
-        else // bit 4 apagado
-        {
-            fmov184(arg); // FMOV DRm, @-Rn
-        }
-        return;
-    } */
 
 	R(n) -= 4;
 
@@ -185,15 +147,6 @@ OPCODE(fmovs178) // FMOV.S FRm, @(R0, Rn) (1111nnnn mmmm0111)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-
-/*	if (IS_SET(FPSCR, FPSCR_SZ))
-	{
-		if ((arg & 0x0010))
-			fmov229(arg); // FMOV XDm, @(R0, Rn)
-		else
-			fmov185(arg); // FMOV DRm, @(R0, Rn)
-		return;
-	} */
 
 	WriteMemoryF(R(0) + R(n), &FR(m));
 
@@ -219,9 +172,6 @@ OPCODE(fmov180) // FMOV @Rm, DRn (1111nnn0 mmmm1000)
    	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 4) & 0x0F;
 
-//	memread(R(m), &DR(n), sizeof(float) * 2);
-//	doubleread(R(m), DR_index(n));
-	
 	memread(R(m), &DR(n), sizeof(DWORD) * 2);
 
 	PC += 2;
@@ -235,18 +185,10 @@ OPCODE(fmov182) // FMOV @Rm+, DRn (1111nnn0 mmmm1001)
 {
    	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 4) & 0x0F;
-//	double d;
-	
-/*	ReadMemoryF(R(m), &float_registers[n*2]);
-	ReadMemoryF(registers[m + 4], &float_registers[n*2+1]); */
 
-/*	memread(R(m), &d, sizeof(double));
-	memcpy(&DR(n), &d, sizeof(double)); */
-
-//	doubleread(R(m), DR_index(n));
 	memread(R(m), &DR(n), sizeof(DWORD)*2);
 
-    R(m) += 8;
+  	  R(m) += 8;
 
 	PC += 2;
 
@@ -498,9 +440,11 @@ OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 {
 	short n = (arg >> 8) & 0x0F;
-
-	FR(n) = (float) sqrt(FR(n));
-
+	#ifndef X86_OPT
+	FR(n) = sqrt(FR(n));
+	#else
+ 	FR(n) = SIMDx86_sqrtf(FR(n));
+ 	#endif
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
@@ -557,11 +501,12 @@ OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 #endif
 }
 
+
 OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 {
 	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 5) & 0x07;
-	double x, y;
+	double x, y,i,bx,by;
 
 //	memcpy(&x, &DR(m), sizeof(double));
 /*	memcpy(&x, &float_registers[DR_index(m)], sizeof(double)); */
@@ -569,6 +514,8 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 	extract_double(&x, DR_index(m));
 	extract_double(&y, DR_index(n));
 //	memcpy(&y, &DR(n), sizeof(double));
+
+	i = y;	
 
 //	logmsg("fadd201: DR%d,%d, DR%d,%d\r\n", m, DR_index(m), n, DR_index(n));
 
@@ -599,7 +546,7 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
-	logmsg("fadd201: DR%d, DR%d total=%f\r\n", m, n, y);
+		logmsg("fadd201: DR%d, DR%d total=%f Input X - %f , Y - %f.Before X - %f, Y - %f \r\n", m, n, y,x,i,bx,by);
 	dump_registers();
 #endif
 }
@@ -614,9 +561,9 @@ OPCODE(fcmpgt203) // FCMP/GT DRm, DRn (1111nnn0 mmm00101)
 	extract_double(&drn, DR_index(n));
 
 	if (drn > drm)
-		SET_BIT(SR, SR_T);
+		SR_T=1;
 	else
-		REMOVE_BIT(SR, SR_T);
+		SR_T=0;
 
 	PC += 2;
 
@@ -692,9 +639,11 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 	double x;
 	
 	extract_double(&x, DR_index(n));
-	
+ 	#ifndef X86_OPT
 	x = sqrt(x);
-
+ 	#else
+ 	SIMDx86_rsqrtd(x);
+	#endif
 	put_double(DR_index(n), &x);
 
 	PC += 2;
@@ -731,4 +680,3 @@ OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 	logmsg("ftrc212: (CONVERSION FROM DOUBLE FLOAT TO SIGNED LONG) FPUL=%x,%d\r\n", (DWORD) FPUL, (signed long) FPUL);
 #endif
 }
-

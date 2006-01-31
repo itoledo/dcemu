@@ -3,9 +3,11 @@
 #include "main.h"
 #include "intc.h"
 #include "opcodes.h"
+#include "mem.h"
 #include "graficos.h"
 #include "intc.h"
 #include "gui.h"
+
 
 #define DWREF(p) (*(DWORD *)(p))
 // extern SDL_mutex * regmap_mutex; // en main.c
@@ -148,7 +150,7 @@ void dump_registers()
 
 	for (i = 0; i < 24; i++)
 	{
-		sprintf(buf, "r%d=%lx ", i, registers[i]);
+		sprintf(buf, "r%d=%lx ", i, R(i));
 		strcat(buf2, buf);
 	}
 	
@@ -156,9 +158,10 @@ void dump_registers()
 
 	for (i = 0; i < 32; i++)
 	{
-		sprintf(buf, "FR%d=%lx ", i, float_to_dword(float_registers[i]));
-		strcat(buf2, buf);
+// 		sprintf(buf, "FR%d=%lx ", i, float_to_dword(FR(i)));
+// 		strcat(buf2, buf);
 	}
+
     strcat(buf2, "\r\n");
 	sprintf(buf, "T=%d, FPUL=%lx,%f MACL=%lx,%ld MACH=%lx,%ld\r\n", IS_SR_T() ? 1 : 0,
  		(DWORD) FPUL, (float) FPUL,
@@ -166,10 +169,11 @@ void dump_registers()
 		(DWORD) MACH, (signed long) MACH);
 	strcat(buf2, buf);
 	
-	sprintf(buf, "SR=%08lx MD:%d RB:%d\n", SR, IS_SET(SR,SR_MD) ? 1 : 0, IS_SET(SR,SR_RB) ? 1 : 0);
+	sprintf(buf, "SR=%08lx MD:%d RB:%d\n", SR, IS_SH4_REG_SET(SR_MD) ? 1 : 0, IS_SH4_REG_SET(SR_RB) ? 1 : 0);
 	strcat(buf2, buf);
 	
 	logmsg(buf2);
+
 }
 
 void check_registers()

@@ -5,7 +5,7 @@
 *****************************************************************************/
  
 #include <stdio.h>
-#include "sh4.h"
+#include "sh4emu.h"
 
 void dump_llamadas()
 {
@@ -28,7 +28,7 @@ OPCODE(nop) // NOP (00000000 00001001)
 
 OPCODE(clrt115)	// CLRT (0000000000001000)
 {
-	REMOVE_BIT(SR, SR_T);
+	REMOVE_SH4_BIT(SR_T);
 
 	PC += 2;
 }
@@ -40,7 +40,8 @@ OPCODE(sleep116)
 	REMOVE_BIT(SR, SR_BL); */
 //	logmsg("sleep116\n");
 //	UpdateSR(SR & ~(SR_MD | SR_BL));
-	UpdateSR(SR & ~SR_MD);
+	SR_MD = ~SR_MD;
+	UpdateSR(SR);
 
 	PC += 2;
 }
@@ -199,7 +200,7 @@ OPCODE(ldcl129) // LDC.L @Rm+, Rn_BANK (0100mmmm 1nnn0111)
 	short m = (arg >> 8) & 0x0F;
 	short n = (arg >> 4) & 0x07;
 	
-	ReadMemoryL(R(m), &R_BANK(n));
+	ReadMemoryL(R(m),&R_BANK(n));
 
 	R(m) += 4;
 
@@ -343,7 +344,7 @@ OPCODE(rte143) // RTE (00000000 00101011)
 /*	delayslot = SPC;
 	PC_func = PC_f_delayslot; */
 	PC += 2;
-	ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
+	core.execute(*(WORD *) get_memory_pointer(PC));
 	PC = SPC;
 	inside_int = false;
 
@@ -643,10 +644,11 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 	*TRA = (imm << 2);
 	*EXPEVT = 0x160;
 
-	UpdateSR(SR | SR_MD | SR_RB | SR_BL);
-/*	SET_BIT(SR, SR_MD);
-	SET_BIT(SR, SR_RB);
-	SET_BIT(SR, SR_BL); */
+	SET_SH4_BIT(SR_MD);
+	SET_SH4_BIT(SR_RB);
+	SET_SH4_BIT(SR_BL);
+	UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN);
+
 	
 /*	NEXTPC = VBR + 0x0100;
 	PC_func = PC_f_nextpc; */

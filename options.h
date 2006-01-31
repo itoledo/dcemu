@@ -17,8 +17,9 @@
 #define USE_BIOS_FONT
 // #define PRINT_ASM
 #define LOGGING
+#define OLD_RA
 // #define LOG_FFLUSH
-#define MACRO_REPLACEMENTS // ???
+// #define MACRO_REPLACEMENTS // ???
 // #define NI
 // #define JOYSTICK
 // #define ASM_DEBUG
@@ -32,7 +33,7 @@
 // #define DEBUG_ARITH_DMUL
 // #define DEBUG_SHIFT
 // #define DEBUG_FLOAT_SIMPLE
-// #define DEBUG_FLOAT_GRAPH
+//#define DEBUG_FLOAT_GRAPH
 // #define DEBUG_SYSCONTROL
 // #define DEBUG_SYSCONTROL_STS
 // #define DEBUG_FLOAT_CONTROL

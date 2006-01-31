@@ -34,6 +34,7 @@
 #include "graficos.h"
 #include "iso.h"
 #include "gui.h"
+#include "sh4emu.h"
 
 DWORD snd_dbg;			// ...
 
@@ -233,7 +234,7 @@ void main_loop(void)
 
 //			instr = *(WORD *) str_PC;
 
-			ejecutar_instruccion(*(WORD *) get_memory_pointer(PC));
+			core.execute(*(WORD *) get_memory_pointer(PC));
 
 //			(*PC_func) ();
 
@@ -281,7 +282,6 @@ void main_loop(void)
 				{
 	   				pvr_scanline = 0;
 //	   				cnt = 0;
-					fps++;
 					break; // salimos de este ciclo y vamos al siguiente
 				}
 			}
@@ -879,6 +879,9 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "leidos %d bytes\n", tam);
 	}
 
+	// we start the cpu
+	// allocating the current cpu
+	initCpuSubSystem();
 //  	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
  	PC = 0x8c010000;
 //	PC = 0x00000000;
@@ -972,6 +975,7 @@ int main(int argc, char *argv[])
 #if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
 	filelogging |= FILELOG_MEMREADS | FILELOG_MEMWRITES;
 #endif
+
 
 	main_loop();
 

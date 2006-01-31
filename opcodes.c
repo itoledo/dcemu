@@ -11,13 +11,17 @@
 #include "floatgraph.h"
 #include "opcodes.h"
 
+// better to have these defined here as they aren't needed elsewhere
+#define REQ_PR_0		1
+#define REQ_SZ_0		2
+#define REQ_PR_0_SZ_1	3
+#define REQ_PR_1_SZ_0	4
 
 short * oplist;
 short oplist_pr0_sz0[65536]; 
 short oplist_pr0_sz1[65536]; 
 short oplist_pr1_sz0[65536];
 short oplist_pr1_sz1[65536];
-
 
 struct st_cmd opcodes[] =
 {
@@ -306,22 +310,22 @@ int find_opcode(DWORD mempos)
 				switch(opcodes[i].restriccion)
 				{
 					case REQ_PR_0:
-						if (IS_SET(FPSCR, FPSCR_PR))
+						if (IS_SH4_REG_SET(FPSCR_PR_BIT))
 							cont = true;
 						break;
 	
 					case REQ_SZ_0:
-						if (IS_SET(FPSCR, FPSCR_SZ))
+						if (IS_SH4_REG_SET(FPSCR_SZ_BIT))
 							cont = true;
 						break;
 	
 					case REQ_PR_0_SZ_1:
-						if (IS_SET(FPSCR, FPSCR_PR) || !IS_SET(FPSCR, FPSCR_SZ))
+						if (IS_SH4_REG_SET(FPSCR_PR_BIT) || !IS_SH4_REG_SET(FPSCR_SZ_BIT))
 							cont = true;
 						break;
 	
 					case REQ_PR_1_SZ_0:
-						if (!IS_SET(FPSCR, FPSCR_PR) || IS_SET(FPSCR, FPSCR_SZ))
+						if (!IS_SH4_REG_SET(FPSCR_PR_BIT) || IS_SH4_REG_SET(FPSCR_SZ_BIT))
 							cont = true;
 						break;
 				}
@@ -419,8 +423,6 @@ void initopcodes()
 		oplist_pr1_sz1[i2] = idx_NOIMP;
 	}
 
-//	checkopcodes();
-
 	for (i = 0; opcodes[i].opdesc; i++)
 	{
 		for (i2 = 0; i2<65536; i2++)
@@ -457,6 +459,5 @@ void initopcodes()
 			}
 		}
 	}
-	
 	oplist = oplist_pr0_sz0;
 }

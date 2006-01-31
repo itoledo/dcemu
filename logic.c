@@ -1,4 +1,4 @@
-#include "sh4.h"
+#include "sh4emu.h"
 
 OPCODE(and72) // AND Rm, Rn (0010 nnnn mmmm 1001)
 {

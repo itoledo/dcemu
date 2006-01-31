@@ -4,7 +4,7 @@
 
 *****************************************************************************/
 
-#include "sh4.h"
+#include "sh4emu.h"
 
 OPCODE(rotl86) // ROTL Rn : T <- Rn <- MSB (0100nnnn 00000100)
 {
@@ -13,7 +13,7 @@ OPCODE(rotl86) // ROTL Rn : T <- Rn <- MSB (0100nnnn 00000100)
 	if (R(n) & 0x80000000)
 		SET_T
 	else
-		UNSET_T;
+		UNSET_T
 
 //	R(n) = ((R(n) << 1) & 0xFFFFFFFE) | (SR & REG_T);
 	R(n) <<= 1;
@@ -37,7 +37,7 @@ OPCODE(rotr87) // ROTR Rn (0100nnnn 00000101)
 	if (R(n) & 0x01)
 		SET_T
 	else
-		UNSET_T;
+		UNSET_T
 
 #ifdef DEBUG_SHIFT
     logmsg("rotr: antes %x\r\n", R(n));
@@ -93,15 +93,15 @@ OPCODE(rotcr89) // ROTCR Rn (0100nnnn 00100101)
 
 	R(n) >>= 1;
 	
-	if (IS_SET(SR, SR_T))
+	if (IS_SH4_REG_SET(SR_T))
 		R(n) |= 0x80000000;
 	else
 		R(n) &= 0x7FFFFFFF;
 
 	if (t)
-		SET_BIT(SR, SR_T);
+		SET_SH4_BIT(SR_T);
 	else
-		REMOVE_BIT(SR, SR_T);
+		REMOVE_SH4_BIT(SR_T);
 
 	PC += 2;
 
