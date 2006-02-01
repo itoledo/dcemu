@@ -335,7 +335,7 @@ void disasm(DWORD address, char *buffer)
 	} else
 		sprintf(buffer, "???");
 }
-
+/*
 void DrawDebugInlineInfo(SDL_Surface * surface)
 {
 extern time_t start_time;
@@ -354,7 +354,7 @@ extern unsigned long instrucciones;
 
 	sprintf(buf, "PC: %08lx t:%d spd:%d SR:%08x", //, %08x,%08x,%08x %s",
 			PC, 
-			dif, (dif > 0) ? instrucciones/dif : 0, SR);
+			dif, (dif > 0) ? core.conte/dif : 0, SR);
 	BFont_PutStringFont(surface, DebugFont, 0, 0, buf);
 }
-
+*/

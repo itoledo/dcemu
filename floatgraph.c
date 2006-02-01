@@ -214,7 +214,7 @@ OPCODE(frchg232) // FRCHG (1111101111111101)
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_GRAPH
-	logmsg("frchg232: fr=%d\r\n", IS_SET(FPSCR, FPSCR_FR) ? 1 : 0);
+	logmsg("frchg232: fr=%d\r\n", FPSCR_FR);
 #endif
 }
 

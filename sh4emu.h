@@ -152,6 +152,8 @@ typedef union
 }_u64;
 
 extern _u64 double_reg_x,double_reg_y; // helpers for the double calculus
+extern unsigned long delayslot;
+extern unsigned long NEXTPC;
 
 typedef union FPR_BANK FPR_BANK;
 
@@ -223,7 +225,7 @@ typedef struct context_t context_t;
 
 struct context_t
 {
-	DWORD cycles; // cycles count between each screen redraw
+	DWORD cycles; // cycles count
 	DWORD registers [24]; // GENERAL PURPOSE REGISTERS
 	FPSCR_t FPSCR_REG; 
 	unsigned long SSR_REG;

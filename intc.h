@@ -6,6 +6,7 @@ void check_ints();
 bool intc_check();
 void intc_add(DWORD inttoadd, int cnt);
 extern bool maple_dma;
+extern DWORD	intc_queuemask;
 
 #define EXC_IRQ9                0x0320
 #define EXC_IRQA                0x0340

@@ -27,7 +27,7 @@ void execute_loop()
 			current_loop->array[current_loop.current].opcode(current_loop->array[current_loop.current].arg);
 			if(current_loop.current == current_loop.size)	
 			{
-					current =0; //we don't execute DT nor BFS
+					current_loop.current =0; //we don't execute DT nor BFS
 			}
 			else current_loop.current++;
 		}

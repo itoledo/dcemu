@@ -105,6 +105,7 @@ void reset()
  memset(&double_reg_x,0,8);
  memset(&double_reg_x,0,8);
 #endif
+ core.context.cycles = 0;
 }
 
 void close()

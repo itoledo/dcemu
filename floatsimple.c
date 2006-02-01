@@ -440,6 +440,7 @@ OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 {
 	short n = (arg >> 8) & 0x0F;
+	float f = FR(n);
 	#ifndef X86_OPT
 	FR(n) = sqrt(FR(n));
 	#else
@@ -448,7 +449,7 @@ OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
-    logmsg("fsqrt197: FR(%d)=%f, FR(%d)=%f\r\n", n, FR(n));
+    logmsg("fsqrt197: FR(%d)=%f, FR(%d)=%f\r\n", n,f,n,FR(n));
 #endif
 }
 
@@ -642,7 +643,7 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
  	#ifndef X86_OPT
 	x = sqrt(x);
  	#else
- 	SIMDx86_rsqrtd(x);
+ 	SIMDx86_sqrt(x);
 	#endif
 	put_double(DR_index(n), &x);
 

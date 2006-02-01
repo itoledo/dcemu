@@ -62,7 +62,6 @@ SDL_Color color_blanco = { 0xff, 0xff, 0xff, 0x00 };
 SDL_Color color_negro = {0x00, 0x00, 0x00, 0 };
 #endif
 time_t start_time;
-unsigned long instrucciones = 0;
 bool logging = true;
 int filelogging = 0;
 bool logmem = false;
@@ -76,7 +75,7 @@ WORD joystick = 0xFFFF;
 unsigned char ltrig = TRIGGER_OFF, rtrig = TRIGGER_OFF;
 unsigned char joyx = JOYSTICK_NEUTRAL, joyy = JOYSTICK_NEUTRAL;
 SDL_Joystick * js;
-int fps=0;
+bool gui_visible=true;
 
 void timer_check();
 
@@ -220,6 +219,8 @@ void main_loop(void)
 //	DWORD valor;
 //	int timer_cnt = 0;
 
+	timer_check(); // we need to check the timer on when 0 cycles have been ran
+
 	for (;;)
 	{
 		for (;;)
@@ -243,10 +244,14 @@ void main_loop(void)
 			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
 			// por lo que en un segundo tenemos 781250 ticks.
 			// cada 1 ms -> 781,25 ticks.
-			if (instrucciones % 50 == 0)
+			if (core.context.cycles == 50)
+			{
+				core.context.cycles=0;
 				timer_check();
-
-			check_ints();
+		
+			}
+			if(intc_queuemask)
+				check_ints();
 
 /*			if (PC == BreakPoint)
 				DebugMode = DBG_STOP; */
@@ -257,7 +262,7 @@ void main_loop(void)
 				RedibujarPantalla();
 			}
    	
-			instrucciones++;
+			core.context.cycles++;
 
 //			if (cnt % (500000 / 0x1FF) == 0)
 			if (++cnt == 978) // 978)
@@ -511,6 +516,15 @@ void main_loop(void)
 					case SDLK_g: // joystick left
 					case SDLK_j: // joystick right
 					joyx = JOYSTICK_NEUTRAL;
+					break;
+		   // toggle fullscreen
+                    case SDLK_F1:
+					SDL_WM_ToggleFullScreen(outputscreen);
+					break;
+                    case SDLK_F2:
+					if(gui_visible == true) gui_visible=false;
+					else gui_visible=true;
+					gui_setvisiblelog(gui_visible);
 					break;
 
                     case SDLK_F9:
@@ -986,7 +1000,7 @@ int main(int argc, char *argv[])
 //	SDL_WaitThread(timer_thread, NULL);
 //	SDL_DestroyMutex(regmap_mutex);
 
-	fprintf(logfp, "PC:%lx VBR:%lx spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
+// 	fprintf(logfp, "PC:%lx VBR:%lx spd:%ld", PC, VBR, instrucciones/(time(NULL) - start_time));
 
 	fclose(logfp);
 	fclose(serialfp);

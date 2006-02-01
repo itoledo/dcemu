@@ -350,7 +350,7 @@ OPCODE(movl21) // MOV.L @(disp, Rm), Rn : (disp x 4 + Rm) -> Rn (0101nnnn mmmmdd
 	short m = (arg >> 4) & 0x0F;
 	BYTE disp = (arg & 0x0F);
 
-	ReadMemoryL(R(m) + disp * 4, (DWORD *) &R(n));
+	ReadMemoryL(R(m) + disp * 4, &R(n));
 
 	PC += 2;
 

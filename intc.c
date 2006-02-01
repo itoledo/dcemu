@@ -426,8 +426,8 @@ void check_ints()
 		return;
 	} */
 #else
-	if (intc_queuemask == 0)
- 		return;
+// 	if (intc_queuemask == 0)
+//  		return;
 
  	if (intc_queuemask & ASIC_IRQ9_A
  	&&  intc(EXC_IRQ9))

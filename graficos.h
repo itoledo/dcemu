@@ -62,5 +62,6 @@ void cb_fb_r_sof1(DWORD addr, void * p, size_t size);
 
 
 extern	SDL_Surface *screen;
+extern SDL_Surface *outputscreen;
 
 #endif // _GRAFICOS_H

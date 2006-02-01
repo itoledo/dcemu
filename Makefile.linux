@@ -12,7 +12,7 @@ CXXINCS = `sdl-config --cflags`
 
 BIN  = dcemu
 CXXFLAGS = $(CXXINCS) -O1 -DPOSX 
-CFLAGS = $(INCS) -Wall -Iinclude  -O1 -DPOSX 
+CFLAGS = $(INCS) -Wall -Iinclude  -O1 -DPOSX
 
 .PHONY: all all-before all-after clean clean-custom
 
