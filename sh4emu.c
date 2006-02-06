@@ -101,10 +101,6 @@ void reset()
  memset(MTRX,0,64);
  memset(XFMTRX,0,64);
  // cleaning up the base doubles
-#ifndef OLD_RA
- memset(&double_reg_x,0,8);
- memset(&double_reg_x,0,8);
-#endif
  core.context.cycles = 0;
 }
 

@@ -16,7 +16,7 @@
 #define BIOS_HACKS		// para tratar de correr la bios
 #define USE_BIOS_FONT
 // #define PRINT_ASM
-// #define LOGGING
+//#define LOGGING
 #define OLD_RA
 // #define LOG_FFLUSH
 // #define MACRO_REPLACEMENTS // ???
@@ -32,7 +32,7 @@
 // #define DEBUG_ARITH_CMP
 // #define DEBUG_ARITH_DMUL
 // #define DEBUG_SHIFT
-// #define DEBUG_FLOAT_SIMPLE
+//#define DEBUG_FLOAT_SIMPLE
 //#define DEBUG_FLOAT_GRAPH
 // #define DEBUG_SYSCONTROL
 // #define DEBUG_SYSCONTROL_STS

@@ -293,41 +293,6 @@ void main_loop(void)
 
 		}
 
-/*		if (pvr_3dscene)
-		{
-//			if (!(pvr_listdone & (1 << 4)) && pvr_registered & (1 << 4))
-			if (pvr_registered & (1 << 4))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para PT\n");
-				intc_add(ASIC_EVT_PVR_PTDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 3)) && pvr_registered & (1 << 3))
-			if (pvr_registered & (1 << 3))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para TRANSMOD\n");
-				intc_add(ASIC_EVT_PVR_TRANSMODDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 2)) && pvr_registered & (1 << 2))
-			if (pvr_registered & (1 << 2))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para TRANSPOLY\n");
-				intc_add(ASIC_EVT_PVR_TRANSDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 1)) && pvr_registered & (1 << 1))
-			if (pvr_registered & (1 << 1))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEMOD\n");
-				intc_add(ASIC_EVT_PVR_OPAQUEMODDONE, 0);
-			}
-//			if (!(pvr_listdone & (1 << 0)) && pvr_registered & (1 << 0))
-			if (pvr_registered & (1 << 0))
-			{
-       			logxmsg(LOG_INTC, "añadiendo intc para OPAQUEPOLY\n");
-				intc_add(ASIC_EVT_PVR_OPAQUEDONE, 0);
-			}
-//			intc_add(ASIC_EVT_PVR_RENDERDONE, 0);
-		}
-*/
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 //		intc_check(ASIC_EVT_PVR_VBLINT);
@@ -990,6 +955,9 @@ int main(int argc, char *argv[])
 	filelogging |= FILELOG_MEMREADS | FILELOG_MEMWRITES;
 #endif
 
+	#ifdef X86_OPT
+	printf("Build: '%s'\n", SIMDx86_GetBuildString());
+	#endif
 
 	main_loop();
 

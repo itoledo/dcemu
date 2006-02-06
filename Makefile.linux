@@ -12,7 +12,7 @@ CXXINCS = `sdl-config --cflags`
 
 BIN  = dcemu
 CXXFLAGS = $(CXXINCS) -O1 -DPOSX 
-CFLAGS = $(INCS) -Wall -Iinclude  -O1 -DPOSX
+CFLAGS = $(INCS) -Wall -Iinclude  -O3 -DPOSX -DX86_OPT -fomit-frame-pointer -fno-strict-aliasing
 
 .PHONY: all all-before all-after clean clean-custom
 

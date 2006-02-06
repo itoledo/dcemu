@@ -142,14 +142,14 @@ OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 	short n = (arg >> 10) & 0x3;
 	short m = (arg >> 8) & 0x3;
 
-#ifndef X86_OPT
+// #ifndef X86_OPT
 	FR(n+3) =	FR(m+0) * FR(n+0) +
 				FR(m+1) * FR(n+1) +
 				FR(m+2) * FR(n+2) +
 				FR(m+3) * FR(n+3);
-#else
- FR(n+3) = SIMDx86Vector_Dot(Vector(m),Vector(n));
-#endif
+// #else
+//  FR(n+3) = SIMDx86Vector_Dot(Vector(m),Vector(n));
+// #endif
 	PC += 2;
 }
 
@@ -186,7 +186,7 @@ float v1, v2, v3, v4;
 	FR(4*n+2) = v3;
 	FR(4*n+3) = v4;
 #else
-SIMDx86Matrix_VectorMultiply(Vector(n),XFMTRX);
+SIMDx86Matrix_Vector4Multiply(Vector(n),XFMTRX);
 #endif
 
 	PC += 2;
@@ -198,7 +198,7 @@ OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 	#ifndef X86_OPT
 	FR(n) = (float) 1.0 / (float) sqrt(FR(n));
 	#else
-	FR(n) = (float) 1.0 / (float) SIMDx86_sqrtf(FR(n));;
+	FR(n) = SIMDx86_rsqrtf(FR(n));
 	#endif
 	PC += 2;
 

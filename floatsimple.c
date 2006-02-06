@@ -4,6 +4,10 @@
 #include <math.h>
 #include <SIMDx86/math.h>
 
+#ifndef OLD_RA
+float swaph;
+#endif
+
 #ifdef OLD_RA
 __inline__ void extract_double(double * dest, short idx)
 {
@@ -162,7 +166,7 @@ OPCODE(fmov179) // FMOV DRm, DRn (1111nnn0 mmm01100)
    	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 5) & 0x07;
 
-	memcpy(&DR(n), &DR(m), sizeof(float));
+	memcpy(&DR(n), &DR(m), sizeof(double));
 
 	PC += 2;
 }
@@ -440,7 +444,6 @@ OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 {
 	short n = (arg >> 8) & 0x0F;
-	float f = FR(n);
 	#ifndef X86_OPT
 	FR(n) = sqrt(FR(n));
 	#else
@@ -507,6 +510,7 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 {
 	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 5) & 0x07;
+	#ifdef OLD_RA
 	double x, y,i,bx,by;
 
 //	memcpy(&x, &DR(m), sizeof(double));
@@ -516,32 +520,19 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 	extract_double(&y, DR_index(n));
 //	memcpy(&y, &DR(n), sizeof(double));
 
-	i = y;	
-
-//	logmsg("fadd201: DR%d,%d, DR%d,%d\r\n", m, DR_index(m), n, DR_index(n));
-
-//	print_double(x);
-//	print_double(y);
-
-/*	if ((DWORD) float_registers[DR_index(m) + 1] & 0x80000000)
-	{
-		signed long long z;
-		memcpy(&z, &float_registers[DR_index(m)], sizeof(float)*2);
-		z = ~z + 1;
-		memcpy(&x, &z, sizeof(float)*2);
-	}
-
-	if ((DWORD) float_registers[DR_index(n) + 1] & 0x80000000)
-	{
-		signed long long z;
-		memcpy(&z, &float_registers[DR_index(n)], sizeof(float)*2);
-		z = ~z + 1;
-		memcpy(&y, &z, sizeof(float)*2);
-	} */
 
 	y = y + x;
 
 	put_double(DR_index(n), &y);
+	#else
+	SWAP(DR_index(m));
+	SWAP(DR_index(n));
+	
+	DR(n) += DR(m);
+	
+	SWAP(DR_index(m));
+	SWAP(DR_index(n));
+	#endif
 //    memcpy(&DR(n), &y, sizeof(float)*2);
 
 	PC += 2;
@@ -556,6 +547,7 @@ OPCODE(fcmpgt203) // FCMP/GT DRm, DRn (1111nnn0 mmm00101)
 {
 	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 5) & 0x07;
+	#ifdef OLD_RA
 	double drm, drn;
 
 	extract_double(&drm, DR_index(m));
@@ -565,7 +557,19 @@ OPCODE(fcmpgt203) // FCMP/GT DRm, DRn (1111nnn0 mmm00101)
 		SR_T=1;
 	else
 		SR_T=0;
-
+	#else
+	SWAP(DR_index(m));
+	SWAP(DR_index(n))
+	
+	if (DR(n) > DR(m))
+		SR_T=1;
+	else
+		SR_T=0;
+	
+	SWAP(DR_index(m));
+	SWAP(DR_index(n))
+	
+	#endif
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
@@ -578,13 +582,19 @@ OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
 {
 	short n = (arg >> 9) & 0x07;
 	short m = (arg >> 5) & 0x07;
+	#ifdef OLD_RA
 	double x, y;
+	#endif
 	
 /*	memcpy(&x, &DR(m), sizeof(float)*2);
 	memcpy(&y, &DR(n), sizeof(float)*2); */
-	
+	#ifdef OLD_RA
 	extract_double(&x, DR_index(m));
 	extract_double(&y, DR_index(n));
+	#else
+	SWAP(DR_index(m));
+	SWAP(DR_index(n));
+	#endif
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fdiv204: x=%f, y=%f\r\n", x, y);
@@ -593,11 +603,18 @@ OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
 	//	print_double(x);
 //	print_double(y);
  
+	#ifdef OLD_RA
   	y /= x;
    
 //    memcpy(&DR(n), &y, sizeof(float)*2);
 	put_double(DR_index(n), &y);
-
+	#else
+	DR(n) /= DR(m);
+	
+	SWAP(DR_index(m));
+	SWAP(DR_index(n));
+	#endif
+	
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
@@ -622,8 +639,12 @@ OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
 //	print_double(x);
 
 //	memcpy(&DR(n), &x, sizeof(float)*2);
+	#ifdef OLD_RA
 	put_double(DR_index(n), &x);
-
+	#else
+	DR(n) = x;
+	SWAP(DR_index(n));
+	#endif
 //	print_double(*(double *) &DR(n));
 
 	PC += 2;
@@ -637,16 +658,27 @@ OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
 OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 {
 	short n = (arg >> 9) & 0x07;
+	#ifdef OLD_RA
 	double x;
-	
 	extract_double(&x, DR_index(n));
- 	#ifndef X86_OPT
-	x = sqrt(x);
- 	#else
- 	SIMDx86_sqrt(x);
+	#else
+	SWAP(DR_index(n));
 	#endif
+ 	#ifndef X86_OPT
+	#ifdef OLD_RA
+	x = sqrt(x);
+	#else
+	DR(n) = sqrt(DR(n));
+	#endif
+ 	#else
+	#ifdef OLD_RA
+ 	x = SIMDx86_sqrt(x);
 	put_double(DR_index(n), &x);
-
+	#else
+	DR(n) = SIMDx86_sqrt(DR(n));
+	SWAP(DR_index(n));
+	#endif
+	#endif
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
@@ -657,11 +689,17 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 {
 	short m = (arg >> 9) & 0x07;
+	#ifdef OLD_RA
 	double x;
+	#endif
 	//signed long y;
 	
 //	memcpy(&x, &DR(m), sizeof(float)*2);
+	#ifdef OLD_RA
 	extract_double(&x, DR_index(m));
+	#else
+	SWAP(DR_index(m));
+	#endif
 
 //	print_double(DR(m));
 //	print_double(x);
@@ -672,12 +710,37 @@ OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 		y = (signed long) ceil(x);
 	else */
 //	y = (signed long) floor(x);
-
+	#ifdef OLD_RA
  	FPUL = (signed long) floor(x); // y;
-
+	#else
+	FPUL = (signed long) floor(DR(m));
+	#endif
 	PC += 2;
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("ftrc212: (CONVERSION FROM DOUBLE FLOAT TO SIGNED LONG) FPUL=%x,%d\r\n", (DWORD) FPUL, (signed long) FPUL);
 #endif
+}
+
+
+OPCODE(fabs258)
+{
+	short n = (arg >> 8) & 0x0F;
+	FR(n) = fabsf(FR(n));
+	PC+2;
+}
+
+// we don't need to retrieve the double in this case just fabsf the n+1 float
+OPCODE(fabs244)
+{
+	short n = (arg >> 9) & 0x07;
+	FR(n+1) = fabsf(FR(n+1));
+	PC+2;
+}
+
+OPCODE(fneg254)
+{
+	short n = (arg >> 9) & 0x07;
+	FR(n+1) = -FR(n+1);
+	PC+2;
 }

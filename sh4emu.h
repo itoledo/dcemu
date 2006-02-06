@@ -144,14 +144,6 @@ extern  DWORD *	TCPR2;
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
 
-
-typedef union
-{
-  double db;
-  unsigned long long ib;
-}_u64;
-
-extern _u64 double_reg_x,double_reg_y; // helpers for the double calculus
 extern unsigned long delayslot;
 extern unsigned long NEXTPC;
 
@@ -162,9 +154,10 @@ union FPR_BANK
   union
   {
     SIMDx86Matrix XMTRX;
-    SIMDx86Vector vector [4];
+   // SIMDx86Vector vector [4];
+    float vector [4] [4];
 #ifndef OLD_RA
-    _u64 pair [8];
+    double pair [8];
 #endif
   } FP;
   union 
@@ -226,6 +219,8 @@ typedef struct context_t context_t;
 struct context_t
 {
 	DWORD cycles; // cycles count
+	DWORD cycles_v_int; // the cycles we can run between each VINT max is 978
+	DWORD cycles_v_int_total; // we need to redraw the screen
 	DWORD registers [24]; // GENERAL PURPOSE REGISTERS
 	FPSCR_t FPSCR_REG; 
 	unsigned long SSR_REG;
@@ -246,10 +241,6 @@ struct context_t
 	FPR_BANK * XF_BANK;
 };
 
-#define SWAP(dest,src){\
-dest |= ((src & 0xFFFFFFFF) << 32);\
-dest |= ((src >> 32)& 0xFFFFFFFF); \
-};
 
 // macros to acess easy up the acess of doubles
 #define sh4_double(x) x.db
@@ -328,18 +319,24 @@ typedef struct
 //floating register stuff
 #define FR(x) core.context.FR_BANK->FP.XMTRX.m[x]
 #ifndef OLD_RA
-#define DR(x) core.context.FR_BANK->FP.pair[x].db
-#define DR_index(x) core.context.FR_BANK->FP.pair[x].ib
+#define DR(x) core.context.FR_BANK->FP.pair[x]
+#define DR_index(x) (x)
 #else
 #define DR(x) (FR(x*2))
 #define DR_index(x) (x*2)
 #endif
-#define Vector(x)  &core.context.FR_BANK->FP.vector[x]
+#define Vector(x)  core.context.FR_BANK->FP.vector[x]
 #define XD(x) core.context.XF_BANK->XFP.pair[x]
 #define MTRX &core.context.FR_BANK->FP.XMTRX.m
 #define XFMTRX &core.context.XF_BANK->XFP.XMTRX
 
 #define XF(x) core.context.XF_BANK->XFP.XMTRX.m[x]
+
+#define SWAP(index){\
+ swaph = FR(index);\
+ FR(index) = FR(index+1);\
+ FR(index+1) = swaph;\
+};
 
 #define IS_SR_MD()(SR_MD == 1)
 #define IS_SR_T() (SR_T ==1)
