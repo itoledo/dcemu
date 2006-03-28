@@ -449,6 +449,8 @@ void check_ints()
 		REMOVE_BIT(intc_queuemask, ASIC_IRQD_A);
       	return;
 	}
+
+	REMOVE_BIT(intc_queuemask,ASIC_ACK_A);
 #endif
 }
 
