@@ -149,16 +149,19 @@ extern unsigned long NEXTPC;
 
 typedef union FPR_BANK FPR_BANK;
 
+ union u64
+{
+	unsigned int part [2];
+	double db;
+};
+
 union FPR_BANK
 {
   union
   {
     SIMDx86Matrix XMTRX;
-   // SIMDx86Vector vector [4];
     float vector [4] [4];
-#ifndef OLD_RA
-    double pair [8];
-#endif
+    union u64 db [8];
   } FP;
   union 
   {
@@ -270,7 +273,7 @@ typedef struct
   context_t context;
   void (* resetCpu)(void);
   void (*closeCpu) (void);
-  void (*execute) (WORD arg);
+  void (*execute) (WORD instr);
   void (*executeBlock)(void);
 }sh4_cpu;
 
@@ -318,13 +321,9 @@ typedef struct
 
 //floating register stuff
 #define FR(x) core.context.FR_BANK->FP.XMTRX.m[x]
-#ifndef OLD_RA
-#define DR(x) core.context.FR_BANK->FP.pair[x]
+#define DR(x) core.context.FR_BANK->FP.db[x]
+#define DR_INT(x) core.context.FR_BANK->FP.db[x].part
 #define DR_index(x) (x)
-#else
-#define DR(x) (FR(x*2))
-#define DR_index(x) (x*2)
-#endif
 #define Vector(x)  core.context.FR_BANK->FP.vector[x]
 #define XD(x) core.context.XF_BANK->XFP.pair[x]
 #define MTRX &core.context.FR_BANK->FP.XMTRX.m
@@ -376,5 +375,6 @@ extern PC_f * PC_func;
 void PC_f_normal(void);
 void PC_f_delayslot(void);
 void PC_f_nextpc(void);
+
 
 #endif

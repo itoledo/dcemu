@@ -4,6 +4,7 @@
 #include "branch.h"
 #include "opcodes.h"
 #include "floatsimple.h"
+#include "intc.h"
 
 
 sh4_cpu core;
@@ -82,6 +83,8 @@ unsigned long NEXTPC = 0;
 FPR_BANK * BANK0; // 1st register bank
 FPR_BANK * BANK1; // 2nd register bank
 
+
+
 void reset()
 {
  FPSCR = 0x0004001; // Floating Point Status/Control Register
@@ -111,7 +114,7 @@ void close()
 
 void run (WORD instr)
 {
-	(opcodes[oplist[instr]].funcion) (instr);
+(opcodes[oplist[instr]].funcion) (instr);
 }
 
 #ifdef _fast_interpreter_

@@ -11,8 +11,8 @@ INCS = `sdl-config --cflags`
 CXXINCS = `sdl-config --cflags`  
 
 BIN  = dcemu
-CXXFLAGS = $(CXXINCS) -O1 -DPOSX 
-CFLAGS = $(INCS) -Wall -Iinclude  -O3 -DPOSX -DX86_OPT -fomit-frame-pointer -fno-strict-aliasing
+CXXFLAGS = $(CXXINCS) -O2 -DPOSX 
+CFLAGS = $(INCS) -Wall -Iinclude  -O3  -DPOSX -DX86_OPT -fomit-frame-pointer -fno-strict-aliasing
 
 .PHONY: all all-before all-after clean clean-custom
 
@@ -85,7 +85,7 @@ $(BIN): $(OBJ)
 ./obj/debug.o: debug.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h   debug.h graficos.h BFont.h
 	$(CC) -c debug.c -o ./obj/debug.o $(CFLAGS)
 
-./obj/iso.o: iso.c include/cdio/config.h include/cdio/cdio.h   include/cdio/version.h include/cdio/types.h include/cdio/cdio_config.h   include/cdio/sector.h include/cdio/device.h include/cdio/disc.h   include/cdio/read.h include/cdio/cdtext.h include/cdio/track.h   include/cdio/iso9660.h include/cdio/ds.h include/cdio/xa.h   include/cdio/rock.h include/cdio/cd_types.h iso.h
+./obj/iso.o: iso.c include/cdio/cdio_config.h include/cdio/cdio.h   include/cdio/version.h include/cdio/types.h include/cdio/cdio_config.h   include/cdio/sector.h include/cdio/device.h include/cdio/disc.h   include/cdio/read.h include/cdio/cdtext.h include/cdio/track.h   include/cdio/iso9660.h include/cdio/ds.h include/cdio/xa.h   include/cdio/rock.h include/cdio/cd_types.h iso.h
 	$(CC) -c iso.c -o ./obj/iso.o $(CFLAGS)
 
 ./obj/scramble.o: scramble.c 

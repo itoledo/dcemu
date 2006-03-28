@@ -77,12 +77,70 @@ unsigned char joyx = JOYSTICK_NEUTRAL, joyy = JOYSTICK_NEUTRAL;
 SDL_Joystick * js;
 bool gui_visible=true;
 
-void timer_check();
 
 /* void query_cache(WORD arg)
 {
 	(opcodes[oplist[arg]].funcion) (arg);
 } */
+
+#define TMU_INT
+
+void timer_check();
+
+void timer_check(void)
+{
+	    if (*TSTR & 4)
+	    {
+	        if ((long) (*TCNT2) < 0) // underflow
+	        {
+	                *TCNT2 = *TCOR2;
+	                *TCR2 |= TMU_TCR_UNF;
+#ifdef TMU_INT
+					if ((*TCR2 & TMU_TCR_UNIE))
+    	            	intc(EXC_TMU2_TUNI2);
+#endif
+	   	     }
+   		     else
+   		     {
+					(*TCNT2)--;
+			}
+	   	 }
+
+	    if (*TSTR & 2)
+	    {
+	        if ((long) (*TCNT1) < 0) // underflow
+	        {
+	                *TCNT1 = *TCOR1;
+	                *TCR1 |= TMU_TCR_UNF;
+#ifdef TMU_INT
+				if ((*TCR1 & TMU_TCR_UNIE))
+	                intc(EXC_TMU1_TUNI1);
+#endif
+	        }
+	        else
+   		     {
+					(*TCNT1)--;
+			}
+	    }
+
+	    if (*TSTR & 1)
+	    {
+	        if ((long) (*TCNT0) < 0) // underflow
+	        {
+	                (*TCNT0) = *TCOR0;
+	                (*TCR0) |= TMU_TCR_UNF;
+#ifdef TMU_INT
+ 					if ((*TCR0 & TMU_TCR_UNIE))
+		                intc(EXC_TMU0_TUNI0);
+#endif
+	        }
+	        else
+   		     {
+					(*TCNT0)--;
+			}
+	    }
+}
+
 
 void RedibujarPantalla()
 {
@@ -155,67 +213,10 @@ void dma_check()
 	}
 }
 
-#define TMU_INT
-
-void timer_check(void)
-{
-	    if (*TSTR & 4)
-	    {
-	        if ((long) (*TCNT2) < 0) // underflow
-	        {
-	                *TCNT2 = *TCOR2;
-	                *TCR2 |= TMU_TCR_UNF;
-#ifdef TMU_INT
-					if ((*TCR2 & TMU_TCR_UNIE))
-    	            	intc(EXC_TMU2_TUNI2);
-#endif
-	   	     }
-   		     else
-   		     {
-					(*TCNT2)--;
-			}
-	   	 }
-
-	    if (*TSTR & 2)
-	    {
-	        if ((long) (*TCNT1) < 0) // underflow
-	        {
-	                *TCNT1 = *TCOR1;
-	                *TCR1 |= TMU_TCR_UNF;
-#ifdef TMU_INT
-				if ((*TCR1 & TMU_TCR_UNIE))
-	                intc(EXC_TMU1_TUNI1);
-#endif
-	        }
-	        else
-   		     {
-					(*TCNT1)--;
-			}
-	    }
-
-	    if (*TSTR & 1)
-	    {
-	        if ((long) (*TCNT0) < 0) // underflow
-	        {
-	                (*TCNT0) = *TCOR0;
-	                (*TCR0) |= TMU_TCR_UNF;
-#ifdef TMU_INT
- 					if ((*TCR0 & TMU_TCR_UNIE))
-		                intc(EXC_TMU0_TUNI0);
-#endif
-	        }
-	        else
-   		     {
-					(*TCNT0)--;
-			}
-	    }
-}
-
 void main_loop(void)
 {
 	SDL_Event event;
-	int cnt = 0;
-//	WORD instr;
+	int cnt=0;
 //	DWORD valor;
 //	int timer_cnt = 0;
 
@@ -232,8 +233,7 @@ void main_loop(void)
 	disasm(PC, &buf[0]);
 	logmsg("TRACE: %s\r\n", buf);
 #endif	
-
-//			instr = *(WORD *) str_PC;
+//		instr = *(WORD *) str_PC;
 
 			core.execute(*(WORD *) get_memory_pointer(PC));
 
@@ -614,7 +614,8 @@ void main_loop(void)
 #endif // JOYSTICK
 
 				default:
-				gui_event(event);
+//           			  SDL_EventState(event.type, SDL_IGNORE);
+			gui_event(event);
 				break;
 			}
 		}
