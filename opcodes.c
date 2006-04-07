@@ -193,8 +193,8 @@ struct st_cmd opcodes[] =
 	{ 0x0012, 0xF0FF, "STC",	OP_T_GBR_RN,			stc150	},
 	{ 0x0022, 0xF0FF, "STC",	OP_T_VBR_RN,			stc149 },
 	{ 0x0032, 0xF0FF, "STC",	OP_T_SSR_RN,			stc152	}, // 150
-	{ 0x0042, 0xF0FF, "STC",	OP_T_SPC_RN,			NOIMP	},
-	{ 0x003A, 0xF0FF, "STC",	OP_T_SGR_RN,			NOIMP	},
+	{ 0x0042, 0xF0FF, "STC",	OP_T_SPC_RN,			stc153	},
+	{ 0x003A, 0xF0FF, "STC",	OP_T_SGR_RN,			stcn154},
 	{ 0x00FA, 0xF0FF, "STC",	OP_T_DBR_RN,			stc155	},
 	{ 0x0082, 0xF08F, "STC",	OP_T_RM_BANK_RN,		stc154	}, // REVISAR
 	{ 0x4003, 0xF0FF, "STC.L",	OP_T_SR_AT_MIN_RN,		stcl155	},
@@ -234,7 +234,7 @@ struct st_cmd opcodes[] =
 
 	{ 0xF01D, 0xF0FF, "FLDS",	OP_T_FRM_FPUL,			flds186						},
 	{ 0xF00D, 0xF0FF, "FSTS",	OP_T_FPUL_FRN,			fsts187						}, // 187
-	{ 0xF05D, 0xF0FF, "FABS",	OP_T_FRN,				fabs258,		REQ_PR_0		},
+	{ 0xF05D, 0xF0FF, "FABS",	OP_T_FRN,				NOIMP,		REQ_PR_0		},
 	{ 0xF000, 0xF00F, "FADD",	OP_T_FRM_FRN,			fadd189,	REQ_PR_0		}, // 189
 	{ 0xF004, 0xF00F, "FCMP/EQ",OP_T_FRM_FRN,			fcmpeq190,	REQ_PR_0		}, // 190
 	{ 0xF005, 0xF00F, "FCMP/GT",OP_T_FRM_FRN,			fcmpgt191,	REQ_PR_0		},
@@ -246,7 +246,7 @@ struct st_cmd opcodes[] =
 	{ 0xF06D, 0xF0FF, "FSQRT",	OP_T_FRN,				fsqrt197,	REQ_PR_0		},
 	{ 0xF001, 0xF00F, "FSUB",	OP_T_FRM_FRN,			fsub198,	REQ_PR_0		},
 	{ 0xF03D, 0xF0FF, "FTRC",	OP_T_FRM_FPUL,			ftrc199,	REQ_PR_0		}, // 199
-	{ 0xF05D, 0xF1FF, "FABS",	OP_T_DRN,				fabs244,		REQ_PR_1_SZ_0	}, // 200
+	{ 0xF05D, 0xF1FF, "FABS",	OP_T_DRN,				NOIMP,		REQ_PR_1_SZ_0	}, // 200
 	{ 0xF000, 0xF11F, "FADD",	OP_T_DRM_DRN,			fadd201,	REQ_PR_1_SZ_0	},
 	{ 0xF004, 0xF11F, "FCMP/EQ",OP_T_DRM_DRN,			NOIMP,		REQ_PR_1_SZ_0	},
 	{ 0xF005, 0xF11F, "FCMP/GT",OP_T_DRM_DRN,			fcmpgt203,	REQ_PR_1_SZ_0	},
@@ -255,7 +255,7 @@ struct st_cmd opcodes[] =
 	{ 0xF0AD, 0xF1FF, "FCNVSD",	OP_T_FPUL_DRN,			NOIMP,		REQ_PR_1_SZ_0	},
 	{ 0xF02D, 0xF1FF, "FLOAT",	OP_T_FPUL_DRN,			float207,	REQ_PR_1_SZ_0	},
 	{ 0xF002, 0xF11F, "FMUL",	OP_T_DRM_DRN,			NOIMP,		REQ_PR_1_SZ_0	},
-	{ 0xF04D, 0xF1FF, "FNEG",	OP_T_DRN,				fneg254,		REQ_PR_1_SZ_0	},
+	{ 0xF04D, 0xF1FF, "FNEG",	OP_T_DRN,				NOIMP,		REQ_PR_1_SZ_0	},
 	{ 0xF06D, 0xF1FF, "FSQRT",	OP_T_DRN,				fsqrt210,	REQ_PR_1_SZ_0	}, // 210
 	{ 0xF001, 0xF11F, "FSUB",	OP_T_DRM_DRN,			NOIMP,		REQ_PR_1_SZ_0	},
 	{ 0xF03D, 0xF1FF, "FTRC",	OP_T_DRM_FPUL,			ftrc212,	REQ_PR_1_SZ_0	},
@@ -291,6 +291,7 @@ struct st_cmd opcodes[] =
 
 	{ 0, 0, NULL, 0, (void *) NULL }
 };
+
 
 int find_opcode(DWORD mempos)
 {
@@ -413,7 +414,7 @@ void initopcodes()
 	int i; int i2;
 	// a armar las 4 listas
 
-	idx_NOIMP		= findopcode(0x0000, 0xFFFF);
+	idx_NOIMP = findopcode(0x0000, 0xFFFF);
 
 	for (i2 = 0; i2<65536; i2++)
 	{

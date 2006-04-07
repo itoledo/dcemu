@@ -6,12 +6,22 @@
 
 #include "sh4emu.h"
 
+
+
+#ifdef _fast_interpreter_
+#define fc_n jumptable.jit_array[jumptable.current_pos].cache.n
+#define fc_m  jumptable.jit_array[jumptable.current_pos].cache.m
+#else
+short fc_n=0;
+short fc_m=0;
+#endif
+
 OPCODE(lds213) // LDS Rm, FPSCR : Rm -> FPSCR (0100mmmm 01101010)
 {
-	short m = (arg >> 8) & 0x0F;
+	fc_m = (arg >> 8) & 0x0F;
 
 //	FPSCR = R(m);
-	FPSCR = R(m);
+	FPSCR = R(fc_m);
 	UpdateFPSCR(FPSCR);
 //	memcpy(&FPSCR, &R(m), sizeof(DWORD));
 
@@ -24,10 +34,10 @@ OPCODE(lds213) // LDS Rm, FPSCR : Rm -> FPSCR (0100mmmm 01101010)
 
 OPCODE(lds214) // LDS Rm, FPUL : Rm -> FPUL (0100mmmm 01011010)
 {
-	short m = (arg >> 8) & 0x0F;
+	fc_m = (arg >> 8) & 0x0F;
 
 //	FPUL = R(m);
-	memcpy(&FPUL, &R(m), sizeof(DWORD));
+	memcpy(&FPUL, &R(fc_m), sizeof(DWORD));
 //	FPUL = f;
 
 	PC += 2;
@@ -39,13 +49,13 @@ OPCODE(lds214) // LDS Rm, FPUL : Rm -> FPUL (0100mmmm 01011010)
 
 OPCODE(ldsl215) // LDS.L @Rm+, FPSCR : (Rm) -> FPSCR, Rm + 4 -> Rm (0100mmmm 01100110)
 {
-	short m = (arg >> 8) & 0x0F;
+	fc_m = (arg >> 8) & 0x0F;
 	DWORD fpscr;
 
-	ReadMemoryL(R(m), &fpscr);
+	ReadMemoryL(R(fc_m), &fpscr);
 	UpdateFPSCR(fpscr);
 
-	R(m) += 4;
+	R(fc_m) += 4;
 
 	PC += 2;
 
@@ -56,11 +66,11 @@ OPCODE(ldsl215) // LDS.L @Rm+, FPSCR : (Rm) -> FPSCR, Rm + 4 -> Rm (0100mmmm 011
 
 OPCODE(ldsl216) // LDS.L @Rm+, FPUL (0100mmmm 01010110)
 {
-	short m = (arg >> 8) & 0x0F;
+	fc_m = (arg >> 8) & 0x0F;
 
-	ReadMemoryL(R(m), &FPUL);
+	ReadMemoryL(R(fc_m), &FPUL);
 
-	R(m) += 4;
+	R(fc_m) += 4;
 
 	PC += 2;
 
@@ -71,10 +81,10 @@ OPCODE(ldsl216) // LDS.L @Rm+, FPUL (0100mmmm 01010110)
 
 OPCODE(sts217) // STS FPSCR, Rn (0000nnnn 01101010)
 {
-	short n = (arg >> 8) & 0x0F;
+	fc_n = (arg >> 8) & 0x0F;
 
 //	R(n) = (DWORD) FPSCR;
-	memcpy(&R(n), &FPSCR, sizeof(DWORD));
+	memcpy(&R(fc_n), &FPSCR, sizeof(DWORD));
 
 	PC += 2;
 
@@ -85,11 +95,11 @@ OPCODE(sts217) // STS FPSCR, Rn (0000nnnn 01101010)
 
 OPCODE(sts218) // STS FPUL, Rn : FPUL -> Rn (0000nnnn 01011010)
 {
-	short n = (arg >> 8) & 0x0F;
+	fc_n = (arg >> 8) & 0x0F;
 //	signed long fpul = (signed long) FPUL;
 
 // ESTA ESTO BIEN?
-	R(n) = (signed long) FPUL;
+	R(fc_n) = (signed long) FPUL;
 //	memcpy(&R(n), &fpul, sizeof(DWORD));
 
 	PC += 2;
@@ -101,11 +111,11 @@ OPCODE(sts218) // STS FPUL, Rn : FPUL -> Rn (0000nnnn 01011010)
 
 OPCODE(stsl219) // STS.L FPSCR, @-Rn : Rn - 4 -> Rn, FPSCR -> (Rn) (0100nnnn 01100010)
 {
-	short n = (arg >> 8) & 0x0F;
+	fc_n = (arg >> 8) & 0x0F;
 
-	R(n) -= 4;
+	R(fc_n) -= 4;
 	
-	WriteMemoryL(R(n), (DWORD *) &FPSCR);
+	WriteMemoryL(R(fc_n), (DWORD *) &FPSCR);
 
 	PC += 2;
 
@@ -116,11 +126,11 @@ OPCODE(stsl219) // STS.L FPSCR, @-Rn : Rn - 4 -> Rn, FPSCR -> (Rn) (0100nnnn 011
 
 OPCODE(stsl220) // STS.L FPUL, @-Rn (0100nnnn 01010010)
 {
-	short n = (arg >> 8) & 0x0F;
+	fc_n = (arg >> 8) & 0x0F;
 
-	R(n) -= 4;
+	R(fc_n) -= 4;
 
-	WriteMemoryL(R(n), (DWORD *) &FPUL);
+	WriteMemoryL(R(fc_n), (DWORD *) &FPUL);
 
 	PC += 2;
 

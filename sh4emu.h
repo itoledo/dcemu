@@ -15,9 +15,6 @@
 #endif
 #include "log.h"
 #include "mem.h"
-#ifdef _fast_interpreter_
-#include "fast_interpreter.h"
-#endif
 
 // data format on the sh4
 
@@ -161,7 +158,7 @@ union FPR_BANK
   {
     SIMDx86Matrix XMTRX;
     float vector [4] [4];
-    union u64 db [8];
+    union u64 dreg [8];
   } FP;
   union 
   {
@@ -245,10 +242,6 @@ struct context_t
 };
 
 
-// macros to acess easy up the acess of doubles
-#define sh4_double(x) x.db
-#define sh4_64(x) x.ib
-
 
 #define SWITCH_FLOAT_REG_BANKS(){\
 FPR_BANK * backup;\
@@ -271,9 +264,9 @@ core.context.FR_BANK = backup;\
 typedef struct
 {
   context_t context;
+  void (* execute )(WORD arg);
   void (* resetCpu)(void);
   void (*closeCpu) (void);
-  void (*execute) (WORD instr);
   void (*executeBlock)(void);
 }sh4_cpu;
 
@@ -321,8 +314,8 @@ typedef struct
 
 //floating register stuff
 #define FR(x) core.context.FR_BANK->FP.XMTRX.m[x]
-#define DR(x) core.context.FR_BANK->FP.db[x]
-#define DR_INT(x) core.context.FR_BANK->FP.db[x].part
+#define DR(x) core.context.FR_BANK->FP.dreg[x]
+#define DR_INT(x) core.context.FR_BANK->FP.dreg[x].part
 #define DR_index(x) (x)
 #define Vector(x)  core.context.FR_BANK->FP.vector[x]
 #define XD(x) core.context.XF_BANK->XFP.pair[x]
@@ -330,12 +323,6 @@ typedef struct
 #define XFMTRX &core.context.XF_BANK->XFP.XMTRX
 
 #define XF(x) core.context.XF_BANK->XFP.XMTRX.m[x]
-
-#define SWAP(index){\
- swaph = FR(index);\
- FR(index) = FR(index+1);\
- FR(index+1) = swaph;\
-};
 
 #define IS_SR_MD()(SR_MD == 1)
 #define IS_SR_T() (SR_T ==1)
@@ -375,6 +362,43 @@ extern PC_f * PC_func;
 void PC_f_normal(void);
 void PC_f_delayslot(void);
 void PC_f_nextpc(void);
+
+/* operand cache stuff */
+
+#ifdef _fast_interpreter_
+// struct used to keep an already decoded opcode
+
+typedef	struct
+	{
+		short n;
+		short m;
+		DWORD d_disp;
+		WORD w_disp;
+		BYTE b_disp;
+		signed long s_disp;
+	}cache_line;
+
+typedef  struct
+  {
+	opcode_f * function;
+	cache_line cache;
+	// the struct with all the operands used
+  }cached_opcode;
+
+// decoded opcode
+typedef struct
+{
+  cache_line jit_b; // for branches
+  cached_opcode  jit_array[65536]; // the 0 position is used when we are not running any cached opcodes
+  int current_pos;
+}op_jit;
+
+extern op_jit jumptable;
+
+void init_cpu_jumptable();
+
+#endif
+
 
 
 #endif

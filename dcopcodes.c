@@ -6,6 +6,8 @@
 
 #define PI 3.1415926535
 
+DWORD com=0;
+
 OPCODE(fsca) // FSCA FPUL, DRn
 {
 //	long n = (arg >> 8) & 0x0F;
@@ -94,7 +96,13 @@ void hack_gdrom()
 
 		    case 1: // GDROM_CHECK_COMMAND
 		    logmsg("GDROM_CHECK_COMMAND: r4=%x, r5=%x\r\n", R(4), R(5));
-		    R(0) = 2;
+		    if (R(4) == com)
+		  	  R(0) = 2;
+		   else
+			{
+			com = R(4);
+			R(0) = 0;
+			}
 		    break;
 
 		    case 2: // GDROM_MAIN_LOOP

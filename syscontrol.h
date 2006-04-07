@@ -48,5 +48,7 @@ OPCODE(stsl166); 	// STS.L MACH, @-Rn (0100nnnn 00000010)
 OPCODE(stsl167); 	// STS.L MACL, @-Rn (0100nnnn 00010010)
 OPCODE(stsl168); 	// STS.L PR, @-Rn : Rn - 4 -> Rn, PR -> (Rn) (0100nnnn 00100010)
 OPCODE(trapa169); 	// TRAPA #imm (11000011 iiiiiiii)
+OPCODE(stcn154); // STC SPC, Rn 
+OPCODE(stc153); // STC SPC, Rn 
 
 #endif // _SYSCONTROL_H_

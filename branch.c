@@ -7,6 +7,17 @@
 #include "sh4emu.h"
 #include "mem.h"
 
+#ifdef _fast_interpreter_
+#define br_n jumptable.jit_b.n
+#define ddisp  jumptable.jit_b.d_disp
+#define bdisp jumptable.jit_b.b_disp
+
+#else
+short br_n=0;
+DWORD ddisp=0;
+DWORD bdisp=0;
+
+#endif
 OPCODE(bf) // BF label (10001011 ssssssss)
 {
 //	DWORD s = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
@@ -30,7 +41,7 @@ OPCODE(bf) // BF label (10001011 ssssssss)
 
 OPCODE(bra) // BRA label (1010dddd dddddddd)
 {
-	DWORD disp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
+	ddisp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
 
 	//	fprintf(fp, "Cambiando PC de %x a %x. arg %x\r\n", PC, disp, arg & 0x0FFF);
 /*	delayslot = disp;
@@ -39,7 +50,7 @@ OPCODE(bra) // BRA label (1010dddd dddddddd)
 	PC += 2;
 	core.execute(*(WORD *) get_memory_pointer(PC));
 
-	PC = disp;
+	PC = ddisp;
 
 #ifdef DEBUG_BRANCH
 	logmsg("bra: dslot=%x\r\n", disp);
@@ -48,8 +59,8 @@ OPCODE(bra) // BRA label (1010dddd dddddddd)
 
 OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 {
-	short n = (arg >> 8) & 0x0F;
-	DWORD target = (DWORD) R(n) + PC + 4;
+	br_n = (arg >> 8) & 0x0F;
+	DWORD target = (DWORD) R(br_n) + PC + 4;
 
 /*	delayslot = target;
 	PC_func = PC_f_delayslot; */
@@ -69,7 +80,7 @@ OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 
 OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 {
-	DWORD disp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
+	ddisp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
 
 	PR = PC + 4;
 
@@ -80,7 +91,7 @@ OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 
 	core.execute(*(WORD *) get_memory_pointer(PC));
 
-	PC = disp;
+	PC = ddisp;
 
 #ifdef DEBUG_BRANCH
 	if (delayslot == 0)
@@ -92,8 +103,8 @@ OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 
 OPCODE(bsrf109) // BSRF Rn (0000nnnn 00000011)
 {
-	short n = (arg >> 8) & 0x0F;
-	DWORD target = (DWORD) R(n) + PC + 4;
+	br_n = (arg >> 8) & 0x0F;
+	DWORD target = (DWORD) R(br_n) + PC + 4;
 
 	PR = PC + 4;
 
@@ -115,8 +126,8 @@ OPCODE(bsrf109) // BSRF Rn (0000nnnn 00000011)
 
 OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 {
-	short n = (arg >> 8) & 0x0F;
-	DWORD target = R(n);
+	br_n = (arg >> 8) & 0x0F;
+	DWORD target = R(br_n);
 
 /*	delayslot = R(n);
 	PC_func = PC_f_delayslot; */
@@ -136,8 +147,8 @@ OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 
 OPCODE(jsr111) // JSR @Rn (0100nnnn 00001011)
 {
-	short n = (arg >> 8) & 0x0F;
-	DWORD target = R(n);
+	br_n = (arg >> 8) & 0x0F;
+	DWORD target = R(br_n);
 
 	PR = PC + 4;
 
@@ -185,15 +196,11 @@ OPCODE(bfs) // 10001111dddddddd
 
 /*		delayslot = SignExtend8(arg & 0x00FF)*2 + PC + 4;;
 		PC_func = PC_f_delayslot; */
-		DWORD nextpc =SignExtend8(arg & 0x00FF)*2 + PC + 4;
-		#ifdef _fast_interpreter_
-		if (nextpc < PC)
-			in_loop=1; // we're in a loop
-		#endif
+		ddisp =SignExtend8(arg & 0x00FF)*2 + PC + 4;
 		PC += 2;
 		core.execute(*(WORD *) get_memory_pointer(PC));
 
-		PC = nextpc;
+		PC = ddisp;
 
 #ifdef DEBUG_BRANCH
 		if (delayslot == 0)
@@ -212,8 +219,9 @@ OPCODE(bt104) // 10001001 dddddddd
 	{
 /*		NEXTPC = SignExtend8(arg & 0xFF)*2 + PC + 4; // antes era disp = ...
 		PC_func = PC_f_nextpc; */
+		ddisp = SignExtend8(arg & 0xFF)*2 + PC + 4;
 		
-		PC = SignExtend8(arg & 0xFF)*2 + PC + 4;
+		PC = ddisp;
 
 #ifdef DEBUG_BRANCH
 		if (NEXTPC == 0)
@@ -233,12 +241,12 @@ OPCODE(bts105) // 10001101 dddddddd
 /*		delayslot = SignExtend8(arg & 0xFF)*2 + PC + 4; // antes era disp = ...
 		PC_func = PC_f_delayslot; */
 
-		DWORD nextpc = SignExtend8(arg & 0xFF)*2 + PC + 4;
+		ddisp = SignExtend8(arg & 0xFF)*2 + PC + 4;
 
 		PC += 2;
   		core.execute(*(WORD *) get_memory_pointer(PC));
   		
-  		PC = nextpc;
+  		PC = ddisp;
 
 #ifdef DEBUG_BRANCH
 		if (delayslot == 0)

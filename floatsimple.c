@@ -8,6 +8,14 @@
 double regN;
 double regM;
 
+#ifdef _fast_interpreter_
+#define fs_n jumptable.jit_array[jumptable.current_pos].cache.n
+#define fs_m  jumptable.jit_array[jumptable.current_pos].cache.m
+#else
+short fs_n=0;
+short fs_m=0;
+#endif
+
 __inline__ void extract_double(double *  i,short idx)
 {
 	// damos vuelta los bytes
@@ -30,29 +38,29 @@ __inline__ void put_double(short idx, double * src)
 
 OPCODE(fldi0170) // FLDI0 FRn (1111nnnn 10001101)
 {
-	short n = (arg >> 8) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
 
-	FR(n) = (float) 0.0;
+	FR(fs_n) = (float) 0.0;
 
 	PC += 2;
 }
 
 OPCODE(fldi1171) // FLDI1 FRn (1111nnnn 10011101)
 {
-	short n = (arg >> 8) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
 
-	FR(n) = (float) 1.0;
+	FR(fs_n) = (float) 1.0;
 
 	PC += 2;
 }
 
 OPCODE(fmov172) // FMOV FRm, FRn : FRm -> FRn (1111nnnn mmmm1100)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
 //	FR(n) = FR(m);
-	memcpy(&FR(n), &FR(m), sizeof(float));
+	memcpy(&FR(fs_n), &FR(fs_m), sizeof(float));
 
 	PC += 2;
 
@@ -63,10 +71,10 @@ OPCODE(fmov172) // FMOV FRm, FRn : FRm -> FRn (1111nnnn mmmm1100)
 
 OPCODE(fmovs173) // FMOV.S @Rm, FRn : (Rm) -> FRn (1111nnnn mmmm1000)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 	
-	memread(R(m), &FR(n), sizeof(DWORD));
+	memread(R(fs_m), &FR(fs_n), sizeof(DWORD));
 
 	PC += 2;
 
@@ -77,11 +85,10 @@ OPCODE(fmovs173) // FMOV.S @Rm, FRn : (Rm) -> FRn (1111nnnn mmmm1000)
 
 OPCODE(fmovs174) // FMOV.S @(R0, Rm), FRn
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
-
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 	
-	memread(R(m) + R(0), &FR(n), sizeof(float));
+	memread(R(fs_m) + R(0), &FR(fs_n), sizeof(float));
 
 	PC += 2;
 
@@ -92,17 +99,17 @@ OPCODE(fmovs174) // FMOV.S @(R0, Rm), FRn
 
 OPCODE(fmovs175) // FMOV.S @Rm+, FRn (1111nnnn mmmm1001)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 /*	float f;
 
 	ReadMemoryL(R(m), &f);
 	
 	FR(n) = (float) f; */
 	
-	memread(R(m), &FR(n), sizeof(float));
+	memread(R(fs_m), &FR(fs_n), sizeof(float));
 
-	R(m) += 4;
+	R(fs_m) += 4;
 	
 	PC += 2;
 
@@ -113,10 +120,10 @@ OPCODE(fmovs175) // FMOV.S @Rm+, FRn (1111nnnn mmmm1001)
 
 OPCODE(fmovs176) // FMOV.S FRm, @Rn : FRm -> (Rn) (1111nnnn mmmm1010)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	WriteMemoryF(R(n), &FR(m));
+	WriteMemoryF(R(fs_n), &FR(fs_m));
 
 	PC += 2;
 
@@ -127,12 +134,12 @@ OPCODE(fmovs176) // FMOV.S FRm, @Rn : FRm -> (Rn) (1111nnnn mmmm1010)
 
 OPCODE(fmovs177) // FMOV.S FRm, @-Rn (1111nnnn mmmm1011)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	R(n) -= 4;
+	R(fs_n) -= 4;
 
-	WriteMemoryF(R(n), &FR(m));
+	WriteMemoryF(R(fs_n), &FR(fs_m));
 
 	PC += 2;
 
@@ -143,10 +150,10 @@ OPCODE(fmovs177) // FMOV.S FRm, @-Rn (1111nnnn mmmm1011)
 
 OPCODE(fmovs178) // FMOV.S FRm, @(R0, Rn) (1111nnnn mmmm0111)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	WriteMemoryF(R(0) + R(n), &FR(m));
+	WriteMemoryF(R(0) + R(fs_n), &FR(fs_m));
 
 	PC += 2;
 
@@ -157,20 +164,20 @@ OPCODE(fmovs178) // FMOV.S FRm, @(R0, Rn) (1111nnnn mmmm0111)
 
 OPCODE(fmov179) // FMOV DRm, DRn (1111nnn0 mmm01100)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+   	fs_n = (arg >> 9) & 0x07;
+	fs_m = (arg >> 5) & 0x07;
 
-	memcpy(&DR(n), &DR(m), sizeof(double));
+	memcpy(&DR(fs_n), &DR(fs_m), sizeof(double));
 
 	PC += 2;
 }
 
 OPCODE(fmov180) // FMOV @Rm, DRn (1111nnn0 mmmm1000)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 4) & 0x0F;
+   	fs_n = (arg >> 9) & 0x07;
+	fs_m = (arg >> 4) & 0x0F;
 
-	memread(R(m), &DR(n), sizeof(DWORD) * 2);
+	memread(R(fs_m), &DR(fs_n), sizeof(DWORD) * 2);
 
 	PC += 2;
 
@@ -181,12 +188,12 @@ OPCODE(fmov180) // FMOV @Rm, DRn (1111nnn0 mmmm1000)
 
 OPCODE(fmov182) // FMOV @Rm+, DRn (1111nnn0 mmmm1001)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 4) & 0x0F;
+   	fs_n = (arg >> 9) & 0x07;
+	fs_m = (arg >> 4) & 0x0F;
 
-	memread(R(m), &DR(n), sizeof(DWORD)*2);
+	memread(R(fs_m), &DR(fs_n), sizeof(DWORD)*2);
 
-  	  R(m) += 8;
+  	  R(fs_m) += 8;
 
 	PC += 2;
 
@@ -197,8 +204,8 @@ OPCODE(fmov182) // FMOV @Rm+, DRn (1111nnn0 mmmm1001)
 
 OPCODE(fmov184) // FMOV DRm, @-Rn (1111nnnn mmm01011)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
+   	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 5) & 0x07;
 /*	short offset;
 	
     if (IS_SET(FPSCR, FPSCR_FR))
@@ -210,10 +217,10 @@ OPCODE(fmov184) // FMOV DRm, @-Rn (1111nnnn mmm01011)
     
     memwrite(R(n), &float_registers[m*2 + offset], sizeof(float) * 2); */
 
-	R(n) -= 8;
+	R(fs_n) -= 8;
 
 //	doublewrite(R(n), DR_index(m));
-	memwrite(R(n), &DR(m), sizeof(DWORD));
+	memwrite(R(fs_n), &DR(fs_m), sizeof(DWORD));
 
 	PC += 2;
 
@@ -224,12 +231,12 @@ OPCODE(fmov184) // FMOV DRm, @-Rn (1111nnnn mmm01011)
 
 OPCODE(fmov185) // FMOV DRm, @(R0, Rn) (1111nnnn mmm00111)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
-	DWORD addr = R(0) + R(n);
+   	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 5) & 0x07;
+	DWORD addr = R(0) + R(fs_n);
 		
 //	doublewrite(addr, DR_index(m));
-	memwrite(addr, &DR(m), sizeof(DWORD)*2);
+	memwrite(addr, &DR(fs_m), sizeof(DWORD)*2);
 
 	PC += 2;
 
@@ -240,10 +247,10 @@ OPCODE(fmov185) // FMOV DRm, @(R0, Rn) (1111nnnn mmm00111)
 
 OPCODE(flds186) // FLDS FRm, FPUL (1111mmmm 00011101)
 {
-	short m = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 8) & 0x0F;
 
 //	FPUL = FR(m);
-	memcpy(&FPUL, &FR(m), sizeof(float));
+	memcpy(&FPUL, &FR(fs_m), sizeof(float));
 
 	PC += 2;
 
@@ -254,10 +261,10 @@ OPCODE(flds186) // FLDS FRm, FPUL (1111mmmm 00011101)
 
 OPCODE(fsts187) // FSTS FPUL, FRn (1111nnnn 00001101)
 {
-	short n = (arg >> 8) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
 
 //	FR(n) = FPUL;
-	memcpy(&FR(n), &FPUL, sizeof(float));
+	memcpy(&FR(fs_n), &FPUL, sizeof(float));
 
 	PC += 2;
 
@@ -268,8 +275,8 @@ OPCODE(fsts187) // FSTS FPUL, FRn (1111nnnn 00001101)
 
 OPCODE(fadd189) // FADD FRm, FRn : FRn + FRm -> FRn (1111nnnn mmmm0000)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
 /*	if (IS_SET(FPSCR, FPSCR_PR))
 	{
@@ -280,7 +287,7 @@ OPCODE(fadd189) // FADD FRm, FRn : FRn + FRm -> FRn (1111nnnn mmmm0000)
 		return;
 	} */
 
-	FR(n) += FR(m);
+	FR(fs_n) += FR(fs_m);
 
 	PC += 2;
 
@@ -291,10 +298,10 @@ OPCODE(fadd189) // FADD FRm, FRn : FRn + FRm -> FRn (1111nnnn mmmm0000)
 
 OPCODE(fcmpeq190) // FCMP/EQ FRm, FRn (1111nnnn mmmm0100)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	if (FR(m) == FR(n))
+	if (FR(fs_m) == FR(fs_n))
         SET_T
     else
         UNSET_T
@@ -308,8 +315,8 @@ OPCODE(fcmpeq190) // FCMP/EQ FRm, FRn (1111nnnn mmmm0100)
 
 OPCODE(fcmpgt191) // FCMP/GT FRm, FRn (1111nnnn mmmm0101)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
 /*	if (IS_SET(FPSCR, FPSCR_PR))
 	{
@@ -320,7 +327,7 @@ OPCODE(fcmpgt191) // FCMP/GT FRm, FRn (1111nnnn mmmm0101)
 		return;
 	} */
 
-	if (FR(n) > FR(m))
+	if (FR(fs_n) > FR(fs_m))
         SET_T
     else
         UNSET_T
@@ -334,8 +341,8 @@ OPCODE(fcmpgt191) // FCMP/GT FRm, FRn (1111nnnn mmmm0101)
 
 OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
 /*	if (IS_SET(FPSCR, FPSCR_PR))
 	{
@@ -346,9 +353,9 @@ OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 		return;
 	} */
 	
-	if (FR(m) == 0)
+	if (FR(fs_m) == 0)
 	{
-		logmsg("EXCEPTION: float_R(m) = 0, n:%d, m:%d\r\n", n, m);
+		logmsg("EXCEPTION: float_R(m) = 0, n:%d, m:%d\r\n", fs_n,fs_m);
 	}
 	else
 	{
@@ -356,7 +363,7 @@ OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 		fprintf(logfp, "fdiv192: n:%d, m:%d, fl_reg[n]=%f, fl_reg[m]=%f\r\n",
 			n, m, FR(n), FR(m));
 #endif
-		FR(n) /= FR(m);
+		FR(fs_n) /= FR(fs_m);
 #ifdef ASM_DEBUG
 		fprintf(logfp, "fdiv192: res=%f\r\n", FR(n));
 #endif
@@ -371,7 +378,7 @@ OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 
 OPCODE(float193) // FLOAT FPUL, FRn : (float) FPUL -> FRn (1111nnnn 00101101)
 {
-	short n = (arg >> 8) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
 	signed long l = (signed long) FPUL;
 /*	signed long l;
 	float f; */
@@ -385,7 +392,7 @@ OPCODE(float193) // FLOAT FPUL, FRn : (float) FPUL -> FRn (1111nnnn 00101101)
 /*	COPY_REG(l, FPUL);
 	f = (float) l; */
 
-	FR(n) = (float) l;
+	FR(fs_n) = (float) l;
 
 	PC += 2;
 
@@ -396,10 +403,10 @@ OPCODE(float193) // FLOAT FPUL, FRn : (float) FPUL -> FRn (1111nnnn 00101101)
 
 OPCODE(fmac194) // FMAC FR0, FRm, FRn (1111nnnn mmmm1110)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	FR(n) += FR(0) * FR(m);
+	FR(fs_n) += FR(0) * FR(fs_m);
 
 	PC += 2;
 
@@ -410,10 +417,10 @@ OPCODE(fmac194) // FMAC FR0, FRm, FRn (1111nnnn mmmm1110)
 
 OPCODE(fmul195) // FMUL FRn * FRm -> FRn (1111nnnn mmmm0010)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	FR(n) *= FR(m);
+	FR(fs_n) *= FR(fs_m);
 
 	PC += 2;
 
@@ -424,9 +431,9 @@ OPCODE(fmul195) // FMUL FRn * FRm -> FRn (1111nnnn mmmm0010)
 
 OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 {
-	short n = (arg >> 8) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
 
-	FR(n) *= -1;
+	FR(fs_n) *= -1;
 
 	PC += 2;
 
@@ -437,11 +444,11 @@ OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 
 OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 {
-	short n = (arg >> 8) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
 	#ifndef X86_OPT
 	FR(n) = sqrt(FR(n));
 	#else
- 	FR(n) = SIMDx86_sqrtf(FR(n));
+ 	FR(fs_n) = SIMDx86_sqrtf(FR(fs_n));
  	#endif
 	PC += 2;
 
@@ -452,10 +459,10 @@ OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 
 OPCODE(fsub198) // FSUB FRm, FRn (1111nnnn mmmm0001)
 {
-	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 4) & 0x0F;
+	fs_n = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 4) & 0x0F;
 
-	FR(n) -= FR(m);
+	FR(fs_n) -= FR(fs_m);
 
 	PC += 2;
 
@@ -466,7 +473,7 @@ OPCODE(fsub198) // FSUB FRm, FRn (1111nnnn mmmm0001)
 
 OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 {
-	short m = (arg >> 8) & 0x0F;
+	fs_m = (arg >> 8) & 0x0F;
 	signed long z;
 
 /*	if (IS_SET(FPSCR, FPSCR_PR))
@@ -485,7 +492,7 @@ OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 
 //	FPUL = (float) floor(FR(m));
 
-	z = (signed long) FR(m);
+	z = (signed long) FR(fs_m);
 	FPUL = z;
 
 /*	logmsg("ftrc199: FPUL=%x,%d FR[%d]=%x,%f\r\n",
@@ -502,21 +509,21 @@ OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 
 OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 {
-	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+	fs_n = (arg >> 9) & 0x07;
+	fs_m = (arg >> 5) & 0x07;
 // 	double x, y;
 
 //	memcpy(&x, &DR(m), sizeof(double));
 /*	memcpy(&x, &float_registers[DR_index(m)], sizeof(double)); */
 
-	extract_double(&regN, DR_index(m));
-	extract_double(&regM, DR_index(n));
+	extract_double(&regN, DR_index(fs_m));
+	extract_double(&regM, DR_index(fs_n));
 //	memcpy(&y, &DR(n), sizeof(double));
 
 
 	regM = regM + regN;
 
-	put_double(DR_index(n), &regM);
+	put_double(DR_index(fs_n), &regM);
 
 //    memcpy(&DR(n), &y, sizeof(float)*2);
 
@@ -530,12 +537,12 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 
 OPCODE(fcmpgt203) // FCMP/GT DRm, DRn (1111nnn0 mmm00101)
 {
-	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+	fs_n = (arg >> 9) & 0x07;
+	fs_m = (arg >> 5) & 0x07;
 // 	double drm, drn;
 
-	extract_double(&regM, DR_index(m));
-	extract_double(&regN, DR_index(n));
+	extract_double(&regM, DR_index(fs_m));
+	extract_double(&regN, DR_index(fs_n));
 
 	if (regN > regM)
 		SR_T=1;
@@ -551,14 +558,14 @@ OPCODE(fcmpgt203) // FCMP/GT DRm, DRn (1111nnn0 mmm00101)
 
 OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
 {
-	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+	fs_n = (arg >> 9) & 0x07;
+	fs_m = (arg >> 5) & 0x07;
 // 	double x, y;
 	
 /*	memcpy(&x, &DR(m), sizeof(float)*2);
 	memcpy(&y, &DR(n), sizeof(float)*2); */
-	extract_double(&regN, DR_index(m));
-	extract_double(&regM, DR_index(n));
+	extract_double(&regN, DR_index(fs_m));
+	extract_double(&regM, DR_index(fs_n));
 
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("fdiv204: x=%f, y=%f\r\n", x, y);
@@ -570,7 +577,7 @@ OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
   	regM  /= regN;
    
 //    memcpy(&DR(n), &y, sizeof(float)*2);
-	put_double(DR_index(n), &regM);
+	put_double(DR_index(fs_n), &regM);
 	
 	PC += 2;
 
@@ -581,7 +588,7 @@ OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
 
 OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
 {
-	int n = (arg >> 9) & 0x07;
+	fs_n = (arg >> 9) & 0x07;
 // 	double x;
 	signed long z = FPUL;
 	
@@ -596,7 +603,7 @@ OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
 //	print_double(x);
 
 //	memcpy(&DR(n), &x, sizeof(float)*2);
-	put_double(DR_index(n), &regN);
+	put_double(DR_index(fs_n), &regN);
 //	print_double(*(double *) &DR(n));
 
 	PC += 2;
@@ -609,14 +616,14 @@ OPCODE(float207) // FLOAT FPUL, DRn (1111nnn0 00101101)
 
 OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 {
-	short n = (arg >> 9) & 0x07;
+	fs_n = (arg >> 9) & 0x07;
 // 	double x;
-	extract_double(&regN, DR_index(n));
+	extract_double(&regN, DR_index(fs_n));
  	#ifndef X86_OPT
 	x = sqrt(x);
 	#else
  	regN = SIMDx86_sqrt(regN);
-	put_double(DR_index(n), &regN);
+	put_double(DR_index(fs_n), &regN);
 	#endif
 	PC += 2;
 
@@ -627,12 +634,12 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 
 OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 {
-	short m = (arg >> 9) & 0x07;
+	fs_m = (arg >> 9) & 0x07;
 // 	double x;
 	//signed long y;
 	
 //	memcpy(&x, &DR(m), sizeof(float)*2);
-	extract_double(&regN, DR_index(m));
+	extract_double(&regN, DR_index(fs_m));
 
 //	print_double(DR(m));
 //	print_double(x);
@@ -649,27 +656,4 @@ OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 #ifdef DEBUG_FLOAT_SIMPLE
 	logmsg("ftrc212: (CONVERSION FROM DOUBLE FLOAT TO SIGNED LONG) FPUL=%x,%d\r\n", (DWORD) FPUL, (signed long) FPUL);
 #endif
-}
-
-
-OPCODE(fabs258)
-{
-	short n = (arg >> 8) & 0x0F;
-	FR(n) = fabsf(FR(n));
-	PC+=2;
-}
-
-// we don't need to retrieve the double in this case just fabsf the n+1 float
-OPCODE(fabs244)
-{
-	short n = (arg >> 9) & 0x07;
-	FR(n+1) = fabsf(FR(n+1));
-	PC+=2;
-}
-
-OPCODE(fneg254)
-{
-	short n = (arg >> 9) & 0x07;
-	FR(n+1) = -FR(n+1);
-	PC+=2;
 }

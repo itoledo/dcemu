@@ -1,7 +1,7 @@
 #include "main.h"
 #include "intc.h"
 
-//  #define INT_QUEUE
+ #define INT_QUEUE
 
 #define SR_GET_IMASK() ((SR >> 4) & 0xF)
 

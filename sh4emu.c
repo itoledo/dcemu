@@ -6,7 +6,9 @@
 #include "floatsimple.h"
 #include "intc.h"
 
-
+#ifdef _fast_interpreter_
+op_jit jumptable;
+#endif
 sh4_cpu core;
 
 DWORD *		PTEL;		// Page Table Entry Low register
@@ -83,8 +85,12 @@ unsigned long NEXTPC = 0;
 FPR_BANK * BANK0; // 1st register bank
 FPR_BANK * BANK1; // 2nd register bank
 
-
-
+#ifdef _fast_interpreter_
+void init_cpu_jumptable(){
+// 	jumptable = (op_jit *) malloc(sizeof(op_jit);)
+	jumptable.current_pos=0;
+}
+#endif
 void reset()
 {
  FPSCR = 0x0004001; // Floating Point Status/Control Register
@@ -112,15 +118,15 @@ void close()
 
 }
 
-void run (WORD instr)
+void run(WORD arg)
 {
-(opcodes[oplist[instr]].funcion) (instr);
+	(opcodes[oplist[arg]].funcion) (arg);
 }
 
 #ifdef _fast_interpreter_
-void runBlock (void)
+void runCache (WORD arg)
 {
-	execute_loop();
+	(opcodes[oplist[arg]].funcion) (arg);
 }
 #endif
 
@@ -136,7 +142,7 @@ void initCpuSubSystem()
  core.closeCpu = &close;
  core.execute = &run;
  #ifdef _fast_interpreter_
- core.runBlock = &runBlock;
+ core.executeBlock = &runCache;
  #endif
  core.resetCpu();
 }

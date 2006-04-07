@@ -862,6 +862,9 @@ int main(int argc, char *argv[])
 	// we start the cpu
 	// allocating the current cpu
 	initCpuSubSystem();
+#ifdef _fast_interpreter_
+	init_cpu_jumptable();
+#endif
 //  	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
  	PC = 0x8c010000;
 //	PC = 0x00000000;

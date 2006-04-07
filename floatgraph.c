@@ -2,12 +2,23 @@
 #include <math.h>
 #include <SIMDx86/math.h>
 
+
+
+#ifdef _fast_interpreter_
+#define fg_n jumptable.jit_array[jumptable.current_pos].cache.n
+#define fg_m  jumptable.jit_array[jumptable.current_pos].cache.m
+#else
+short fg_n=0;
+short fg_m=0;
+#endif
+
+
 OPCODE(fmov221) // FMOV DRm, XDn (1111nnn1 mmm01100)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+   	fg_n = (arg >> 9) & 0x07;
+	fg_m = (arg >> 5) & 0x07;
 
-	memcpy(&XD(n), &DR(m), sizeof(float)*2);
+	memcpy(&XD(fg_n), &DR(fg_m), sizeof(float)*2);
 
 	PC += 2;
 
@@ -18,10 +29,10 @@ OPCODE(fmov221) // FMOV DRm, XDn (1111nnn1 mmm01100)
 
 OPCODE(fmov222) // FMOV XDm, DRn (1111nnn0 mmm11100)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+   	fg_n = (arg >> 9) & 0x07;
+	fg_m = (arg >> 5) & 0x07;
 
-	memcpy(&DR(n), &XD(m), sizeof(float)*2);
+	memcpy(&DR(fg_n), &XD(fg_m), sizeof(float)*2);
 
 	PC += 2;
 
@@ -32,10 +43,10 @@ OPCODE(fmov222) // FMOV XDm, DRn (1111nnn0 mmm11100)
 
 OPCODE(fmov223) // FMOV XDm, XDn (1111nnn1 mmm11100)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 5) & 0x07;
+   	fg_n = (arg >> 9) & 0x07;
+	fg_m = (arg >> 5) & 0x07;
 
-	memcpy(&XD(n), &XD(m), sizeof(float)*2);
+	memcpy(&XD(fg_n), &XD(fg_m), sizeof(float)*2);
 
 	PC += 2;
 
@@ -46,13 +57,13 @@ OPCODE(fmov223) // FMOV XDm, XDn (1111nnn1 mmm11100)
 
 OPCODE(fmov224) // FMOV @Rm, XDn (1111nnn1 mmmm1000)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 4) & 0x0F;
+   	fg_n = (arg >> 9) & 0x07;
+	fg_m = (arg >> 4) & 0x0F;
 
 /*	memread(R(m), &float_registers[XD_index(n)], sizeof(float));
 	memread(registers[m+4], &float_registers[XD_index(n)+1], sizeof(float)); */
 	
-	memread(R(m), &XD(n), sizeof(float)*2);
+	memread(R(fg_m), &XD(fg_n), sizeof(float)*2);
 
 	PC += 2;
 
@@ -63,12 +74,12 @@ OPCODE(fmov224) // FMOV @Rm, XDn (1111nnn1 mmmm1000)
 
 OPCODE(fmov225) // FMOV @Rm+, XDn (1111nnn1 mmmm1001)
 {
-   	short n = (arg >> 9) & 0x07;
-	short m = (arg >> 4) & 0x0F;
+   	fg_n = (arg >> 9) & 0x07;
+	fg_m = (arg >> 4) & 0x0F;
 
-	memread(R(m), &XD(n), sizeof(DWORD) * 2);
+	memread(R(fg_m), &XD(fg_n), sizeof(DWORD) * 2);
 
-    	R(m) += 8;
+    	R(fg_m) += 8;
 
 	PC += 2;
 
@@ -79,11 +90,11 @@ OPCODE(fmov225) // FMOV @Rm+, XDn (1111nnn1 mmmm1001)
 
 OPCODE(fmov226) // FMOV @(R0, Rm), XDn		(1111nnn1 mmmm0110)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
-	DWORD addr = R(0) + R(m);
+   	fg_n = (arg >> 8) & 0x0F;
+	fg_m = (arg >> 5) & 0x07;
+	DWORD addr = R(0) + R(fg_m);
 
-	memread(addr, &XD(n), sizeof(DWORD)*2);
+	memread(addr, &XD(fg_n), sizeof(DWORD)*2);
 
 	PC += 2;
 
@@ -94,10 +105,10 @@ OPCODE(fmov226) // FMOV @(R0, Rm), XDn		(1111nnn1 mmmm0110)
 
 OPCODE(fmov227) // FMOV XDm, @Rn (1111nnnn mmm11010)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
+   	fg_n = (arg >> 8) & 0x0F;
+	fg_m = (arg >> 5) & 0x07;
 
-	memwrite(R(n), &XD(m), sizeof(DWORD) * 2);
+	memwrite(R(fg_n), &XD(fg_m), sizeof(DWORD) * 2);
 
 	PC += 2;
 
@@ -108,12 +119,12 @@ OPCODE(fmov227) // FMOV XDm, @Rn (1111nnnn mmm11010)
 	
 OPCODE(fmov228) // FMOV XDm, @-Rn (1111nnnn mmm11011)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
+   	fg_n = (arg >> 8) & 0x0F;
+	fg_m = (arg >> 5) & 0x07;
 
-    R(n) -= 8;
+    R(fg_n) -= 8;
     
-    memwrite(R(n), &XD(m), sizeof(DWORD)*2);
+    memwrite(R(fg_n), &XD(fg_m), sizeof(DWORD)*2);
 
 	PC += 2;
 
@@ -124,11 +135,11 @@ OPCODE(fmov228) // FMOV XDm, @-Rn (1111nnnn mmm11011)
 
 OPCODE(fmov229) // FMOV XDm, @(R0, Rn) (1111nnnn mmm10111)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
-	DWORD addr = R(0) + R(n);
+   	fg_n = (arg >> 8) & 0x0F;
+	fg_m = (arg >> 5) & 0x07;
+	DWORD addr = R(0) + R(fg_n);
 
-	memwrite(addr, &XD(m), sizeof(DWORD)*2);
+	memwrite(addr, &XD(fg_m), sizeof(DWORD)*2);
 
 	PC += 2;
 
@@ -139,14 +150,14 @@ OPCODE(fmov229) // FMOV XDm, @(R0, Rn) (1111nnnn mmm10111)
 
 OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 {
-	short n = (arg >> 10) & 0x3;
-	short m = (arg >> 8) & 0x3;
+	fg_n = (arg >> 10) & 0x3;
+	fg_m = (arg >> 8) & 0x3;
 
 // #ifndef X86_OPT
-	FR(n+3) =	FR(m+0) * FR(n+0) +
-				FR(m+1) * FR(n+1) +
-				FR(m+2) * FR(n+2) +
-				FR(m+3) * FR(n+3);
+	FR(fg_n+3) =	FR(fg_m+0) * FR(fg_n+0) +
+				FR(fg_m+1) * FR(fg_n+1) +
+				FR(fg_m+2) * FR(fg_n+2) +
+				FR(fg_m+3) * FR(fg_n+3);
 // #else
 //  FR(n+3) = SIMDx86Vector_Dot(Vector(m),Vector(n));
 // #endif
@@ -155,7 +166,7 @@ OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 
 OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
 {
-	short n = (arg >> 10) & 0x3;
+	fg_n = (arg >> 10) & 0x3;
 #ifndef X86_OPT
 float v1, v2, v3, v4;
 /* matriz:
@@ -186,7 +197,7 @@ float v1, v2, v3, v4;
 	FR(4*n+2) = v3;
 	FR(4*n+3) = v4;
 #else
-SIMDx86Matrix_Vector4Multiply(Vector(n),XFMTRX);
+SIMDx86Matrix_Vector4Multiply(Vector(fg_n),XFMTRX);
 #endif
 
 	PC += 2;
@@ -194,11 +205,11 @@ SIMDx86Matrix_Vector4Multiply(Vector(n),XFMTRX);
 
 OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 {
-   	short n = (arg >> 8) & 0x0F;
+   	fg_n = (arg >> 8) & 0x0F;
 	#ifndef X86_OPT
 	FR(n) = (float) 1.0 / (float) sqrt(FR(n));
 	#else
-	FR(n) = SIMDx86_rsqrtf(FR(n));
+	FR(fg_n) = SIMDx86_rsqrtf(FR(fg_n));
 	#endif
 	PC += 2;
 
