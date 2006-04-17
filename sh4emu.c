@@ -142,7 +142,7 @@ void initCpuSubSystem()
  core.closeCpu = &close;
  core.execute = &run;
  #ifdef _fast_interpreter_
- core.executeBlock = &runCache;
+//  core.executeBlock = &runCache;
  #endif
  core.resetCpu();
 }

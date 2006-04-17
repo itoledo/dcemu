@@ -20,8 +20,8 @@ long s=0;
 #endif
 OPCODE(add39) // ADD Rm, Rn : Rn + Rm -> Rn (0011nnnn mmmm1100)
 {
-	ar_n = (arg >> 8) & 0x0F;
-	ar_m = (arg >> 4) & 0x0F;
+ 	ar_n = (arg >> 8) & 0x0F;
+ 	ar_m = (arg >> 4) & 0x0F;
 /*	signed long rm, rn;
 
 	COPY_REG(rm, R(ar_m));
@@ -42,8 +42,8 @@ OPCODE(add39) // ADD Rm, Rn : Rn + Rm -> Rn (0011nnnn mmmm1100)
 
 OPCODE(add40) // ADD #imm, Rn
 {
-	ar_n = (arg >> 8) & 0x0F;
-	s = SignExtend8(arg & 0xFF);
+ 	ar_n = (arg >> 8) & 0x0F;
+ 	s = SignExtend8(arg & 0xFF);
 /*	signed long rn;
 
 	COPY_REG(rn, R(ar_n));
@@ -62,7 +62,7 @@ OPCODE(add40) // ADD #imm, Rn
 
 OPCODE(addc41) // ADDC Rm, Rn (0011nnnn mmmm1110)
 {
-	ar_n = (arg >> 8) & 0x0F;
+ 	ar_n = (arg >> 8) & 0x0F;
 	ar_m = (arg >> 4) & 0x0F;
 	unsigned long tmp0, tmp1;
 	
@@ -91,8 +91,8 @@ OPCODE(addc41) // ADDC Rm, Rn (0011nnnn mmmm1110)
 
 OPCODE(cmpeq43) // CMP/EQ #imm, R0 (10001000 iiiiiiii)
 {
-	s = SignExtend8(arg & 0xFF);
-//	signed long r0;
+ 	s = SignExtend8(arg & 0xFF);
+// 	signed long r0;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/eq: r[0]=%x,%d,'%c' == #%x,%d,'%c' ?\r\n",
@@ -118,7 +118,7 @@ OPCODE(cmpeq43) // CMP/EQ #imm, R0 (10001000 iiiiiiii)
 OPCODE(cmpeq44) // CMP/EQ Rm, Rn (0011nnnn mmmm0000)
 {
 	ar_n = (arg >> 8) & 0x0F;
-	ar_m = (arg >> 4) & 0x0F;
+ 	ar_m = (arg >> 4) & 0x0F;
 //	signed long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
@@ -141,8 +141,8 @@ OPCODE(cmpeq44) // CMP/EQ Rm, Rn (0011nnnn mmmm0000)
 
 OPCODE(cmphs45) // CMP/HS Rm, Rn (0011nnnn mmmm0010)
 {
-	ar_n = (arg >> 8) & 0x0F;
-	ar_m = (arg >> 4) & 0x0F;
+ 	ar_n = (arg >> 8) & 0x0F;
+ 	ar_m = (arg >> 4) & 0x0F;
 //	unsigned long rm, rn;
 
 #ifdef DEBUG_ARITH_CMP
@@ -230,7 +230,7 @@ OPCODE(cmpgt48) // CMP/GT Rm, Rn (0011nnnn mmmm0111)
 OPCODE(cmppz49) // CMP/PZ Rn (0100nnnn 00010001)
 {
 	ar_n = (arg >> 8) & 0x0F;
-//	signed long rn;
+// 	signed long rn;
 
 #ifdef DEBUG_ARITH_CMP
     logmsg("cmp/pz: r[%d]=%x >= 0 ?\r\n", n, (signed long) R(ar_n));
@@ -249,7 +249,7 @@ OPCODE(cmppz49) // CMP/PZ Rn (0100nnnn 00010001)
 
 OPCODE(cmppl50) // CMP/PL Rn (0100nnnn 00010101)
 {
-	ar_n = (arg >> 8) & 0x0F;
+ 	ar_n = (arg >> 8) & 0x0F;
 //	signed long rn;
 
 #ifdef DEBUG_ARITH_CMP
@@ -329,7 +329,7 @@ OPCODE(div0s53) // DIV0S Rm, Rn (0010nnnn mmmm0111)
 OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
 {
 	ar_n = (arg >> 8) & 0x0F;
-	ar_m = (arg >> 4) & 0x0F;
+ 	ar_m = (arg >> 4) & 0x0F;
     unsigned long tmp0;
     unsigned char old_q,tmp1;
     
@@ -478,8 +478,8 @@ OPCODE(div0u54) // DIV0U (00000000 00011001)
 
 OPCODE(dmulsl55) // DMULS.L Rm, Rn (0011nnnn mmmm1101)
 {
-	ar_n = (arg >> 8) & 0x0F;
-	ar_m = (arg >> 4) & 0x0F;
+ 	ar_n = (arg >> 8) & 0x0F;
+ 	ar_m = (arg >> 4) & 0x0F;
 	signed long long x;
 	
 	x = (signed long long) (signed long) R(ar_n) * (signed long long) (signed long) R(ar_m);
@@ -522,7 +522,8 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 
 OPCODE(dt) // DT Rn (0100nnnn 00010000)
 {
-	ar_n = (arg >> 8) & 0x0F;
+
+ 	ar_n = (arg >> 8) & 0x0F;
 
 #ifdef DEBUG_ARITH
 	logmsg("dt: r[%d]=%x\r\n", n, R(ar_n));

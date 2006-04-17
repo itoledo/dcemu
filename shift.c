@@ -16,7 +16,7 @@ short st_m=0;
 
 OPCODE(rotl86) // ROTL Rn : T <- Rn <- MSB (0100nnnn 00000100)
 {
-	st_n = (arg >> 8) & 0x0F;
+ 	st_n = (arg >> 8) & 0x0F;
 
 	if (R(st_n) & 0x80000000)
 		SET_T
@@ -120,8 +120,8 @@ OPCODE(rotcr89) // ROTCR Rn (0100nnnn 00100101)
 
 OPCODE(shad90) // SHAD Rm, Rn (0100nnnn mmmm1100)
 {
-	st_n = (arg >> 8) & 0x0F;
-	st_m = (arg >> 4) & 0x0F;
+ 	st_n = (arg >> 8) & 0x0F;
+ 	st_m = (arg >> 4) & 0x0F;
 //	signed long rm;
 	long amount;
 
@@ -241,7 +241,7 @@ OPCODE(shld93) // SHLD Rm, Rn (0100nnnn mmmm1101)
 
 OPCODE(shll94) // SHLL Rn : T <- Rn <- 0 (0100nnnn 00000000)
 {
-	st_n = (arg >> 8) & 0x0F;
+ 	st_n = (arg >> 8) & 0x0F;
 
 #ifdef DEBUG_SHIFT
     logmsg("shll: antes %x\r\n", R(st_n));
@@ -305,7 +305,7 @@ OPCODE(shll2) // SHLL2 Rn: Rn << 2 -> Rn (0100nnnn 00001000)
 
 OPCODE(shlr2) // SHLR2 Rn: Rn >> 2 -> Rn (0100nnnn 00001001)
 {
-	st_n = (arg >> 8) & 0x0F;
+ 	st_n = (arg >> 8) & 0x0F;
 
 	R(st_n) >>= 2;
 	
@@ -358,7 +358,7 @@ OPCODE(shlr8) // SHLR8 Rn (0100nnnn 00011001)
 
 OPCODE(shll16) // SHLL16 Rn (0100nnnn 00101000)
 {
-	st_n = (arg >> 8) & 0x0F;
+ 	st_n = (arg >> 8) & 0x0F;
 
 #ifdef ASM_DEBUG
 	logmsg("shll16: n:%d, reg[n]=%d\r\n", n, R(st_n));

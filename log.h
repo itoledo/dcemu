@@ -48,6 +48,7 @@ struct st_cmd
 	const int		params;
 //	opcode_log_f *	logfunc;
 	opcode_f *		funcion;
+// 	const  int			fd;
 	const long		restriccion;
 	unsigned long	llamadas;
 };

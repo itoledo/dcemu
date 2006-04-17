@@ -193,8 +193,8 @@ struct st_cmd opcodes[] =
 	{ 0x0012, 0xF0FF, "STC",	OP_T_GBR_RN,			stc150	},
 	{ 0x0022, 0xF0FF, "STC",	OP_T_VBR_RN,			stc149 },
 	{ 0x0032, 0xF0FF, "STC",	OP_T_SSR_RN,			stc152	}, // 150
-	{ 0x0042, 0xF0FF, "STC",	OP_T_SPC_RN,			stc153	},
-	{ 0x003A, 0xF0FF, "STC",	OP_T_SGR_RN,			stcn154},
+	{ 0x0042, 0xF0FF, "STC",	OP_T_SPC_RN,			NOIMP	},
+	{ 0x003A, 0xF0FF, "STC",	OP_T_SGR_RN,			NOIMP	},
 	{ 0x00FA, 0xF0FF, "STC",	OP_T_DBR_RN,			stc155	},
 	{ 0x0082, 0xF08F, "STC",	OP_T_RM_BANK_RN,		stc154	}, // REVISAR
 	{ 0x4003, 0xF0FF, "STC.L",	OP_T_SR_AT_MIN_RN,		stcl155	},
@@ -291,7 +291,6 @@ struct st_cmd opcodes[] =
 
 	{ 0, 0, NULL, 0, (void *) NULL }
 };
-
 
 int find_opcode(DWORD mempos)
 {
@@ -414,7 +413,7 @@ void initopcodes()
 	int i; int i2;
 	// a armar las 4 listas
 
-	idx_NOIMP = findopcode(0x0000, 0xFFFF);
+	idx_NOIMP		= findopcode(0x0000, 0xFFFF);
 
 	for (i2 = 0; i2<65536; i2++)
 	{

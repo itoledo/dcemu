@@ -20,14 +20,14 @@ DWORD bdisp=0;
 #endif
 OPCODE(bf) // BF label (10001011 ssssssss)
 {
-//	DWORD s = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
+// 	ddisp =
 
 	if (!IS_SR_T())
 	{
 //		NEXTPC = s;
 /*		NEXTPC = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
 		PC_func = PC_f_nextpc; */
-		PC = SignExtend8(arg & 0x00FF)*2 + 4 + PC;
+		PC =  SignExtend8(arg & 0x00FF)*2 + 4 + PC;;
 #ifdef DEBUG_BRANCH
 		if (NEXTPC == 0)
 		{
@@ -41,7 +41,7 @@ OPCODE(bf) // BF label (10001011 ssssssss)
 
 OPCODE(bra) // BRA label (1010dddd dddddddd)
 {
-	ddisp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
+ 	ddisp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
 
 	//	fprintf(fp, "Cambiando PC de %x a %x. arg %x\r\n", PC, disp, arg & 0x0FFF);
 /*	delayslot = disp;
@@ -59,7 +59,7 @@ OPCODE(bra) // BRA label (1010dddd dddddddd)
 
 OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 {
-	br_n = (arg >> 8) & 0x0F;
+ 	br_n = (arg >> 8) & 0x0F;
 	DWORD target = (DWORD) R(br_n) + PC + 4;
 
 /*	delayslot = target;
@@ -80,7 +80,7 @@ OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 
 OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 {
-	ddisp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
+ 	ddisp = SignExtend12(arg & 0x0FFF) * 2 + PC + 4;
 
 	PR = PC + 4;
 
@@ -147,7 +147,7 @@ OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 
 OPCODE(jsr111) // JSR @Rn (0100nnnn 00001011)
 {
-	br_n = (arg >> 8) & 0x0F;
+ 	br_n = (arg >> 8) & 0x0F;
 	DWORD target = R(br_n);
 
 	PR = PC + 4;

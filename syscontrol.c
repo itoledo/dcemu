@@ -127,7 +127,7 @@ OPCODE(ldcl122) // LDC.L @Rm+, SR (0100mmmm 00000111)
 
 OPCODE(ldcl123) // LDC.L @Rm+, GBR (0100mmmm 00010111)
 {
-	sys_m = (arg >> 8) & 0x0F;
+ 	sys_m = (arg >> 8) & 0x0F;
 
 	ReadMemoryL(R(sys_m), &GBR);
 
@@ -260,7 +260,7 @@ OPCODE(lds132) // LDS Rm, PR : Rm -> PR (0100mmmm 00101010)
 
 OPCODE(ldsl133) // LDS.L @Rm+, MACH (0100mmmm 00000110)
 {
-	sys_m = (arg >> 8) & 0x0F;
+ 	sys_m = (arg >> 8) & 0x0F;
 
 	ReadMemoryL(R(sys_m), (DWORD *) &MACH);
 
@@ -409,8 +409,7 @@ OPCODE(stc152) // STC SSR, Rn : SSR -> Rn (0000nnnn 00110010)
 }
 
 OPCODE(stc150) // STC GBR, Rn 
-{
-	sys_n = (arg >> 8) & 0x0F;
+{ 	sys_n = (arg >> 8) & 0x0F;
 
 	R(sys_n) = GBR;
 
@@ -449,7 +448,7 @@ OPCODE(stc153) // STC SPC, Rn
 
 OPCODE(stcn154) // STC SPC, Rn 
 {
-	sys_n = (arg >> 8) & 0x0F;
+sys_n = (arg >> 8) & 0x0F;
 
 	R(sys_n) = SGR;
 
@@ -462,8 +461,8 @@ OPCODE(stcn154) // STC SPC, Rn
 
 OPCODE(stc154) // STC Rm_BANK, Rn (0000nnnn 1mmm0010)
 {
-	sys_n = (arg >> 8) & 0x0F;
-	sys_m = (arg >> 4) & 0x07;
+sys_n = (arg >> 8) & 0x0F;
+sys_m = (arg >> 4) & 0x07;
 
 	R(sys_n) = R_BANK(sys_m);
 
@@ -491,7 +490,7 @@ OPCODE(stcl155) // STC.L SR, @-Rn (0100nnnn 00000011)
 
 OPCODE(stcl156) // STC.L GBR, @-Rn (0100nnnn 00010011)
 {
-	sys_n = (arg >> 8) & 0x0F;
+sys_n = (arg >> 8) & 0x0F;
 
     R(sys_n) -= 4;
     
@@ -502,7 +501,7 @@ OPCODE(stcl156) // STC.L GBR, @-Rn (0100nnnn 00010011)
 
 OPCODE(stcl157) // STC.L VBR, @-Rn (0100nnnn 00100011)
 {
-	sys_n = (arg >> 8) & 0x0F;
+  sys_n = (arg >> 8) & 0x0F;
 
     R(sys_n) -= 4;
     
@@ -517,7 +516,7 @@ OPCODE(stcl157) // STC.L VBR, @-Rn (0100nnnn 00100011)
 
 OPCODE(stcl158) // STC.L SSR, @-Rn (0100nnnn 00110011)
 {
-	sys_n = (arg >> 8) & 0x0F;
+  sys_n = (arg >> 8) & 0x0F;
 
     R(sys_n) -= 4;
     
@@ -532,7 +531,7 @@ OPCODE(stcl158) // STC.L SSR, @-Rn (0100nnnn 00110011)
 
 OPCODE(stcl159) // STC.L SPC, @-Rn (0100nnnn 00100011)
 {
-	sys_n = (arg >> 8) & 0x0F;
+   sys_n = (arg >> 8) & 0x0F;
 
     R(sys_n) -= 4;
     
@@ -547,7 +546,7 @@ OPCODE(stcl159) // STC.L SPC, @-Rn (0100nnnn 00100011)
 
 OPCODE(stcl160) // STC.L SGR, @-Rn (0100nnnn 00110010)
 {
-	sys_n = (arg >> 8) & 0x0F;
+ 	sys_n = (arg >> 8) & 0x0F;
 	
 	R(sys_n) -= 4;
 	
@@ -569,8 +568,9 @@ OPCODE(stcl161) // STC.L DBR, @-Rn (0100nnnn 11110010)
 
 OPCODE(stcl162) // STC.L Rm_BANK, @-Rn (0100nnnn 1mmm0011)
 {
+
 	sys_n = (arg >> 8) & 0x0F;
-	sys_m = (arg >> 4) & 0x07;
+ 	sys_m = (arg >> 4) & 0x07;
 	
 	R(sys_n) -= 4;
 	
@@ -585,7 +585,7 @@ OPCODE(stcl162) // STC.L Rm_BANK, @-Rn (0100nnnn 1mmm0011)
 
 OPCODE(sts163) // STS MACH, Rn : MACH -> Rn (0000nnnn 00001010)
 {
-	sys_n = (arg >> 8) & 0x0F;
+ 	sys_n = (arg >> 8) & 0x0F;
 
 //	R(sys_n) = MACH;
 	COPY_REG(R(sys_n), MACH);
@@ -599,7 +599,7 @@ OPCODE(sts163) // STS MACH, Rn : MACH -> Rn (0000nnnn 00001010)
 
 OPCODE(sts164) // STS MACL, Rn : MACL -> Rn (0000nnnn 00011010)
 {
-	sys_n = (arg >> 8) & 0x0F;
+ 	sys_n = (arg >> 8) & 0x0F;
 
 //	R(sys_n) = MACL;
 	COPY_REG(R(sys_n), MACL);
@@ -626,7 +626,7 @@ OPCODE(sts165) // STS PR, Rn : PR -> Rn (0000nnnn 00101010)
 
 OPCODE(stsl166) // STS.L MACH, @-Rn (0100nnnn 00000010)
 {
-	sys_n = (arg >> 8) & 0x0F;
+ 	sys_n = (arg >> 8) & 0x0F;
 
 	R(sys_n) -= 4;
 
@@ -641,7 +641,7 @@ OPCODE(stsl166) // STS.L MACH, @-Rn (0100nnnn 00000010)
 
 OPCODE(stsl167) // STS.L MACL, @-Rn (0100nnnn 00010010)
 {
-	sys_n = (arg >> 8) & 0x0F;
+ 	sys_n = (arg >> 8) & 0x0F;
 
 	R(sys_n) -= 4;
 
@@ -656,7 +656,7 @@ OPCODE(stsl167) // STS.L MACL, @-Rn (0100nnnn 00010010)
 
 OPCODE(stsl168) // STS.L PR, @-Rn : Rn - 4 -> Rn, PR -> (Rn) (0100nnnn 00100010)
 {
-	sys_n = (arg >> 8) & 0x0F;
+ 	sys_n = (arg >> 8) & 0x0F;
 
 	R(sys_n) -= 4;
 
@@ -694,7 +694,7 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 
 OPCODE(ldc122) // LDC Rm, DBR
 {
-	sys_m = (arg >> 8) & 0x0F;
+ 	sys_m = (arg >> 8) & 0x0F;
 
 	ReadMemoryL(R(sys_m), &DBR);
 
