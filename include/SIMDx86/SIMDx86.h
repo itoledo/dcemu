@@ -15,6 +15,7 @@
 #include <SIMDx86/matrix.h> /* Matrix routines */
 #include <SIMDx86/vector.h> /* Vector routines */
 #include <SIMDx86/quaternion.h> /* Quaternion routines */
+#include <SIMDx86/sphere.h> /* Sphere routines */
 
 #define SIMDx86_emms()	asm("emms\n")
 #define SIMDx86_femms() asm("femms\n")

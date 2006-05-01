@@ -8,17 +8,17 @@
 #ifndef _SIMDX86_VERSION_H
 #define _SIMDX86_VERSION_H
 
-/* Compile Time Constants for v0.2.1 */
+/* Compile Time Constants for v0.3.0 */
 #define SIMDX86_VERSION_MAJOR		0
-#define SIMDX86_VERSION_MINOR		2
-#define SIMDX86_VERSION_REVISION	1
+#define SIMDX86_VERSION_MINOR		3
+#define SIMDX86_VERSION_REVISION	0
 
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Runtime (Linkage) Constants for v0.2 */
+/* Runtime (Linkage) Constants for v0.3 */
 extern int SIMDx86_GetMajorVersion();
 extern int SIMDx86_GetMinorVersion();
 extern int SIMDx86_GetRevisionVersion();

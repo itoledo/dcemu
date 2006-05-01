@@ -30,6 +30,7 @@ void SIMDx86Vector_DiffOf(SIMDx86Vector* pOut, const SIMDx86Vector* pLeft, const
 void SIMDx86Vector_Scale(SIMDx86Vector* pOut, float scalar);
 void SIMDx86Vector_ScaleOf(SIMDx86Vector* pOut, const SIMDx86Vector* pIn, float scalar);
 float SIMDx86Vector_Dot(const SIMDx86Vector* pSrc1, const SIMDx86Vector* pSrc2);
+float SIMDx86Vector_Dot4(const float* pSrc4D1, const float* pSrc4D2);
 float SIMDx86Vector_LengthSq(const SIMDx86Vector* pVec);
 float SIMDx86Vector_Length(const SIMDx86Vector* pVec);
 void SIMDx86Vector_Cross(SIMDx86Vector* pLeft, const SIMDx86Vector* pRight);
