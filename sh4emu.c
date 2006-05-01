@@ -113,7 +113,7 @@ void reset()
  core.context.cycles = 0;
 }
 
-void close()
+void Close()
 {
 
 }
@@ -139,7 +139,7 @@ void initCpuSubSystem()
  core.context.XF_BANK = BANK1;
  // setting up the function pointers
  core.resetCpu = &reset;
- core.closeCpu = &close;
+ core.closeCpu = &Close;
  core.execute = &run;
  #ifdef _fast_interpreter_
 //  core.executeBlock = &runCache;
