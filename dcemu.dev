@@ -1,11 +1,11 @@
 [Project]
 FileName=dcemu.dev
 Name=dcemu
-UnitCount=49
+UnitCount=50
 Type=0
 Ver=1
 ObjFiles=
-Includes=E:\Dev-Cpp\include\SDL
+Includes=C:\Dev-Cpp\include\SDL
 Libs=
 PrivateResource=dcemu_private.rc
 ResourceIncludes=
@@ -398,26 +398,6 @@ OverrideBuildCmd=0
 BuildCmd=
 
 [Unit36]
-FileName=sh4.h
-CompileCpp=0
-Folder=
-Compile=1
-Link=1
-Priority=1000
-OverrideBuildCmd=0
-BuildCmd=
-
-[Unit37]
-FileName=sh4.c
-CompileCpp=0
-Folder=
-Compile=1
-Link=1
-Priority=1000
-OverrideBuildCmd=0
-BuildCmd=
-
-[Unit38]
 FileName=debug.c
 CompileCpp=0
 Folder=
@@ -427,7 +407,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit39]
+[Unit37]
 FileName=debug.h
 CompileCpp=0
 Folder=
@@ -437,7 +417,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit40]
+[Unit38]
 FileName=BFont.h
 CompileCpp=0
 Folder=dcemu
@@ -447,7 +427,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit41]
+[Unit39]
 FileName=graficos.h
 CompileCpp=0
 Folder=
@@ -457,7 +437,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit42]
+[Unit40]
 FileName=iso.c
 CompileCpp=0
 Folder=
@@ -467,7 +447,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit43]
+[Unit41]
 FileName=iso.h
 CompileCpp=0
 Folder=
@@ -477,7 +457,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit44]
+[Unit42]
 FileName=scramble.c
 CompileCpp=0
 Folder=dcemu
@@ -487,7 +467,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit45]
+[Unit43]
 FileName=gui.cpp
 CompileCpp=1
 Folder=
@@ -497,7 +477,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=$(CPP) -c gui.cpp -o ./obj/gui.o $(CXXFLAGS)
 
-[Unit46]
+[Unit44]
 FileName=gui.h
 CompileCpp=0
 Folder=
@@ -507,7 +487,7 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit47]
+[Unit45]
 FileName=glops.c
 CompileCpp=0
 Folder=
@@ -517,10 +497,30 @@ Priority=1000
 OverrideBuildCmd=0
 BuildCmd=
 
-[Unit48]
+[Unit46]
 FileName=glops.h
 CompileCpp=0
 Folder=
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit47]
+FileName=scramble.h
+CompileCpp=0
+Folder=
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit48]
+FileName=sh4emu.c
+CompileCpp=0
+Folder=dcemu
 Compile=1
 Link=1
 Priority=1000
@@ -538,9 +538,19 @@ OverrideBuildCmd=0
 BuildCmd=
 
 [Unit49]
-FileName=scramble.h
+FileName=sh4emu.h
 CompileCpp=0
-Folder=
+Folder=dcemu
+Compile=1
+Link=1
+Priority=1000
+OverrideBuildCmd=0
+BuildCmd=
+
+[Unit50]
+FileName=lnxdefs.h
+CompileCpp=0
+Folder=dcemu
 Compile=1
 Link=1
 Priority=1000

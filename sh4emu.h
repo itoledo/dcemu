@@ -8,7 +8,7 @@
 
 #include "options.h"
 #include "opcodes.h"
-#if defined (WIN32)
+#ifdef WIN32
 #include <windows.h>
 #elif (__GNUC__)
 #include <string.h>
@@ -17,13 +17,6 @@
 #include "mem.h"
 
 // data format on the sh4
-
-#define FLOAT float
-#define DOUBLE double
-
-typedef short bool;
-#define true 1
-#define false 0
 							
 extern DWORD *	PTEL;		// Page Table Entry Low register
 							

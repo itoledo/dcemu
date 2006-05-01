@@ -446,7 +446,7 @@ OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 {
 	fs_n = (arg >> 8) & 0x0F;
 	#ifndef X86_OPT
-	FR(n) = sqrt(FR(n));
+	FR(fs_n) = sqrt(FR(fs_n));
 	#else
  	FR(fs_n) = SIMDx86_sqrtf(FR(fs_n));
  	#endif
@@ -618,9 +618,11 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 {
 	fs_n = (arg >> 9) & 0x07;
 // 	double x;
+
 	extract_double(&regN, DR_index(fs_n));
  	#ifndef X86_OPT
-	x = sqrt(x);
+	regN = sqrt(regN);
+	put_double(DR_index(fs_n), &regN);
 	#else
  	regN = SIMDx86_sqrt(regN);
 	put_double(DR_index(fs_n), &regN);

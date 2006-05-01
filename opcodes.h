@@ -1,6 +1,8 @@
 #ifndef _OPCODES_H_
 #define _OPCODES_H_
 
+#include "main.h"
+
 int find_opcode(DWORD mempos);
 void initopcodes();
 

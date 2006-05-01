@@ -175,27 +175,27 @@ float v1, v2, v3, v4;
 	XF2		XF6		XF10	XF14
 	XF3		XF7		XF11	XF15 */
 
-	v1	=	XF(0) * FR(4*n+0) +
-				XF(4) * FR(4*n+1) +
-				XF(8) * FR(4*n+2) +
-				XF(12) * FR(4*n+3);
-	v2 =	XF(1) * FR(4*n+0) +
-				XF(5) * FR(4*n+1) +
-				XF(9) * FR(4*n+2) +
-				XF(13) * FR(4*n+3);
-	v3 =	XF(2) * FR(4*n+0) +
-				XF(6) * FR(4*n+1) +
-				XF(10) * FR(4*n+2) +
-				XF(14) * FR(4*n+3);
-	v4 =	XF(3) * FR(4*n+0) +
-				XF(7) * FR(4*n+1) +
-				XF(11) * FR(4*n+2) +
-				XF(15) * FR(4*n+3);
+	v1	=	XF(0) * FR(4*fg_n+0) +
+				XF(4) * FR(4*fg_n+1) +
+				XF(8) * FR(4*fg_n+2) +
+				XF(12) * FR(4*fg_n+3);
+	v2 =	XF(1) * FR(4*fg_n+0) +
+				XF(5) * FR(4*fg_n+1) +
+				XF(9) * FR(4*fg_n+2) +
+				XF(13) * FR(4*fg_n+3);
+	v3 =	XF(2) * FR(4*fg_n+0) +
+				XF(6) * FR(4*fg_n+1) +
+				XF(10) * FR(4*fg_n+2) +
+				XF(14) * FR(4*fg_n+3);
+	v4 =	XF(3) * FR(4*fg_n+0) +
+				XF(7) * FR(4*fg_n+1) +
+				XF(11) * FR(4*fg_n+2) +
+				XF(15) * FR(4*fg_n+3);
 
-	FR(4*n+0) = v1;
-	FR(4*n+1) = v2;
-	FR(4*n+2) = v3;
-	FR(4*n+3) = v4;
+	FR(4*fg_n+0) = v1;
+	FR(4*fg_n+1) = v2;
+	FR(4*fg_n+2) = v3;
+	FR(4*fg_n+3) = v4;
 #else
 SIMDx86Matrix_Vector4Multiply(Vector(fg_n),XFMTRX);
 #endif
@@ -207,7 +207,7 @@ OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 {
    	fg_n = (arg >> 8) & 0x0F;
 	#ifndef X86_OPT
-	FR(n) = (float) 1.0 / (float) sqrt(FR(n));
+	FR(fg_n) = (float) 1.0 / (float) sqrt(FR(fg_n));
 	#else
 	FR(fg_n) = SIMDx86_rsqrtf(FR(fg_n));
 	#endif
