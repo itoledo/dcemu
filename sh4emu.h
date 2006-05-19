@@ -234,6 +234,7 @@ struct context_t
 	FPR_BANK * XF_BANK;
 };
 
+// bool SH4_SLEEPING=false; // by default the processor is doing something
 
 
 #define SWITCH_FLOAT_REG_BANKS(){\
@@ -243,7 +244,7 @@ core.context.XF_BANK = core.context.FR_BANK; \
 core.context.FR_BANK = backup;\
 }
 
-#define OPCODE(instr) void instr (WORD arg)
+#define OPCODE(instr)  void   instr (WORD arg)
 #define COPY_REG(a, b) ((a) =(b))
 
 
@@ -355,43 +356,5 @@ extern PC_f * PC_func;
 void PC_f_normal(void);
 void PC_f_delayslot(void);
 void PC_f_nextpc(void);
-
-/* operand cache stuff */
-
-#ifdef _fast_interpreter_
-// struct used to keep an already decoded opcode
-
-typedef	struct
-	{
-		short n;
-		short m;
-		DWORD d_disp;
-		WORD w_disp;
-		BYTE b_disp;
-		signed long s_disp;
-	}cache_line;
-
-typedef  struct
-  {
-	opcode_f * function;
-	cache_line cache;
-	// the struct with all the operands used
-  }cached_opcode;
-
-// decoded opcode
-typedef struct
-{
-  cache_line jit_b; // for branches
-  cached_opcode  jit_array[65536]; // the 0 position is used when we are not running any cached opcodes
-  int current_pos;
-}op_jit;
-
-extern op_jit jumptable;
-
-void init_cpu_jumptable();
-
-#endif
-
-
 
 #endif

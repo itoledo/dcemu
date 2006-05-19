@@ -8,12 +8,19 @@ void initopcodes();
 
 // extern int oplist[65536];
 // extern int opcode_primer_restriccion;
+#ifdef old_oplist
 extern short * oplist;
 extern short oplist_pr0_sz0[65536];
 extern short oplist_pr0_sz1[65536];
 extern short oplist_pr1_sz0[65536];
 extern short oplist_pr1_sz1[65536];
-
+#else
+extern opcode_f ** oplist;
+extern opcode_f * oplist_pr0_sz0[65536];
+extern opcode_f * oplist_pr0_sz1[65536];
+extern opcode_f * oplist_pr1_sz0[65536];
+extern opcode_f * oplist_pr1_sz1[65536];
+#endif
 extern int idx_NOIMP;
 
 // opcodes con restricción

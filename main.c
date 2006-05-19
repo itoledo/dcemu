@@ -35,6 +35,7 @@
 #include "iso.h"
 #include "gui.h"
 #include "sh4emu.h"
+#include "SIMDx86/version.h"
 
 DWORD snd_dbg;			// ...
 
@@ -244,11 +245,11 @@ void main_loop(void)
 			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
 			// por lo que en un segundo tenemos 781250 ticks.
 			// cada 1 ms -> 781,25 ticks.
-			if (core.context.cycles == 50)
+			if (core.context.cycles >= 50)
 			{
-				core.context.cycles=0;
+				core.context.cycles_v_int +=  core.context.cycles;
+				core.context.cycles=core.context.cycles-50;
 				timer_check();
-		
 			}
 			if(intc_queuemask)
 				check_ints();
@@ -262,14 +263,15 @@ void main_loop(void)
 				RedibujarPantalla();
 			}
    	
-			core.context.cycles++;
+// 			core.context.cycles++;
 
 //			if (cnt % (500000 / 0x1FF) == 0)
-			if (++cnt == 978) // 978)
+			if ( core.context.cycles_v_int  >= 978) // 978)
 			{
 				pvr_scanline++;
-   				cnt = 0;
    				
+				core.context.cycles_v_int = core.context.cycles_v_int - 978;
+
 				if (pvr_scanline == pvr_spg_vblank_int_out)
 				{
         			logxmsg(LOG_PVR, "llamando SCANINT1\n");
@@ -297,7 +299,6 @@ void main_loop(void)
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 //		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
-
 		while (SDL_PollEvent(&event))
 		{
 			switch(event.type)
@@ -856,20 +857,18 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 		
-		fprintf(stderr, "leidos %d bytes\n", tam);
+		fprintf(stderr, "leidos %ld bytes\n", tam);
 	}
 
 	// we start the cpu
 	// allocating the current cpu
 	initCpuSubSystem();
-#ifdef _fast_interpreter_
-	init_cpu_jumptable();
-#endif
-//  	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
-// 	PC = 0x8c010000;
+	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+//   	PC = 0x8c010000;
+// 	PC = 0x8c000000;
 //	PC = 0x00000000;
-//	PC = 0x8c0000e0;
-    PC = 0x8C008300;
+// 	PC = 0x8c0000e0;
+//	PC = 0x8C008300;
 
 //	str_PC = get_memory_pointer(PC);
 	

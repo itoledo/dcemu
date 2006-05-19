@@ -17,12 +17,19 @@
 #define REQ_PR_0_SZ_1	3
 #define REQ_PR_1_SZ_0	4
 
+#ifdef old_oplist
 short * oplist;
 short oplist_pr0_sz0[65536]; 
 short oplist_pr0_sz1[65536]; 
 short oplist_pr1_sz0[65536];
 short oplist_pr1_sz1[65536];
-
+#else
+opcode_f ** oplist;
+opcode_f * oplist_pr0_sz0[65536]; 
+opcode_f  *oplist_pr0_sz1[65536]; 
+opcode_f  *oplist_pr1_sz0[65536];
+opcode_f  * oplist_pr1_sz1[65536];
+#endif
 struct st_cmd opcodes[] =
 {
 	// Fixed Point Transfer Instructions
@@ -407,7 +414,7 @@ int findopcode(DWORD op, DWORD mask)
 	fprintf(stderr, "findopcode: opcode 0x%x / mask 0x%x no encontrado!\n", op, mask);
 	return -1;
 }
-
+#ifdef oplist_old
 void initopcodes()
 {
 	int i; int i2;
@@ -461,3 +468,59 @@ void initopcodes()
 	}
 	oplist = oplist_pr0_sz0;
 }
+#else
+void initopcodes()
+{
+	int i; int i2;
+	// a armar las 4 listas
+
+	idx_NOIMP		= findopcode(0x0000, 0xFFFF);
+
+	for (i2 = 0; i2<65536; i2++)
+	{
+		oplist_pr0_sz0[i2] = opcodes[idx_NOIMP].funcion;
+		oplist_pr0_sz1[i2] = opcodes[idx_NOIMP].funcion;
+		oplist_pr1_sz0[i2] = opcodes[idx_NOIMP].funcion;
+		oplist_pr1_sz1[i2] = opcodes[idx_NOIMP].funcion;
+	}
+
+	for (i = 0; opcodes[i].opdesc; i++)
+	{
+		for (i2 = 0; i2<65536; i2++)
+		{
+			if ((i2 & opcodes[i].mask) == opcodes[i].op)
+			{
+				switch(opcodes[i].restriccion)
+				{
+					case REQ_PR_0:
+						oplist_pr0_sz0[i2] = opcodes[i].funcion;
+						oplist_pr0_sz1[i2] = opcodes[i].funcion;
+						break;
+						
+					case REQ_SZ_0:
+						oplist_pr0_sz0[i2] = opcodes[i].funcion;
+						oplist_pr1_sz0[i2] = opcodes[i].funcion;
+						break;
+						
+					case REQ_PR_0_SZ_1:
+						oplist_pr0_sz1[i2] = opcodes[i].funcion;
+						break;
+					
+					case REQ_PR_1_SZ_0:
+						oplist_pr1_sz0[i2] = opcodes[i].funcion;
+						break;
+					
+					default:
+						oplist_pr0_sz0[i2] = opcodes[i].funcion;
+						oplist_pr0_sz1[i2] = opcodes[i].funcion;
+						oplist_pr1_sz0[i2] = opcodes[i].funcion;
+						oplist_pr1_sz1[i2] = opcodes[i].funcion;
+						break;
+				}
+			}
+		}
+	}
+	oplist = oplist_pr0_sz0;
+}
+
+#endif

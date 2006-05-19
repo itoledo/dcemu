@@ -1,6 +1,6 @@
 [Editors]
-Focused=1
-Order=1
+Focused=28
+Order=1,28
 [Editor_0]
 Open=0
 Top=0
@@ -11,10 +11,10 @@ LeftChar=1
 [Editor_1]
 Open=1
 <<<<<<< dcemu.layout
-Top=1
-CursorCol=20
+Top=0
+CursorCol=1
 CursorRow=872
-TopLine=855
+TopLine=963
 =======
 Top=1
 CursorCol=5
@@ -205,10 +205,10 @@ CursorRow=10
 TopLine=1
 LeftChar=1
 [Editor_28]
-Open=0
-Top=0
+Open=1
+Top=1
 CursorCol=1
-CursorRow=585
+CursorRow=562
 TopLine=555
 LeftChar=1
 [Editor_29]
