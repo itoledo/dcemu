@@ -1,7 +1,7 @@
 /* -*- c -*-
-    $Id: read.h,v 1.6 2005/03/21 09:19:06 rocky Exp $
+    $Id: read.h,v 1.11 2006/01/23 20:47:33 rocky Exp $
 
-    Copyright (C) 2005 Rocky Bernstein <rocky@panix.com>
+    Copyright (C) 2005, 2006 Rocky Bernstein <rocky@panix.com>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -27,17 +27,32 @@
 #ifndef __CDIO_READ_H__
 #define __CDIO_READ_H__
 
+#ifndef EXTERNAL_LIBCDIO_CONFIG_H
+#define EXTERNAL_LIBCDIO_CONFIG_H
+/* Need for HAVE_SYS_TYPES_H */
+#include <cdio/cdio_config.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
 
+  /** All the different ways a block/sector can be read. */
+  typedef enum {
+    CDIO_READ_MODE_AUDIO,  /**< CD-DA, audio, Red Book */
+    CDIO_READ_MODE_M1F1,   /**< Mode 1 Form 1 */
+    CDIO_READ_MODE_M1F2,   /**< Mode 1 Form 2 */
+    CDIO_READ_MODE_M2F1,   /**< Mode 2 Form 1 */
+    CDIO_READ_MODE_M2F2,   /**< Mode 2 Form 2 */
+  } cdio_read_mode_t;
+  
   /*!
     Reposition read offset
-    Similar to (if not the same as) libc's lseek()
+    Similar to (if not the same as) libc's fseek()
 
-    @param p_cdio object to get information from
+    @param p_cdio object which gets adjusted
     @param offset amount to seek
-    @param whence  like corresponding parameter in libc's lseek, e.g. 
+    @param whence  like corresponding parameter in libc's fseek, e.g. 
                    SEEK_SET or SEEK_END.
     @return (off_t) -1 on error. 
   */
@@ -84,7 +99,7 @@ extern "C" {
 						uint32_t i_blocks);
 
   /*!
-    Read a data sector
+    Read data sectors
 
     @param p_cdio object to read from
     @param p_buf place to read data into.  The caller should make sure
@@ -104,7 +119,6 @@ extern "C" {
 						void *p_buf, lsn_t i_lsn,
 						uint16_t i_blocksize,
 						uint32_t i_blocks );
-
   /*!
     Reads a mode 1 sector
 
@@ -117,7 +131,6 @@ extern "C" {
   driver_return_code_t cdio_read_mode1_sector (const CdIo_t *p_cdio, 
 					       void *p_buf, lsn_t i_lsn, 
 					       bool b_form2);
-  
   /*!
     Reads mode 1 sectors
 
@@ -132,7 +145,6 @@ extern "C" {
 						void *p_buf, lsn_t i_lsn, 
 						bool b_form2, 
 						uint32_t i_blocks);
-  
   /*!
     Reads a mode 2 sector
 
@@ -151,6 +163,12 @@ extern "C" {
 					       void *p_buf, lsn_t i_lsn, 
 					       bool b_form2);
   
+  /** The special case of reading a single block is a common one so we
+      provide a routine for that as a convenience.
+  */
+  driver_return_code_t cdio_read_sector(const CdIo_t *p_cdio, void *p_buf, 
+					lsn_t i_lsn, 
+					cdio_read_mode_t read_mode);
   /*!
     Reads mode 2 sectors
 
@@ -171,6 +189,40 @@ extern "C" {
 						bool b_form2, 
 						uint32_t i_blocks);
   
+  /*!
+    Reads a number of sectors (AKA blocks).
+
+    @param p_cdio cdio object
+    @param p_buf place to read data into. The caller should make sure
+    this location is large enough. See below for size information.
+    @param read_mode the kind of "mode" to use in reading.
+    @param i_lsn sector to read
+    @param i_blocks number of sectors to read
+    @return DRIVER_OP_SUCCESS (0) if no error, other (negative) enumerations
+    are returned on error.
+
+    If read_mode is CDIO_MODE_AUDIO,
+      *p_buf should hold at least CDIO_FRAMESIZE_RAW * i_blocks bytes.
+
+    If read_mode is CDIO_MODE_DATA,
+      *p_buf should hold at least i_blocks times either ISO_BLOCKSIZE, 
+      M1RAW_SECTOR_SIZE or M2F2_SECTOR_SIZE depending on the kind of 
+      sector getting read. If you don't know whether you have a Mode 1/2, 
+    Form 1/ Form 2/Formless sector best to reserve space for the maximum
+    which is M2RAW_SECTOR_SIZE.
+
+    If read_mode is CDIO_MODE_M2F1,
+    *p_buf should hold at least M2RAW_SECTOR_SIZE * i_blocks bytes.
+    
+    If read_mode is CDIO_MODE_M2F2,
+    *p_buf should hold at least CDIO_CD_FRAMESIZE * i_blocks bytes.
+    
+  */
+  driver_return_code_t cdio_read_sectors(const CdIo_t *p_cdio, void *p_buf, 
+					 lsn_t i_lsn, 
+					 cdio_read_mode_t read_mode,
+					 uint32_t i_blocks);
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

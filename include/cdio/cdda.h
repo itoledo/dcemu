@@ -1,7 +1,7 @@
 /*
-  $Id: cdda.h,v 1.23 2005/09/21 01:41:32 rocky Exp $
+  $Id: cdda.h,v 1.26 2006/02/16 20:09:27 rocky Exp $
 
-  Copyright (C) 2004, 2005 Rocky Bernstein <rocky@panix.com>
+  Copyright (C) 2004, 2005, 2006 Rocky Bernstein <rocky@panix.com>
   Copyright (C) 2001 Xiph.org
   and Heiko Eissfeldt heiko@escape.colossus.de
 
@@ -41,7 +41,8 @@ extern "C" {
 typedef struct cdrom_paranoia_s cdrom_paranoia_t;
 typedef struct cdrom_drive_s   cdrom_drive_t;
 
-/** For compatibility. cdrom_drive_t is depricated, use cdrom_drive_t instead. */
+/** For compatibility. cdrom_drive_t is deprecated, use cdrom_drive_t
+    instead. */
 
 extern enum paranoia_cdda_enums {
   CDDA_MESSAGE_FORGETIT = 0,
@@ -66,7 +67,7 @@ typedef struct TOC_s {
   int32_t       dwStartSector;
 } TOC_t;
 
-/** For compatibility. TOC is depricated, use TOC_t instead. */
+/** For compatibility. TOC is deprecated, use TOC_t instead. */
 #define TOC TOC_t
 
 #define CDDA_MESSAGE_FORGETIT 0
@@ -133,10 +134,10 @@ struct cdrom_drive_s {
 };
 
 
-/*! An enumeration for some of the CDDA_TEST_* #defines below. This isn't
-  really an enumeration one would really use in a program it is to
-  be helpful in debuggers where wants just to refer to the CDDA_TEST_
-  names and get something.
+/*! An enumeration for some of the CDDA_TEST_* \#defines below. This
+  isn't really an enumeration one would really use in a program. The
+  enumeration is created be helpful in debuggers where wants just to
+  refer to the CDDA_TEST_ names and get something.
 */
 extern enum paranoia_jitter_enums {
   CDDA_TEST_JITTER_SMALL   = 1,

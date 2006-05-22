@@ -1,7 +1,7 @@
 /*
-    $Id: rock.h,v 1.10 2005/09/15 06:36:01 rocky Exp $
+    $Id: rock.h,v 1.14 2006/01/14 09:44:53 rocky Exp $
 
-    Copyright (C) 2005 Rocky Bernstein <rocky@panix.com>
+    Copyright (C) 2005, 2006 Rocky Bernstein <rocky@panix.com>
 
     See also rock.c by Eric Youngdale (1993) from GNU/Linux 
     This is Copyright 1993 Yggdrasil Computing, Incorporated
@@ -47,7 +47,7 @@ extern "C" {
 #define S_ISLNK(st_mode) ((((st_mode)) & 0170000) == (0010000))
 #endif
 
-/*! An enumeration for some of the ISO_ROCK_* #defines below. This isn't
+/*! An enumeration for some of the ISO_ROCK_* \#defines below. This isn't
   really an enumeration one would really use in a program it is to
   be helpful in debuggers where wants just to refer to the ISO_ROCK_*
   names and get something.
@@ -318,6 +318,9 @@ typedef struct iso_rock_statbuf_s {
                                          9660:9.5.6. */
   iso_rock_time_t effective;          /**< Effective time; See ISO 9660:9.5.7.
                                        */
+  uint32_t i_rdev;                    /**< the upper 16-bits is major device 
+                                         number, the lower 16-bits is the
+                                         minor device number */
 
 } iso_rock_statbuf_t;
   
@@ -327,7 +330,13 @@ PRAGMA_END_PACKED
 int get_rock_ridge_filename(iso9660_dir_t * de, /*out*/ char * retname, 
                             /*out*/ iso9660_stat_t *p_stat);
 
-int parse_rock_ridge_stat(iso9660_dir_t *de, /*out*/ iso9660_stat_t *p_stat);
+  int parse_rock_ridge_stat(iso9660_dir_t *de, /*out*/ iso9660_stat_t *p_stat);
+
+  /*!
+    Returns POSIX mode bitstring for a given file.
+  */
+  mode_t 
+  iso9660_get_posix_filemode_from_rock(const iso_rock_statbuf_t *rr);
 
 /*!
   Returns a string which interpreting the POSIX mode st_mode. 
@@ -366,7 +375,7 @@ const char *iso9660_get_rock_attr_str(posix_mode_t st_mode);
 
 /** These variables are not used, but are defined to facilatate debugging
     by letting us use enumerations values (which also correspond to 
-    #define's inside a debugged program.
+    \#define's inside a debugged program.
  */
 extern iso_rock_nm_flag_t iso_rock_nm_flag;
 extern iso_rock_sl_flag_t iso_rock_sl_flag;

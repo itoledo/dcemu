@@ -6,7 +6,7 @@
 
 // typedef int ssize_t; // falta en mingw32
 
-#include <cdio/cdio_config.h>
+#include <cdio/config.h>
 #include <cdio/cdio.h>
 #include <cdio/iso9660.h>
 #include <cdio/cd_types.h>

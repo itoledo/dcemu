@@ -1,5 +1,5 @@
 /*
-    $Id: cdtext.h,v 1.11 2005/04/25 23:06:21 rocky Exp $
+    $Id: cdtext.h,v 1.13 2005/11/11 12:26:57 rocky Exp $
 
     Copyright (C) 2004, 2005 Rocky Bernstein <rocky@panix.com>
     adapted from cuetools
@@ -37,6 +37,7 @@ extern "C" {
 #endif /* __cplusplus */
 
 #define MAX_CDTEXT_FIELDS 13
+#define MIN_CDTEXT_FIELD  0
   
   /*! \brief structure for holding CD-Text information
 
@@ -46,7 +47,9 @@ extern "C" {
     char *field[MAX_CDTEXT_FIELDS];
   };
   
-  /*! \brief A list of all of the CD-Text fields */
+  /*! \brief A list of all of the CD-Text fields. Because
+    the interval has no gaps, we can use ++ to iterate over fields.
+   */
   typedef enum {
     CDTEXT_ARRANGER   =  0,   /**< name(s) of the arranger(s) */
     CDTEXT_COMPOSER   =  1,   /**< name(s) of the composer(s) */
@@ -81,8 +84,8 @@ extern "C" {
 
     The user needs to free the string when done with it.
 
-    @see cdio_get_cdtext to retrieve the cdtext structure used as
-    input here.
+    @see cdio_get_const to retrieve a constant string that doesn't
+    have to be freed.
   */
   char *cdtext_get (cdtext_field_t key, const cdtext_t *cdtext);
 
@@ -92,8 +95,8 @@ extern "C" {
     Don't use the string when the cdtext object (i.e. the CdIo_t object
     you got it from) is no longer valid.
 
-    @see cdio_get_cdtext to retrieve the cdtext structure used as
-    input here.
+    @see cdio_get to retrieve an allocated string that persists past
+    the cdtext object.
   */
   const char *cdtext_get_const (cdtext_field_t key, const cdtext_t *cdtext);
   
