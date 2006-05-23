@@ -57,11 +57,6 @@ DWORD pvr_lists[] = {
 DWORD pvr_fb_r_ctrl = (1 << 23) | (1 << 2) | 1; // VGA, enabled, RGB565
 DWORD pvr_fb_r_sof1 = 0x0;
 
-// sync pulse generator
-DWORD pvr_spg_vblank_int = 0x00280208;	// VGA 640x480
-DWORD pvr_spg_load = 0x020C0359;		// VGA 640x480
-DWORD pvr_spg_load_vcount = 0x20C;		// VGA 640x480
-
 DWORD pvr_isp_backgnd_t = 0x0;
 DWORD pvr_param_base = 0x0;
 DWORD pvr_region_base = 0x0;

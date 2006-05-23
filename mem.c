@@ -564,15 +564,51 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		case 0xa05f80cc: // SPG_VBLANK_INT
 		{
 			memcpy(p, &pvr_spg_vblank_int, size);
-			logmsg("pvr_read: SCANINTPOS\n");
+			logxmsg(LOG_PVR, "pvr_read: SCANINTPOS\n");
+		}
+		break;
+		
+		case 0xa05f80d0: // SPG_CONTROL
+		{
+//			dw = 0x100; // VGA
+			memcpy(p, &pvr_spg_control, sizeof(DWORD));
+			logxmsg(LOG_PVR, "pvr_read: SPG_CONTROL\n");
+		}
+		break;
+		
+		case 0xa05f80d4: // SPG_HBLANK
+		{
+			memcpy(p, &pvr_spg_hblank, sizeof(DWORD));
+			logxmsg(LOG_PVR, "pvr_read: SPG_HBLANK\n");
 		}
 		break;
 
+		case 0xa05f80d8: // SPG_LOAD
+		{
+			memcpy(p, &pvr_spg_load, sizeof(DWORD));
+			logxmsg(LOG_PVR, "pvr_read: SPG_LOAD\n");
+		}
+		break;
+		
+		case 0xa05f80dc: // SPG_VBLANK
+		{
+			memcpy(p, &pvr_spg_vblank, sizeof(DWORD));
+			logxmsg(LOG_PVR, "pvr_read: SPG_VBLANK\n");
+		}
+		break;
+		
+		case 0xa05f80e0: // SPG_WIDTH 
+		{
+			memcpy(p, &pvr_spg_width, sizeof(DWORD));
+			logxmsg(LOG_PVR, "pvr_read: SPG_WIDTH\n");
+		}
+		break;
+		
 		case 0xa05f80e8: // BITMAPTYPE2
 		{
 			dw = 0x00160000;
 			memcpy(p, &dw, size);
-			logmsg("pvr_read: BITMAPTYPE2\r\n");
+			logxmsg(LOG_PVR, "pvr_read: BITMAPTYPE2\r\n");
 		}
 		break;
 
@@ -1010,6 +1046,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 #define PVR_WRITE_1(dir, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} break; }
 #define PVR_WRITE_CB_1(dir, callback, texto, arg)		{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg);} callback(direccion, p, size); break; }
+#define PVR_WRITE_VAR_1(dir, texto, arg, var)	{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg); var = arg;} break; }
 #define PVR_WRITE_2(dir, texto, arg1, arg2)	{ case (dir): { logxmsg(LOG_PVR, texto "\n", arg1, arg2);} break; }
 
 		PVR_WRITE_1(0xa05f8000 + 0x00 * 4, "COREID [ID] (PVR2 Core ID), grabando %x", *(DWORD *) p);
@@ -1224,6 +1261,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		    logxmsg(LOG_PVR, "SPG_CONTROL: mcsync_pol = %d\n", (DWREF(p) >> 2) & 1);
 		    logxmsg(LOG_PVR, "SPG_CONTROL: mvsync_pol = %d\n", (DWREF(p) >> 1) & 1);
 		    logxmsg(LOG_PVR, "SPG_CONTROL: mhsync_pol = %d\n", (DWREF(p) >> 0) & 1);
+		    pvr_spg_control = DWREF(p);
 		}
 		break;
 
@@ -1232,6 +1270,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		    logxmsg(LOG_PVR, "SPG_HBLANK: hbend = %x, hbstart = %x\n",
 		    	(DWREF(p) >> 16) & 0x3ff,
 		    	DWREF(p) & 0x3ff);
+		    pvr_spg_hblank = DWREF(p);
 		}
 		break;
 

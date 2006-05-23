@@ -56,7 +56,7 @@ OPCODE(add40) // ADD #imm, Rn
 OPCODE(addc41) // ADDC Rm, Rn (0011nnnn mmmm1110)
 {
  	short n = (arg >> 8) & 0x0F;
-	short  m = (arg >> 4) & 0x0F;
+	short m = (arg >> 4) & 0x0F;
 	unsigned long tmp0, tmp1;
 	
 	tmp1 = R(n) + R(m);
@@ -499,12 +499,64 @@ OPCODE(dmulsl55) // DMULS.L Rm, Rn (0011nnnn mmmm1101)
 {
  	short n = (arg >> 8) & 0x0F;
  	short m = (arg >> 4) & 0x0F;
-	signed long long x;
+/*	signed long long x;
 	
 	x = (signed long long) (signed long) R(n) * (signed long long) (signed long) R(m);
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
-	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
+	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF); */
+
+	unsigned long RnL,RnH,RmL,RmH,Res0,Res1,Res2;
+	unsigned long temp0,temp1,temp2,temp3;
+	long tempm,tempn,fnLmL;
+	
+	tempn=(long)R(n);
+	tempm=(long)R(m);
+	
+	if (tempn<0)
+		tempn=0-tempn;
+	if (tempm<0)
+		tempm=0-tempm;
+		
+	if ((long)(R(n)^R(m))<0)
+		fnLmL=-1;
+	else
+		fnLmL=0;
+		
+	temp1=(unsigned long)tempn;
+	temp2=(unsigned long)tempm;
+	RnL=temp1&0x0000FFFF;
+	RnH=(temp1>>16)&0x0000FFFF;
+	RmL=temp2&0x0000FFFF;
+	RmH=(temp2>>16)&0x0000FFFF;
+
+	temp0=RmL*RnL;
+	temp1=RmH*RnL;
+	temp2=RmL*RnH;
+	temp3=RmH*RnH;
+
+	Res2=0;
+	Res1=temp1+temp2;
+
+	if (Res1<temp1)
+		Res2+=0x00010000;
+		
+	temp1=(Res1<<16)&0xFFFF0000;
+	Res0=temp0+temp1;
+	
+	if (Res0<temp0)
+		Res2++;
+	Res2=Res2+((Res1>>16)&0x0000FFFF)+temp3;
+	if (fnLmL<0)
+	{
+		Res2=~Res2;
+		if (Res0==0)
+			Res2++;
+		else
+		Res0=(~Res0)+1;
+	}
+	MACH=Res2;
+	MACL=Res0;
 
 	PC += 2;
 
@@ -523,12 +575,41 @@ OPCODE(dmulul56) // DMULU.L Rm, Rn (0011nnnn mmmm0101)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	unsigned long long x;
+/*	unsigned long long x;
 
 	x = (unsigned long long) (unsigned long) R(n) * (unsigned long long) (unsigned long) R(m);
 
 	MACL = (DWORD) (x & 0xFFFFFFFF);
-	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF);
+	MACH = (DWORD) ((x >> 32) & 0xFFFFFFFF); */
+	
+	unsigned long RnL,RnH,RmL,RmH,Res0,Res1,Res2;
+	unsigned long temp0,temp1,temp2,temp3;
+
+	RnL=R(n)&0x0000FFFF;
+	RnH=(R(n)>>16)&0x0000FFFF;
+	RmL=R(m)&0x0000FFFF;
+	RmH=(R(m)>>16)&0x0000FFFF;
+
+	temp0=RmL*RnL;
+	temp1=RmH*RnL;
+	temp2=RmL*RnH;
+	temp3=RmH*RnH;
+	
+	Res2=0;
+	Res1=temp1+temp2;
+	
+	if (Res1<temp1)
+		Res2+=0x00010000;
+		
+	temp1=(Res1<<16)&0xFFFF0000;
+	Res0=temp0+temp1;
+	
+	if (Res0<temp0)
+		Res2++;
+		
+	Res2=Res2+((Res1>>16)&0x0000FFFF)+temp3;
+	MACH=Res2;
+	MACL=Res0;
 
 	PC += 2;
 
@@ -565,15 +646,10 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	DWORD rm, rn;
-	signed long long mul, mac, result;
+/*	DWORD rm, rn;
+	signed long long mul, mac, result; */
 
-	memread(R(m), &rm, sizeof(DWORD));
-	memread(R(n), &rn, sizeof(DWORD));
-	
-	logmsg("macl62: R(%d)=%x->%x, R(%d)=%x->%x\n", m, R(m), rm,n, R(n), rn);
-
-	R(m) += 4;
+/*	R(m) += 4;
 	R(n) += 4;
 	
 	mul = rm * rn;
@@ -582,7 +658,103 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 	result = mac + mul;
 	
 	MACL = (DWORD) (result & 0xFFFFFFFF);
-	MACH = (DWORD) ((result >> 32) & 0xFFFFFFFF);
+	MACH = (DWORD) ((result >> 32) & 0xFFFFFFFF); */
+	
+	unsigned long RnL,RnH,RmL,RmH,Res0,Res1,Res2;
+	unsigned long temp0,temp1,temp2,temp3;
+	long rm, rn, fnLmL;
+
+	memread(R(m), &rm, sizeof(DWORD));
+	memread(R(n), &rn, sizeof(DWORD));
+	
+	logmsg("macl62: R(%d)=%x->%x, R(%d)=%x->%x\n", m, R(m), rm,n, R(n), rn);
+
+	R(n)+=4;
+	R(m)+=4;
+	
+	if ((long)(rn^rm)<0)
+		fnLmL=-1;
+	else
+		fnLmL=0;
+
+	if (rn<0)
+		rn=0-rn;
+	if (rm<0)
+		rm=0-rm;
+		
+	temp1=(unsigned long)rn;
+	temp2=(unsigned long)rm;
+	RnL=temp1&0x0000FFFF;
+	RnH=(temp1>>16)&0x0000FFFF;
+	RmL=temp2&0x0000FFFF;
+	RmH=(temp2>>16)&0x0000FFFF;
+	temp0=RmL*RnL;
+	temp1=RmH*RnL;
+	temp2=RmL*RnH;
+	temp3=RmH*RnH;
+	Res2=0;
+	Res1=temp1+temp2;
+	
+	if (Res1<temp1)
+		Res2+=0x00010000;
+		
+	temp1=(Res1<<16)&0xFFFF0000;
+	Res0=temp0+temp1;
+
+	if (Res0<temp0)
+		Res2++;
+	
+	Res2=Res2+((Res1>>16)&0x0000FFFF)+temp3;
+	
+	if(fnLmL<0)
+	{
+		Res2=~Res2;
+		if (Res0==0)
+			Res2++;
+		else
+			Res0=(~Res0)+1;
+	}
+
+	if(IS_SR_S())
+	{
+		Res0=MACL+Res0;
+		
+		if (MACL>Res0)
+			Res2++;
+		
+		if (MACH&0x00008000)
+			;
+		else
+			Res2+=MACH|0xFFFF0000;
+			
+		Res2+=MACH&0x00007FFF;
+		
+		if(((long)Res2<0)&&(Res2<0xFFFF8000))
+		{
+			Res2=0xFFFF8000;
+			Res0=0x00000000;
+		}
+
+		if(((long)Res2>0)&&(Res2>0x00007FFF))
+		{
+			Res2=0x00007FFF;
+			Res0=0xFFFFFFFF;
+		};
+
+		MACH=(Res2&0x0000FFFF)|(MACH&0xFFFF0000);
+		MACL=Res0;
+	}
+	else
+	{
+		Res0=MACL+Res0;
+		
+		if (MACL>Res0)
+			Res2++;
+			
+		Res2+=MACH;
+		MACH=Res2;
+		MACL=Res0;
+	}
 
 	PC += 2;
 
@@ -734,6 +906,11 @@ OPCODE(extsw59) // EXTS.W Rm, Rn (0110nnnn mmmm1111)
 	short m = (arg >> 4) & 0x0F;
 
 	R(n) = SignExtend16(R(m) & 0x0000FFFF);
+/*	R(n) = R(m);
+	if ((R(m) & 0x00000080) == 0)
+		R(n) &= 0x0000FFFF;
+	else
+		R(n) |= 0xFFFF0000; */
 
 	PC += 2;
 
@@ -780,8 +957,9 @@ OPCODE(mull) // Rn x Rm -> MACL (0000nnnn mmmm0111)
 	short m = (arg >> 4) & 0x0F;
 
 	//	MACL = (R(n) * R(m)) & 0xFFFFFFFF;
-	signed long long x = (signed long long) R(n) * (signed long long) R(m);
-	MACL = (DWORD) (x & 0xFFFFFFFF);
+/*	signed long long x = (signed long long) R(n) * (signed long long) R(m);
+	MACL = (DWORD) (x & 0xFFFFFFFF); */
+	MACL = R(n) * R(m);
 
 	PC += 2;
 
@@ -800,7 +978,8 @@ OPCODE(mulsw65) // MULS.W Rm, Rn (0010nnnn mmmm1111)
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
 
-	MACL = ((signed) (R(n) & 0xFFFF) * (signed) (R(m) & 0xFFFF));
+//	MACL = ((signed) (R(n) & 0xFFFF) * (signed) (R(m) & 0xFFFF));
+	MACL = ((long) (short) R(n) * (long)(short)R(m));
 
 	PC += 2;
 
@@ -819,7 +998,8 @@ OPCODE(muluw66) // MULU.W Rm, Rn (0010nnnn mmmm1110)
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
 
-	MACL = ((unsigned) (R(n) & 0xFFFF) * (unsigned) (R(m) & 0xFFFF));
+//	MACL = ((unsigned) (R(n) & 0xFFFF) * (unsigned) (R(m) & 0xFFFF));
+	MACL = ((unsigned long) (unsigned short) R(n) * (unsigned long) (unsigned short) R(m));
 
 	PC += 2;
 

@@ -123,11 +123,11 @@ OPCODE(shad90) // SHAD Rm, Rn (0100nnnn mmmm1100)
  	short n = (arg >> 8) & 0x0F;
  	short m = (arg >> 4) & 0x0F;
 //	signed long rm;
-	long amount;
+//	long amount;
 
 	PC += 2;
 
-	if (R(m) == 0)
+/*	if (R(m) == 0)
 		return;
 
 #ifdef DEBUG_SHIFT
@@ -154,7 +154,22 @@ OPCODE(shad90) // SHAD Rm, Rn (0100nnnn mmmm1100)
 	else
 	{
 		R(n) = 0;
+	} */
+
+	int sgn=R(m) & 0x80000000;
+
+	if (sgn==0)
+		R(n) <<= (R(m) & 0x1F);
+	else
+	if ((R(m) & 0x1F) == 0)
+	{
+		if ((R(n) & 0x80000000) == 0)
+			R(n) = 0;
+		else
+			R(n) = 0xFFFFFFFF;
 	}
+	else
+		R(n)=(long)R(n) >> ((~R(m) & 0x1F)+1);
 
 	core.context.cycles += 1;
 
@@ -217,7 +232,7 @@ OPCODE(shld93) // SHLD Rm, Rn (0100nnnn mmmm1101)
 
 	PC += 2;
 
-	if (R(m) == 0)
+/*	if (R(m) == 0)
 		return;
 
 	if ((signed) R(m) > 0)
@@ -236,7 +251,25 @@ OPCODE(shld93) // SHLD Rm, Rn (0100nnnn mmmm1101)
 		R(n) >>= (32 - (R(m) & 0x1F)); // era con (DWORD) al comienzo
 	}
 	else
+		R(n) = 0; */
+
+	int sgn = R(m) & 0x80000000;
+	
+#ifdef DEBUG_SHIFT_SHLD
+	logmsg("shld: r(%d)=%d, r(%d)=%d, sgn=%d\r\n", m, R(m), n, R(n), sgn);
+#endif
+
+	if (sgn == 0)
+		R(n) <<= (R(m) & 0x1F);
+	else
+	if ((R(m) & 0x1F) == 0)
 		R(n) = 0;
+	else
+		R(n)=(unsigned)R(n) >> ((~R(m) & 0x1F)+1);
+		
+#ifdef DEBUG_SHIFT_SHLD
+	logmsg("shld: result: %d\r\n", R(n));
+#endif
 
 	core.context.cycles += 1;
 

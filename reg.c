@@ -18,3 +18,12 @@ DWORD	ASIC_ACK_C		= 0x0;	// 0xa05f6908
 DWORD	SB_PDTNRM		= 0x0;	//	(0x005F 6940)	PVR-DMA trigger select from normal interrupt
 DWORD	SB_PDTEXT		= 0x0;	//	(0x005F 6944)	PVR-DMA trigger select from external interrupt
 
+// sync pulse generator
+DWORD	pvr_spg_vblank_int = 0x00280208;	// VGA 640x480
+DWORD	pvr_spg_load_vcount = 0x20C;		// VGA 640x480
+
+DWORD	pvr_spg_control = 0x100;
+DWORD	pvr_spg_hblank = 0x007E0345;
+DWORD	pvr_spg_load = 0x020C0359;
+DWORD	pvr_spg_vblank = 0x00280208;
+DWORD	pvr_spg_width = 0x03F1933F;

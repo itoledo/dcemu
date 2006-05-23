@@ -23,4 +23,8 @@ extern	DWORD ASIC_ACK_A;	// 0xa05f6900	SB_ISTNRM	normal interrupt status
 extern	DWORD ASIC_ACK_B;	// 0xa05f6904	SB_ISTEXT	external interrupt status
 extern	DWORD ASIC_ACK_C;	// 0xa05f6908	SB_ISTERR	error interrupt status
 
-
+extern	DWORD	pvr_spg_control;
+extern	DWORD	pvr_spg_hblank;
+extern	DWORD	pvr_spg_load;
+extern	DWORD	pvr_spg_vblank;
+extern	DWORD	pvr_spg_width;

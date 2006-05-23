@@ -217,7 +217,7 @@ void dma_check()
 void main_loop(void)
 {
 	SDL_Event event;
-	int cnt=0;
+//	int cnt=0;
 //	DWORD valor;
 //	int timer_cnt = 0;
 
@@ -719,7 +719,7 @@ void exitproc(void)
 int main(int argc, char *argv[])
 {
 //	long idx, cnt = 0;
- 	long i, tam; // , j;
+ 	long tam; // , i, j;
 //	short c;
 	WORD wvalor;
 	DWORD dwvalor;

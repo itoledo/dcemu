@@ -319,9 +319,10 @@ typedef struct
 #define XF(x) core.context.XF_BANK->XFP.XMTRX.m[x]
 
 #define IS_SR_MD()(SR_MD == 1)
-#define IS_SR_T() (SR_T ==1)
+#define IS_SR_T() (SR_T == 1)
 #define IS_SR_Q() (SR_Q == 1)
 #define IS_SR_M() (SR_M == 1)
+#define IS_SR_S() (SR_S == 1)
 
 #define SET_T {SR_T = 1;}
 #define UNSET_T {SR_T =0;}

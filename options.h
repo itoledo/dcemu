@@ -17,7 +17,7 @@
 #define USE_BIOS_FONT
 #define _fast_interpreter_
 // #define PRINT_ASM
-//  #define LOGGING
+#define LOGGING
 // #define LOG_FFLUSH
 // #define MACRO_REPLACEMENTS // ???
 // #define NI
@@ -32,6 +32,7 @@
 // #define DEBUG_ARITH_CMP
 // #define DEBUG_ARITH_DMUL
 // #define DEBUG_SHIFT
+// #define DEBUG_SHIFT_SHLD
 //#define DEBUG_FLOAT_SIMPLE
 //#define DEBUG_FLOAT_GRAPH
 // #define DEBUG_SYSCONTROL
