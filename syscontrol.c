@@ -57,7 +57,7 @@ OPCODE(ldc116) // LDC Rm, SR : Rm -> SR (0100mmmm 00001110)
 	short m = (arg >> 8) & 0x0F;
 
 //	SR = R(m);
-	UpdateSR(R(m));
+	UpdateSR(R(m) & 0x700083f3);
 
 	PC += 2;
 

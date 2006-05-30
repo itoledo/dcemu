@@ -345,7 +345,7 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
 {
 	short n = (arg >> 8) & 0x0F;
  	short m = (arg >> 4) & 0x0F;
-    unsigned long tmp0;
+    unsigned long tmp0, tmp2;
     unsigned char old_q,tmp1;
     
     old_q=IS_SR_Q() ? 1 : 0;
@@ -354,6 +354,9 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
     else
         REMOVE_SH4_BIT(SR_Q);
 //    Q=(unsigned char)((0x80000000 & R[n])!=0);
+
+	tmp2 = R(m);
+	
     R(n) <<= 1;
 
     if (IS_SR_T())
@@ -366,7 +369,7 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
         {
             case 0:
             tmp0=R(n);
-            R(n)-=R(m);
+            R(n)-=tmp2;
             tmp1=(R(n) > tmp0);
             switch(IS_SR_Q() ? 1 : 0)
             {
@@ -390,7 +393,7 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
 
             case 1:
             tmp0=R(n);
-            R(n)+=R(m);
+            R(n)+=tmp2;
             tmp1=(R(n)<tmp0);
             switch(IS_SR_Q() ? 1 : 0)
             {
@@ -419,7 +422,7 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
         {
             case 0:
             tmp0=R(n);
-            R(n)+=R(m);
+            R(n)+=tmp2;
             tmp1=(R(n)<tmp0);
 
             switch(IS_SR_Q() ? 1 : 0)
@@ -444,7 +447,7 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
 
             case 1:
             tmp0=R(n);
-            R(n)-=R(m);
+            R(n)-=tmp2;
             tmp1=(R(n)>tmp0);
             switch(IS_SR_Q() ? 1 : 0)
             {
@@ -727,11 +730,11 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 		else
 			Res2+=MACH|0xFFFF0000;
 			
-		Res2+=MACH&0x00007FFF;
+		Res2+=MACL&0x00007FFF; // MACH o MACL?
 		
 		if(((long)Res2<0)&&(Res2<0xFFFF8000))
 		{
-			Res2=0xFFFF8000;
+			Res2=0x00008000;
 			Res0=0x00000000;
 		}
 
@@ -741,7 +744,7 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 			Res0=0xFFFFFFFF;
 		};
 
-		MACH=(Res2&0x0000FFFF)|(MACH&0xFFFF0000);
+		MACH=Res2; // (Res2&0x0000FFFF)|(MACH&0xFFFF0000);
 		MACL=Res0;
 	}
 	else

@@ -242,8 +242,11 @@ OPCODE(fschg233) // FSCHG (11110011 11111101)
 #ifdef DEBUG_FLOAT_GRAPH
 	logmsg("fschg233:Antes sz=%d\r\n", FPSCR_SZ_BIT);
 #endif
-	FPSCR_SZ_BIT = ~FPSCR_SZ_BIT ;
-	UpdateFPSCR(FPSCR);
+	FPSCR_t fpscr = core.context.FPSCR_REG;
+	
+	fpscr.FPSCR_REG_BITS.SZ_BF = ~fpscr.FPSCR_REG_BITS.SZ_BF;
+//	FPSCR_SZ_BIT = ~FPSCR_SZ_BIT ;
+	UpdateFPSCR(fpscr.FPSCR_ALL);
 	PC += 2;
 
 	core.context.cycles += 1;

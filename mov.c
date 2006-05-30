@@ -574,9 +574,14 @@ OPCODE(swapb36) // SWAP.B Rm, Rn (0110nnnn mmmm1000)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
+	unsigned long temp0, temp1;
 
 //	R(n) = ((R(m) >> 16) & 0xFFFF) | ((R(m) << 16) & 0xFFFF0000);
-	R(n) = (R(m) & 0xFFFF0000) | ((R(m) >> 8) & 0x000000FF) | ((R(m) << 8) & 0x0000FF00);
+//	R(n) = (R(m) & 0xFFFF0000) | ((R(m) >> 8) & 0x000000FF) | ((R(m) << 8) & 0x0000FF00);
+	temp0 = R(m) & 0xFFFF0000;
+	temp1 = (R(m) & 0x000000FF) << 8;
+	R(n) = (R(m) & 0x0000FF00) >> 8;
+	R(n) = R(n) | temp1 | temp0;
 
 	PC += 2;
 
@@ -591,8 +596,12 @@ OPCODE(swapw37) // SWAP.W Rm, Rn (0110nnnn mmmm1001)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
+	unsigned long temp;
 
-	R(n) = ((R(m) >> 16) & 0xFFFF) | ((R(m) << 16) & 0xFFFF0000);
+//	R(n) = ((R(m) >> 16) & 0xFFFF) | ((R(m) << 16) & 0xFFFF0000);
+	temp = (R(m)>>16)&0x0000FFFF;
+	R(n) = R(m)<<16;
+	R(n) |= temp;
 
 	PC += 2;
 

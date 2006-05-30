@@ -6,13 +6,16 @@
 
 #include "sh4emu.h"
 
+#define FPSCR_MASK 0x003FFFFF
+
 OPCODE(lds213) // LDS Rm, FPSCR : Rm -> FPSCR (0100mmmm 01101010)
 {
 	short m = (arg >> 8) & 0x0F;
+	DWORD fpscr;
 
 //	FPSCR = R(m);
-	FPSCR = R(m);
-	UpdateFPSCR(FPSCR);
+	fpscr = R(m) & FPSCR_MASK;
+	UpdateFPSCR(fpscr);
 //	memcpy(&FPSCR, &R(m), sizeof(DWORD));
 
 	PC += 2;
@@ -47,6 +50,7 @@ OPCODE(ldsl215) // LDS.L @Rm+, FPSCR : (Rm) -> FPSCR, Rm + 4 -> Rm (0100mmmm 011
 	DWORD fpscr;
 
 	ReadMemoryL(R(m), &fpscr);
+	fpscr &= FPSCR_MASK;
 	UpdateFPSCR(fpscr);
 
 	R(m) += 4;
@@ -80,9 +84,10 @@ OPCODE(ldsl216) // LDS.L @Rm+, FPUL (0100mmmm 01010110)
 OPCODE(sts217) // STS FPSCR, Rn (0000nnnn 01101010)
 {
 	short n = (arg >> 8) & 0x0F;
+	DWORD fpscr = FPSCR & 0x003FFFFF;
 
 //	R(n) = (DWORD) FPSCR;
-	memcpy(&R(n), &FPSCR, sizeof(DWORD));
+	memcpy(&R(n), &fpscr, sizeof(DWORD));
 
 	PC += 2;
 
@@ -114,10 +119,11 @@ OPCODE(sts218) // STS FPUL, Rn : FPUL -> Rn (0000nnnn 01011010)
 OPCODE(stsl219) // STS.L FPSCR, @-Rn : Rn - 4 -> Rn, FPSCR -> (Rn) (0100nnnn 01100010)
 {
 	short n = (arg >> 8) & 0x0F;
+	DWORD fpscr = FPSCR & 0x003FFFFF;
 
 	R(n) -= 4;
 	
-	WriteMemoryL(R(n), (DWORD *) &FPSCR);
+	WriteMemoryL(R(n), (DWORD *) &fpscr);
 
 	PC += 2;
 
