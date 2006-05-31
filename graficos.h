@@ -64,4 +64,14 @@ void cb_fb_r_sof1(DWORD addr, void * p, size_t size);
 extern	SDL_Surface *screen;
 extern SDL_Surface *outputscreen;
 
+extern DWORD * ta_address_pointer;
+
+// it is better to have ta_check split up into smaller functions
+
+void	 taListEnd();
+void	 doUserClip();
+void objectListSet();
+void taPolyModifier();
+void  taVertexHandler();
+
 #endif // _GRAFICOS_H

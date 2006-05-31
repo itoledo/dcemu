@@ -1,7 +1,8 @@
 #ifndef _GLOPS_H_
 #define _GLOPS_H_
 
-enum e_glOp { GLOP_BEGIN, GLOP_BINDTEXTURE, GLOP_CLEAR, GLOP_BLENDFUNC, GLOP_COLOR4F, GLOP_VERTEX3F, GLOP_TEXCOORD2F, GLOP_END, GLOP_TEXIMAGE2D, GLOP_ENABLE, GLOP_DISABLE, GLOP_DEPTHFUNC, GLOP_DEPTHMASK, GLOP_TEXPARAMETERI };
+// enum e_glOp { GLOP_BEGIN, GLOP_BINDTEXTURE, GLOP_CLEAR, GLOP_BLENDFUNC, GLOP_COLOR4F, GLOP_VERTEX3F, GLOP_TEXCOORD2F, GLOP_END, GLOP_TEXIMAGE2D, GLOP_ENABLE, GLOP_DISABLE, GLOP_DEPTHFUNC, GLOP_DEPTHMASK, GLOP_TEXPARAMETERI };
+enum e_glOp { GLOP_BEGIN, GLOP_BINDTEXTURE, GLOP_CLEAR, GLOP_BLENDFUNC, GLOP_COLOR4F, GLOP_VERTEX3F, GLOP_TEXCOORD2F, GLOP_END, GLOP_TEXIMAGE2D, GLOP_CULL_FACE, GLOP_ENABLE, GLOP_DISABLE, GLOP_DEPTHFUNC, GLOP_DEPTHMASK, GLOP_TEXPARAMETERI };
 
 typedef enum e_glOp e_glOp;
 typedef struct s_glOp s_glOp;
@@ -83,6 +84,10 @@ gop_list.current->bar[gop_list.current->fill ].enum2 = par7;\
  gop_list.current->bar[gop_list.current->fill ].ptr1 = par9; incr_sOglP(gop_list); }
 
 #define GLOP_ENABLE(par1) { gop_list.current->bar[gop_list.current->fill ].op = GLOP_ENABLE; \
+gop_list.current->bar[gop_list.current->fill ].enum1 = par1; \
+incr_sOglP(gop_list); }
+
+#define GLOP_CULL_FACE(par1) { gop_list.current->bar[gop_list.current->fill ].op = GLOP_CULL_FACE; \
 gop_list.current->bar[gop_list.current->fill ].enum1 = par1; \
 incr_sOglP(gop_list); }
 

@@ -6,10 +6,12 @@
 #include "intc.h"
 #include "gui.h"
 #include "glops.h"
+#include "render.h"
 
 
 #define TEXTURE_CACHING
 // #define DEBUG_VERTEX
+// #define DEBUG_VERTEX_NEW
 
 SDL_Surface *screen;
 SDL_Surface *outputscreen;
@@ -20,15 +22,15 @@ typedef Uint16 pcon_func(Uint16 src);
 int global_parameter;
 int vertex_parameter;
 
-int pvr_texture_surface;
+// int pvr_texture_surface;
 int pvr_texture_pixelformat;
 int pvr_texture_pixelpack;
 int pvr_texture_components;
 int pvr_texture_size_usize;
 int pvr_texture_size_vsize;
-int pvr_texture_twiddled;
-int pvr_texture_vq;
-int pvr_listtype;
+// int pvr_texture_twiddled;
+// int pvr_texture_vq;
+// int pvr_listtype;
 int pvr_registering = -1;
 int pvr_listdone = 0;
 int pvr_srcblend;
@@ -56,6 +58,21 @@ DWORD pvr_lists[] = {
 		ASIC_EVT_PVR_PTDONE };
 DWORD pvr_fb_r_ctrl = (1 << 23) | (1 << 2) | 1; // VGA, enabled, RGB565
 DWORD pvr_fb_r_sof1 = 0x0;
+
+DWORD * ta_address_pointer;
+
+// ta control stuff  
+
+tile_accell TA;
+texture_info TexInfo;
+renderer_control RendCtrl;
+
+// END 
+
+// sync pulse generator
+// DWORD pvr_spg_vblank_int = 0x00280208;	// VGA 640x480
+// DWORD pvr_spg_load = 0x020C0359;		// VGA 640x480
+// DWORD pvr_spg_load_vcount = 0x20C;		// VGA 640x480
 
 DWORD pvr_isp_backgnd_t = 0x0;
 DWORD pvr_param_base = 0x0;
@@ -479,6 +496,7 @@ void cb_ppblocksize(DWORD addr, void * p, size_t size)
 		REMOVE_BIT(pvr_registered, 1 << 0);
 }
 
+#ifdef OLD_TA_CHECK
 void ta_check(DWORD addr)
 {
 /*	DWORD d = *(DWORD *) &ta_mem[0];
@@ -1176,6 +1194,569 @@ void ta_check(DWORD addr)
        	break;
        	
 		default:	logxmsg(LOG_PVR, "TA: cmd %d desconocido - no implemetado\n");	break;
+	}
+}
+#endif
+
+void taListEnd()
+{
+/*	TA.control = *ta_address_pointer; */ // viene en blanco!
+
+	pvr_listdone |= (1 << TA.registers.pcw_list_type);
+	intc_add(pvr_lists[TA.registers.pcw_list_type], 100);
+	
+//	logxmsg(LOG_PVR, "pcw: taListEnd: End Of List: ld: %08x, reg: %08x, TA: %08x\n", pvr_listdone, pvr_registered, TA.control);
+	
+	if (pvr_listdone == pvr_registered)
+	{
+//		logxmsg(LOG_PVR, "pcw: taListEnd: RENDER_DONE\n");
+		intc_add(ASIC_EVT_PVR_RENDERDONE, 200);
+	}
+}
+
+void doUserClip()
+{
+	logxmsg(LOG_PVR, "pcw: User Tile Clip\n");
+	logxmsg(LOG_PVR, "USER_CLIP: Xmin: %x\n", ta_address_pointer[4]);
+	logxmsg(LOG_PVR, "USER_CLIP: Ymin: %x\n", ta_address_pointer[5]);
+	logxmsg(LOG_PVR, "USER_CLIP: Xmax: %x\n", ta_address_pointer[6]);
+	logxmsg(LOG_PVR, "USER_CLIP: Ymax: %x\n", ta_address_pointer[7]);
+	logxmsg(LOG_PVR, "USER_CLIP: NO IMPLEMENTADO\n");
+}
+
+void objectListSet()
+{
+	logxmsg(LOG_PVR, "pcw: Object List Set\n");
+	logxmsg(LOG_PVR, "pcw: NO IMPLEMENTADO\n");
+}
+
+void taPolyModifier()
+{
+	TA.control = *ta_address_pointer;
+	
+	logxmsg(LOG_PVR, "pcw: Polygon or Modifier Volume\n");
+
+	pvr_registering = TA.registers.pcw_list_type;
+	
+	switch(TA.registers.pcw_list_type)
+	{
+			case 0:	logxmsg(LOG_PVR, "pcw: list_type: opaque\n");						break;
+			case 1: logxmsg(LOG_PVR, "pcw: list_type: opaque modifier volume\n");		break;
+			case 2: logxmsg(LOG_PVR, "pcw: list_type: translucent\n");					break;
+			case 3: logxmsg(LOG_PVR, "pcw: list_type: translucent modifier volume\n");	break;
+			case 4: logxmsg(LOG_PVR, "pcw: list_type: punch through\n");				break;
+			default:	logxmsg(LOG_PVR, "pcw: list_type: RESERVED\n");					break;
+	}
+
+	// group control
+	if (TA.registers.pcw_group_en)
+	{
+		logxmsg(LOG_PVR, "pcw: group_en\n");
+		switch(TA.registers.pcw_strip_len)
+		{
+			case 0: logxmsg(LOG_PVR, "pcw: strip_len: 1\n");	break;
+			case 1: logxmsg(LOG_PVR, "pcw: strip_len: 2\n");	break;
+			case 2: logxmsg(LOG_PVR, "pcw: strip_len: 4\n");	break;
+			case 3: logxmsg(LOG_PVR, "pcw: strip_len: 6\n");	break;
+		}
+		switch(TA.registers.pcw_user_clip)
+		{
+			case 0: logxmsg(LOG_PVR, "pcw: user_clip: disable\n");	break;
+			case 1: logxmsg(LOG_PVR, "pcw: user_clip: reserved\n");	break;
+			case 2: logxmsg(LOG_PVR, "pcw: user_clip: inside enable\n");	break;
+			case 3: logxmsg(LOG_PVR, "pcw: user_clip: outside enable\n");	break;
+		}
+	}
+		
+	// obj control
+
+	// acá tenemos que determinar qué tipo de parámetros hay que leer
+	global_parameter = vertex_parameter = -1;
+				
+	// revisemos los parámetros para la lista de vertex
+	if (TA.registers.pcw_texture == 0)
+	{
+		if (TA.registers.pcw_volume == 0)
+		{
+			switch(TA.registers.pcw_col_type)
+			{
+				case 0:
+				global_parameter = 0;
+				vertex_parameter = 0;
+				break;
+			
+				case 1:
+				global_parameter = 0;
+				vertex_parameter = 1;
+				break;
+			
+				case 2:
+				global_parameter = 1;
+				vertex_parameter = 2;
+				break;
+			
+				case 3:
+				global_parameter = 0;
+				vertex_parameter = 2;
+				break;
+			}
+		}
+		else
+		{
+			switch (TA.registers.pcw_col_type)
+			{
+				case 0:
+				global_parameter = 3;
+				vertex_parameter = 9;
+				break;
+			
+				case 2:
+				global_parameter = 4;
+				vertex_parameter = 10;
+				break;
+			
+				case 3:
+				global_parameter = 3;
+				vertex_parameter = 10;
+				break;
+			}
+		}
+	}
+	else // textured
+	{
+		if (TA.registers.pcw_volume == 0)
+		{
+			switch(TA.registers.pcw_col_type)
+			{
+				case 0:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					global_parameter = 0;
+					vertex_parameter = 3;
+				}
+				else
+				{
+					global_parameter = 0;
+					vertex_parameter = 4;
+				}
+				break;
+				
+				case 1:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					global_parameter = 0;
+					vertex_parameter = 5;
+				}
+				else
+				{
+					vertex_parameter = 6;
+					global_parameter = 0;
+				}
+				break;
+				
+				case 2:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					if (TA.registers.pcw_offset == 0)
+					{
+						global_parameter = 1;
+						vertex_parameter = 7;
+					}
+					else
+					{
+						global_parameter = 2;
+						vertex_parameter = 7;
+					}
+				}
+				else
+				{
+					if (TA.registers.pcw_offset == 0)
+					{
+						global_parameter = 1;
+						vertex_parameter = 8;
+					}
+					else
+					{
+						global_parameter = 2;
+						vertex_parameter = 8;
+					}
+				}
+				break;
+					
+				case 3:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					global_parameter = 0;
+					vertex_parameter = 7;
+				}
+				else
+				{
+					global_parameter = 0;
+					vertex_parameter = 8;
+				}
+				break;
+			}
+		}
+		else
+		{
+			switch(TA.registers.pcw_col_type)
+			{
+				case 0:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					global_parameter = 3;
+					vertex_parameter = 11;
+				}
+				else
+				{
+					global_parameter = 3;
+					vertex_parameter = 12;
+				}
+				break;
+				
+				case 2:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					global_parameter = 4;
+					vertex_parameter = 13;
+				}
+			else
+				{
+					global_parameter = 4;
+					vertex_parameter = 14;
+				}
+				break;
+				
+				case 3:
+				if (TA.registers.pcw_16bit_UV == 0)
+				{
+					global_parameter = 3;
+					vertex_parameter = 13;
+				}
+				else
+				{
+					global_parameter = 3;
+					vertex_parameter = 14;
+				}
+				break;
+			}
+		}
+	}
+
+	logxmsg(LOG_PVR, "pcw: global parameter: polygon type %d\n", global_parameter);
+
+	if (TA.registers.pcw_list_type == 0 || TA.registers.pcw_list_type == 2 || TA.registers.pcw_list_type == 4)
+	{
+		RendCtrl.control  = ta_address_pointer[1];
+
+// 				logxmsg(LOG_PVR, "uv16bit: %d\n", uv16bit);
+	
+		if (TA.registers.pcw_list_type == 2) // transparent polygon
+			pvr_depthmode = GL_GEQUAL;
+		else
+		if (TA.registers.pcw_list_type == 4) // punch-through polygon
+			pvr_depthmode = GL_LEQUAL;
+		else
+		{
+			switch(RendCtrl.registers.depthmode)
+			{
+				case 0:	pvr_depthmode = GL_NEVER;	logxmsg(LOG_PVR, "depthmode: never\n"); break;
+				case 1:	pvr_depthmode = GL_LESS;	logxmsg(LOG_PVR, "depthmode: less\n"); break;
+				case 2:	pvr_depthmode = GL_EQUAL;	logxmsg(LOG_PVR, "depthmode: equal\n"); break;
+				case 3:	pvr_depthmode = GL_LEQUAL;	logxmsg(LOG_PVR, "depthmode: lequal\n"); break;
+				case 4:	pvr_depthmode = GL_GREATER;	logxmsg(LOG_PVR, "depthmode: greater\n"); break;
+				case 5:	pvr_depthmode = GL_NOTEQUAL;logxmsg(LOG_PVR, "depthmode: notequal\n"); break;
+				case 6:	pvr_depthmode = GL_GEQUAL;	logxmsg(LOG_PVR, "depthmode: gequal\n"); break;
+				case 7:	pvr_depthmode = GL_ALWAYS;	logxmsg(LOG_PVR, "depthmode: always\n"); break;
+			}
+		}
+		
+		GLOP_DEPTHFUNC(pvr_depthmode);
+		
+		switch(RendCtrl.registers.cullingmode)
+		{
+			case 0: // desactivar culling
+			{
+					logxmsg(LOG_PVR, "cull: disable\n");
+					GLOP_DISABLE(GL_CULL_FACE);
+			}
+			break;
+			
+// 			case 1: break;
+// 			case 2:
+
+			case 3:
+			{
+					logxmsg(LOG_PVR, "cull: enable\n");
+					GLOP_CULL_FACE(GL_BACK);
+					GLOP_ENABLE(GL_CULL_FACE);
+//							GLOP_ENABLE(GL_CULL_FACE);
+			}
+			break;
+		}
+		
+		switch(RendCtrl.registers.zwrite)
+		{
+			case 0: logxmsg(LOG_PVR, "zwrite: enable\n"); GLOP_DEPTHMASK(GL_TRUE); break;
+			case 1: logxmsg(LOG_PVR, "zwrite: disable\n"); GLOP_DEPTHMASK(GL_FALSE); break;
+		}
+	}
+	
+//			switch((pvr_srcblend = (ta_address_pointer[2] >> 29) & 0x7)) // srcblend
+	switch((ta_address_pointer[2] >> 29) & 0x7) // srcblend
+	{
+		case 0:		pvr_srcblend = GL_ZERO;			logxmsg(LOG_PVR, "srcblend: zero\n");	break;
+		case 1:		pvr_srcblend = GL_ONE;			logxmsg(LOG_PVR, "srcblend: one\n");	break;
+		case 2:		pvr_srcblend = GL_DST_COLOR;	logxmsg(LOG_PVR, "srcblend: dst colour\n");	break;
+		case 3:		pvr_srcblend = GL_ONE_MINUS_DST_COLOR;	logxmsg(LOG_PVR, "srcblend: inverse dst colour\n");	break;
+		case 4:		pvr_srcblend = GL_SRC_ALPHA;	logxmsg(LOG_PVR, "srcblend: src alpha\n"); break;
+		case 5:		pvr_srcblend = GL_ONE_MINUS_SRC_ALPHA;	logxmsg(LOG_PVR, "srcblend: inverse src alpha\n");	break;
+		case 6:		pvr_srcblend = GL_DST_ALPHA;	logxmsg(LOG_PVR, "srcblend: dst alpha\n");	break;
+		case 7:		pvr_srcblend = GL_ONE_MINUS_DST_ALPHA;	logxmsg(LOG_PVR, "srcblend: inverse dst alpha\n");	break;
+	}
+	
+//			switch((pvr_dstblend = (ta_address_pointer[2] >> 26) & 0x7)) // dstblend
+	switch((ta_address_pointer[2] >> 26) & 0x7) // dstblend
+	{
+		case 0:		pvr_dstblend = GL_ZERO;			logxmsg(LOG_PVR, "dstblend: zero\n");	break;
+		case 1:		pvr_dstblend = GL_ONE;			logxmsg(LOG_PVR, "dstblend: one\n");	break;
+		case 2:		pvr_dstblend = GL_DST_COLOR;	logxmsg(LOG_PVR, "dstblend: dst colour\n");	break;
+		case 3:		pvr_dstblend = GL_ONE_MINUS_DST_COLOR;	logxmsg(LOG_PVR, "dstblend: inverse dst colour\n");	break;
+		case 4:		pvr_dstblend = GL_SRC_ALPHA;	logxmsg(LOG_PVR, "dstblend: src alpha\n"); break;
+		case 5:		pvr_dstblend = GL_ONE_MINUS_SRC_ALPHA;	logxmsg(LOG_PVR, "dstblend: inverse src alpha\n");	break;
+		case 6:		pvr_dstblend = GL_DST_ALPHA;	logxmsg(LOG_PVR, "dstblend: dst alpha\n");	break;
+		case 7:		pvr_dstblend = GL_ONE_MINUS_DST_ALPHA;	logxmsg(LOG_PVR, "dstblend: inverse dst alpha\n");	break;
+	}
+	
+	pvr_srcblendmode = (ta_address_pointer[2] >> 25) & 0x1;
+	pvr_dstblendmode = (ta_address_pointer[2] >> 24) & 0x1;
+	
+	if (pvr_srcblendmode)
+		logxmsg(LOG_PVR, "srcblend: src select\n");
+	if (pvr_dstblendmode)
+		logxmsg(LOG_PVR, "dstblend: dst select\n");
+	
+	if ((ta_address_pointer[2] >> 20) & 0x1) // alpha
+	{
+		GLOP_ENABLE(GL_BLEND);
+	}
+	else
+	{
+		GLOP_DISABLE(GL_BLEND);
+	}
+	
+	if (TA.registers.pcw_texture)
+	{
+		TexInfo.texture = ta_address_pointer[3];
+	
+		if (TexInfo.registers.mipmap)
+			logxmsg(LOG_PVR, "texture: enable mipmap\n");
+		else
+			logxmsg(LOG_PVR, "texture: disable mipmap\n");
+	
+#define CTT() { pvr_texture_pixelformat = -1; pvr_texture_components = -1; pvr_texture_pixelpack = -1; }
+	
+		switch (TexInfo.registers.pixelformat)
+		{
+			case 0:
+			logxmsg(LOG_PVR, "texture: ARGB1555\n");
+			pvr_texture_pixelformat = GL_BGRA;
+			pvr_texture_components = 4;
+			pvr_texture_pixelpack = GL_UNSIGNED_SHORT_1_5_5_5_REV;
+			pvr_texture_pixelconvert = NULL;
+			break;
+	
+			case 1:
+			logxmsg(LOG_PVR, "texture: RGB565\n");
+			pvr_texture_components = 3;
+			pvr_texture_pixelformat = GL_RGB;
+			pvr_texture_pixelpack = GL_UNSIGNED_SHORT_5_6_5;
+			pvr_texture_pixelconvert = NULL;
+			break;
+	
+			case 2:
+			logxmsg(LOG_PVR, "texture: ARGB4444\n");
+    		pvr_texture_pixelformat = GL_BGRA_EXT;	
+	  		pvr_texture_pixelpack = GL_UNSIGNED_SHORT_4_4_4_4_REV;
+			pvr_texture_components = 4;
+			break;
+	
+			case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;
+			case 4: logxmsg(LOG_PVR, "texture: BUMP\n");	CTT();	break;
+			case 5: logxmsg(LOG_PVR, "texture: 4BPP_PALETTE\n");	CTT(); break;
+			case 6: logxmsg(LOG_PVR, "texture: 8BPP_PALETTE\n");	CTT(); break;
+		}
+		
+// 				logxmsg(LOG_PVR, "texture: surface %08x\n", texture_surface);
+	
+		if (TexInfo.registers.stride)
+			logxmsg(LOG_PVR, "texture: stride\n");
+		else
+			logxmsg(LOG_PVR, "texture: no stride\n");
+	
+		switch((ta_address_pointer[2] >> 13) & 0x3) // Filter Mode
+		{
+			case 0:
+			GLOP_TEXPARAMETERI(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			GLOP_TEXPARAMETERI(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			break;							// Point Sampled
+	
+			case 1:
+			GLOP_TEXPARAMETERI(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			GLOP_TEXPARAMETERI(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			break;							// Bilinear Filter
+	
+			case 2:		break;							// Tri-linear Pass A
+			case 3:		break;							// Tri-linear Pass B
+		}
+	
+		switch((ta_address_pointer[2] >> 3) & 0x7)
+		{
+			case 0:		pvr_texture_size_usize = 8;		break;
+			case 1:		pvr_texture_size_usize = 16;	break;
+			case 2:		pvr_texture_size_usize = 32;	break;
+			case 3:		pvr_texture_size_usize = 64;	break;
+			case 4:		pvr_texture_size_usize = 128;	break;
+			case 5:		pvr_texture_size_usize = 256;	break;
+			case 6:		pvr_texture_size_usize = 512;	break;
+			case 7:		pvr_texture_size_usize = 1024;	break;
+		}
+		
+		switch(ta_address_pointer[2] & 0x7)
+		{
+			case 0:		pvr_texture_size_vsize = 8;		break;
+			case 1:		pvr_texture_size_vsize = 16;	break;
+			case 2:		pvr_texture_size_vsize = 32;	break;
+			case 3:		pvr_texture_size_vsize = 64;	break;
+			case 4:		pvr_texture_size_vsize = 128;	break;
+			case 5:		pvr_texture_size_vsize = 256;	break;
+			case 6:		pvr_texture_size_vsize = 512;	break;
+			case 7:		pvr_texture_size_vsize = 1024;	break;
+		}
+	
+		logxmsg(LOG_PVR, "texture size: %d x %d\n", pvr_texture_size_usize, pvr_texture_size_vsize);
+	}
+	else
+		TexInfo.registers.texture_surface = 0;
+}
+
+void taVertexHandler()
+{
+//	logxmsg(LOG_PVR, "pcw: vertex parameter: polygon type %d, pcw: %08x\n", vertex_parameter, TA.control);
+	
+	TA.control = *ta_address_pointer;
+
+	if (vertexstart == true)
+	{
+		if (TexInfo.registers.texture_surface)
+		{
+			logxmsg(LOG_PVR, "llamando a get_texture(%d, %d, %d, %d)\n", pvr_texture_size_usize, pvr_texture_size_vsize, TexInfo.registers.texture_surface << 3, !TexInfo.registers.twiddled);
+			get_texture(pvr_texture_size_usize, pvr_texture_size_vsize, TexInfo.registers.texture_surface << 3, !TexInfo.registers.twiddled, TexInfo.registers.vq);
+		}
+//				glBlendFunc(pvr_srcblend, pvr_dstblend);
+		GLOP_BLENDFUNC(pvr_srcblend, pvr_dstblend);
+//				glBegin(GL_TRIANGLE_STRIP);
+		GLOP_BEGIN(GL_TRIANGLE_STRIP);
+		vertexstart = false;
+	}
+
+	switch (vertex_parameter)
+	{
+		case 0: // Non-Textured, Packed Color
+		{
+			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float) * 3);
+			memcpy(&base_colour, &ta_address_pointer[6], sizeof(DWORD));
+
+			colors[0] = ((base_colour >> 24) & 0xFF) / 255.0;
+			colors[1] = ((base_colour >> 16) & 0xFF) / 255.0;
+			colors[2] = ((base_colour >> 8)  & 0xFF) / 255.0;
+			colors[3] = ((base_colour >> 0)  & 0xFF) / 255.0;
+
+#ifdef DEBUG_VERTEX_NEW
+			logxmsg(LOG_PVR, "vertex tipo 0: color=%f,%f,%f,%f coords=%f,%f,%f\n",
+				colors[0], colors[1], colors[2], colors[3], coords[0], coords[1], coords[2]);
+#endif
+			GLOP_COLOR4F(colors[1], colors[2], colors[3], colors[0]);
+			GLOP_VERTEX3F(coords[0], coords[1], coords[2]);
+		}
+		break;
+
+		case 1:
+		{			
+			memcpy(&data[0], &ta_address_pointer[1], sizeof(float)*7);
+
+#ifdef DEBUG_VERTEX_NEW
+			logxmsg(LOG_PVR, "vertex tipo 1: color %f %f %f %f\n", data[4], data[5], data[6], data[3]);
+			logxmsg(LOG_PVR, "posición: %f %f %f\n", data[0], data[1], data[2]);
+#endif
+//					glColor4f(datos[4], datos[5], datos[6], datos[3]);
+			GLOP_COLOR4F(data[4],data[5],data[6], data[3]);
+//					glVertex3f(datos[0], datos[1], datos[2] - 100);
+			GLOP_VERTEX3F(data[0], data[1],data[2]);
+		}
+		break;
+				
+		case 3: // Packed Color
+		{				
+			memcpy(&base_colour, &ta_address_pointer[6], sizeof(DWORD));
+			
+			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float)*5);
+
+			colors[0] = ((base_colour >> 24) & 0xFF) / 255.0;
+			colors[1] = ((base_colour >> 16) & 0xFF) / 255.0;
+			colors[2] = ((base_colour >> 8)  & 0xFF) / 255.0;
+			colors[3] = ((base_colour >> 0)  & 0xFF) / 255.0;
+
+#ifdef DEBUG_VERTEX_NEW
+			logxmsg(LOG_PVR, "seteando colors rgba: %f %f %f %f\n", colors[0], colors[1], colors[2], colors[3]);
+//			logxmsg(LOG_PVR, "seteando texturas en %fx%f %02xx%02x\n", coords[3], coords[4], ta_address_pointer[4], ta_address_pointer[5]);
+			logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
+#endif
+//					glColor4f(r, g, b, a);
+			GLOP_COLOR4F(colors[1], colors[2], colors[3], colors[0]);
+//					glTexCoord2f(coords[3], coords[4]);
+			GLOP_TEXCOORD2F(coords[3],coords[4]);
+//					glVertex3f(coords[0], coords[1], coords[2] - 100);
+			GLOP_VERTEX3F(coords[0], coords[1], coords[2]);
+		}
+		break;
+
+		case 5:
+		{			
+			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float)*5);
+
+			memcpy(&colors[0], &ta_address_pointer[8], sizeof(float)*4);
+
+#ifdef DEBUG_VERTEX_NEW
+//					logxmsg(LOG_PVR, "seteando colors rgba: %f %f %f %f\n", r, g, b, a);
+			logxmsg(LOG_PVR, "seteando texturas en %fx%f\n", coords[3], coords[4]);
+			logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
+#endif
+//					glColor4f(colors[1], colors[2], colors[3], colors[0]);
+			GLOP_COLOR4F(colors[1], colors[2], colors[3], colors[0]);
+//					glTexCoord2f(coords[3], coords[4]);
+			GLOP_TEXCOORD2F(coords[3], coords[4]);
+//					glVertex3f(coords[0], coords[1], coords[2] - 100);
+			GLOP_VERTEX3F(coords[0], coords[1],coords[2]);
+		}
+		break;
+				
+		default:
+		{
+			logxmsg(LOG_PVR, "VERTEX: tipo %d de vertex no implementado!\n", vertex_parameter);
+		}
+		break;
+	}
+
+	if (TA.registers.pcw_end_of_strip)
+	{
+#ifdef DEBUG_VERTEX_NEW
+		logxmsg(LOG_PVR, "VERTEX: end-of-strip\n");
+#endif
+//    			glEnd();
+		GLOP_END();
+		pvr_registering = -1;
+		vertexstart = true;
 	}
 }
 

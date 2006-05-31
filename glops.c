@@ -276,7 +276,14 @@ void glop_process()
 #endif
 				glEnable(ptr->bar[i].enum1);
 				break;
-				
+
+				case GLOP_CULL_FACE:
+#ifdef DEBUG_GLOP
+				logxmsg(LOG_GLOP, "enable: %s\n", enable(ptr->bar[i].enum1));
+#endif
+				glCullFace(ptr->bar[i].enum1);
+				break;
+
 				case GLOP_DISABLE:
 #ifdef DEBUG_GLOP
 				logxmsg(LOG_GLOP, "disable: %s\n", enable(ptr->bar[i].enum1));

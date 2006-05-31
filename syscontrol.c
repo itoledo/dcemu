@@ -6,6 +6,7 @@
  
 #include <stdio.h>
 #include "sh4emu.h"
+#include "graficos.h"
 
 void dump_llamadas()
 {
@@ -345,6 +346,7 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 {
 	short n = (arg >> 8) & 0x0F;
 	DWORD addr, * src;
+	DWORD pcw;
 
 //    logxmsg(LOG_MEM, "PREF @R%d, valor %x\r\n", n, R(n));
 
@@ -368,7 +370,39 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 		if (addr & 0x10000000) // debieran ser 0x10000000 o 0x10000020
 		{
 //			logxmsg(LOG_MEM, "PREF %x\n", addr);
-			ta_check(addr);
+			ta_address_pointer =  (DWORD *) &ta_mem[addr & 0xFF]; // 0x00 o 0x20
+			pcw = *ta_address_pointer;
+			switch ((pcw >> 29) & 0x7)
+			{
+				case 0:
+//				logxmsg(LOG_PVR, "taListEnd\n");
+				taListEnd();
+// 				puts("List End ");
+				break;
+
+				case 1:
+//				logxmsg(LOG_PVR, "doUserClip\n");
+				doUserClip();
+				break;
+
+				case 2:
+//				logxmsg(LOG_PVR, "objectListSet\n");
+				objectListSet();
+				break;
+
+				case 4:
+//				logxmsg(LOG_PVR, "taPolyModifier\n");
+				taPolyModifier();
+// 					puts("Poly Mod ");
+				break;
+
+				case 7:
+//				logxmsg(LOG_PVR, "taVertexHandler\n");
+				taVertexHandler();
+// 					puts("Vertex Handler");
+				break;
+			}
+// 			ta_check(addr);
 		}
 	}
 
