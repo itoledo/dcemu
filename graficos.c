@@ -1650,8 +1650,8 @@ void taVertexHandler()
 	{
 		if (TexInfo.registers.texture_surface)
 		{
-			logxmsg(LOG_PVR, "llamando a get_texture(%d, %d, %d, %d)\n", pvr_texture_size_usize, pvr_texture_size_vsize, TexInfo.registers.texture_surface << 3, !TexInfo.registers.twiddled);
-			get_texture(pvr_texture_size_usize, pvr_texture_size_vsize, TexInfo.registers.texture_surface << 3, !TexInfo.registers.twiddled, TexInfo.registers.vq);
+			logxmsg(LOG_PVR, "llamando a get_texture(%d, %d, %d, %d)\n", pvr_texture_size_usize, pvr_texture_size_vsize, TexInfo.registers.texture_surface << 3, TexInfo.registers.twiddled ? 0 : 1);
+			get_texture(pvr_texture_size_usize, pvr_texture_size_vsize, TexInfo.registers.texture_surface << 3, TexInfo.registers.twiddled ? 0 : 1, TexInfo.registers.vq);
 		}
 //				glBlendFunc(pvr_srcblend, pvr_dstblend);
 		GLOP_BLENDFUNC(pvr_srcblend, pvr_dstblend);
