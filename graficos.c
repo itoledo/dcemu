@@ -1202,11 +1202,21 @@ void taListEnd()
 {
 /*	TA.control = *ta_address_pointer; */ // viene en blanco!
 
-	pvr_listdone |= (1 << TA.registers.pcw_list_type);
-	intc_add(pvr_lists[TA.registers.pcw_list_type], 100);
+//	pvr_listdone |= (1 << TA.registers.pcw_list_type);
+//	intc_add(pvr_lists[TA.registers.pcw_list_type], 100);
+
+	if (pvr_registering != -1)
+	{
+		pvr_listdone |= (1 << pvr_registering);
+		intc_add(pvr_lists[pvr_registering], 100);
+		pvr_registering = -1;
+	}
 	
 //	logxmsg(LOG_PVR, "pcw: taListEnd: End Of List: ld: %08x, reg: %08x, TA: %08x\n", pvr_listdone, pvr_registered, TA.control);
 	
+/*   logxmsg(LOG_PVR, "listdone: %08x registered: %08x listtype: %08x\n",
+                    pvr_listdone, pvr_registered, TA.registers.pcw_list_type); */
+
 	if (pvr_listdone == pvr_registered)
 	{
 //		logxmsg(LOG_PVR, "pcw: taListEnd: RENDER_DONE\n");
@@ -1642,7 +1652,9 @@ void taPolyModifier()
 
 void taVertexHandler()
 {
-//	logxmsg(LOG_PVR, "pcw: vertex parameter: polygon type %d, pcw: %08x\n", vertex_parameter, TA.control);
+#ifdef DEBUG_VERTEX_NEW
+	logxmsg(LOG_PVR, "pcw: vertex parameter: polygon type %d, pcw: %08x\n", vertex_parameter, TA.control);
+#endif
 	
 	TA.control = *ta_address_pointer;
 
@@ -1755,7 +1767,7 @@ void taVertexHandler()
 #endif
 //    			glEnd();
 		GLOP_END();
-		pvr_registering = -1;
+//		pvr_registering = -1;
 		vertexstart = true;
 	}
 }
