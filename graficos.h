@@ -49,8 +49,6 @@ void limpiar_pantalla();
 void cb_tastart(DWORD addr, void * p, size_t size);
 void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);
 
-// i really don't know why i need to export this in Linux and in Dev C++ it works oh well
-
 #if defined (POSX)
 void cb_renderstart(DWORD addr, void * p, size_t size);
 void cb_param_base(DWORD addr, void * p, size_t size);

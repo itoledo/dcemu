@@ -382,26 +382,15 @@ void sq_write(unsigned long direccion, void * p, size_t size)
 {
     short pos;
 
-/*    switch(size)
-    {
-    case 1: logmsg( "sq_write: dir %x, BYTE %x\r\n", direccion, *(BYTE *)p); break;
-    case 2: logmsg( "sq_write: dir %x, WORD %x\r\n", direccion, *(WORD *)p); break;
-    case 4: logmsg( "sq_write: dir %x, DWORD %x\r\n", direccion, *(DWORD *)p); break;
-    } */
-	
-//	dump_registers();
-
     pos = (direccion >> 2) & 7; // 3 bits
 
     if (direccion & 0x20) // 0: SQ0, 1: SQ1
     {
         SQ1[pos] = *(DWORD *) p;
-//		logxmsg(LOG_MEM, "sq_write: guardando %x en SQ1[%d]\r\n", *(DWORD *) p, pos);
     }
     else
     {
         SQ0[pos] = *(DWORD *) p;
-//		logxmsg(LOG_MEM, "sq_write: guardando %x en SQ0[%d]\r\n", *(DWORD *) p, pos);
     }
 }
 

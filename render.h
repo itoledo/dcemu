@@ -75,8 +75,6 @@ typedef union
 	DWORD control;
 }renderer_control;
 
-// vertex parameters 
-//  int vertex_param [ ] = {0,0,0,1,0,2,1,2,0,2,3,9,4,10,3,10,0,3,0,4};
 
 /*  Blit info.Contains the framebuffer format and other info */
 struct blit
@@ -85,6 +83,41 @@ struct blit
 	GLenum blit_type;
 };
 
+typedef struct vertex
+{
+	float x,y,z;
+	float r,g,b,a;
+	float t1,t2;
+}vertex;
+
+typedef struct TriangleStripInfo
+{
+	DWORD count;
+	DWORD alpha;
+	GLenum depthmode;
+	DWORD pvr_srcblend;
+	DWORD pvr_dstblend;
+	DWORD zwrite;
+	DWORD culling;
+	DWORD type;
+	struct
+	{
+		DWORD surface; // if 1 then this polygon will have a texture bound to it
+		DWORD pvr_texture_pixelformat;
+		DWORD pvr_texture_pixelpack;
+		DWORD pvr_texture_components;
+		DWORD twiddled;
+		DWORD vq;
+		DWORD filtermode;
+		DWORD pvr_texture_size_usize;
+		DWORD pvr_texture_size_vsize;
+	}texture;
+	DWORD index;
+}TSI;
+
+
+vertex VertexBuffer[65000];
+TSI TriangleStrip[10000];
 
 float coords[5];
 float colors[4];

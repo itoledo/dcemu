@@ -1015,3 +1015,26 @@ OPCODE(muluw66) // MULU.W Rm, Rn (0010nnnn mmmm1110)
         MACL, MACL);
 #endif
 }
+
+OPCODE(addv)
+{
+	DWORD  ans;
+	DWORD m = ((arg >> 4) & 0x0f);
+	DWORD  n = ((arg >> 8) & 0x0f);
+
+	DWORD dest = (R(n) >> 31) & 1;
+	DWORD  src  = (R(m) >> 31) & 1;
+  
+	src += dest;
+	R(n) += R(m);
+
+	ans = (R(n) >> 31) & 1;
+	ans += dest;
+  
+	if ((src == 0) || (src == 2))
+       SR_T  = (ans == 1);
+	else
+	   SR_T = 0;
+
+	PC +=2;
+}

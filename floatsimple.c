@@ -97,11 +97,6 @@ OPCODE(fmovs175) // FMOV.S @Rm+, FRn (1111nnnn mmmm1001)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-/*	float f;
-
-	ReadMemoryL(R(m), &f);
-	
-	FR(n) = (float) f; */
 	
 	memread(R(m), &FR(n), sizeof(float));
 

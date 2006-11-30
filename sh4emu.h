@@ -131,6 +131,15 @@ extern  DWORD *	TCPR2;
 #define TMU_TCR_UNIE	(1 << 5)
 /*** FIN TMU ***/
 
+
+
+#define SWITCH_FLOAT_REG_BANKS(){\
+FPR_BANK * backup;\
+backup = core.context.XF_BANK; \
+core.context.XF_BANK = core.context.FR_BANK; \
+core.context.FR_BANK = backup;\
+}
+
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
 
@@ -237,12 +246,7 @@ struct context_t
 // bool SH4_SLEEPING=false; // by default the processor is doing something
 
 
-#define SWITCH_FLOAT_REG_BANKS(){\
-FPR_BANK * backup;\
-backup = core.context.XF_BANK; \
-core.context.XF_BANK = core.context.FR_BANK; \
-core.context.FR_BANK = backup;\
-}
+
 
 #define OPCODE(instr)  void   instr (WORD arg)
 #define COPY_REG(a, b) ((a) =(b))

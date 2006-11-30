@@ -213,7 +213,7 @@ void UpdateSR(DWORD new)
 	md = SR_MD;
 	rb = SR_RB;
 	SR = new;
-	if ((SR_MD != md) | (SR_RB != rb))
+	if (SR_RB != rb)
 		{
 		swap_registers();
 		}

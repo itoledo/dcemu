@@ -63,11 +63,11 @@ struct st_cmd opcodes[] =
 	{ 0x000D, 0xF00F, "MOV.W",	OP_T_AT_R0_RM_RN,		movw26 },		// 0000nnnn mmmm1101
 	{ 0x000E, 0xF00F, "MOV.L",	OP_T_AT_R0_RM_RN,		movl27 },		// 0000nnnn mmmm1110
 
-	{ 0xC000, 0xFF00, "MOV.B",	OP_T_R0_AT_DISP_GBR,	NOIMP	},
+	{ 0xC000, 0xFF00, "MOV.B",	OP_T_R0_AT_DISP_GBR,	movb28	},
 	{ 0xC100, 0xFF00, "MOV.W",	OP_T_R0_AT_DISP_GBR,	movw29	},
 	{ 0xC200, 0xFF00, "MOV.L",	OP_T_R0_AT_DISP_GBR,	movl30	}, // 30
 	{ 0xC400, 0xFF00, "MOV.B",	OP_T_AT_DISP_GBR_R0,	movb31	},
-	{ 0xC500, 0xFF00, "MOV.W",	OP_T_AT_DISP_GBR_R0,	NOIMP	},
+	{ 0xC500, 0xFF00, "MOV.W",	OP_T_AT_DISP_GBR_R0,	movw32	},
 	{ 0xC600, 0xFF00, "MOV.L",	OP_T_AT_DISP_GBR_R0,	movl33	},
 	{ 0xC700, 0xFF00, "MOVA",	OP_T_AT_DISP_PC_R0,		mova34	}, // 34
 	{ 0x0029, 0xF0FF, "MOVT",	OP_T_RN,				movt35	},			// 0000nnnn 00101001

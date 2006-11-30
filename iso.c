@@ -39,8 +39,6 @@ int iso_init(char * sDevice)
 		
 		fprintf(stderr, "iso_init: usando %s como archivo formato iso9660\n", sDevice);
 
-//		iso9660_stat_t * statbuf;
-
 		iso = iso9660_open(sDevice);
 	
 		if (iso == NULL)
@@ -69,12 +67,6 @@ int iso_init(char * sDevice)
 			return 1;
 		}		
 
-	/*	cdio_get_drive_cap(cdio, &readcap, &writecap, &misccap);
-		
-		if (misccap & CDIO_DRIVE_CAP_MISC_MULTI_SESSION)
-		{
-			fprintf(stderr, "multi sesión\n");
-		} */
 
 		fprintf(stderr,
 	 		"primera pista: %d\n"
@@ -103,15 +95,6 @@ int iso_init(char * sDevice)
 		{
 			fprintf(stderr, "multisesion\n");
 		}
-
-/*		if (cdio_get_last_session(cdio, &lsn_ult_sesion))
-		{
-			fprintf(stderr, "cdio_get_last_session: error\n");
-		}
-		else
-		{
-			fprintf(stderr, "lsn ultima sesion: %d\n", lsn_ult_sesion);
-		} */
 	}
 
 	return 0;
@@ -171,8 +154,6 @@ int iso_read_sector(char * target, int secstart, int secnum)
 		{
 			for (i = 0; i < secnum; i++)
 			{
-		//		ret = cdio_read_mode1_sector(cdio, buf, secstart - 150 + i, false);
-		//		ret = cdio_read_mode1_sector(cdio, buf, secstart + i, false);
 				ret = cdio_read_data_sectors(cdio, buf, secstart - 150 + i, CDIO_CD_FRAMESIZE, 1);
 			
 				if (ret != 0)
@@ -180,14 +161,6 @@ int iso_read_sector(char * target, int secstart, int secnum)
 		
 				memcpy(target, buf, ISO_BLOCKSIZE);
 				target += ISO_BLOCKSIZE;
-				
-		/*		sprintf(fname, "sector%d.bin", secstart + i);
-				FILE * fp = fopen(fname, "wb");
-				if (fp)
-				{
-					fwrite(buf, sizeof(char), ISO_BLOCKSIZE, fp);
-					fclose(fp);
-				} */
 			}
 		}
 		break;

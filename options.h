@@ -17,7 +17,7 @@
 #define USE_BIOS_FONT
 #define _fast_interpreter_
 // #define PRINT_ASM
-#define LOGGING
+//#define LOGGING
 // #define LOG_FFLUSH
 // #define MACRO_REPLACEMENTS // ???
 // #define NI
