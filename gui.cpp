@@ -3,6 +3,7 @@
 #include <guichan.hpp>
 #include <guichan/sdl.hpp>
 #include <guichan/opengl.hpp>
+#include <guichan/opengl/openglsdlimageloader.hpp>
 #include "gui.h"
 
 #ifdef WIN32
@@ -15,8 +16,7 @@ gcn::Gui* gui;            // A Gui object - binds it all together
 gcn::ImageFont* font;     // A font
 gcn::SDLInput* input;                 // Input driver
 gcn::OpenGLGraphics* graphics;        // Graphics driver
-gcn::OpenGLImageLoader* imageLoader;  // For loading images
-gcn::SDLImageLoader* hostImageLoader; // For loading images
+gcn::OpenGLSDLImageLoader* imageLoader;  // For loading images
 gcn::Container* top;                 // A top container
 gcn::Window *window;
 gcn::Icon* debugIcon; 
@@ -31,9 +31,7 @@ void gui_init()
 	try
 	{
 		// inicializar estructuras
-		imageLoader = new gcn::OpenGLImageLoader();
-		hostImageLoader = new gcn::SDLImageLoader();
-		imageLoader->setHostImageLoader(hostImageLoader);
+		imageLoader = new gcn::OpenGLSDLImageLoader();
 		gcn::Image::setImageLoader(imageLoader); 
 
 		graphics = new gcn::OpenGLGraphics();
@@ -69,14 +67,9 @@ void gui_init()
 		scrollArea->setForegroundColor(0x331010);
 //		scrollArea->setOpaque(false);
 		
-		window->setContent(scrollArea);
+		window->add(scrollArea);
 		window->resizeToContent();
 		top->add(window, 40, 40);
-
-/*		label = new gcn::Label("Fps :");
-		label->setPosition(280, 220);
-		// Add the label to the top container
-		top->add(label); */
 	}
 	catch (...)
 	{
