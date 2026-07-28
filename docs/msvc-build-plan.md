@@ -1,7 +1,9 @@
 # Plan: compilar dcemu con MSVC (Visual Studio 2026)
 
-Estado: propuesta, sin ejecutar. Escrito en julio de 2026 a partir de una revisión del
-código en `master` (`b92b76b`).
+Estado: **ejecutado**. Escrito en julio de 2026 a partir de una revisión del código en
+`master` (`b92b76b`); las fases 0 a 3 están implementadas y compilan. Ver
+[Resultado](#resultado) al final para lo que cambió respecto de lo planificado y lo que
+queda pendiente.
 
 ## Contexto
 
@@ -148,3 +150,78 @@ optimizar cuando el binario corra igual que el de MinGW.
 
 Fase 1 entre uno y dos días, siendo el lector ISO9660 propio la parte más larga. Fases 2 y 3,
 unas horas.
+
+---
+
+## Resultado
+
+Fases 0 a 4 completas. `dcemu.exe` compila en Win32 con Visual Studio 2026, en Debug y en
+Release, sin errores, y corre el rotozoomer de 256 bytes de `demos/roto/` con el mismo aspecto
+que en el build de MinGW: la textura XOR gira y hace zoom, animada y estable.
+
+```sh
+cmake -S . -B build -G "Visual Studio 18 2026" -A Win32
+cmake --build build --config Debug
+```
+
+### Diferencias respecto de lo planificado
+
+**SDL 1.2.** No hizo falta compilar sdl12-compat: publica un paquete de desarrollo para MSVC
+(`sdl12-compat-devel-VC.zip`) con cabeceras, `.lib` y DLL. `CMakeLists.txt` lo descarga, con el
+SHA256 fijado, y replica las cabeceras bajo un subdirectorio `SDL/` porque el paquete las deja
+planas y el código incluye `<SDL/SDL.h>`.
+
+Cuidado con la cadena de DLL: `SDL.dll` es sdl12-compat, que carga `SDL2.dll`, que **no es
+SDL2** sino sdl2-compat, que a su vez carga `SDL3.dll`. Si falta cualquiera de las tres el
+proceso muere antes del `main` con `STATUS_DLL_INIT_FAILED` (`0xC0000142`), sin mensaje.
+
+**SDL_image.** Reemplazado por `stb_image.h` (`include/stb_image.h`), no por una conversión a
+BMP: `font.png` es color type 6 (RGBA), así que se carga con cuatro canales a una superficie de
+32 bits, que es exactamente lo que entregaba `IMG_Load`. `debug.c` carga `font.bmp` por la misma
+función y stb también lee BMP.
+
+**libcdio.** El lector propio quedó en `iso9660_min.c` + `iso9660_min.h`, unas 200 líneas en vez
+de las 300 estimadas. `iso.c` conserva los dos backends; el de libcdio está tras `USE_LIBCDIO`.
+El lector se verificó contra una imagen ISO9660 sintética: encuentra `ip.bin` y `1st_read.bin`,
+traduce los nombres, devuelve lsn/tamaño correctos y responde bien a un archivo inexistente.
+
+**SIMDx86.** `simdx86_stub.c`, seis símbolos. El `/wd4133` previsto resultó innecesario:
+`Vector(x)` es `float[4][4]`, que decae a `float *` y calza con el prototipo real.
+
+**static_assert.** Se usa el idioma C89 (`typedef char x[cond ? 1 : -1]`), no `static_assert` de
+C11, porque `Makefile.win` apunta a gcc 3.4.2. La macro es `DC_ASSERT_SIZE` en `lnxdefs.h`.
+
+**Consola.** `DCEMU_CONSOLE=ON` enlaza con `/SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup`, porque
+`SDL_main.h` hace `#define main SDL_main` y el punto de entrada real lo aporta `SDLmain.lib`.
+Aun así sdl12-compat redirige la salida a `stdout.txt` y `stderr.txt` como el SDL 1.2 original;
+para verla en la consola hay que exportar `SDL_STDIO_REDIRECT=0`.
+
+**Arranque.** `debug.c` traía `DebugVisible = 1` y `DebugMode = DBG_STOP`, así que el emulador
+abría en la vista de depuración y detenido, esperando F11. Ahora arranca ejecutando y con la
+pantalla normal; F12, F10, F11 y F9 siguen funcionando igual. El cambio también afecta a los
+builds de los makefiles.
+
+### Problemas que el plan no anticipó
+
+| Archivo | Problema |
+|---|---|
+| `lnxdefs.h` | `#define FLOAT float` / `DOUBLE double` chocan con los `typedef` de `<windows.h>` (`minwindef.h`, `wtypesbase.h`) y rompen las cabeceras del sistema con C2632. Quedaron bajo `#ifndef _WIN32`. |
+| `graficos.h` | Los prototipos `cb_renderstart`, `cb_param_base`, `cb_region_base`, `cb_fb_w_ctrl`, `cb_ppblocksize` y `cb_fb_r_sof1` estaban tras `#if defined(POSX)`, así que en Windows `mem.c` los llamaba sin declarar. Ahora se declaran siempre. |
+| `log.h` | `<stdarg.h>` y `lnxdefs.h` también estaban tras `POSX`. |
+| `mov.c:671,684` | `MOV.B @(disp,GBR),R0` y `MOV.W @(disp,GBR),R0` pasaban `r` en vez de `&r` a `ReadMemoryB`/`ReadMemoryW`: el valor sin inicializar se usaba como puntero de destino. Bug real y anterior al port, que MSVC delató con C4700 + C4022. |
+
+### Fase 4 — primer hito
+
+Corre `demos/roto/roto.bin` (rotozoomer de 256 bytes, quarn/Outbreak 2002) como `.bin` suelto,
+sin ISO y sin GUI. Ejercita el intérprete completo, la FPU (`FSCA`, `FDIV`, `FTRC`, `FLOAT`),
+`MUL.L` y el camino de framebuffer 2D del PVR. Instrucciones en
+[demos/roto/README.md](../demos/roto/README.md).
+
+El riesgo de aliasing que preocupaba no se materializó: el type-punning de `mem.c` y de
+`floatsimple.c` funciona igual en Debug (`/Od`) que en Release (`/O2`).
+
+### Pendiente
+
+- **Fase 5** — reponer la ventana de log y el backend libcdio.
+- **Fase 6** — x64.
+- Probar algo más grande que un 256b: Doom o MAME, que es lo que llegó a correr en su momento.

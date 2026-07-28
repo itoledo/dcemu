@@ -8,6 +8,11 @@ obj/*.res
 dcemu.exe
 /dcemu
 
+# CMake / MSVC
+/build/
+/out/
+CMakeUserPresets.json
+
 # Logs generados en tiempo de ejecucion
 logs/*.txt
 !logs/remove.txt

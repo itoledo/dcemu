@@ -3,10 +3,8 @@
 
 #include <stdio.h>
 
-#if defined(POSX)
 #include <stdarg.h>
 #include "lnxdefs.h"
-#endif
 
 #define LOG_MEM			1
 #define LOG_PVR			2

@@ -668,7 +668,7 @@ OPCODE(movb28)
 {
 	DWORD  d = (arg & 0xff);
 	BYTE r;
-	ReadMemoryB(GBR + d,r);
+	ReadMemoryB(GBR + d, &r);
 	R(0)  = (DWORD) r;
 
 	PC +=2;;
@@ -681,7 +681,7 @@ OPCODE(movw32)
 	DWORD  d = (arg & 0xff);
 	WORD r;
 
-	ReadMemoryW(GBR + (d << 1),r);
+	ReadMemoryW(GBR + (d << 1), &r);
 
 	R(0)  = (DWORD) r;
 	

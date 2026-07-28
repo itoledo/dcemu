@@ -13,13 +13,16 @@
 #include "stdlib.h"
 #include "stdarg.h"
 
-#include <SDL/SDL_image.h>
-
 #include "BFont.h"
 
+/* Antes se usaba SDL_image solo para este IMG_Load. Se reemplaza por stb_image,
+   que es un unico header y evita arrastrar SDL_image 1.2. */
+#define STBI_NO_STDIO_WRITE
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
-/* ATTENTION: MS Visual C++ do not declarate vsnprintf in <stdio.h>  */
-#ifdef WIN32
+/* vsnprintf es estandar desde C99; el workaround de _vsnprintf ya no hace falta. */
+#if defined(WIN32) && !defined(_MSC_VER)
 	#define vsnprintf _vsnprintf
 #endif
 
@@ -53,6 +56,41 @@ static char bfont_buffer[BFONT_BUFFER_LEN];
 /* utility functions */
 static Uint32 GetPixel(SDL_Surface *Surface, Sint32 X, Sint32 Y);
 static void   PutPixel(SDL_Surface *surface, Sint32 X, Sint32 Y, Uint32 pixel);
+
+
+/* Carga una imagen (png o bmp) a un SDL_Surface RGBA de 32 bits, que es lo
+   mismo que entregaba IMG_Load para el font.png original (color type 6). */
+static SDL_Surface * cargar_imagen(const char *filename)
+{
+    int w = 0, h = 0, canales = 0;
+    unsigned char *pixels;
+    SDL_Surface *surface;
+    int y;
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+    const Uint32 rmask = 0xff000000, gmask = 0x00ff0000, bmask = 0x0000ff00, amask = 0x000000ff;
+#else
+    const Uint32 rmask = 0x000000ff, gmask = 0x0000ff00, bmask = 0x00ff0000, amask = 0xff000000;
+#endif
+
+    pixels = stbi_load(filename, &w, &h, &canales, 4);
+    if (pixels == NULL)
+        return NULL;
+
+    surface = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, 32, rmask, gmask, bmask, amask);
+    if (surface == NULL) {
+        stbi_image_free(pixels);
+        return NULL;
+    }
+
+    if (SDL_MUSTLOCK(surface)) SDL_LockSurface(surface);
+    for (y = 0; y < h; y++)
+        memcpy((Uint8 *) surface->pixels + y * surface->pitch, pixels + y * w * 4, w * 4);
+    if (SDL_MUSTLOCK(surface)) SDL_UnlockSurface(surface);
+
+    stbi_image_free(pixels);
+
+    return surface;
+}
 
 
 /***************************** BFont Functions ********************************/
@@ -110,7 +148,7 @@ BFont_Info * BFont_LoadFont (const char *filename)
 	if (Font == NULL) 
 		return NULL;
 
-	surface = (SDL_Surface *) IMG_Load(filename);
+	surface = cargar_imagen(filename);
 	if (surface == NULL) {
 		free(Font);
 		return NULL;

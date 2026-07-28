@@ -210,11 +210,15 @@ struct FPSCR_REG_BITS_t
 	unsigned reserved0:10;
 };
 
-union FPSCR 
+union FPSCR
 {
 	struct FPSCR_REG_BITS_t FPSCR_REG_BITS;
 	unsigned long FPSCR_ALL;
-}; // floating-point status control register 
+}; // floating-point status control register
+
+// Estos dos se leen y escriben tambien como DWORD (SR_ALL / FPSCR_ALL).
+DC_ASSERT_SIZE(sr_bits, struct SR_BIT_t, 4);
+DC_ASSERT_SIZE(fpscr_bits, struct FPSCR_REG_BITS_t, 4);
 
 typedef struct context_t context_t;
 

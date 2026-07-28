@@ -1,4 +1,6 @@
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
 #include "main.h"
 #include "log.h"
 #include "opcodes.h"
@@ -56,14 +58,14 @@ int inicializar_logs()
 /*	FILE * fp;
 	int i, j; */
 
-    unlink("logs/error.txt");
-    unlink("logs/disasm.txt");
-    unlink("logs/memoria.txt");
-    unlink("logs/serial.txt");
-    unlink("logs/pvr.txt");
-    unlink("logs/intc.txt");
-    unlink("logs/repetidos.txt");
-    unlink("logs/glop.txt");
+    remove("logs/error.txt");
+    remove("logs/disasm.txt");
+    remove("logs/memoria.txt");
+    remove("logs/serial.txt");
+    remove("logs/pvr.txt");
+    remove("logs/intc.txt");
+    remove("logs/repetidos.txt");
+    remove("logs/glop.txt");
 	
 	logfp = fopen("logs/disasm.txt", "w");
 

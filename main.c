@@ -1,16 +1,7 @@
 // #define TTF
 
-#if defined(WIN32) && !defined(__GNUC__)
-#pragma comment(lib, "SDL.lib")
-#pragma comment(lib, "SDLmain.lib")
-#ifdef TTF
-#pragma comment(lib, "SDL_ttf.lib")
-#else
-#pragma comment(lib, "SDL_image.lib")
-#endif
-#pragma comment(lib, "sdlgfx.lib")
-// #pragma comment(lib, "sdlconsole.lib")
-#endif
+// Las bibliotecas las enlaza el sistema de compilacion (CMake / makefiles),
+// no #pragma comment(lib, ...).
 
 // #include "windows.h"
 #include "main.h"
@@ -285,7 +276,7 @@ void main_loop(void)
 				}
 
 //				if ((++cnt) == 500000)
-				if (pvr_scanline >= pvr_spg_load_vcount) // valor máximo que puede tomar
+				if (pvr_scanline >= pvr_spg_load_vcount) // valor mï¿½ximo que puede tomar
 				{
 	   				pvr_scanline = 0;
 //	   				cnt = 0;
@@ -797,7 +788,7 @@ int main(int argc, char *argv[])
 		return 1; 
 //*/
 
-	// determinemos qué vamos a cargar
+	// determinemos quï¿½ vamos a cargar
 	char * ejecutable = argv[1] ? argv[1] : "1st_read.bin";
 	
 	fprintf(stderr, "usando %s como parametro.\n", ejecutable);

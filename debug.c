@@ -14,8 +14,10 @@
 #include <time.h>
 #include "main.h"
 
-int DebugVisible = 1;
-int DebugMode = DBG_STOP;
+// Al arrancar se ejecuta de inmediato y con la pantalla normal. F12 muestra la
+// vista de depuracion, F10 detiene, F11 vuelve a correr, F9 avanza un paso.
+int DebugVisible = 0;
+int DebugMode = DBG_RUN;
 DWORD MemDebug = 0x8c000000;
 
 SDL_Surface *DebugWindow;

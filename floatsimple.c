@@ -9,7 +9,7 @@ double regN;
 double regM;
 
 
-__inline__ void extract_double(double *  i,short idx)
+DC_INLINE void extract_double(double *  i,short idx)
 {
 	// damos vuelta los bytes
 	DWORD * p =  (DWORD *) i;
@@ -19,7 +19,7 @@ __inline__ void extract_double(double *  i,short idx)
 	*p = DR_INT(idx) [0];
 }
 
-__inline__ void put_double(short idx, double * src)
+DC_INLINE void put_double(short idx, double * src)
 {
 	// damos vuelta los bytes
 	DWORD * d = (DWORD *) src;

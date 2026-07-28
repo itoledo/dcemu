@@ -57,6 +57,12 @@ struct registers_r
 		unsigned depthmode:3;
 };
 
+// Los tres se leen desde la FIFO del TA como un DWORD, asi que el layout de
+// bitfields tiene que dar exactamente 4 bytes.
+DC_ASSERT_SIZE(registers_ta, struct registers_ta, 4);
+DC_ASSERT_SIZE(registers_tex, struct registers_tex, 4);
+DC_ASSERT_SIZE(registers_r, struct registers_r, 4);
+
 typedef union
 {
 	taReg registers;

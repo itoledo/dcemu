@@ -10,19 +10,18 @@
 
 // OpenGL
 #if defined(WIN32)
-#include <gl\gl.h>								// Header File For The OpenGL32 Library
-#include <gl\glu.h>								// Header File For The GLu32 Library
+#include <GL/gl.h>								// Header File For The OpenGL32 Library
 // #include <gl\glaux.h>								// Header File For The GLaux Library
 #endif
 
-#if defined(POSX) 
+#if defined(POSX)
 #include <GL/gl.h>								// Header File For The OpenGL32 Library
-#include <GL/glu.h>								// Header File For The GLu32 Library
-#include "lnxdefs.h"
 #include <unistd.h>
+#endif
+
+#include "lnxdefs.h"
 #include <string.h>
 #include <stdlib.h>
-#endif
 
 #include "options.h"
 #include "reg.h"
