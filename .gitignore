@@ -1,0 +1,21 @@
+# Archivo CVS/RCS original, conservado como respaldo fuera del control de versiones
+_cvsroot/
+
+# Resultado de la compilacion
+# (las librerias .a de lib/ si van versionadas: son dependencias en el arbol)
+*.o
+obj/*.res
+dcemu.exe
+/dcemu
+
+# Logs generados en tiempo de ejecucion
+logs/*.txt
+!logs/remove.txt
+
+# BIOS e imagenes de disco (no se distribuyen)
+bios/
+*.iso
+*.cue
+*.gdi
+1st_read.bin
+ip.bin
