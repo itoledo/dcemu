@@ -1,9 +1,17 @@
+// La ventana de log usa guichan, que no tiene releases desde 2010 y no compila
+// con MSVC. Queda detras de USE_GUICHAN: sin ese define se compilan stubs vacios
+// y el emulador funciona igual, solo sin la ventana de log (F2).
+
 #include <iostream>
 #include <SDL/SDL.h>
+
+#ifdef USE_GUICHAN
 #include <guichan.hpp>
 #include <guichan/sdl.hpp>
 #include <guichan/opengl.hpp>
 #include <guichan/opengl/openglsdlimageloader.hpp>
+#endif
+
 #include "gui.h"
 
 #ifdef WIN32
@@ -11,6 +19,8 @@
 #endif
 
 #include <GL/gl.h>
+
+#ifdef USE_GUICHAN
 
 gcn::Gui* gui;            // A Gui object - binds it all together
 gcn::ImageFont* font;     // A font
@@ -126,3 +136,19 @@ bool gui_isvisiblelog()
 }
 
 };
+
+#else // !USE_GUICHAN
+
+extern "C" {
+
+void gui_init() {}
+void gui_event(SDL_Event evt) { (void) evt; }
+void gui_refresh() {}
+void gui_addlog(char * str) { (void) str; }
+void gui_addlogchar(char c) { (void) c; }
+void gui_setvisiblelog(bool vis) { (void) vis; }
+bool gui_isvisiblelog() { return false; }
+
+};
+
+#endif // USE_GUICHAN

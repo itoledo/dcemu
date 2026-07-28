@@ -49,14 +49,14 @@ void limpiar_pantalla();
 void cb_tastart(DWORD addr, void * p, size_t size);
 void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);
 
-#if defined (POSX)
+// Estaban tras un #if defined(POSX), asi que en Windows mem.c los llamaba sin
+// prototipo. Declararlos siempre.
 void cb_renderstart(DWORD addr, void * p, size_t size);
 void cb_param_base(DWORD addr, void * p, size_t size);
 void cb_region_base(DWORD addr, void * p, size_t size);
 void cb_fb_w_ctrl(DWORD addr, void * p, size_t size);
 void cb_ppblocksize(DWORD addr, void * p, size_t size);
 void cb_fb_r_sof1(DWORD addr, void * p, size_t size);
-#endif
 
 
 extern	SDL_Surface *screen;

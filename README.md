@@ -31,19 +31,41 @@ de memoria y ejecución paso a paso.
 
 ## Compilación
 
+### Windows, con MSVC (recomendado)
+
+Es la ruta que funciona hoy sin conseguir nada a mano: CMake descarga
+[sdl12-compat](https://github.com/libsdl-org/sdl12-compat) y deja las DLL junto al
+ejecutable.
+
+```sh
+cmake -S . -B build -G "Visual Studio 18 2026" -A Win32
+cmake --build build --config Debug
+```
+
+Visual Studio también abre el directorio directamente, sin necesidad de generar una solución
+(`dcemu.vcproj` es formato de 2003 y apunta al núcleo viejo `sh4.c`: no sirve).
+
+Este build deja fuera, a propósito, la ventana de log (guichan) y el backend libcdio para
+imágenes bin/cue y lectora física; se activan con `-DDCEMU_USE_GUICHAN=ON` y
+`-DDCEMU_USE_LIBCDIO=ON`, pero hay que proveer esas dependencias. Las imágenes `.iso` se leen
+con el lector propio de `iso9660_min.c`, sin libcdio.
+
+Detalle del port y de lo que falta en [docs/msvc-build-plan.md](docs/msvc-build-plan.md).
+
+### MinGW / Linux (histórico)
+
 ```sh
 make -f Makefile.linux    # Linux   -> dcemu
 make -f Makefile.win      # Windows -> dcemu.exe  (MinGW / Dev-C++)
 ```
 
-Dependencias: SDL 1.2, SDL_image, OpenGL, [guichan](https://github.com/darkbitsorg/guichan),
+Dependencias: SDL 1.2, OpenGL, [guichan](https://github.com/darkbitsorg/guichan),
 libcdio + libiso9660 y [SIMDx86](https://sourceforge.net/projects/simdx86/). Las dos últimas
 vienen en el árbol, bajo `include/` y `lib/`.
 
 Advertencia honesta: **son dependencias de 2005 y ninguna se instala hoy sin trabajo.** SDL 1.2
-está descontinuado (existe [sdl12-compat](https://github.com/libsdl-org/sdl12-compat) como
-reemplazo), guichan no tiene releases desde 2010, y las librerías precompiladas de `lib/` son
-binarios de MinGW de 32 bits. Levantar esto en un toolchain moderno es un proyecto en sí mismo.
+está descontinuado, guichan no tiene releases desde 2010, y las librerías precompiladas de
+`lib/` son binarios de MinGW de 32 bits.
 
 Los directorios `obj/` y `logs/` deben existir antes de compilar y ejecutar.
 
@@ -70,7 +92,7 @@ otro caso se abre como imagen de disco y ambos se extraen de ahí.
 | F1 | Pantalla completa |
 | F2 | Ventana de log |
 | F9 / F10 / F11 | Paso a paso / detener / ejecutar |
-| F12 | Vista de depuración |
+| F12 | Vista de depuración (arranca oculta: el emulador parte ejecutando) |
 | `+` `-` (teclado numérico) | Recorrer el volcado de memoria |
 
 ## Estructura
@@ -112,6 +134,7 @@ Componentes de terceros incluidos en el árbol:
 
 - [SIMDx86](https://sourceforge.net/projects/simdx86/) — Patrick Baggett (LGPL)
 - [libcdio / libiso9660](https://www.gnu.org/software/libcdio/) — GNU (GPL)
+- [stb_image](https://github.com/nothings/stb) — Sean Barrett (dominio público / MIT)
 - BFont — renderizador de fuentes de mapa de bits para SDL
 - En `dcemu-exp`, `1strdchk.c` es un port del *1st_read.bin File Checker 1.5* de LyingWake
 

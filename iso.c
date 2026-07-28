@@ -6,23 +6,37 @@
 
 // typedef int ssize_t; // falta en mingw32
 
+// El backend libcdio (bin/cue y lectora fisica) es opcional: sus .a son de
+// MinGW y no sirven con MSVC. Sin USE_LIBCDIO queda solo la ruta .iso, atendida
+// por el lector propio de iso9660_min.c.
+#ifdef USE_LIBCDIO
 #include <cdio/config.h>
 #include <cdio/cdio.h>
 #include <cdio/iso9660.h>
 #include <cdio/cd_types.h>
+#endif
 
+#include "lnxdefs.h"
+#include "iso9660_min.h"
 #include "iso.h"
 #include "scramble.h"
+
+// Lo definia <cdio/iso9660.h>.
+#ifndef ISO_BLOCKSIZE
+#define ISO_BLOCKSIZE MIN_ISO_BLOCKSIZE
+#endif
 
 // formatos
 enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDIO } formato_imagen;
 #define ISO_DEFAULT_LBA 150
 
 // variables iso9660
-iso9660_t * iso;
+min_iso_t * iso;
 
+#ifdef USE_LIBCDIO
 // variables libcdio
 CdIo * cdio;
+#endif
 
 int iso_init(char * sDevice)
 {
@@ -31,21 +45,22 @@ int iso_init(char * sDevice)
 		formato_imagen = FORMATO_NULL;
 		return 0;
 	}
-	
+
 	if (strncmp(&sDevice[strlen(sDevice) - 4], ".iso", 4) == 0) // si termina en .iso
 	{
 		// usaremos exclusivamente iso9660
 		formato_imagen = FORMATO_ISO9660;
-		
+
 		fprintf(stderr, "iso_init: usando %s como archivo formato iso9660\n", sDevice);
 
-		iso = iso9660_open(sDevice);
-	
+		iso = min_iso_open(sDevice);
+
 		if (iso == NULL)
 			return 1;
 	}
 	else
 	{
+#ifdef USE_LIBCDIO
 	    char * s;
 //	    lsn_t lsn_ult_sesion;
 	    cdio_fs_anal_t fs;
@@ -55,22 +70,22 @@ int iso_init(char * sDevice)
 		formato_imagen = FORMATO_CDIO;
 
 		cdio_init();
-	
+
 		if (sDevice == NULL)
 			fprintf(stderr, "cdio_get_default_device: %s\n", sDevice = cdio_get_default_device(NULL));
 
 		cdio = cdio_open(sDevice, DRIVER_UNKNOWN);
-	
+
 		if (!cdio)
 		{
 			fprintf(stderr, "cdio_open: cdio NULL\n");
 			return 1;
-		}		
+		}
 
 
 		fprintf(stderr,
 	 		"primera pista: %d\n"
-			"número de pistas: %d\n"
+			"nï¿½mero de pistas: %d\n"
 			"formato: %s\n"
 			"lsn: %d\n"
 			"lba: %d\n",
@@ -81,20 +96,26 @@ int iso_init(char * sDevice)
 	    			cdio_get_track_lba(cdio, 1));
 
 		fs = cdio_guess_cd_type(cdio, 0, 1, &ia);
-		
+
 		switch(CDIO_FSTYPE(fs))
 		{
 		    case CDIO_FS_ISO_9660:	s = "iso9660";	break;
 		    case CDIO_FS_AUDIO:		s = "audio";	break;
 		    default:				s = "unknown";	break;
 		}
-		
+
 		fprintf(stderr, "formato filesystem %d: %d %s\n", 1, CDIO_FSTYPE(fs), s);
-		
+
 		if (fs & CDIO_FS_ANAL_MULTISESSION)
 		{
 			fprintf(stderr, "multisesion\n");
 		}
+#else
+		fprintf(stderr, "iso_init: %s no es un .iso y esta compilacion no incluye "
+		                "libcdio (bin/cue y lectora fisica).\n", sDevice);
+		formato_imagen = FORMATO_NULL;
+		return 1;
+#endif
 	}
 
 	return 0;
@@ -105,20 +126,24 @@ int iso_get_lba()
 	switch(formato_imagen)
 	{
 		case FORMATO_ISO9660:	return ISO_DEFAULT_LBA;
+#ifdef USE_LIBCDIO
 		case FORMATO_CDIO:		return cdio_get_track_lba(cdio, 1);
+#endif
 		case FORMATO_NULL:		return 0;
+		default:				return 0;
 	}
-	
-	return 0;
 }
 
 int iso_get_mode()
 {
+#ifdef USE_LIBCDIO
     int fmt;
+#endif
 
 	if (formato_imagen == FORMATO_ISO9660 || formato_imagen == FORMATO_NULL)
 		return 1; // TRACK_FORMAT_DATA
 
+#ifdef USE_LIBCDIO
     switch(cdio_get_track_format(cdio, 1))
     {
         case TRACK_FORMAT_AUDIO:	fmt = -1;	break;
@@ -127,58 +152,69 @@ int iso_get_mode()
         case TRACK_FORMAT_DATA:		fmt = 1;	break;
         case TRACK_FORMAT_PSX:		fmt = -1;	break;
         default:					fmt = -1;	break;
-	}	
-	
+	}
+
 	if (fmt == -1)
 	{
 	    fprintf(stderr, "error en formato de pista 1: %s\n", track_format2str[cdio_get_track_format(cdio, 1)]);
-	    fmt = 1; // dejémoslo en modo1
+	    fmt = 1; // dejï¿½moslo en modo1
 	}
-	
+
 	fprintf(stderr, "cdio_get_track_format: %d\n", fmt);
 
 	return fmt;
-}    
-    
+#else
+	return 1;
+#endif
+}
+
 int iso_read_sector(char * target, int secstart, int secnum)
 {
-	int ret = 0, i;
+	int ret = 0;
+#ifdef USE_LIBCDIO
+	int i;
 	char buf[ISO_BLOCKSIZE];
+#endif
 //	char fname[128];
- 
+
 	fprintf(stderr, "leyendo sectores, secstart %d, secnum %d\n", secstart, secnum);
-	
+
 	switch(formato_imagen)
 	{
+#ifdef USE_LIBCDIO
 		case FORMATO_CDIO:
 		{
 			for (i = 0; i < secnum; i++)
 			{
 				ret = cdio_read_data_sectors(cdio, buf, secstart - 150 + i, CDIO_CD_FRAMESIZE, 1);
-			
+
 				if (ret != 0)
 					fprintf(stderr, "error al tratar de leer sector %d\n", secstart - 150 + i);
-		
+
 				memcpy(target, buf, ISO_BLOCKSIZE);
 				target += ISO_BLOCKSIZE;
 			}
 		}
 		break;
-		
+#endif
+
 		case FORMATO_ISO9660:
 		{
-			ret = iso9660_iso_seek_read(iso, target, secstart - ISO_DEFAULT_LBA, secnum);
-				
+			ret = (int) min_iso_seek_read(iso, target, secstart - ISO_DEFAULT_LBA, secnum);
+
 			if (ret <= 0)
 				fprintf(stderr, "error al tratar de leer %d sectores desde sector %d\n", secnum, secstart);
 		}
 		break;
-		
+
 		case FORMATO_NULL:
 		{
 			memset(target, 0, secnum * ISO_BLOCKSIZE);
 			ret = 1;
 		}
+		break;
+
+		default:
 		break;
 	}
 
@@ -200,7 +236,7 @@ int cargar_archivo( char * fname, void * target)
 		fprintf(stderr, "No se pudo abrir %s\r\n", fname);
 		return -1;
 	}
-	
+
 	for (c = fgetc(fp); !feof(fp); c = fgetc(fp))
 	{
 		*(p++) = c;
@@ -208,17 +244,15 @@ int cargar_archivo( char * fname, void * target)
 	}
 
 	fclose(fp);
-	
+
 	return cnt;
 }
 
 int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 {
-	CdioList_t * list;
-	CdioListNode_t *entnode;
-	lsn_t lsn = 0;
-	uint32_t size = 0;
-	uint32_t secsize = 0;
+	unsigned int lsn = 0;
+	unsigned int size = 0;
+	unsigned int secsize = 0;
 
 	if (formato_imagen == FORMATO_NULL)
 	{
@@ -226,43 +260,60 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 		return -1;
 	}
 
-	switch(formato_imagen)
-	{
-		case FORMATO_CDIO: list = iso9660_fs_readdir(cdio, "/", false); break;
-		case FORMATO_ISO9660: list = iso9660_ifs_readdir(iso, "/"); break;
-	}
-	
-	if (list == NULL)
-	{
-		fprintf(stderr, "No se pudo abrir directorio.\n");
-		return -1;
-	}
-	
 	if (mempos == NULL)
 	{
 		fprintf(stderr, "mempos == NULL?\n");
 		return -1;
 	}
-	
-	_CDIO_LIST_FOREACH(entnode, list)
-	{
-      char filename[4096];
-      iso9660_stat_t *p_statbuf = (iso9660_stat_t *) _cdio_list_node_data (entnode);
-      iso9660_name_translate(p_statbuf->filename, filename);
-      
-      // acá tenemos el nombre del archivo, ahora deberemos leerlo.
-      if (!strcmp(filename, fname))
-      {
-			lsn = p_statbuf->lsn;
-			secsize = p_statbuf->secsize;
-			size = p_statbuf->size;
-	  }
 
-//      free(p_statbuf);
+	switch(formato_imagen)
+	{
+#ifdef USE_LIBCDIO
+		case FORMATO_CDIO:
+		{
+			CdioList_t * list = iso9660_fs_readdir(cdio, "/", false);
+			CdioListNode_t * entnode;
+
+			if (list == NULL)
+			{
+				fprintf(stderr, "No se pudo abrir directorio.\n");
+				return -1;
+			}
+
+			_CDIO_LIST_FOREACH(entnode, list)
+			{
+			  char filename[4096];
+			  iso9660_stat_t *p_statbuf = (iso9660_stat_t *) _cdio_list_node_data (entnode);
+			  iso9660_name_translate(p_statbuf->filename, filename);
+
+			  // acï¿½ tenemos el nombre del archivo, ahora deberemos leerlo.
+			  if (!strcmp(filename, fname))
+			  {
+					lsn = p_statbuf->lsn;
+					secsize = p_statbuf->secsize;
+					size = p_statbuf->size;
+			  }
+			}
+
+			_cdio_list_free(list, true);
+		}
+		break;
+#endif
+
+		case FORMATO_ISO9660:
+		{
+			if (!min_iso_stat_root(iso, fname, &lsn, &size, &secsize))
+			{
+				fprintf(stderr, "no se encontro %s en el directorio raiz.\n", fname);
+				size = 0;
+			}
+		}
+		break;
+
+		default:
+		break;
 	}
-	
-	_cdio_list_free(list, true);
-	
+
 	// necesitamos el lsn y el size
 	if (size > 0)
 	{
@@ -270,8 +321,11 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 
 		switch(formato_imagen)
 		{
+#ifdef USE_LIBCDIO
 			case FORMATO_CDIO: if (cdio_read_data_sectors(cdio, mempos, lsn, ISO_BLOCKSIZE, secsize) == DRIVER_OP_SUCCESS) fprintf(stderr, "archivo leido exitosamente.\n"); break;
-			case FORMATO_ISO9660: if (iso9660_iso_seek_read(iso, mempos, lsn, secsize) > 0) fprintf(stderr, "archivo leido exitosamente.\n"); break;
+#endif
+			case FORMATO_ISO9660: if (min_iso_seek_read(iso, mempos, lsn, secsize) > 0) fprintf(stderr, "archivo leido exitosamente.\n"); break;
+			default: break;
 		}
 
 		if (scrambled)
@@ -299,23 +353,28 @@ int cargar_ip_bin(unsigned char * mempos)
 {
 	switch(formato_imagen)
 	{
+#ifdef USE_LIBCDIO
 		case FORMATO_CDIO:
 		{
 			if (cdio_read_data_sectors(cdio, mempos, 0, ISO_BLOCKSIZE, 16) == DRIVER_OP_SUCCESS)
 				return 1;
 		}
 		break;
-		
+#endif
+
 		case FORMATO_ISO9660:
 		{
-			if (iso9660_iso_seek_read(iso, mempos, 0, 16) > 0)
+			if (min_iso_seek_read(iso, mempos, 0, 16) > 0)
 				return 1;
 		}
 		break;
-		
+
 		case FORMATO_NULL:
 			return 0;
+
+		default:
+			break;
 	}
-	
+
 	return 0;
 }
