@@ -225,3 +225,6 @@ a un bloque de descarte, como hace `tests/memoria_prueba.c`.
 | 10 | Excepciones generales | mediano | diagnóstico |
 
 Los cuatro primeros son una tarde. El punto 4 es el que decide si esto llega al menú o no.
+
+El orden de trabajo, con hitos y estimaciones, está en
+[bios-boot-plan.md](bios-boot-plan.md).
