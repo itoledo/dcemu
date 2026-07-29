@@ -24,6 +24,7 @@ set(CMAKE_CXX_STANDARD 17)
 option(DCEMU_USE_GUICHAN "Compilar la ventana de log con guichan" OFF)
 option(DCEMU_USE_LIBCDIO "Compilar el backend libcdio (bin/cue, lectora fisica)" OFF)
 option(DCEMU_CONSOLE "Dejar la consola abierta para ver los mensajes a stderr" ON)
+option(DCEMU_BUILD_TESTS "Compilar las pruebas unitarias de opcodes (tests/)" ON)
 
 # ---------------------------------------------------------------------------
 # SDL 1.2, via sdl12-compat
@@ -187,3 +188,16 @@ foreach(_dll SDL.dll SDL2.dll SDL3.dll)
 			"${SDL12_LIBDIR}/${_dll}" "$<TARGET_FILE_DIR:dcemu>/"
 		VERBATIM)
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Pruebas unitarias
+#
+# Enlazan los handlers de opcodes sin SDL ni OpenGL. Ver tests/README.md.
+#   cmake --build build --target dcemu_tests
+#   ctest --test-dir build -C Debug --output-on-failure
+# ---------------------------------------------------------------------------
+
+if(DCEMU_BUILD_TESTS)
+	enable_testing()
+	add_subdirectory(tests)
+endif()

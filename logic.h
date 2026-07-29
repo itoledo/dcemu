@@ -8,4 +8,8 @@ OPCODE(tst80); // TST Rm, Rn (0010nnnn mmmm1000)
 OPCODE(tst81); // TST #imm, R0 (11001000 iiiiiiii)
 OPCODE(xor83); // (0010 nnnn mmmm 1010)
 OPCODE(xor84); // XOR #imm, R0 (11001010 iiiiiiii)
+OPCODE(andb74); // AND.B #imm, @(R0, GBR) (11001101 iiiiiiii)
+OPCODE(orb78); // OR.B #imm, @(R0, GBR) (11001111 iiiiiiii)
+OPCODE(tstb82); // TST.B #imm, @(R0, GBR) (11001100 iiiiiiii)
+OPCODE(xorb85); // XOR.B #imm, @(R0, GBR) (11001110 iiiiiiii)
 

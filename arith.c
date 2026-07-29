@@ -472,11 +472,13 @@ OPCODE(div1s52) // DIV1 Rm, Rn (0011nnnn mmmm0100)
         break;
     }
 
-    if (IS_SR_Q() && IS_SR_M())
+    /* T = (Q == M). Tambien vale 1 cuando los dos estan apagados, que es el
+       caso de la division sin signo: con "Q && M" el cociente salia siempre
+       cero. */
+    if ((IS_SR_Q() ? 1 : 0) == (IS_SR_M() ? 1 : 0))
         SET_SH4_BIT(SR_T);
     else
         REMOVE_SH4_BIT(SR_T);
-//    T=(Q==M);
 
 	PC += 2;
 
@@ -667,14 +669,16 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 	unsigned long temp0,temp1,temp2,temp3;
 	long rm, rn, fnLmL;
 
-	memread(R(m), &rm, sizeof(DWORD));
+	/* El manual lee @Rn+ primero, con su incremento, y recien despues @Rm+.
+	   Con n == m eso significa leer dos posiciones consecutivas y avanzar el
+	   registro 8 bytes, no leer dos veces la misma. */
 	memread(R(n), &rn, sizeof(DWORD));
-	
-	logmsg("macl62: R(%d)=%x->%x, R(%d)=%x->%x\n", m, R(m), rm,n, R(n), rn);
+	R(n) += 4;
+	memread(R(m), &rm, sizeof(DWORD));
+	R(m) += 4;
 
-	R(n)+=4;
-	R(m)+=4;
-	
+	logmsg("macl62: rm=%x, rn=%x\n", rm, rn);
+
 	if ((long)(rn^rm)<0)
 		fnLmL=-1;
 	else
@@ -720,32 +724,27 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 
 	if(IS_SR_S())
 	{
-		Res0=MACL+Res0;
-		
-		if (MACL>Res0)
-			Res2++;
-		
-		if (MACH&0x00008000)
-			;
+		/* Con S=1 el acumulador es de 48 bits con signo: MACH[15:0]:MACL. La
+		   suma se satura en ese rango y MACH[31:16] no participa ni cambia. */
+		long long acumulador, producto, total;
+
+		acumulador = (long long) ((((unsigned long long) MACH & 0xFFFF) << 32) | MACL);
+
+		if (acumulador & 0x0000800000000000LL)	// extension de signo de 48 bits
+			acumulador |= (long long) 0xFFFF000000000000ULL;
+
+		producto = (long long) ((((unsigned long long) Res2) << 32) | Res0);
+
+		total = acumulador + producto;
+
+		if (total > 0x00007FFFFFFFFFFFLL)
+			total = 0x00007FFFFFFFFFFFLL;
 		else
-			Res2+=MACH|0xFFFF0000;
-			
-		Res2+=MACL&0x00007FFF; // MACH o MACL?
-		
-		if(((long)Res2<0)&&(Res2<0xFFFF8000))
-		{
-			Res2=0x00008000;
-			Res0=0x00000000;
-		}
+		if (total < -0x0000800000000000LL)
+			total = -0x0000800000000000LL;
 
-		if(((long)Res2>0)&&(Res2>0x00007FFF))
-		{
-			Res2=0x00007FFF;
-			Res0=0xFFFFFFFF;
-		};
-
-		MACH=Res2; // (Res2&0x0000FFFF)|(MACH&0xFFFF0000);
-		MACL=Res0;
+		MACL = (DWORD) (total & 0xFFFFFFFF);
+		MACH = (MACH & 0xFFFF0000) | (DWORD) ((total >> 32) & 0xFFFF);
 	}
 	else
 	{
@@ -1016,7 +1015,7 @@ OPCODE(muluw66) // MULU.W Rm, Rn (0010nnnn mmmm1110)
 #endif
 }
 
-OPCODE(addv)
+OPCODE(addv) // ADDV Rm, Rn : Rn + Rm -> Rn, desborde -> T (0011nnnn mmmm1111)
 {
 	DWORD  ans;
 	DWORD m = ((arg >> 4) & 0x0f);
@@ -1024,17 +1023,115 @@ OPCODE(addv)
 
 	DWORD dest = (R(n) >> 31) & 1;
 	DWORD  src  = (R(m) >> 31) & 1;
-  
+
 	src += dest;
 	R(n) += R(m);
 
 	ans = (R(n) >> 31) & 1;
 	ans += dest;
-  
+
+	/* Solo hay desborde si los dos operandos tenian el mismo signo y el
+	   resultado cambio de signo. */
 	if ((src == 0) || (src == 2))
        SR_T  = (ans == 1);
 	else
 	   SR_T = 0;
 
 	PC +=2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(subv71) // SUBV Rm, Rn : Rn - Rm -> Rn, desborde -> T (0011nnnn mmmm1011)
+{
+	short n = (arg >> 8) & 0x0F;
+	short m = (arg >> 4) & 0x0F;
+	long dest, src, ans;
+
+	dest = ((long) R(n) >= 0) ? 0 : 1;
+	src  = ((long) R(m) >= 0) ? 0 : 1;
+	src += dest;
+
+	R(n) -= R(m);
+
+	ans = ((long) R(n) >= 0) ? 0 : 1;
+	ans += dest;
+
+	/* Al reves que ADDV: la resta solo puede desbordar si los operandos
+	   tenian signos distintos (src == 1). */
+	if (src == 1)
+		SR_T = (ans == 1) ? 1 : 0;
+	else
+		SR_T = 0;
+
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(macw63)	// MAC.W @Rm+, @Rn+ (0100nnnn mmmm1111)
+{
+	short n = (arg >> 8) & 0x0F;
+	short m = (arg >> 4) & 0x0F;
+	WORD wn, wm;
+	long tempm, tempn, dest, src, ans;
+	unsigned long templ;
+
+	/* Igual que MAC.L: primero @Rn+ y despues @Rm+, cada uno con su
+	   incremento. */
+	ReadMemoryW(R(n), &wn);
+	R(n) += 2;
+	ReadMemoryW(R(m), &wm);
+	R(m) += 2;
+
+	tempn = (long) (short) wn;
+	tempm = (long) (short) wm;
+
+	templ = MACL;
+	tempm = tempn * tempm;	// el producto de dos words entra en 32 bits
+
+	dest = ((long) MACL >= 0) ? 0 : 1;
+
+	if (tempm >= 0)
+	{
+		src = 0;
+		tempn = 0;			// lo que se suma a MACH: extension de signo
+	}
+	else
+	{
+		src = 1;
+		tempn = -1;
+	}
+
+	src += dest;
+
+	MACL += tempm;
+
+	ans = ((long) MACL >= 0) ? 0 : 1;
+	ans += dest;
+
+	if (IS_SR_S())
+	{
+		/* Con S=1 el acumulador es de 32 bits y se satura en MACL; MACH no
+		   participa. */
+		if (ans == 1)
+		{
+			if (src == 0)
+				MACL = 0x7FFFFFFF;
+
+			if (src == 2)
+				MACL = 0x80000000;
+		}
+	}
+	else
+	{
+		MACH += tempn;
+
+		if (templ > MACL)	// hubo acarreo hacia la parte alta
+			MACH += 1;
+	}
+
+	PC += 2;
+
+	core.context.cycles += 3;
 }

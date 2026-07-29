@@ -180,9 +180,12 @@ OPCODE(movb10) // MOV.B Rm, @-Rn  (0010nnnn mmmm0100)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	BYTE valor = (BYTE) (R(m) & 0xFF);
+	BYTE valor;
 
+	/* El manual define "R[n] -= 1; Write_Byte(R[n], R[m])": el registro fuente
+	   se lee despues de decrementar, lo que importa cuando n == m. */
 	R(n)--;
+	valor = (BYTE) (R(m) & 0xFF);
 	WriteMemoryB(R(n), &valor);
 
 	PC += 2;
@@ -198,9 +201,11 @@ OPCODE(movw11) // MOV.W Rm, @-Rn (0010nnnn mmmm0101)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
-	WORD valor = (WORD) (R(m) & 0xFFFF);
+	WORD valor;
 
+	/* Igual que movb10: primero se decrementa y despues se lee Rm. */
 	R(n) -= 2;
+	valor = (WORD) (R(m) & 0xFFFF);
 	WriteMemoryW(R(n), &valor);
 
 	PC += 2;
@@ -664,29 +669,42 @@ OPCODE(movl30) // MOV.L R0, @(disp, GBR)
 	core.context.cycles += 2;
 }
 
-OPCODE(movb28)
+OPCODE(movb28) // MOV.B R0, @(disp, GBR) (11000000 dddddddd)
 {
-	DWORD  d = (arg & 0xff);
-	BYTE r;
-	ReadMemoryB(GBR + d, &r);
-	R(0)  = (DWORD) r;
+	DWORD d = (arg & 0xFF);
+	BYTE valor = (BYTE) (R(0) & 0xFF);
 
-	PC +=2;;
-	
-	core.context.cycles +=1;
+	WriteMemoryB(GBR + d, &valor);
+
+	PC += 2;
+
+	core.context.cycles += 1;
 }
 
-OPCODE(movw32)
+OPCODE(movw32) // MOV.W @(disp, GBR), R0 (11000101 dddddddd)
 {
-	DWORD  d = (arg & 0xff);
-	WORD r;
+	DWORD d = (arg & 0xFF);
+	WORD w;
 
-	ReadMemoryW(GBR + (d << 1), &r);
+	ReadMemoryW(GBR + (d << 1), &w);
 
-	R(0)  = (DWORD) r;
-	
+	R(0) = SignExtend16(w);
 
-	PC +=2;;
-	
-	core.context.cycles +=1;
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(movcal137) // MOVCA.L R0, @Rn (0000nnnn 11000011)
+{
+	short n = (arg >> 8) & 0x0F;
+	DWORD valor = R(0);
+
+	/* En el SH-4 esto ademas reserva la linea de cache sin leerla de memoria.
+	   Sin cache emulada, el efecto visible es el de un MOV.L R0, @Rn. */
+	WriteMemoryL(R(n), &valor);
+
+	PC += 2;
+
+	core.context.cycles += 1;
 }

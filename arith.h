@@ -24,12 +24,15 @@ OPCODE(extsw59); 	// EXTS.W Rm, Rn (0110nnnn mmmm1111)
 OPCODE(extub60); 	// EXTU.B Rm, Rn
 OPCODE(extuw61); 	// EXTU.W Rm, Rn (0110nnnn mmmm1101)
 OPCODE(macl62);		// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
+OPCODE(macw63);		// MAC.W @Rm+, @Rn+	(0100nnnn mmmm1111)
 OPCODE(mulsw65); 	// MULS.W Rm, Rn (0010nnnn mmmm1111)
 OPCODE(muluw66); 	// MULU.W Rm, Rn (0010nnnn mmmm1110)
 OPCODE(neg67); 		// NEG Rm, Rn : 0 - Rm -> Rn (0110nnnn mmmm1011)
 OPCODE(negc68); 	// NEGC Rm, Rn (0110nnnn mmmm1010)
 OPCODE(sub69); 		// SUB Rm, Rn : Rn - Rm -> Rn (0011nnnn mmmm1000)
 OPCODE(subc70); 	// SUBC Rm, Rn : Rn - Rm - T -> Rn (0011nnnn mmmm1010)
+OPCODE(subv71); 	// SUBV Rm, Rn : Rn - Rm -> Rn, desborde -> T (0011nnnn mmmm1011)
 OPCODE(mull); 		// Rn x Rm -> MACL (0000nnnn mmmm0111)
+OPCODE(addv); 		// ADDV Rm, Rn : Rn + Rm -> Rn, desborde -> T (0011nnnn mmmm1111)
 
 #endif // _ARITH_H_

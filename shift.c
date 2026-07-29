@@ -178,6 +178,24 @@ OPCODE(shad90) // SHAD Rm, Rn (0100nnnn mmmm1100)
 #endif
 }
 
+/* SHAL hace lo mismo que SHLL: el desplazamiento aritmetico a la izquierda y
+   el logico coinciden. Son dos encodings distintos de la misma operacion. */
+OPCODE(shal91) // SHAL Rn : T <- Rn <- 0 (0100nnnn 00100000)
+{
+	short n = (arg >> 8) & 0x0F;
+
+	if (R(n) & 0x80000000)
+		SET_T
+	else
+		UNSET_T
+
+	R(n) <<= 1;
+
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
 OPCODE(shar92) // SHAR Rn : MSB -> Rn -> T (0100nnnn 00100001)
 {
 	short n = (arg >> 8) & 0x0F;

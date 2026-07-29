@@ -36,6 +36,44 @@ OPCODE(clrt115)	// CLRT (0000000000001000)
 	core.context.cycles += 1;
 }
 
+OPCODE(clrmac113) // CLRMAC (00000000 00101000)
+{
+	MACH = 0;
+	MACL = 0;
+
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(clrs114) // CLRS (00000000 01001000)
+{
+	REMOVE_SH4_BIT(SR_S);
+
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(sets144) // SETS (00000000 01011000)
+{
+	SET_SH4_BIT(SR_S);
+
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(ldtlb136) // LDTLB (00000000 00111000)
+{
+	/* Carga la TLB desde PTEH/PTEL/PTEA. dcemu no emula la MMU -- todos los
+	   accesos son directos -- asi que no hay TLB que cargar. Se deja como
+	   instruccion valida que no hace nada, en vez de un opcode ilegal. */
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
 OPCODE(sleep116)
 {
 	// al entrar al sleepmode, se activan las ints
@@ -67,6 +105,39 @@ OPCODE(ldc116) // LDC Rm, SR : Rm -> SR (0100mmmm 00001110)
 #ifdef DEBUG_SYSCONTROL
 	logmsg("ldc116: R%d=%x -> SR=%x\r\n", m, R(m), SR);
 #endif
+}
+
+OPCODE(ldc117) // LDC Rm, GBR : Rm -> GBR (0100mmmm 00011110)
+{
+	short m = (arg >> 8) & 0x0F;
+
+	GBR = R(m);
+
+	PC += 2;
+
+	core.context.cycles += 3;
+}
+
+OPCODE(ldc120) // LDC Rm, SPC : Rm -> SPC (0100mmmm 01001110)
+{
+	short m = (arg >> 8) & 0x0F;
+
+	SPC = R(m);
+
+	PC += 2;
+
+	core.context.cycles += 3;
+}
+
+OPCODE(ldc121) // LDC Rm, SGR : Rm -> SGR (0100mmmm 00111010)
+{
+	short m = (arg >> 8) & 0x0F;
+
+	SGR = R(m);
+
+	PC += 2;
+
+	core.context.cycles += 3;
 }
 
 OPCODE(ldc118) // LDC Rm, VBR : Rm -> VBR (0100mmmm 00101110)
@@ -336,10 +407,22 @@ OPCODE(ldsl135) // LDS.L @Rm+, PR : (Rm) -> PR, Rm + 4 -> Rm (0100mmmm 00100110)
 #endif
 }
 
+/* Las tres operaciones de bloque de cache no tienen efecto visible sin cache
+   emulada: dcemu escribe siempre directo a memoria, asi que no hay nada que
+   invalidar ni que volcar. Se dejan como instrucciones validas que solo
+   avanzan PC. */
 OPCODE(ocbwb141) // OCBWB @Rn (0000nnnn 10110011)
 {
-	// FIXME: qué hace este opcode?
 	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(ocbp140) // OCBP @Rn (0000nnnn 10100011)
+{
+	PC += 2;
+
+	core.context.cycles += 1;
 }
 
 OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
@@ -515,7 +598,7 @@ OPCODE(stc155) // STC DBR, Rn
 #endif
 }
 
-OPCODE(stc153) // STC SPC, Rn 
+OPCODE(stc153) // STC SPC, Rn : SPC -> Rn (0000nnnn 01000010)
 {
 	short n = (arg >> 8) & 0x0F;
 
@@ -526,11 +609,11 @@ OPCODE(stc153) // STC SPC, Rn
 	core.context.cycles += 2;
 
 #ifdef DEBUG_SYSCONTROL
-	logmsg("stc155: DBR=%x -> r[%d]=%x\r\n", DBR, n, R(n));
+	logmsg("stc153: SPC=%x -> r[%d]=%x\r\n", SPC, n, R(n));
 #endif
 }
 
-OPCODE(stcn154) // STC SPC, Rn 
+OPCODE(stcn154) // STC SGR, Rn : SGR -> Rn (0000nnnn 00111010)
 {
 	short n = (arg >> 8) & 0x0F;
 
@@ -541,7 +624,7 @@ OPCODE(stcn154) // STC SPC, Rn
 	core.context.cycles += 2;
 
 #ifdef DEBUG_SYSCONTROL
-	logmsg("stc155: DBR=%x -> r[%d]=%x\r\n", DBR, n, R(n));
+	logmsg("stcn154: SGR=%x -> r[%d]=%x\r\n", SGR, n, R(n));
 #endif
 }
 
@@ -791,6 +874,7 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 
 	SPC = PC + 2;
 	SSR = SR;
+	SGR = R(15);	// la secuencia de excepcion del SH-4 guarda el stack pointer
 	*TRA = (imm << 2);
 	*EXPEVT = 0x160;
 
@@ -810,11 +894,13 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 //	logmsg("imm: %x, NEXTPC: %x\r\n", imm, NEXTPC);
 }
 
-OPCODE(ldc122) // LDC Rm, DBR
+OPCODE(ldc122) // LDC Rm, DBR : Rm -> DBR (0100mmmm 11111010)
 {
  	short m = (arg >> 8) & 0x0F;
 
-	ReadMemoryL(R(m), &DBR);
+	/* Copia el registro. La variante que lee de memoria es LDC.L @Rm+, DBR
+	   (ldcl128), que es otra instruccion. */
+	DBR = R(m);
 
 	PC += 2;
 

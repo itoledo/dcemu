@@ -170,3 +170,72 @@ OPCODE(xor84) // XOR #imm, R0 (11001010 iiiiiiii)
 	core.context.cycles += 1;
 }
 
+/* Las cuatro variantes .B operan sobre un byte de memoria en (R0 + GBR): lo
+   leen, lo combinan con el inmediato y lo vuelven a escribir. TST.B es la
+   excepcion: no escribe, solo mueve T. */
+
+OPCODE(andb74) // AND.B #imm, @(R0, GBR) (11001101 iiiiiiii)
+{
+	DWORD addr = GBR + R(0);
+	BYTE valor;
+
+	ReadMemoryB(addr, &valor);
+
+	valor = (BYTE) (valor & (arg & 0xFF));
+
+	WriteMemoryB(addr, &valor);
+
+	PC += 2;
+
+	core.context.cycles += 4;
+}
+
+OPCODE(orb78) // OR.B #imm, @(R0, GBR) (11001111 iiiiiiii)
+{
+	DWORD addr = GBR + R(0);
+	BYTE valor;
+
+	ReadMemoryB(addr, &valor);
+
+	valor = (BYTE) (valor | (arg & 0xFF));
+
+	WriteMemoryB(addr, &valor);
+
+	PC += 2;
+
+	core.context.cycles += 4;
+}
+
+OPCODE(tstb82) // TST.B #imm, @(R0, GBR) (11001100 iiiiiiii)
+{
+	DWORD addr = GBR + R(0);
+	BYTE valor;
+
+	ReadMemoryB(addr, &valor);
+
+	if (valor & (arg & 0xFF))
+		UNSET_T
+	else
+		SET_T
+
+	PC += 2;
+
+	core.context.cycles += 4;
+}
+
+OPCODE(xorb85) // XOR.B #imm, @(R0, GBR) (11001110 iiiiiiii)
+{
+	DWORD addr = GBR + R(0);
+	BYTE valor;
+
+	ReadMemoryB(addr, &valor);
+
+	valor = (BYTE) (valor ^ (arg & 0xFF));
+
+	WriteMemoryB(addr, &valor);
+
+	PC += 2;
+
+	core.context.cycles += 4;
+}
+

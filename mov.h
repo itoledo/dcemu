@@ -35,5 +35,6 @@ OPCODE(swapw37); // SWAP.W Rm, Rn (0110nnnn mmmm1001)
 OPCODE(xtrct38); // XTRCT Rm, Rn (0010nnnn mmmm1101)
 OPCODE(movw29); // MOV.W R0, @(disp, GBR)
 OPCODE(movl30); // MOV.L R0, @(disp, GBR)
-OPCODE(movw32);
-OPCODE(movb28);
+OPCODE(movw32); // MOV.W @(disp, GBR), R0 (11000101 dddddddd)
+OPCODE(movb28); // MOV.B R0, @(disp, GBR) (11000000 dddddddd)
+OPCODE(movcal137); // MOVCA.L R0, @Rn (0000nnnn 11000011)
