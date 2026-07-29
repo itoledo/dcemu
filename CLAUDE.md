@@ -15,8 +15,9 @@ code, using neutral Spanish (no voseo).
 
 ## Build
 
-There is no test suite, no linter and no CI. Verification means building and running the
-emulator against a demo/ISO.
+There is no linter and no CI. There is a unit-test suite for the SH-4 opcode handlers
+(`tests/`, MSVC/CMake only) — see "Tests" below. Everything above the CPU core is still
+verified by building and running the emulator against a demo/ISO.
 
 ```sh
 make -f Makefile.win      # Windows, MinGW/Dev-C++ gcc  -> dcemu.exe
@@ -40,6 +41,36 @@ compile with `-DPOSX -DX86_OPT -fno-strict-aliasing -O3`. `POSX` is defined on W
 
 `dcemu.dev` (Dev-C++) and `dcemu.sln`/`dcemu.vcproj` (Visual Studio) exist but are stale
 relative to the makefiles; the makefiles are the source of truth for the object list.
+
+## Tests
+
+```sh
+cmake -S . -B build
+cmake --build build --config Debug --target dcemu_tests
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+`tests/` holds unit tests for every implemented row of `opcodes[]` (one suite per handler
+file, plus one for the dispatch-table expansion). They link the real handlers and the real
+`opcodes.c`; `tests/memoria_prueba.c` replaces `mem.c` and `tests/dobles.c` replaces the
+`graficos.c` / `iso.c` / `intc.c` symbols the handlers reference, which keeps SDL and
+OpenGL out of the link. SDL *headers* are still needed to compile (`opcodes.h` pulls in
+`main.h`).
+
+Every row of `opcodes[]` is now implemented — the only one left on `NOIMP` is the
+catch-all that covers bit patterns which are not SH-4 instructions. The 16 deviations the
+suite originally found have been fixed; `tests/README.md` lists them, plus the three
+things that still do not match the manual on purpose (no FPU exception/flag machinery, no
+MMU or cache behind `LDTLB`/`OCB*`, and two `LDC ...,SGR` rows of doubtful existence).
+
+A case marked `CASO_XFAIL` documents a known deviation and is expected to fail; if it
+starts passing the runner reports `XPASS` and exits non-zero, so the note cannot go stale.
+
+The `cobertura` suite walks `opcodes[]` and fails if any implemented row was never
+exercised, so a new instruction gets flagged until it has a test.
+
+End-to-end check after touching the CPU core: `demos/roto/` is a 256-byte rotozoomer that
+exercises FSCA, FDIV, FTRC, FLOAT and MUL.L. See its README for how to run it.
 
 ## Run
 
