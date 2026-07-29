@@ -84,7 +84,9 @@ FPR_BANK * BANK1; // 2nd register bank
 
 void reset()
 {
- FPSCR = 0x0004001; // Floating Point Status/Control Register
+ FPSCR = 0x00040001; // Floating Point Status/Control Register: DN=1, RM=01
+					// (antes decia 0x0004001, un cero de menos: en vez de DN
+					// dejaba prendido un bit de Cause)
  PC =  0xA0000000;   // Program Counter
  MACH = 0; // Multiply-And-Accumulate register High
  MACL = 0; // Multiply-And-Accumulate register Low
@@ -148,12 +150,12 @@ void initCpuSubSystem()
 
 void UpdateFPSCR(DWORD newFPSCR)
 {
-	// aquí hacemos el swap de los registros float
+	// aquï¿½ hacemos el swap de los registros float
 	// y revisamos si hay cambio en FPSCR_PR o FPSCR_SZ
 
-/*	if ((FPSCR ^ newFPSCR) & (FPSCR_PR | FPSCR_SZ)) // algún cambio?
+/*	if ((FPSCR ^ newFPSCR) & (FPSCR_PR | FPSCR_SZ)) // algï¿½n cambio?
 	{ */
-		// determinemos qué cambio se hizo
+		// determinemos quï¿½ cambio se hizo
 		// nos fijamos en newFPSCR
 	int f;
 	f = FPSCR_FR;
@@ -204,7 +206,7 @@ void swap_registers(void)
 void UpdateSR(DWORD new)
 {
 	int md,rb;
-	// veamos cómo estamos ahora
+	// veamos cï¿½mo estamos ahora
 //	if (IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB))
 	if (new == SH4_SYSTEM_REGISTER_INTC_REWRITTEN)
 		swap_registers();
@@ -259,7 +261,7 @@ void PC_f_delayslot2(void)
 	else */
 
 /*	DWORD offset = PC % 0x20000000;
-	if (offset < BIOS_SIZE) // está dentro del área de BIOS?
+	if (offset < BIOS_SIZE) // estï¿½ dentro del ï¿½rea de BIOS?
 		str_PC = &bios_mem[offset];
 	else
 		str_PC = &memoria[(PC % 0x20000000)]; // - mem_n_base]; */
@@ -315,7 +317,7 @@ void PC_f_nextpc(void)
 
 /*	DWORD offset = PC % 0x20000000;
 
-	if (offset < BIOS_SIZE) // está dentro del área de BIOS?
+	if (offset < BIOS_SIZE) // estï¿½ dentro del ï¿½rea de BIOS?
 		str_PC = &bios_mem[offset];
 	else
 		str_PC = &memoria[offset]; // - mem_n_base];

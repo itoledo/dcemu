@@ -221,8 +221,7 @@ OPCODE(fmov184) // FMOV DRm, @-Rn (1111nnnn mmm01011)
 
 	R(n) -= 8;
 
-//	doublewrite(R(n), DR_index(m));
-	memwrite(R(n), &DR(m), sizeof(DWORD));
+	memwrite(R(n), &DR(m), sizeof(DWORD) * 2);	// el par entero: 8 bytes
 
 	PC += 2;
 
@@ -365,21 +364,11 @@ OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 		return;
 	} */
 	
-	if (FR(m) == 0)
-	{
-		logmsg("EXCEPTION: float_R(m) = 0, n:%d, m:%d\r\n", n,m);
-	}
-	else
-	{
-#ifdef ASM_DEBUG
-		fprintf(logfp, "fdiv192: n:%d, m:%d, fl_reg[n]=%f, fl_reg[m]=%f\r\n",
-			n, m, FR(n), FR(m));
-#endif
-		FR(n) /= FR(m);
-#ifdef ASM_DEBUG
-		fprintf(logfp, "fdiv192: res=%f\r\n", FR(n));
-#endif
-	}
+	/* Dividir por cero no es un caso especial: con la excepcion de division
+	   por cero deshabilitada -- que es como arranca FPSCR -- IEEE 754 define
+	   x/0 como infinito con signo y 0/0 como NaN, que es justo lo que entrega
+	   el host. */
+	FR(n) /= FR(m);
 
 	PC += 2;
 
@@ -452,8 +441,13 @@ OPCODE(fmul195) // FMUL FRn * FRm -> FRn (1111nnnn mmmm0010)
 OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 {
 	short n = (arg >> 8) & 0x0F;
+	DWORD bits;
 
-	FR(n) *= -1;
+	/* El manual define FNEG como "invertir el bit de signo", no como una
+	   multiplicacion: asi tambien queda bien con ceros y NaN. */
+	memcpy(&bits, &FR(n), sizeof(bits));
+	bits ^= 0x80000000;
+	memcpy(&FR(n), &bits, sizeof(bits));
 
 	PC += 2;
 
@@ -498,11 +492,22 @@ OPCODE(fsub198) // FSUB FRm, FRn (1111nnnn mmmm0001)
 OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 {
 	short m = (arg >> 8) & 0x0F;
-	signed long z;
+	float f = FR(m);
 
-	z = (signed long) FR(m);
-	FPUL = z;
-
+	/* Trunca hacia cero y satura: fuera de rango el manual pide el maximo o el
+	   minimo entero con signo, y NaN da el minimo. El limite inferior se
+	   compara con "<" porque -2147483649 no es representable en float y
+	   redondearia justo al valor valido. */
+	if (f != f)								// NaN
+		FPUL = 0x80000000;
+	else
+	if (f >= 2147483648.0f)					// incluye +infinito
+		FPUL = 0x7FFFFFFF;
+	else
+	if (f < -2147483648.0f)					// incluye -infinito
+		FPUL = 0x80000000;
+	else
+		FPUL = (DWORD) (signed long) f;		// el cast de C trunca hacia cero
 
 	PC += 2;
 
@@ -513,6 +518,146 @@ OPCODE(ftrc199) // FTRC FRm, FPUL : (long) FRm -> FPUL (1111mmmm00111101)
 // #endif
 }
 
+
+OPCODE(fabs188) // FABS FRn (1111nnnn 01011101)
+{
+	short n = (arg >> 8) & 0x0F;
+	DWORD bits;
+
+	/* Como FNEG: es una operacion sobre el bit de signo, no aritmetica. */
+	memcpy(&bits, &FR(n), sizeof(bits));
+	bits &= 0x7FFFFFFF;
+	memcpy(&FR(n), &bits, sizeof(bits));
+
+	PC += 2;
+}
+
+OPCODE(fmov181) // FMOV @(R0, Rm), DRn (1111nnn0 mmmm0110)
+{
+	short n = (arg >> 9) & 0x07;
+	short m = (arg >> 4) & 0x0F;
+
+	memread(R(0) + R(m), &DR(n), sizeof(DWORD) * 2);
+
+	PC += 2;
+
+	core.context.cycles += 2;
+}
+
+OPCODE(fmov183) // FMOV DRm, @Rn (1111nnnn mmm01010)
+{
+	short n = (arg >> 8) & 0x0F;
+	short m = (arg >> 5) & 0x07;
+
+	memwrite(R(n), &DR(m), sizeof(DWORD) * 2);
+
+	PC += 2;
+
+	core.context.cycles += 1;
+}
+
+OPCODE(fabs200) // FABS DRn (1111nnn0 01011101)
+{
+	short n = (arg >> 9) & 0x07;
+
+	/* La parte alta del par lleva el signo y el exponente. */
+	DR_INT(n)[0] &= 0x7FFFFFFF;
+
+	PC += 2;
+}
+
+OPCODE(fneg209) // FNEG DRn (1111nnn0 01001101)
+{
+	short n = (arg >> 9) & 0x07;
+
+	DR_INT(n)[0] ^= 0x80000000;
+
+	PC += 2;
+}
+
+OPCODE(fcmpeq202) // FCMP/EQ DRm, DRn (1111nnn0 mmm00100)
+{
+	short n = (arg >> 9) & 0x07;
+	short m = (arg >> 5) & 0x07;
+
+	extract_double(&regM, DR_index(m));
+	extract_double(&regN, DR_index(n));
+
+	if (regN == regM)
+		SR_T = 1;
+	else
+		SR_T = 0;
+
+	PC += 2;
+
+	core.context.cycles += 3;
+}
+
+OPCODE(fmul208) // FMUL DRm, DRn : DRn * DRm -> DRn (1111nnn0 mmm00010)
+{
+	short n = (arg >> 9) & 0x07;
+	short m = (arg >> 5) & 0x07;
+
+	extract_double(&regN, DR_index(m));
+	extract_double(&regM, DR_index(n));
+
+	regM = regM * regN;
+
+	put_double(DR_index(n), &regM);
+
+	PC += 2;
+
+	core.context.cycles += 7;
+}
+
+OPCODE(fsub211) // FSUB DRm, DRn : DRn - DRm -> DRn (1111nnn0 mmm00001)
+{
+	short n = (arg >> 9) & 0x07;
+	short m = (arg >> 5) & 0x07;
+
+	extract_double(&regN, DR_index(m));
+	extract_double(&regM, DR_index(n));
+
+	regM = regM - regN;
+
+	put_double(DR_index(n), &regM);
+
+	PC += 2;
+
+	core.context.cycles += 7;
+}
+
+OPCODE(fcnvds205) // FCNVDS DRm, FPUL : (float) DRm -> FPUL (1111mmm0 10111101)
+{
+	short m = (arg >> 9) & 0x07;
+	float f;
+
+	extract_double(&regN, DR_index(m));
+
+	f = (float) regN;
+
+	memcpy(&FPUL, &f, sizeof(float));
+
+	PC += 2;
+
+	core.context.cycles += 4;
+}
+
+OPCODE(fcnvsd206) // FCNVSD FPUL, DRn : (double) FPUL -> DRn (1111nnn0 10101101)
+{
+	short n = (arg >> 9) & 0x07;
+	float f;
+
+	memcpy(&f, &FPUL, sizeof(float));
+
+	regN = (double) f;
+
+	put_double(DR_index(n), &regN);
+
+	PC += 2;
+
+	core.context.cycles += 4;
+}
 
 OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 {
@@ -657,19 +802,21 @@ OPCODE(ftrc212) // FTRC DRm, FPUL (1111mmm0 00011101)
 // 	double x;
 	//signed long y;
 	
-//	memcpy(&x, &DR(m), sizeof(float)*2);
 	extract_double(&regN, DR_index(m));
 
-//	print_double(DR(m));
-//	print_double(x);
+	/* Igual que ftrc199: trunca hacia cero (no floor, que redondearia mal los
+	   negativos) y satura fuera de rango. */
+	if (regN != regN)						// NaN
+		FPUL = 0x80000000;
+	else
+	if (regN >= 2147483648.0)				// incluye +infinito
+		FPUL = 0x7FFFFFFF;
+	else
+	if (regN <= -2147483649.0)				// incluye -infinito
+		FPUL = 0x80000000;
+	else
+		FPUL = (DWORD) (signed long) regN;	// el cast de C trunca hacia cero
 
-//	y = (signed long) x;
-	
-/*	if ((x - floor(x)) >= .5)
-		y = (signed long) ceil(x);
-	else */
-//	y = (signed long) floor(x);
- 	FPUL = (signed long) floor(regN); // y;
 	PC += 2;
 
 	core.context.cycles += 4;

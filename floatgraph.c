@@ -84,8 +84,10 @@ OPCODE(fmov225) // FMOV @Rm+, XDn (1111nnn1 mmmm1001)
 
 OPCODE(fmov226) // FMOV @(R0, Rm), XDn		(1111nnn1 mmmm0110)
 {
-   	short n = (arg >> 8) & 0x0F;
-	short m = (arg >> 5) & 0x07;
+	/* n son los bits 9-11 (el bit 8 marca que el destino es XD) y m ocupa los
+	   cuatro bits 4-7, como en las demas variantes con @Rm. */
+   	short n = (arg >> 9) & 0x07;
+	short m = (arg >> 4) & 0x0F;
 	DWORD addr = R(0) + R(m);
 
 	memread(addr, &XD(n), sizeof(DWORD)*2);
@@ -154,13 +156,15 @@ OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 	short n = (arg >> 10) & 0x3;
 	short m = (arg >> 8) & 0x3;
 
+	/* n y m numeran vectores de cuatro registros: FVn son FR[4n]..FR[4n+3], y
+	   el producto punto queda en el ultimo, FR[4n+3]. */
  #ifndef X86_OPT
-	FR(n+3) =	FR(m+0) * FR(n+0) +
-				FR(m+1) * FR(n+1) +
-				FR(m+2) * FR(n+2) +
-				FR(m+3) * FR(n+3);
+	FR(4*n+3) =	FR(4*m+0) * FR(4*n+0) +
+				FR(4*m+1) * FR(4*n+1) +
+				FR(4*m+2) * FR(4*n+2) +
+				FR(4*m+3) * FR(4*n+3);
 #else
- FR(n+3) = SIMDx86Vector_Dot4(Vector(m),Vector(n));
+ FR(4*n+3) = SIMDx86Vector_Dot4(Vector(m),Vector(n));
 #endif
 	PC += 2;
 

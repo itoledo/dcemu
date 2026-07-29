@@ -69,6 +69,26 @@ está descontinuado, guichan no tiene releases desde 2010, y las librerías prec
 
 Los directorios `obj/` y `logs/` deben existir antes de compilar y ejecutar.
 
+## Pruebas
+
+Hay una batería de pruebas unitarias para los opcodes del SH-4 en [`tests/`](tests/), sobre
+la ruta de CMake/MSVC. Enlazan los handlers reales y la tabla real de `opcodes.c`, sin SDL
+ni OpenGL.
+
+```sh
+cmake --build build --config Debug --target dcemu_tests
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+Son 387 casos que cubren las 239 filas de la tabla de instrucciones —una suite comprueba
+que no quede ninguna sin ejercitar—. Encontraron 16 desviaciones respecto del manual del
+SH-4, todas corregidas; la más gruesa: `DIV1` calculaba `T = Q && M` en vez de
+`T = (Q == M)`, de modo que **toda división sin signo devolvía cociente 0**. De paso se
+implementaron las 29 instrucciones que faltaban (`ADDV`, `SUBV`, `MAC.W`, `SHAL`, las
+lógicas `.B` sobre memoria, `CLRMAC`/`CLRS`/`SETS`, varias `LDC`/`STC` y ocho de punto
+flotante). El detalle, y lo que sigue sin emularse a propósito, está en
+[tests/README.md](tests/README.md).
+
 ## Uso
 
 ```sh
