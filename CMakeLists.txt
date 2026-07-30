@@ -90,6 +90,7 @@ set(DCEMU_SOURCES
 	intc.c
 	iso.c
 	iso9660_min.c
+	cdi.c
 	log.c
 	logic.c
 	main.c

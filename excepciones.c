@@ -13,6 +13,7 @@
 #include "log.h"
 #include "mmu.h"
 #include "sh4emu.h"
+#include "traza.h"
 
 jmp_buf	excepcion_salto;
 int		excepcion_salto_armado = 0;
@@ -49,6 +50,31 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 
 	logxmsg(LOG_INTC, "excepcion: EXPEVT %03x, SPC %08x, salta a %08x\n",
 		codigo, SPC, PC);
+
+	/*
+		Una excepcion general que el guest no esperaba termina casi siempre en
+		un BRA a si mismo, y desde ahi no se puede saber cual fue: el manejador
+		ya piso los registros. Con --traza-mem se reporta cada codigo la primera
+		vez, que es lo que convierte "se colgo en 0xAC00E0B2" en "instruccion
+		ilegal en tal PC".
+	*/
+	if (traza_activa)
+	{
+		static DWORD vistos[16];
+		static int   n = 0;
+		int          i;
+
+		for (i = 0; i < n; i++)
+			if (vistos[i] == codigo)
+				return;
+
+		if (n < 16)
+			vistos[n++] = codigo;
+
+		fprintf(stderr, "traza: excepcion EXPEVT %03lx desde PC %08lx,"
+			" salta a %08lx\n",
+			(unsigned long) codigo, (unsigned long) SPC, (unsigned long) PC);
+	}
 }
 
 void excepcion_abortar(DWORD codigo, DWORD vector)

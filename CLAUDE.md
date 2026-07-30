@@ -527,6 +527,39 @@ drive's status register deasserts its interrupt line, as ATA requires.
 address modes), but only on channels in auto-request mode: peripheral-requested transfers
 on the Dreamcast are done by the ASIC, not the DMAC.
 
+### Disc images
+
+`iso.c` picks a backend by extension. `.iso` is a flat ISO9660 read by
+`iso9660_min.c`; `.cdi` (DiscJuggler) goes through `cdi.c`; anything else needs
+`USE_LIBCDIO`, which this build does not have.
+
+**A `.cdi` is how virtually every Dreamcast image circulates**, and neither the flat reader nor
+libcdio reads one. It stores the track data at the front — one track after another, with
+**raw** sectors of 2336 or 2352 bytes rather than 2048 — and the session/track table in a
+header at the *end* of the file; the last 8 bytes give the version and where that header
+starts.
+
+**The track walk is validated rather than trusted.** The step between sessions varies across
+versions and there is no unambiguous way to follow it, so `cdi.c` scans for the per-track
+filename and checks each candidate: a real track has `total == length + pregap`, and mode and
+sector size in range. A position that is not a track fails that on its own. `cdi_abrir()`
+then checks that the tracks together occupy exactly up to where the header begins — if they
+don't, something was misread and it says so.
+
+**Two coordinate systems meet here and it is easy to mix them up:**
+
+- **FAD = LBA + 150.** The drive's `CD_READ` speaks FAD; `min_iso_*` speaks LBA.
+- **Inside a GD-ROM's high-density area, the ISO9660's own LBAs are absolute disc
+  addresses** — the root directory is at 45023, not at 23 — so `min_iso_open_pista()` takes
+  the track's base LBA and works in that numbering. For a flat `.iso` the base is 0 and
+  everything reduces to what it was.
+
+`iso_es_gdrom()` is true when the data track starts at or past LBA 45000. The drive reports
+`GD_DISCO_GDROM` instead of `GD_DISCO_CDROM` for those, and `gdrom_construir_toc_area()`
+builds a **separate TOC per density area** — single density below FAD 45150, high density
+above. Before that the drive answered the same one-track TOC to both, and the boot ROM
+concluded there was no game: *"please insert game disc"*.
+
 ### GD-ROM
 
 `gdrom.c/h` is the drive as the hardware sees it: the ATA register block, the status
@@ -654,6 +687,19 @@ died on one `memwrite` that should have been `memwrite_fisico`; see below.
 three pieces of system state the boot ROM asks for before the drive: the PDTRA/PCTRA cable
 handshake, the flash ROM (loaded from `bios/flash.bin` or synthesized) and the RTC. Both
 are free of SDL on purpose, so `tests/` can link them. `traza.c` implements `--traza-mem`.
+
+**The flash and the RTC are writable and they persist**, and they have to be: without that
+the BIOS asks for the date and time on *every* boot, because it never manages to record that
+it is already set.
+
+- **The flash is not memory, it is a chip with a command set** (AMD/Fujitsu compatible).
+  Writing a byte means `AA` to `0x5555`, `55` to `0x2AAA`, `A0` to `0x5555`, then the data;
+  erasing a sector is a six-write sequence ending in `30`. Programming can only clear bits —
+  hence `&=`, the same rule the flashrom syscall hook already followed. `sistema_flash_guardar()`
+  writes `bios/flash.bin` back at exit, and only if something changed.
+- **The RTC write is stored as an offset against the host clock**, not as a frozen timestamp,
+  so time keeps running. It lands in `bios/rtc.txt` — one number, in text, so it can be read
+  and deleted by hand.
 
 `gui.cpp` is the only C++ file — a guichan overlay log window, exported to C via
 `extern "C"` in `gui.h`. `debug.c` is the in-emulator disassembler and register/memory view

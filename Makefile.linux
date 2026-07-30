@@ -1,8 +1,8 @@
 CPP  = g++
 CC   = gcc
 
-OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
-LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
 
 
 LIBS = `sdl-config --libs` -Llib/linux -lSDLmain -lSDL -lcdio -lGL -liso9660 -lguichan_opengl -lguichan_sdl -lguichan -lSIMDx86
@@ -114,6 +114,9 @@ $(BIN): $(OBJ)
 
 ./obj/iso9660_min.o: iso9660_min.c iso9660_min.h
 	$(CC) -c iso9660_min.c -o ./obj/iso9660_min.o $(CFLAGS)
+
+./obj/cdi.o: cdi.c cdi.h
+	$(CC) -c cdi.c -o ./obj/cdi.o $(CFLAGS)
 
 ./obj/scramble.o: scramble.c 
 	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)

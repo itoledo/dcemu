@@ -195,4 +195,8 @@ void gdrom_write(unsigned long direccion, void * p, size_t size);
 struct TOC;
 void gdrom_construir_toc(struct TOC * toc);
 
+/* La TOC de un area concreta: 0 densidad simple, 1 alta densidad. En un
+   GD-ROM son dos discos logicos distintos y el boot ROM pregunta por los dos. */
+void gdrom_construir_toc_area(struct TOC * toc, int area);
+
 #endif /* _GDROM_H_ */

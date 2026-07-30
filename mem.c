@@ -67,6 +67,7 @@ mem_access_write_t regmap_write;
 mem_access_write_t mem_write_error;
 mem_access_write_t pvr_write;
 mem_access_write_t sq_write;
+mem_access_read_t sq_read;
 mem_access_write_t ta_write;
 mem_access_write_t ignore_write;
 
@@ -430,6 +431,11 @@ void mem_hash_setup(void)
 	mem_hash_write[0xA5] = video_write;
 	mem_hash_write[0xA6] = ignore_write;
  	mem_hash_write[0xAC] = ram_write;
+ 	mem_hash_read[0xE0] = sq_read;
+ 	mem_hash_read[0xE1] = sq_read;
+ 	mem_hash_read[0xE2] = sq_read;
+ 	mem_hash_read[0xE3] = sq_read;
+
  	mem_hash_write[0xE0] = sq_write;
  	mem_hash_write[0xE1] = sq_write;
  	mem_hash_write[0xE2] = sq_write;
@@ -493,6 +499,26 @@ void mem_write_error(unsigned long direccion, void * p, size_t size)
 		default: logxmsg(LOG_MEM, "mem_write_error: size %d\n", size);	break;
 	}
 //	dump_registers();
+}
+
+/*
+	Leer una store queue. Estaba sin mapear -- solo la escritura --, asi que
+	toda lectura de 0xE0000000-0xE3FFFFFF caia en mem_read_error(): devolvia
+	ceros y se reportaba como direccion sin emular.
+
+	El SH-4 deja leer las colas: son 32 bytes de memoria normal hasta que un
+	PREF las vuelca. Virtua Tennis lee la suya, y ese fue el primer hueco que
+	aparecio al montar su imagen.
+*/
+void sq_read(unsigned long direccion, void * p, size_t size)
+{
+	DWORD *       sq  = (direccion & 0x20) ? SQ1 : SQ0;
+	unsigned long off = direccion & 0x1F;
+
+	if (off + size > sizeof(DWORD) * 8)
+		size = sizeof(DWORD) * 8 - off;
+
+	memcpy(p, (unsigned char *) sq + off, size);
 }
 
 void sq_write(unsigned long direccion, void * p, size_t size)
@@ -1871,11 +1897,28 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 		// fin PVR
 
-		case 0xa0710000: // Dreamcast RTC, reg 1
-		case 0xa0710004:
+		// Poner el reloj en hora. Se guarda como desfase contra el reloj del
+		// anfitrion, y persiste: sin esto la BIOS volvia a pedir la fecha en
+		// cada arranque, porque nunca conseguia dejarla puesta.
+		case 0xa0710000: // RTC, mitad alta
 		{
-			// Poner el reloj en hora no se emula: el RTC sigue al del host.
-			logmsg("pvr_write: RTC\r\n");
+			memcpy(&dw, p, size);
+			sistema_rtc_escribir_alto((WORD) dw);
+		}
+		break;
+
+		case 0xa0710004: // RTC, mitad baja
+		{
+			memcpy(&dw, p, size);
+			sistema_rtc_escribir_bajo((WORD) dw);
+		}
+		break;
+
+		case 0xa0710008: // RTC, control de escritura
+		{
+			// El bit 0 habilita la escritura de los otros dos registros. Aca no
+			// hace falta llevar el estado; basta con no reportarlo como error.
+			logxmsg(LOG_MEM, "pvr_write: RTC control\r\n");
 		}
 		break;
 
@@ -1906,6 +1949,20 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			{
 				// No hay dispositivo: la escritura se descarta en silencio,
 				// pero sin reportarla como error.
+				break;
+			}
+
+			// Flash: no es memoria, es un chip con juego de comandos. La BIOS
+			// escribe ahi la fecha y los ajustes, y sin esto los perdia en cada
+			// arranque. Ver sistema_flash_escribir().
+			if (fisica >= FLASH_BASE && fisica < FLASH_BASE + FLASH_SIZE)
+			{
+				size_t i;
+
+				for (i = 0; i < size; i++)
+					sistema_flash_escribir((DWORD) (fisica - FLASH_BASE + i),
+						((BYTE *) p)[i]);
+
 				break;
 			}
 

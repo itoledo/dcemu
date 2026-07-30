@@ -18,6 +18,7 @@
 
 #include "lnxdefs.h"
 #include "iso9660_min.h"
+#include "cdi.h"
 #include "iso.h"
 #include "scramble.h"
 
@@ -27,11 +28,23 @@
 #endif
 
 // formatos
-enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDIO } formato_imagen;
+enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDI, FORMATO_CDIO } formato_imagen;
 #define ISO_DEFAULT_LBA 150
 
 // variables iso9660
 min_iso_t * iso;
+
+/* Con un .cdi el volumen no empieza en el LBA 150 de la convencion de dcemu
+   sino donde diga la pista, que en un GD-ROM es el area de alta densidad. */
+static unsigned int iso_lba_base = ISO_DEFAULT_LBA;
+
+/* Modo de la pista de datos del .cdi: lo pide iso_get_mode(). */
+static int iso_modo_pista = 1;
+
+/* Las pistas del .cdi, para la TOC y para REQ_SES. Un GD-ROM tiene dos
+   sesiones -- la de densidad simple y la de alta -- y el boot ROM las pregunta
+   antes de decidir que el disco es un juego. */
+static struct cdi_t iso_cdi;
 
 #ifdef USE_LIBCDIO
 // variables libcdio
@@ -50,10 +63,50 @@ int iso_init(char * sDevice)
 	{
 		// usaremos exclusivamente iso9660
 		formato_imagen = FORMATO_ISO9660;
+		iso_lba_base = ISO_DEFAULT_LBA;
 
 		fprintf(stderr, "iso_init: usando %s como archivo formato iso9660\n", sDevice);
 
 		iso = min_iso_open(sDevice);
+
+		if (iso == NULL)
+			return 1;
+	}
+	else
+	if (strncmp(&sDevice[strlen(sDevice) - 4], ".cdi", 4) == 0)
+	{
+		/* DiscJuggler: el volumen vive dentro de una pista, en cualquier
+		   offset y con sectores crudos. cdi.c saca la geometria y el lector de
+		   iso9660_min.c hace el resto. */
+		struct cdi_t				cdi;
+		const struct cdi_pista_t *	pista;
+		int							cual;
+
+		if (cdi_abrir(sDevice, &cdi) != 0)
+			return 1;
+
+		cual = cdi_pista_de_datos(&cdi);
+
+		if (cual < 0)
+		{
+			fprintf(stderr, "iso_init: %s no tiene pistas de datos\n", sDevice);
+			return 1;
+		}
+
+		pista = &cdi.pistas[cual];
+
+		fprintf(stderr, "iso_init: usando %s, %d pista%s; la de datos empieza en"
+			" el LBA %u, %u sectores de %u bytes en modo %u\n",
+			sDevice, cdi.n, (cdi.n == 1) ? "" : "s",
+			pista->lba, pista->sectores, pista->sector_crudo, pista->modo);
+
+		formato_imagen = FORMATO_CDI;
+		iso_lba_base = pista->lba;
+		iso_modo_pista = (int) pista->modo;
+		iso_cdi = cdi;
+
+		iso = min_iso_open_pista(sDevice, pista->lba, pista->offset,
+			pista->sector_crudo, pista->desplazamiento);
 
 		if (iso == NULL)
 			return 1;
@@ -125,7 +178,11 @@ int iso_get_lba()
 {
 	switch(formato_imagen)
 	{
+		/* En FAD, que es lo que lleva la TOC: el LBA donde empieza la pista mas
+		   los 150 del pregap. Para un .iso plano el volumen esta en el LBA 0 y
+		   esto son los 150 de siempre. */
 		case FORMATO_ISO9660:	return ISO_DEFAULT_LBA;
+		case FORMATO_CDI:		return (int) (iso_lba_base + ISO_DEFAULT_LBA);
 #ifdef USE_LIBCDIO
 		case FORMATO_CDIO:		return cdio_get_track_lba(cdio, 1);
 #endif
@@ -139,11 +196,69 @@ int iso_hay_disco()
 	return formato_imagen != FORMATO_NULL;
 }
 
+/*
+	Un GD-ROM se distingue de un CD-ROM en que sus datos estan en un area de
+	alta densidad que empieza en el FAD 45150. Una imagen .iso plana nunca lo
+	es; un .cdi lo es si su pista de datos empieza ahi, que es lo normal en las
+	imagenes de juegos.
+
+	Importa porque el boot ROM decide con esto si el disco es arrancable o si
+	le abre el reproductor de CD.
+*/
+int iso_es_gdrom()
+{
+	return formato_imagen == FORMATO_CDI && iso_lba_base >= 45000;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Pistas, para la TOC y las sesiones                                       */
+/* ------------------------------------------------------------------------ */
+
+int iso_num_pistas(void)
+{
+	return (formato_imagen == FORMATO_CDI) ? iso_cdi.n : 1;
+}
+
+/* Todo lo que sale de aca va en FAD, que es lo que lleva la TOC. */
+int iso_pista_fad(int i)
+{
+	if (formato_imagen != FORMATO_CDI)
+		return ISO_DEFAULT_LBA;
+
+	if (i < 0 || i >= iso_cdi.n)
+		return 0;
+
+	return (int) (iso_cdi.pistas[i].lba + ISO_DEFAULT_LBA);
+}
+
+int iso_pista_sectores(int i)
+{
+	if (formato_imagen != FORMATO_CDI)
+		return iso_num_sectores();
+
+	if (i < 0 || i >= iso_cdi.n)
+		return 0;
+
+	return (int) iso_cdi.pistas[i].sectores;
+}
+
+int iso_pista_es_datos(int i)
+{
+	if (formato_imagen != FORMATO_CDI)
+		return 1;
+
+	if (i < 0 || i >= iso_cdi.n)
+		return 0;
+
+	return iso_cdi.pistas[i].modo != 0;
+}
+
 int iso_num_sectores()
 {
 	switch(formato_imagen)
 	{
-		case FORMATO_ISO9660:	return (int) min_iso_sectores(iso);
+		case FORMATO_ISO9660:
+		case FORMATO_CDI:		return (int) min_iso_sectores(iso);
 #ifdef USE_LIBCDIO
 		/* cdio_get_track_lsn de la pista de lead-out (0xAA) da donde termina
 		   el area de datos. */
@@ -162,6 +277,10 @@ int iso_get_mode()
 
 	if (formato_imagen == FORMATO_ISO9660 || formato_imagen == FORMATO_NULL)
 		return 1; // TRACK_FORMAT_DATA
+
+	/* El .cdi trae el modo real de la pista; casi siempre 2 (XA). */
+	if (formato_imagen == FORMATO_CDI)
+		return (int) iso_modo_pista;
 
 #ifdef USE_LIBCDIO
     switch(cdio_get_track_format(cdio, 1))
@@ -219,8 +338,18 @@ int iso_read_sector(char * target, int secstart, int secnum)
 #endif
 
 		case FORMATO_ISO9660:
+		case FORMATO_CDI:
 		{
-			ret = (int) min_iso_seek_read(iso, target, secstart - ISO_DEFAULT_LBA, secnum);
+			/*
+				secstart viene en FAD, que es el LBA mas 150: es lo que pide el
+				comando CD_READ de la lectora, y en un GD-ROM el area de alta
+				densidad empieza en el FAD 45150. min_iso_* habla en LBA y ya
+				sabe donde empieza el volumen -- 0 en un .iso plano, 45000 en la
+				pista de datos de un .cdi --, asi que la conversion es la misma
+				para los dos.
+			*/
+			ret = (int) min_iso_seek_read(iso, target,
+				(unsigned int) (secstart - ISO_DEFAULT_LBA), secnum);
 
 			if (ret <= 0)
 				fprintf(stderr, "error al tratar de leer %d sectores desde sector %d\n", secnum, secstart);
@@ -321,6 +450,7 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 #endif
 
 		case FORMATO_ISO9660:
+		case FORMATO_CDI:
 		{
 			if (!min_iso_stat_root(iso, fname, &lsn, &size, &secsize))
 			{
@@ -383,8 +513,11 @@ int cargar_ip_bin(unsigned char * mempos)
 #endif
 
 		case FORMATO_ISO9660:
+		case FORMATO_CDI:
 		{
-			if (min_iso_seek_read(iso, mempos, 0, 16) > 0)
+			/* IP.BIN no es un archivo del sistema de archivos: son los 16
+			   primeros sectores de la pista. */
+			if (min_iso_seek_read(iso, mempos, min_iso_lba_base(iso), 16) > 0)
 				return 1;
 		}
 		break;

@@ -6,6 +6,20 @@ int iso_get_mode();
    lectora arranca con disco o sin disco. */
 int iso_hay_disco();
 
+/* 1 si el disco montado es un GD-ROM: sus datos estan en el area de alta
+   densidad. Lo mira la lectora para decir de que tipo es el disco. */
+int iso_es_gdrom();
+
+/*
+	Las pistas del disco, para armar la TOC y contestar REQ_SES. Un .iso plano
+	es una sola pista de datos; un .cdi de juego son dos o tres, y la ultima es
+	el area de alta densidad. Todo en FAD.
+*/
+int iso_num_pistas(void);
+int iso_pista_fad(int i);
+int iso_pista_sectores(int i);
+int iso_pista_es_datos(int i);
+
 /* Sectores que ocupa el disco: la TOC lo necesita para el lead-out. */
 int iso_num_sectores();
 

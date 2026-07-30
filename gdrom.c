@@ -99,9 +99,16 @@ void gdrom_iniciar(int bandeja)
 			break;
 	}
 
-	/* Las imagenes que dcemu monta son iso9660 de una sola pista de datos, o
-	   sea un CD-ROM. Un GD-ROM de verdad tendria dos areas de densidad. */
-	gdrom.formato = hay_disco() ? GD_DISCO_CDROM : GD_DISCO_CDDA;
+	/*
+		Un .iso plano es una sola pista de datos, o sea un CD-ROM. Un .cdi de
+		juego trae el area de alta densidad que empieza en el FAD 45150, y ese
+		si es un GD-ROM -- decirlo importa, porque el boot ROM decide con esto
+		si el disco es arrancable o si le abre el reproductor de CD.
+	*/
+	if (!hay_disco())
+		gdrom.formato = GD_DISCO_CDDA;
+	else
+		gdrom.formato = iso_es_gdrom() ? GD_DISCO_GDROM : GD_DISCO_CDROM;
 
 	sentido_clave = GD_SENTIDO_OK;
 	sentido_asc   = 0;
@@ -128,23 +135,72 @@ void gdrom_iniciar(int bandeja)
 
 #define TOC_VACIA			0xFFFFFFFF
 
-void gdrom_construir_toc(struct TOC * toc)
+/*
+	El FAD donde empieza el area de alta densidad de un GD-ROM. Es fijo por
+	norma, y es lo que separa las dos sesiones del disco.
+*/
+#define GD_FAD_ALTA_DENSIDAD	45150
+
+/*
+	La TOC de un area del disco.
+
+	  area 0  densidad simple: las pistas por debajo del FAD 45150
+	  area 1  alta densidad: las de ahi en adelante, donde vive el juego
+
+	Antes esto armaba siempre una TOC de una sola pista con todo el disco, que
+	es lo que corresponde a un .iso plano. Con un .cdi de juego el boot ROM
+	preguntaba por las dos areas, recibia la misma respuesta y concluia que no
+	habia juego: "please insert game disc".
+*/
+void gdrom_construir_toc_area(struct TOC * toc, int area)
 {
-	int		i;
-	DWORD	inicio = (DWORD) iso_get_lba();
-	int		sectores = iso_num_sectores();
+	int		i, n = iso_num_pistas();
+	int		primera = -1, ultima = -1, pistas = 0;
+	DWORD	fin = 0;
 
 	for (i = 0; i < 99; i++)
 		toc->entry[i] = TOC_VACIA;
 
-	toc->entry[0] = TOC_ENTRADA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, inicio);
-	toc->first    = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, 1);
-	toc->last     = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, 1);
+	toc->first = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, 1);
+	toc->last  = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, 1);
+	toc->dunno = TOC_VACIA;
+
+	for (i = 0; i < n && i < 99; i++)
+	{
+		int fad = iso_pista_fad(i);
+		int alta = (fad >= GD_FAD_ALTA_DENSIDAD);
+
+		if (alta != (area != 0))
+			continue;
+
+		if (primera < 0)
+			primera = i;
+
+		ultima = i;
+		pistas++;
+
+		toc->entry[i] = TOC_ENTRADA(
+			iso_pista_es_datos(i) ? TOC_CTRL_DATOS : 0,
+			TOC_ADDR_POSICION, (DWORD) fad);
+
+		fin = (DWORD) (fad + iso_pista_sectores(i));
+	}
+
+	if (pistas == 0)
+		return;
+
+	toc->first = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, primera + 1);
+	toc->last  = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, ultima + 1);
 
 	/* El campo que dcemu llamo "dunno" es la entrada de lead-out: donde
 	   termina el area de datos. */
-	toc->dunno = TOC_ENTRADA(TOC_CTRL_DATOS, TOC_ADDR_POSICION,
-		inicio + (DWORD) (sectores > 0 ? sectores : 0));
+	toc->dunno = TOC_ENTRADA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, fin);
+}
+
+void gdrom_construir_toc(struct TOC * toc)
+{
+	/* Sin area: la del juego, que es la que pide el hook de syscall. */
+	gdrom_construir_toc_area(toc, iso_es_gdrom() ? 1 : 0);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -343,16 +399,41 @@ static void cmd_req_ses(const BYTE * p)
 
 	ses[0] = (BYTE) (gdrom.unidad & 0x0F);
 
+	/*
+		Un GD-ROM tiene dos sesiones: la de densidad simple y la de alta, que
+		empieza en el FAD 45150 y es donde esta el juego. Antes esto contestaba
+		siempre "una sesion", asi que el boot ROM no encontraba nunca la del
+		juego.
+	*/
 	if (p[2] == 0)
 	{
 		/* Sesion 0: cuantas sesiones hay y donde termina la ultima. */
+		int ultima = iso_num_pistas() - 1;
+
+		ses[1] = (BYTE) (iso_es_gdrom() ? 2 : 1);
+		fad = (DWORD) (iso_pista_fad(ultima) + iso_pista_sectores(ultima));
+	}
+	else
+	if (p[2] == 1 || !iso_es_gdrom())
+	{
+		/* La primera sesion empieza donde la primera pista. */
 		ses[1] = 1;
-		fad = (DWORD) (iso_get_lba() + (iso_num_sectores() > 0 ? iso_num_sectores() : 0));
+		fad = (DWORD) iso_pista_fad(0);
 	}
 	else
 	{
+		/* La segunda: la primera pista del area de alta densidad. */
+		int i, cual = iso_num_pistas() - 1;
+
+		for (i = 0; i < iso_num_pistas(); i++)
+			if (iso_pista_fad(i) >= GD_FAD_ALTA_DENSIDAD)
+			{
+				cual = i;
+				break;
+			}
+
 		ses[1] = 1;
-		fad = (DWORD) iso_get_lba();
+		fad = (DWORD) iso_pista_fad(cual);
 	}
 
 	ses[2] = (BYTE) ((fad >> 16) & 0xFF);
@@ -367,7 +448,8 @@ static void cmd_get_toc(const BYTE * p)
 	struct TOC	toc;
 	int			largo = (p[3] << 8) | p[4];
 
-	gdrom_construir_toc(&toc);
+	/* El bit 0 del segundo byte elige el area: 0 densidad simple, 1 alta. */
+	gdrom_construir_toc_area(&toc, p[1] & 1);
 
 	entregar(&toc, (int) sizeof(toc), 0, largo);
 }

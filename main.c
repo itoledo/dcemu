@@ -986,6 +986,9 @@ int main(int argc, char *argv[])
 	if (sistema_flash_iniciar("bios/flash.bin"))
 		return 1;
 
+	// Y la hora que el guest haya puesto en corridas anteriores.
+	sistema_rtc_cargar();
+
 	// Arranque por el boot ROM: no se carga nada a mano, la imagen (si la hay)
 	// se monta para que la vea la lectora. Ver la fase 1.1 del plan.
 	if (opciones.arranque_bios)
@@ -1191,6 +1194,12 @@ int main(int argc, char *argv[])
 	#endif
 
 	main_loop();
+
+	/* Lo que el guest escribio en la flash -- la fecha, el idioma, los ajustes
+	   de juegos -- vuelve al archivo. Sin esto la BIOS pide la hora en cada
+	   arranque, porque nunca consigue guardar que ya esta configurada. */
+	sistema_flash_guardar();
+	sistema_rtc_guardar();
 
 	traza_resumen();
 

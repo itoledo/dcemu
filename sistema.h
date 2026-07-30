@@ -68,6 +68,17 @@ int sistema_flash_iniciar(const char * ruta);
    estructura que el boot ROM espera encontrar. Expuesta para las pruebas. */
 void sistema_flash_sintetizar(unsigned char * dest, time_t fabricacion);
 
+/*
+	Una escritura del guest a la flash, con el desplazamiento dentro de los
+	128 KB. No es memoria: el chip espera una secuencia de desbloqueo antes de
+	dejar programar o borrar, y sin ella la escritura no hace nada. Ver el
+	comentario en sistema.c.
+*/
+void sistema_flash_escribir(DWORD offset, BYTE valor);
+
+/* Devuelve la flash al archivo del que salio, si cambio. 0 si todo bien. */
+int sistema_flash_guardar(void);
+
 /* ------------------------------------------------------------------------ */
 /* Reloj de tiempo real                                                     */
 /* ------------------------------------------------------------------------ */
@@ -76,6 +87,18 @@ void sistema_flash_sintetizar(unsigned char * dest, time_t fabricacion);
 #define RTC_EPOCA_1950	631152000U		/* segundos entre 1950 y 1970 */
 
 DWORD sistema_rtc_desde_hora(time_t t);
+
+/*
+	Poner el reloj en hora. El guest escribe las dos mitades de 16 bits y hasta
+	que no llegan las dos no hay fecha; lo que queda guardado es el **desfase**
+	contra el reloj del anfitrion, para que el tiempo siga corriendo.
+*/
+void sistema_rtc_escribir_alto(WORD valor);
+void sistema_rtc_escribir_bajo(WORD valor);
+
+/* El desfase persiste entre corridas, igual que la flash. */
+void sistema_rtc_cargar(void);
+int  sistema_rtc_guardar(void);
 
 /* Los dos registros de 16 bits. El alto releva el reloj del host y lo deja
    latcheado; el bajo devuelve la mitad baja de ese mismo valor, para que la

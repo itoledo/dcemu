@@ -125,6 +125,34 @@ int iso_num_sectores()
 	return dobles_hay_disco ? DOBLE_SECTORES : 0;
 }
 
+/* El doble es un disco de una sola pista de datos, o sea un CD-ROM: es lo que
+   ejercitan las pruebas del GD-ROM. La segunda sesion de un GD-ROM se prueba
+   contra imagenes de verdad, no aca. */
+int iso_es_gdrom()
+{
+	return 0;
+}
+
+int iso_num_pistas(void)
+{
+	return 1;
+}
+
+int iso_pista_fad(int i)
+{
+	return (i == 0) ? DOBLE_LBA : 0;
+}
+
+int iso_pista_sectores(int i)
+{
+	return (i == 0 && dobles_hay_disco) ? DOBLE_SECTORES : 0;
+}
+
+int iso_pista_es_datos(int i)
+{
+	return (i == 0);
+}
+
 /* Patron reproducible: el byte i del sector s vale (s * 7 + i) & 0xFF. Deja
    verificar en la prueba que se leyo el sector pedido y no otro. */
 int iso_read_sector(char * target, int secstart, int secnum)

@@ -52,6 +52,10 @@ WORD sistema_pdtra(DWORD pctra, WORD pdtra, int cable)
 
 unsigned char * flash_mem = NULL;
 
+/* De donde se cargo la flash y si hay cambios que devolverle. */
+static const char *	flash_ruta = NULL;
+static int			flash_sucia = 0;
+
 #define FLASH_MAGIA			"KATANA_FLASH____"
 #define FLASH_MAGIA_LARGO	16
 
@@ -159,6 +163,143 @@ int sistema_flash_iniciar(const char * ruta)
 		sistema_flash_sintetizar(flash_mem, time(NULL));
 	}
 
+	flash_ruta  = ruta;
+	flash_sucia = 0;
+
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Escritura de la flash                                                    */
+/* ------------------------------------------------------------------------ */
+
+/*
+	La flash de la Dreamcast es un chip compatible con el juego de comandos de
+	AMD/Fujitsu: no se escribe poniendo un byte en una direccion, sino mandando
+	una secuencia de desbloqueo a dos direcciones fijas.
+
+	  programar un byte:  AA en 0x5555, 55 en 0x2AAA, A0 en 0x5555, dato
+	  borrar un sector:   AA en 0x5555, 55 en 0x2AAA, 80 en 0x5555,
+	                      AA en 0x5555, 55 en 0x2AAA, 30 en el sector
+
+	Esto no estaba: las escrituras se reportaban como direcciones sin emular y
+	se perdian, asi que **la BIOS pedia la fecha y la hora en cada arranque**.
+	Nunca conseguia guardar que ya estaba configurada.
+
+	Programar solo puede bajar bits -- para subirlos hay que borrar el sector
+	entero --, y por eso el paso de programacion hace `&=` y no `=`. Es la misma
+	regla que ya seguia el hook de syscall de flashrom.
+*/
+
+#define FLASH_CMD_1		0x5555
+#define FLASH_CMD_2		0x2AAA
+
+/* Los sectores del chip: 8 de 16 KB en los 128 KB. Borrar afecta al sector
+   entero, que es lo que hace la BIOS antes de reescribir una particion. */
+#define FLASH_SECTOR	0x4000
+
+static enum
+{
+	FE_LISTA = 0,		/* esperando el AA */
+	FE_DESBLOQUEO,		/* llego el AA, se espera el 55 */
+	FE_COMANDO,			/* llego el 55, se espera A0 o 80 */
+	FE_PROGRAMAR,		/* llego el A0, el proximo byte es el dato */
+	FE_BORRAR_1,		/* llego el 80, se espera otro AA */
+	FE_BORRAR_2,		/* llego el AA, se espera el 55 */
+	FE_BORRAR_3			/* llego el 55, se espera el 30 en el sector */
+} flash_estado = FE_LISTA;
+
+void sistema_flash_escribir(DWORD offset, BYTE valor)
+{
+	if (flash_mem == NULL || offset >= FLASH_SIZE)
+		return;
+
+	switch (flash_estado)
+	{
+		case FE_LISTA:
+			if (offset == FLASH_CMD_1 && valor == 0xAA)
+				flash_estado = FE_DESBLOQUEO;
+			break;
+
+		case FE_DESBLOQUEO:
+			flash_estado = (offset == FLASH_CMD_2 && valor == 0x55)
+				? FE_COMANDO : FE_LISTA;
+			break;
+
+		case FE_COMANDO:
+			if (offset != FLASH_CMD_1)
+				flash_estado = FE_LISTA;
+			else
+			if (valor == 0xA0)
+				flash_estado = FE_PROGRAMAR;
+			else
+			if (valor == 0x80)
+				flash_estado = FE_BORRAR_1;
+			else
+				flash_estado = FE_LISTA;
+			break;
+
+		case FE_PROGRAMAR:
+			/* Programar solo baja bits. */
+			flash_mem[offset] &= valor;
+			flash_sucia = 1;
+			flash_estado = FE_LISTA;
+			break;
+
+		case FE_BORRAR_1:
+			flash_estado = (offset == FLASH_CMD_1 && valor == 0xAA)
+				? FE_BORRAR_2 : FE_LISTA;
+			break;
+
+		case FE_BORRAR_2:
+			flash_estado = (offset == FLASH_CMD_2 && valor == 0x55)
+				? FE_BORRAR_3 : FE_LISTA;
+			break;
+
+		case FE_BORRAR_3:
+			if (valor == 0x30)
+			{
+				/* Borrado de sector: todo a 1, que es el estado virgen. */
+				DWORD base = offset & ~(DWORD) (FLASH_SECTOR - 1);
+
+				memset(&flash_mem[base], 0xFF, FLASH_SECTOR);
+				flash_sucia = 1;
+			}
+			else
+			if (valor == 0x10)
+			{
+				/* Borrado del chip entero. */
+				memset(flash_mem, 0xFF, FLASH_SIZE);
+				flash_sucia = 1;
+			}
+
+			flash_estado = FE_LISTA;
+			break;
+	}
+}
+
+int sistema_flash_guardar(void)
+{
+	FILE * fp;
+
+	if (!flash_sucia || flash_mem == NULL || flash_ruta == NULL)
+		return 0;
+
+	fp = fopen(flash_ruta, "wb");
+
+	if (fp == NULL)
+	{
+		fprintf(stderr, "no se pudo guardar la flash en %s\n", flash_ruta);
+		return 1;
+	}
+
+	fwrite(flash_mem, 1, FLASH_SIZE, fp);
+	fclose(fp);
+
+	flash_sucia = 0;
+
+	fprintf(stderr, "flash guardada en %s\n", flash_ruta);
+
 	return 0;
 }
 
@@ -169,12 +310,61 @@ int sistema_flash_iniciar(const char * ruta)
 static DWORD	rtc_latch = 0;
 static int		rtc_latcheado = 0;
 
+/*
+	Desfase entre el reloj del anfitrion y el que el guest puso en hora. Sin
+	esto las escrituras al RTC se perdian, y la BIOS volvia a pedir la fecha en
+	cada arranque: no conseguia dejarla puesta nunca.
+
+	Se guarda al lado de la flash, en el mismo directorio, porque es informacion
+	de la misma naturaleza -- estado de la consola, no del emulador.
+*/
+static long		rtc_desfase = 0;
+static int		rtc_desfase_sucio = 0;
+
 DWORD sistema_rtc_desde_hora(time_t t)
 {
 	if (t < 0)
 		t = 0;
 
-	return (DWORD) t + RTC_EPOCA_1950;
+	return (DWORD) ((long long) t + RTC_EPOCA_1950 + rtc_desfase);
+}
+
+/*
+	El guest escribe el reloj en dos mitades de 16 bits, y hasta que no llegan
+	las dos no hay una fecha completa. Se junta aca y se convierte en un desfase
+	contra el reloj del anfitrion, para que el tiempo siga corriendo en vez de
+	quedarse congelado en el instante en que lo pusieron en hora.
+*/
+static WORD	rtc_escrito_alto = 0;
+static int	rtc_tiene_alto = 0;
+
+void sistema_rtc_escribir_alto(WORD valor)
+{
+	rtc_escrito_alto = valor;
+	rtc_tiene_alto = 1;
+}
+
+void sistema_rtc_escribir_bajo(WORD valor)
+{
+	DWORD	pedido;
+	DWORD	ahora;
+
+	if (!rtc_tiene_alto)
+		return;
+
+	rtc_tiene_alto = 0;
+
+	pedido = ((DWORD) rtc_escrito_alto << 16) | valor;
+
+	/* El desfase se calcula contra el reloj crudo, sin el desfase anterior:
+	   lo que el guest pidio es la hora absoluta que quiere ver. */
+	ahora = (DWORD) ((long long) time(NULL) + RTC_EPOCA_1950);
+
+	rtc_desfase = (long) ((long long) pedido - (long long) ahora);
+	rtc_desfase_sucio = 1;
+
+	fprintf(stderr, "rtc: el guest puso el reloj en %lu (desfase %ld s)\n",
+		(unsigned long) pedido, rtc_desfase);
 }
 
 WORD sistema_rtc_alto(void)
@@ -195,4 +385,52 @@ WORD sistema_rtc_bajo(void)
 	rtc_latcheado = 0;
 
 	return (WORD) (rtc_latch & 0xFFFF);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Persistencia del desfase del reloj                                       */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El desfase va en un archivo de texto al lado de la flash. Es un solo numero
+	y en texto se puede mirar y borrar a mano, que para un ajuste de este
+	tamano vale mas que un formato binario.
+*/
+#define RTC_ARCHIVO		"bios/rtc.txt"
+
+void sistema_rtc_cargar(void)
+{
+	FILE * fp = fopen(RTC_ARCHIVO, "r");
+	long   valor;
+
+	if (fp == NULL)
+		return;
+
+	if (fscanf(fp, "%ld", &valor) == 1)
+		rtc_desfase = valor;
+
+	fclose(fp);
+}
+
+int sistema_rtc_guardar(void)
+{
+	FILE * fp;
+
+	if (!rtc_desfase_sucio)
+		return 0;
+
+	fp = fopen(RTC_ARCHIVO, "w");
+
+	if (fp == NULL)
+	{
+		fprintf(stderr, "no se pudo guardar el desfase del reloj en %s\n", RTC_ARCHIVO);
+		return 1;
+	}
+
+	fprintf(fp, "%ld\n", rtc_desfase);
+	fclose(fp);
+
+	rtc_desfase_sucio = 0;
+
+	return 0;
 }

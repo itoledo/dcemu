@@ -30,6 +30,20 @@ struct min_iso_s
 	unsigned int	root_lba;
 	unsigned int	root_size;		/* en bytes */
 	unsigned int	sectores;		/* tamano del volumen */
+
+	/*
+		Geometria de la pista donde vive el volumen. Un .iso es el caso trivial
+		-- el sector 0 esta en el byte 0 y los sectores son 2048 bytes limpios
+		--, pero dentro de un .cdi el volumen empieza en cualquier offset, los
+		sectores son crudos (2336 o 2352, de los que solo 2048 son datos, detras
+		de un subheader) y **los LBA que trae el propio ISO9660 son absolutos
+		del disco**: en el area de alta densidad de un GD-ROM el directorio raiz
+		esta en el 45023, no en el 23.
+	*/
+	unsigned int	lba_base;		/* el LBA al que corresponde `base` */
+	long long		base;			/* su byte en el archivo */
+	unsigned int	sector_crudo;	/* 2048, 2336 o 2352 */
+	unsigned int	desplazamiento;	/* donde empiezan los 2048 dentro del sector */
 };
 
 static unsigned int leer_le32(const unsigned char * p)
@@ -40,13 +54,21 @@ static unsigned int leer_le32(const unsigned char * p)
 	       ((unsigned int) p[3] << 24);
 }
 
-static int posicionar(FILE * fp, unsigned int lba)
+/* El byte donde empiezan los datos de usuario del sector `lba` del volumen. */
+static long long posicion_de(const min_iso_t * iso, unsigned int lba)
 {
-	/* Una imagen de GD-ROM no llega a 2 GB, pero el cast a 64 bits es gratis. */
+	return iso->base + (long long) (lba - iso->lba_base) * iso->sector_crudo
+	     + iso->desplazamiento;
+}
+
+static int posicionar(min_iso_t * iso, unsigned int lba)
+{
+	/* Un .cdi de dos capas pasa de 2 GB con facilidad, asi que aca el cast a
+	   64 bits ya no es solo higiene. */
 #if defined(_MSC_VER)
-	return _fseeki64(fp, (__int64) lba * MIN_ISO_BLOCKSIZE, SEEK_SET);
+	return _fseeki64(iso->fp, posicion_de(iso, lba), SEEK_SET);
 #else
-	return fseek(fp, (long) lba * MIN_ISO_BLOCKSIZE, SEEK_SET);
+	return fseeko(iso->fp, (off_t) posicion_de(iso, lba), SEEK_SET);
 #endif
 }
 
@@ -67,6 +89,13 @@ void min_iso_name_translate(const char * src, char * dst)
 
 min_iso_t * min_iso_open(const char * path)
 {
+	return min_iso_open_pista(path, 0, 0, MIN_ISO_BLOCKSIZE, 0);
+}
+
+min_iso_t * min_iso_open_pista(const char * path, unsigned int lba_base,
+                               long long base, unsigned int sector_crudo,
+                               unsigned int desplazamiento)
+{
 	min_iso_t * iso;
 	unsigned char pvd[MIN_ISO_BLOCKSIZE];
 	const unsigned char * root;
@@ -74,6 +103,11 @@ min_iso_t * min_iso_open(const char * path)
 	iso = (min_iso_t *) calloc(1, sizeof(min_iso_t));
 	if (iso == NULL)
 		return NULL;
+
+	iso->lba_base       = lba_base;
+	iso->base           = base;
+	iso->sector_crudo   = sector_crudo;
+	iso->desplazamiento = desplazamiento;
 
 	iso->fp = fopen(path, "rb");
 	if (iso->fp == NULL)
@@ -83,7 +117,7 @@ min_iso_t * min_iso_open(const char * path)
 		return NULL;
 	}
 
-	if (posicionar(iso->fp, PVD_LBA) != 0 ||
+	if (posicionar(iso, lba_base + PVD_LBA) != 0 ||
 	    fread(pvd, 1, MIN_ISO_BLOCKSIZE, iso->fp) != MIN_ISO_BLOCKSIZE)
 	{
 		fprintf(stderr, "min_iso_open: no se pudo leer el descriptor de volumen\n");
@@ -126,22 +160,50 @@ void min_iso_close(min_iso_t * iso)
 
 long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned int nblocks)
 {
-	size_t leidos;
+	unsigned char *	p = (unsigned char *) buf;
+	long			total = 0;
+	unsigned int	i;
 
 	if (iso == NULL || iso->fp == NULL)
 		return -1;
 
-	if (posicionar(iso->fp, lba) != 0)
-		return -1;
+	/* Con sectores de 2048 limpios se pueden pedir todos de una; con sectores
+	   crudos hay que ir uno a uno, porque entre unos datos y los siguientes
+	   quedan el subheader y el ECC. */
+	if (iso->sector_crudo == MIN_ISO_BLOCKSIZE && iso->desplazamiento == 0)
+	{
+		if (posicionar(iso, lba) != 0)
+			return -1;
 
-	leidos = fread(buf, 1, (size_t) nblocks * MIN_ISO_BLOCKSIZE, iso->fp);
+		return (long) fread(buf, 1, (size_t) nblocks * MIN_ISO_BLOCKSIZE, iso->fp);
+	}
 
-	return (long) leidos;
+	for (i = 0; i < nblocks; i++)
+	{
+		size_t leidos;
+
+		if (posicionar(iso, lba + i) != 0)
+			break;
+
+		leidos = fread(p, 1, MIN_ISO_BLOCKSIZE, iso->fp);
+		total += (long) leidos;
+		p += MIN_ISO_BLOCKSIZE;
+
+		if (leidos != MIN_ISO_BLOCKSIZE)
+			break;
+	}
+
+	return total;
 }
 
 unsigned int min_iso_sectores(min_iso_t * iso)
 {
 	return (iso == NULL) ? 0 : iso->sectores;
+}
+
+unsigned int min_iso_lba_base(min_iso_t * iso)
+{
+	return (iso == NULL) ? 0 : iso->lba_base;
 }
 
 int min_iso_stat_root(min_iso_t * iso, const char * nombre,
