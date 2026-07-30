@@ -6,9 +6,13 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **91** binarios (89 demos: `bfont` y `tunnel` están duplicados) |
-| Fallan por algo que falta emular | **16** |
+| Funcionan | **95** binarios |
+| Fallan por algo que falta emular | **12** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
+
+El 1 de agosto de 2026 pasaron cuatro más: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
+`pvr-cheap_shadow` al implementar los once tipos de vértice que faltaban y el rearmado de los
+parámetros de 64 bytes, y `pvr-pvrline`, que **nunca estuvo roto** — ver más abajo.
 
 El 31 de julio de 2026 pasaron siete de la segunda fila a la primera: `parallax-serpent_dma`
 con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las dos de
@@ -27,8 +31,15 @@ dcemu demo.bin --salir-tras=8 --captura-gl=cap.bmp
 El emulador vuelca a un BMP lo que OpenGL rasterizó, justo antes de presentar cada cuadro, y sale
 solo a los 8 segundos de tiempo emulado. Después se cuentan los colores distintos del BMP. El
 inventario de abajo se midió con el método viejo, así que sus cifras no son comparables una a una
-con las de este —el BMP es de 640×480 y la captura de ventana salía escalada—, pero el veredicto
-sí lo es.
+con las de este, pero el veredicto sí lo es.
+
+**El volcado recortaba, y eso invalidó un barrido entero.** `volcar_gl()` leía 640×480 desde
+(0,0) —el tamaño de la pantalla emulada— pero la ventana de GL es de **800×600** y `screeninit()`
+estira los 640×480 del guest sobre ella entera con `glOrtho`. Así que salía el rectángulo de abajo
+a la izquierda: se perdía el 20% de arriba y el 20% de la derecha. Cualquier demo que escriba en la
+franja superior —toda la familia `conio`, que pone ahí su texto— daba un BMP casi negro y parecía
+que no dibujaba nada. `conio-basic` pasó de 8 píxeles no negros a 2742 con el arreglo, sin tocar
+nada del PVR. Ahora lee `outputscreen->w/h`, o sea la ventana de verdad.
 
 **Por qué cambió**: capturar la ventana depende del compositor del anfitrión, y eso se rompe sin
 aviso. En una misma sesión, `tunnel` pasó de 3036 colores a 4 sin que cambiara una línea del
@@ -68,6 +79,27 @@ captura tiene contenido real pero no se revisó imagen por imagen.
 
 ## Lo que falta
 
+### Tipos de vértice del TA (0)
+
+Estaban implementados **cuatro de quince**: el 0, el 1, el 3 y el 5. Los once que faltaban se
+descartaban en silencio —el vértice no entraba al buffer, la tira cerraba con `count` 0 y no se
+dibujaba nada—, y eso es lo que dejaba en negro a las demos de volumen modificador:
+`pvr-modifier_volume` perdía así 41 de sus 42 vértices, todos de tipo 9.
+
+El diagnóstico sale entero de `--traza-mem`, que reporta los tipos de vértice vistos por escena:
+`[0]=1 [9]=41` con todas las tiras en `n=0` no deja lugar a dudas.
+
+Detrás había un segundo problema, y es el que hacía falta para `modifier_volume_tex`: **los
+parámetros de 64 bytes no se rearmaban.** Llegan en dos bloques de 32 —uno por store queue— y cada
+uno se despachaba por separado, así que la segunda mitad se leía como si fuera una palabra de
+control. Como su primera palabra suele ser un float, el tipo salía de la basura; cuando ese float
+vale 0.0 el tipo sale **0**, que es fin de lista. Ahora `ta.c` sabe cuánto mide cada parámetro
+—de la palabra de control más el tipo de vértice que dejó vigente el último encabezado— y junta las
+dos mitades antes de despachar.
+
+Nota: **esto no arregló el `attempt to submit to unopened list` de `tunnel`**, que era la sospecha.
+Sigue apareciendo miles de veces por corrida aunque la demo dibuje bien.
+
 ### Formatos de textura del PVR (1)
 
 `taPolyModifier()` en `graficos.c` despacha el `pixelformat` de la palabra de control de textura,
@@ -101,16 +133,22 @@ bits. El selector de banco va en el propio texture control word, encima de los b
 demás formatos son «sin usar», «stride» y «scan order»; por eso estas texturas van siempre
 twiddled.
 
-### Otras rutas del PVR (5)
+### Otras rutas del PVR (2)
 
 | demo | qué falta |
 | --- | --- |
-| `pvr-modifier_volume`, `pvr-modifier_volume_tex`, `pvr-cheap_shadow` | volúmenes modificadores. `taPolyModifier()` reconoce el tipo de lista pero no hay recorte por volumen |
-| `pvr-fb_tex`, `pvr-pvr_rtt_sized` | render a textura (`pvr_scene_begin_rtt`) |
-| `pvr-pvrline` | primitivas de línea |
+| `pvr-fb_tex`, `pvr-pvr_rtt_sized` | render a textura (`pvr_scene_begin_rtt`). La geometría sí llega y se dibuja; lo que falta es el contenido de la textura |
 
-`pvr-modifier_volume_zclip` sí dibuja, pero eso no dice que los volúmenes funcionen: lo que se ve
-puede ser la geometría sin recortar.
+**`pvr-pvrline` nunca necesitó primitivas de línea.** El PVR no las tiene y la demo tampoco las
+pide: dibuja cada línea como un cuadrilátero en tira de triángulos, y lo dice en su propio
+comentario. Funciona. Lo que la hacía parecer rota era el recorte del volcado más el hecho de que
+arranca con **una** línea —`linecount = 1`—, así que un BMP con 632 píxeles no negros es
+exactamente lo que corresponde. Esta fila era una conjetura del inventario, no una medición.
+
+**Las tres de volumen modificador ya dibujan** (1 de agosto de 2026), por lo que se cuenta en la
+sección de tipos de vértice. Lo que todavía no está es el efecto del volumen: `modifier_volume`
+pinta sus cuadrados azules pero no el recorte que los vuelve verdes por dentro, y `cheap_shadow`
+no oscurece. Para eso hace falta el buffer de plantilla, y es trabajo aparte.
 
 **`parallax-serpent_dma` ya funciona** (31 de julio de 2026). La sospecha de este documento era
 correcta: entregaba la geometría por el CH2 DMA (`pvr_dma_load_ta`), que no estaba emulado —

@@ -7,6 +7,7 @@
 #include "gui.h"
 #include "traza.h"
 #include "opciones.h"		/* --captura-gl */
+#include "ta.h"				/* clasificacion de los parametros del TA */
 //#include "glops.h"
 #include "render.h"
 
@@ -16,6 +17,35 @@
 
 SDL_Surface *screen;
 SDL_Surface *outputscreen;
+
+/* Lo que va en la barra de titulo. screeninit() se vuelve a llamar cada vez que
+   el guest cambia el modo de video, asi que el titulo tiene que estar guardado y
+   no armarse ahi. */
+char titulo_ventana[256] = APPTITLE;
+
+/*
+	Deja el nombre de lo que se esta ejecutando en la barra de titulo. Con un
+	barrido de demos abiertas una tras otra, saber cual esta corriendo es la
+	diferencia entre mirar la pantalla y adivinar.
+*/
+void titulo_poner(const char * ruta)
+{
+	const char * nombre = ruta;
+	const char * p;
+
+	if (ruta == NULL)
+		return;
+
+	/* Solo el nombre del archivo: la ruta completa no cabe y no aporta. */
+	for (p = ruta; *p; p++)
+		if (*p == '/' || *p == '\\')
+			nombre = p + 1;
+
+	snprintf(titulo_ventana, sizeof(titulo_ventana), "%s - dcemu", nombre);
+
+	if (outputscreen != NULL)
+		SDL_WM_SetCaption(titulo_ventana, NULL);
+}
 
 typedef Uint16 pcon_func(Uint16 src);
 
@@ -60,7 +90,8 @@ DWORD pvr_lists[] = {
 DWORD pvr_fb_r_ctrl = (1 << 23) | (1 << 2) | 1; // VGA, enabled, RGB565
 DWORD pvr_fb_r_sof1 = 0x0;
 
-DWORD * ta_address_pointer;
+/* ta_address_pointer vive en ta.c: apunta al parametro ya completo, que puede
+   ser el bloque que llego o el buffer donde se juntaron sus dos mitades. */
 
 DWORD total_polygon_count=0;
 DWORD strip_polygon_count = 0;
@@ -71,8 +102,19 @@ DWORD strip_count =0;
    geometria, se cierran las tiras, y las coordenadas caen en pantalla. */
 static int   traza_ta_vertices = 0;
 static int   traza_ta_fin_tira = 0;
-static int   traza_ta_tipos[16];
+static int   traza_ta_tipos[TA_TIPOS];
 static float traza_ta_min[3], traza_ta_max[3];
+
+/*
+	El color de cara vigente, en A,R,G,B. Los vertices en modo intensidad no
+	traen color propio: traen un multiplicador que se aplica a este.
+
+	Sobrevive al encabezado a proposito -- el modo intensidad 2 usa el que dejo
+	el ultimo poligono en modo intensidad 1 --, asi que solo se pisa cuando
+	llega un encabezado que lo trae. Blanco de partida, que es lo que deja la
+	intensidad tal cual si el guest nunca lo puso.
+*/
+static float color_cara[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 
 static int blend_modes [ ] = {GL_ZERO,GL_ONE,GL_DST_COLOR,GL_ONE_MINUS_DST_COLOR,GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,GL_DST_ALPHA,GL_ONE_MINUS_DST_ALPHA};
 
@@ -722,24 +764,69 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 }
 
 /*
- *  the qsort from stdlib orders arrays in ascending order. 
- * Because pcw.list_type has a bigger value if it is opaque the comparisons are reversed
- */
+	Ordena las tiras por tipo de lista, ascendente: opaca (0) primero y
+	translucida (2) despues, que es el orden en que hay que dibujarlas.
+
+	**El desempate importa y no estaba.** qsort no es estable: dos tiras del
+	mismo tipo quedaban en un orden que depende del estado interno del
+	algoritmo, o sea distinto de un cuadro al siguiente aunque la escena fuera
+	identica. Para geometria opaca da igual -- decide el test de profundidad --,
+	pero la translucida se dibuja sin escribir Z y el resultado depende del
+	orden: el mismo cuadro salia distinto cada vez y la pantalla parpadeaba.
+
+	El PVR dibuja dentro de una lista en el orden en que el guest la entrego, y
+	ese orden es el de `index`, que solo crece dentro de un cuadro. Asi que
+	desempatar por index es a la vez estabilizar el sort y respetar al chip.
+*/
 int compare(const void *  f,const void * s)
 {
-	int c=0;
-	if(((TSI *)f)->type > ((TSI *)s)->type)
-	{
-		 c = 1;
-	}else 
-		if(((TSI *)f)->type < ((TSI *)s)->type) c = -1;
-	return c;
+	const TSI * a = (const TSI *) f;
+	const TSI * b = (const TSI *) s;
+
+	if (a->type != b->type)
+		return (a->type > b->type) ? 1 : -1;
+
+	if (a->index != b->index)
+		return (a->index > b->index) ? 1 : -1;
+
+	return 0;
+}
+
+/* Las tiras que trajo cada una de las ultimas escenas, y cuantas hubo. */
+#define TRAZA_ULTIMAS	12
+
+static int traza_rendidas = 0;
+static int traza_ultimas[TRAZA_ULTIMAS];
+
+void traza_ta_resumen(void)
+{
+	int i, desde, n;
+
+	if (!traza_activa)
+		return;
+
+	n = (traza_rendidas < TRAZA_ULTIMAS) ? traza_rendidas : TRAZA_ULTIMAS;
+	desde = traza_rendidas - n;
+
+	fprintf(stderr, "traza: %d escenas rendidas; tiras de las ultimas %d:",
+		traza_rendidas, n);
+
+	for (i = 0; i < n; i++)
+		fprintf(stderr, " %d", traza_ultimas[(desde + i) % TRAZA_ULTIMAS]);
+
+	fprintf(stderr, "\n");
 }
 
 void cb_tastart(DWORD addr, void * p, size_t size)
 {
 	int i;
 	DWORD debug;
+
+	if (traza_activa)
+	{
+		traza_ultimas[traza_rendidas % TRAZA_ULTIMAS] = (int) strip_count;
+		traza_rendidas++;
+	}
 
 	/* Con --traza-mem, reportar las primeras rendidas: cuantas tiras llegaron y
 	   cuantos vertices. Es la pregunta que hay que contestar antes de mirar
@@ -758,7 +845,7 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 				traza_ta_vertices, traza_ta_fin_tira);
 
 			fprintf(stderr, "traza:   tipos de vertice:");
-			for (t = 0; t < 16; t++)
+			for (t = 0; t < TA_TIPOS; t++)
 				if (traza_ta_tipos[t])
 					fprintf(stderr, " [%d]=%d", t, traza_ta_tipos[t]);
 			fprintf(stderr, "\n");
@@ -955,6 +1042,11 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		fprintf(stderr, "traza: TA_LIST_INIT: hechas=%02x habilitadas=%02x, se ponen en cero\n",
 			(unsigned) pvr_listdone, (unsigned) pvr_registered);
 	pvr_listdone = 0;
+
+	/* Si el guest dejo un parametro de 64 bytes por la mitad, la mitad que
+	   quedo no debe pegarse con el primer bloque de la escena siguiente. */
+	ta_reiniciar();
+
 	limpiar_texturas();
 //	cur_tex_count = 0;
 
@@ -1099,6 +1191,19 @@ void objectListSet()
 	logxmsg(LOG_PVR, "pcw: NO IMPLEMENTADO\n");
 }
 
+/*
+	Encabezado de sprite. El PVR dibuja rectangulos con un parametro propio --
+	cuatro esquinas de las que la ultima se deduce -- en vez de dos triangulos.
+	No esta implementado; lo que si esta es reconocerlo, porque de eso depende
+	que sus vertices de 64 bytes se junten bien y no se despache la segunda
+	mitad como si fuera otro parametro.
+*/
+void taSprite()
+{
+	logxmsg(LOG_PVR, "pcw: Sprite\n");
+	logxmsg(LOG_PVR, "pcw: NO IMPLEMENTADO\n");
+}
+
 void taPolyModifier()
 {
 	TA.control = *ta_address_pointer;
@@ -1141,180 +1246,47 @@ void taPolyModifier()
 		
 	// obj control
 
-	// ac� tenemos que determinar qu� tipo de par�metros hay que leer
-	global_parameter = vertex_parameter = -1;
-				
-	// revisemos los par�metros para la lista de vertex
-	if (TA.registers.pcw_texture == 0)
-	{
-		if (TA.registers.pcw_volume == 0)
-		{
-			switch(TA.registers.pcw_col_type)
-			{
-				case 0:
-				global_parameter = 0;
-				vertex_parameter = 0;
-				break;
-			
-				case 1:
-				global_parameter = 0;
-				vertex_parameter = 1;
-				break;
-			
-				case 2:
-				global_parameter = 1;
-				vertex_parameter = 2;
-				break;
-			
-				case 3:
-				global_parameter = 0;
-				vertex_parameter = 2;
-				break;
-			}
-		}
-		else
-		{
-			switch (TA.registers.pcw_col_type)
-			{
-				case 0:
-				global_parameter = 3;
-				vertex_parameter = 9;
-				break;
-			
-				case 2:
-				global_parameter = 4;
-				vertex_parameter = 10;
-				break;
-			
-				case 3:
-				global_parameter = 3;
-				vertex_parameter = 10;
-				break;
-			}
-		}
-	}
-	else // textured
-	{
-		if (TA.registers.pcw_volume == 0)
-		{
-			switch(TA.registers.pcw_col_type)
-			{
-				case 0:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					global_parameter = 0;
-					vertex_parameter = 3;
-				}
-				else
-				{
-					global_parameter = 0;
-					vertex_parameter = 4;
-				}
-				break;
-				
-				case 1:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					global_parameter = 0;
-					vertex_parameter = 5;
-				}
-				else
-				{
-					vertex_parameter = 6;
-					global_parameter = 0;
-				}
-				break;
-				
-				case 2:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					if (TA.registers.pcw_offset == 0)
-					{
-						global_parameter = 1;
-						vertex_parameter = 7;
-					}
-					else
-					{
-						global_parameter = 2;
-						vertex_parameter = 7;
-					}
-				}
-				else
-				{
-					if (TA.registers.pcw_offset == 0)
-					{
-						global_parameter = 1;
-						vertex_parameter = 8;
-					}
-					else
-					{
-						global_parameter = 2;
-						vertex_parameter = 8;
-					}
-				}
-				break;
-					
-				case 3:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					global_parameter = 0;
-					vertex_parameter = 7;
-				}
-				else
-				{
-					global_parameter = 0;
-					vertex_parameter = 8;
-				}
-				break;
-			}
-		}
-		else
-		{
-			switch(TA.registers.pcw_col_type)
-			{
-				case 0:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					global_parameter = 3;
-					vertex_parameter = 11;
-				}
-				else
-				{
-					global_parameter = 3;
-					vertex_parameter = 12;
-				}
-				break;
-				
-				case 2:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					global_parameter = 4;
-					vertex_parameter = 13;
-				}
-			else
-				{
-					global_parameter = 4;
-					vertex_parameter = 14;
-				}
-				break;
-				
-				case 3:
-				if (TA.registers.pcw_16bit_UV == 0)
-				{
-					global_parameter = 3;
-					vertex_parameter = 13;
-				}
-				else
-				{
-					global_parameter = 3;
-					vertex_parameter = 14;
-				}
-				break;
-			}
-		}
-	}
+	/*
+		Que tipo de parametro global es este encabezado y que tipo de vertice
+		deja vigente detras. La tabla esta en ta.c porque la necesitan dos: aca
+		para saber que campos leer, y el ensamblador de bloques para saber si el
+		parametro mide 32 o 64 bytes.
+	*/
+	ta_clasificar(TA.control, &global_parameter, &vertex_parameter);
 
 	logxmsg(LOG_PVR, "pcw: global parameter: polygon type %d\n", global_parameter);
+
+	/*
+		El color de cara, para los vertices que traen intensidad en vez de
+		color. Va en la segunda mitad del encabezado, o sea que solo existe en
+		los de 64 bytes.
+
+		En modo intensidad 2 (col_type 3) el encabezado NO lo trae: se usa el
+		que dejo el ultimo poligono en modo intensidad 1. Por eso se guarda en
+		un estatico y solo se pisa cuando llega uno nuevo.
+	*/
+	if (global_parameter == TA_GLOBAL_POLY1 || global_parameter == TA_GLOBAL_POLY2 ||
+		global_parameter == TA_GLOBAL_POLY4)
+	{
+		memcpy(&color_cara[0], &ta_address_pointer[8], sizeof(float) * 4);
+
+		/* En POLY4 la segunda mitad es el color de cara del otro volumen; en
+		   POLY2 es el color de offset. Ni uno ni otro se usan todavia. */
+	}
+
+	/*
+		Un encabezado de volumen modificador solo trae la palabra ISP/TSP: no
+		hay TSP instruction word, ni control de textura, ni blend. Leer sus
+		palabras 2 y 3 -- que estan reservadas -- dejaba factores de blend y
+		formato de textura sacados de basura, y esos parametros globales
+		sobreviven hasta el proximo encabezado, o sea que se los llevaba puestos
+		la geometria de la lista siguiente.
+	*/
+	if (global_parameter == TA_GLOBAL_VOLUMEN)
+	{
+		logxmsg(LOG_PVR, "pcw: encabezado de volumen modificador\n");
+		return;
+	}
 
 	if (TA.registers.pcw_list_type == 0 || TA.registers.pcw_list_type == 2 || TA.registers.pcw_list_type == 4)
 	{
@@ -1499,6 +1471,96 @@ void taPolyModifier()
 		}
 }
 
+/*
+	Abre un vertice nuevo en el buffer con la posicion, que es lo unico que
+	todos los tipos traen en el mismo sitio: x, y, z en las palabras 1 a 3.
+
+	z se guarda como su reciproco porque el TA entrega 1/w y GL espera
+	profundidad.
+*/
+static vertex * vertice_nuevo(void)
+{
+	float xyz[3];
+	vertex * v;
+
+	memcpy(xyz, &ta_address_pointer[1], sizeof(float) * 3);
+
+	total_polygon_count++;
+
+	v = &VertexBuffer[total_polygon_count];
+
+	v->x = xyz[0];
+	v->y = xyz[1];
+	v->z = 1.0 / xyz[2];
+
+	/* Sin coordenadas de textura mientras el tipo no diga otra cosa: si no,
+	   quedan las del vertice anterior. */
+	v->t1 = 0.0f;
+	v->t2 = 0.0f;
+
+	return v;
+}
+
+/* Color empaquetado: una palabra ARGB, alpha en 31-24. */
+static void vertice_color(vertex * v, DWORD argb)
+{
+	v->a = ((argb >> 24) & 0xFF) / 255.0;
+	v->r = ((argb >> 16) & 0xFF) / 255.0;
+	v->g = ((argb >> 8)  & 0xFF) / 255.0;
+	v->b = ((argb >> 0)  & 0xFF) / 255.0;
+}
+
+/* Color en punto flotante: cuatro floats A, R, G, B desde la palabra `w`. */
+static void vertice_color_flotante(vertex * v, int w)
+{
+	float c[4];
+
+	memcpy(c, &ta_address_pointer[w], sizeof(float) * 4);
+
+	v->a = c[0];
+	v->r = c[1];
+	v->g = c[2];
+	v->b = c[3];
+}
+
+/*
+	Modo intensidad: el vertice no trae color sino un multiplicador sobre el
+	color de cara que dejo el encabezado. El alpha sale del color de cara tal
+	cual -- la intensidad no lo toca.
+*/
+static void vertice_intensidad(vertex * v, DWORD palabra)
+{
+	float i;
+
+	memcpy(&i, &palabra, sizeof(float));
+
+	v->a = color_cara[0];
+	v->r = color_cara[1] * i;
+	v->g = color_cara[2] * i;
+	v->b = color_cara[3] * i;
+}
+
+/* UV de 32 bits: u y v en dos palabras consecutivas desde `w`. */
+static void vertice_uv(vertex * v, int w)
+{
+	memcpy(&v->t1, &ta_address_pointer[w],     sizeof(float));
+	memcpy(&v->t2, &ta_address_pointer[w + 1], sizeof(float));
+}
+
+/*
+	UV de 16 bits: las dos coordenadas van en una sola palabra, y cada una es la
+	**mitad alta** de un float de 32 bits. O sea que se recuperan desplazando,
+	no convirtiendo: se pierde precision en la mantisa y nada mas.
+*/
+static void vertice_uv16(vertex * v, DWORD palabra)
+{
+	DWORD u = palabra & 0xFFFF0000;
+	DWORD s = palabra << 16;
+
+	memcpy(&v->t1, &u, sizeof(float));
+	memcpy(&v->t2, &s, sizeof(float));
+}
+
 void taVertexHandler()
 {
 #ifdef DEBUG_VERTEX_NEW
@@ -1514,7 +1576,7 @@ void taVertexHandler()
 		if (TA.registers.pcw_end_of_strip)
 			traza_ta_fin_tira++;
 
-		if (vertex_parameter >= 0 && vertex_parameter < 16)
+		if (vertex_parameter >= 0 && vertex_parameter < TA_TIPOS)
 			traza_ta_tipos[vertex_parameter]++;
 	}
 
@@ -1525,138 +1587,155 @@ void taVertexHandler()
 		vertexstart = false;
 	}
 
+	/*
+		Los quince tipos de vertice del manual. Todos empiezan igual -- x, y, z
+		en las palabras 1 a 3 -- y se diferencian en como traen el color y las
+		coordenadas de textura:
+
+		  - color empaquetado: una palabra ARGB;
+		  - color en punto flotante: cuatro floats A, R, G, B;
+		  - intensidad: un float que multiplica el color de cara del encabezado;
+		  - UV de 32 bits: dos palabras; de 16, las dos en una.
+
+		Y los seis de "dos volumenes" traen todo dos veces: el juego 0 es el que
+		se usa fuera del volumen modificador y el 1 dentro. Mientras no haya
+		recorte por volumen se usa el 0, que es lo que se ve en la mayor parte
+		de la pantalla.
+
+		Estaban implementados solo el 0, 1, 3 y 5. Los que faltaban se
+		descartaban en silencio: el vertice no entraba al buffer, la tira
+		terminaba con count 0 y no se dibujaba nada. Las demos de volumen
+		modificador perdian asi 41 de sus 42 vertices.
+	*/
 	switch (vertex_parameter)
 	{
-		case 0: // Non-Textured, Packed Color
+		case 0:		/* sin textura, color empaquetado */
+			vertice_color(vertice_nuevo(), ta_address_pointer[6]);
+			break;
+
+		case 1:		/* sin textura, color en punto flotante */
+			vertice_color_flotante(vertice_nuevo(), 4);
+			break;
+
+		case 2:		/* sin textura, intensidad */
+			vertice_intensidad(vertice_nuevo(), ta_address_pointer[4]);
+			break;
+
+		case 3:		/* texturado, color empaquetado, UV de 32 bits */
 		{
+			/* Layout: +0x04 x, +0x08 y, +0x0C z, +0x10 u, +0x14 v, +0x18 color
+			   base, +0x1C color de offset. Las coordenadas leian desde [6] --
+			   o sea +0x18, el color -- y se pasaban 12 bytes del registro de
+			   32. El caso 5 ya lo hacia bien desde [1]. */
+			vertex * v = vertice_nuevo();
 
-			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float) * 3);
-			memcpy(&base_colour, &ta_address_pointer[6], sizeof(DWORD));
-
-#ifdef DEBUG_VERTEX_NEW
-			logxmsg(LOG_PVR, "vertex tipo 0: color=%f,%f,%f,%f coords=%f,%f,%f\n",
-				colors[0], colors[1], colors[2], colors[3], coords[0], coords[1], coords[2]);
-#endif
-	
-			total_polygon_count++;
-
-			VertexBuffer[total_polygon_count].x = coords[0];
-
-			VertexBuffer[total_polygon_count].y = coords[1];;
-
-			VertexBuffer[total_polygon_count].z = 1.0 / coords[2];
-		
-			VertexBuffer[total_polygon_count].a = ((base_colour >> 24) & 0xFF) / 255.0;
-
-			VertexBuffer[total_polygon_count].r =((base_colour >> 16) & 0xFF) / 255.0;
-
-			VertexBuffer[total_polygon_count].g =  ((base_colour >> 8)  & 0xFF) / 255.0;
-
-			VertexBuffer[total_polygon_count].b = ((base_colour >> 0)  & 0xFF) / 255.0;
-		}
-		break;
-
-		case 1:
-		{			
-			
-			memcpy(&data[0], &ta_address_pointer[1], sizeof(float)*7);
-
-#ifdef DEBUG_VERTEX_NEW
-			logxmsg(LOG_PVR, "vertex tipo 1: color %f %f %f %f\n", data[4], data[5], data[6], data[3]);
-			logxmsg(LOG_PVR, "posici�n: %f %f %f\n", data[0], data[1], data[2]);
-#endif
-
-			total_polygon_count++;
-		
-			VertexBuffer[total_polygon_count].x = data[0];
-
-			VertexBuffer[total_polygon_count].y = data[1];
-
-			VertexBuffer[total_polygon_count].z = 1.0 / data[2];
-
-			VertexBuffer[total_polygon_count].a = data[3];
-
-			VertexBuffer[total_polygon_count].r = data[4];
-
-			VertexBuffer[total_polygon_count].g = data[5];
-
-			VertexBuffer[total_polygon_count].b =data[6];
-		}
-		break;
-				
-		case 3: // Texturado, color empaquetado, UV de 32 bits
-		{
-			/* Layout del tipo 3: +0x04 x, +0x08 y, +0x0C z, +0x10 u, +0x14 v,
-			   +0x18 color base, +0x1C color de offset. Las coordenadas leian
-			   desde [6] -- o sea +0x18, el color -- y se pasaban 12 bytes del
-			   registro de 32. El caso 5 ya lo hacia bien desde [1]. */
-			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float)*5);
-			memcpy(&base_colour, &ta_address_pointer[6], sizeof(DWORD));
-
-#ifdef DEBUG_VERTEX_NEW
-			logxmsg(LOG_PVR, "seteando colors rgba: %f %f %f %f\n", colors[0], colors[1], colors[2], colors[3]);
-			logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
-#endif
-		
-			total_polygon_count++;
-
-			VertexBuffer[total_polygon_count].x =coords[0];
-
-			VertexBuffer[total_polygon_count].y = coords[1];
-
-			VertexBuffer[total_polygon_count].z = 1.0 / coords[2] ; 
-
-			VertexBuffer[total_polygon_count].t1 = coords[3];
-
-			VertexBuffer[total_polygon_count].t2 = coords[4];		
-
+			vertice_uv(v, 4);
 			/* El color empaquetado es ARGB: alpha en 31-24, no en 23-16. Estaba
 			   tomando el alpha del mismo campo que el rojo, asi que la
-			   geometria texturada quedaba con alpha = rojo. El caso 0 ya lo
-			   hacia bien. */
-			VertexBuffer[total_polygon_count].a = ((base_colour >> 24) & 0xFF) / 255.0;
-
-			VertexBuffer[total_polygon_count].r = ((base_colour >> 16) & 0xFF) / 255.0;
-
-			VertexBuffer[total_polygon_count].g =  ((base_colour >> 8)  & 0xFF) / 255.0;
-
-			VertexBuffer[total_polygon_count].b = ((base_colour >> 0)  & 0xFF) / 255.0;
+			   geometria texturada quedaba con alpha = rojo. */
+			vertice_color(v, ta_address_pointer[6]);
 		}
 		break;
 
-		case 5:
-		{			
-			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float)*5);
+		case 4:		/* texturado, color empaquetado, UV de 16 bits */
+		{
+			vertex * v = vertice_nuevo();
 
-			memcpy(&colors[0], &ta_address_pointer[8], sizeof(float)*4);
-
-#ifdef DEBUG_VERTEX_NEW
-			logxmsg(LOG_PVR, "seteando texturas en %fx%f\n", coords[3], coords[4]);
-			logxmsg(LOG_PVR, "coordenadas: %f,%f,%f\n", coords[0], coords[1], coords[2]);
-#endif
-		
-			total_polygon_count++;	
-
-			VertexBuffer[total_polygon_count].x = coords[0];
-
-			VertexBuffer[total_polygon_count].y = coords[1];
-
-			VertexBuffer[total_polygon_count].z = 1.0 / coords[2];
-
-			VertexBuffer[total_polygon_count].t1 = coords[3];
-
-			VertexBuffer[total_polygon_count].t2 = coords[4];		
-
-			VertexBuffer[total_polygon_count].a = colors[0];
-
-			VertexBuffer[total_polygon_count].r = colors[1]; 
-
-			VertexBuffer[total_polygon_count].g = colors[2];
-
-			VertexBuffer[total_polygon_count].b = colors[3];
+			vertice_uv16(v, ta_address_pointer[4]);
+			vertice_color(v, ta_address_pointer[6]);
 		}
 		break;
-				
+
+		case 5:		/* texturado, color en punto flotante, UV de 32 bits */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv(v, 4);
+			vertice_color_flotante(v, 8);
+		}
+		break;
+
+		case 6:		/* texturado, color en punto flotante, UV de 16 bits */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv16(v, ta_address_pointer[4]);
+			vertice_color_flotante(v, 8);
+		}
+		break;
+
+		case 7:		/* texturado, intensidad, UV de 32 bits */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv(v, 4);
+			vertice_intensidad(v, ta_address_pointer[6]);
+		}
+		break;
+
+		case 8:		/* texturado, intensidad, UV de 16 bits */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv16(v, ta_address_pointer[4]);
+			vertice_intensidad(v, ta_address_pointer[6]);
+		}
+		break;
+
+		case 9:		/* sin textura, color empaquetado, dos volumenes */
+			vertice_color(vertice_nuevo(), ta_address_pointer[4]);
+			break;
+
+		case 10:	/* sin textura, intensidad, dos volumenes */
+			vertice_intensidad(vertice_nuevo(), ta_address_pointer[4]);
+			break;
+
+		case 11:	/* texturado, color empaquetado, dos volumenes, UV de 32 */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv(v, 4);
+			vertice_color(v, ta_address_pointer[6]);
+		}
+		break;
+
+		case 12:	/* texturado, color empaquetado, dos volumenes, UV de 16 */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv16(v, ta_address_pointer[4]);
+			vertice_color(v, ta_address_pointer[6]);
+		}
+		break;
+
+		case 13:	/* texturado, intensidad, dos volumenes, UV de 32 */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv(v, 4);
+			vertice_intensidad(v, ta_address_pointer[6]);
+		}
+		break;
+
+		case 14:	/* texturado, intensidad, dos volumenes, UV de 16 */
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_uv16(v, ta_address_pointer[4]);
+			vertice_intensidad(v, ta_address_pointer[6]);
+		}
+		break;
+
+		/*
+			Un vertice de volumen modificador trae un triangulo entero -- tres
+			puntos en 64 bytes -- y no es geometria que se dibuje: define la
+			region donde los poligonos cambian de parametros. Sin recorte por
+			volumen no hay nada que hacer con el, pero hay que reconocerlo:
+			leerlo como un vertice normal metia basura en el buffer.
+		*/
+		case TA_VERTICE_VOLUMEN:
+			break;
+
 		default:
 		{
 			logxmsg(LOG_PVR, "VERTEX: tipo %d de vertex no implementado!\n", vertex_parameter);
@@ -1798,8 +1877,19 @@ SDL_Surface * draw_backscreen()
 int volcar_gl(const char * ruta)
 {
 	FILE *			fp;
-	int				ancho = screenancho;
-	int				alto = screenheight;
+	/*
+		El tamano de la **ventana**, no el de la pantalla emulada.
+
+		Son distintos: la ventana es de 800x600 y screeninit() estira los
+		640x480 del guest sobre ella entera con glOrtho. Leyendo 640x480 desde
+		(0,0) salia el rectangulo de abajo a la izquierda, o sea que se perdia
+		el 20% de arriba y el 20% de la derecha. Y como glOrtho invierte la y,
+		"arriba" en la imagen es arriba en la ventana: cualquier demo que
+		escriba en la franja superior -- toda la familia conio, que pone su
+		texto ahi -- salia en negro y parecia que no dibujaba nada.
+	*/
+	int				ancho = (outputscreen != NULL) ? outputscreen->w : screenancho;
+	int				alto  = (outputscreen != NULL) ? outputscreen->h : screenheight;
 	int				x, y, relleno;
 	unsigned char	cabecera[54];
 	unsigned char *	pixeles;
@@ -2132,7 +2222,7 @@ int glinit(void)
 		exit(1);
 	}
 
-    SDL_WM_SetCaption(APPTITLE, NULL);
+    SDL_WM_SetCaption(titulo_ventana, NULL);
     SDL_WM_SetIcon(SDL_LoadBMP("dcemu.bmp"), NULL);
 	SDL_EnableUNICODE(1);
 

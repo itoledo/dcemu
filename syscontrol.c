@@ -8,6 +8,7 @@
 #include "sh4emu.h"
 #include "excepciones.h"
 #include "graficos.h"
+#include "ta.h"			/* ta_procesar_bloque(): la FIFO de poligonos */
 
 void dump_llamadas()
 {
@@ -427,34 +428,6 @@ OPCODE(ocbp140) // OCBP @Rn (0000nnnn 10100011)
 	core.context.cycles += 1;
 }
 
-/*
-	Un bloque de 32 bytes entrando a la FIFO de poligonos del TA: despacha por
-	el tipo de la palabra de control. Estaba embebido en pref142(), que es como
-	llega la geometria cuando el guest usa store queues; el CH2 DMA (mem.c) la
-	entrega igual, en bloques de 32 bytes, y el decodificador tiene que ser el
-	mismo para los dos.
-
-	Vive aca y no en graficos.c porque las pruebas enlazan syscontrol.c de
-	verdad y de graficos.c solo los dobles: asi la suite de pref142 sigue
-	ejercitando este switch y no una copia.
-*/
-void ta_procesar_bloque(void * bloque)
-{
-	DWORD pcw;
-
-	ta_address_pointer = (DWORD *) bloque;
-	pcw = *ta_address_pointer;
-
-	switch ((pcw >> 29) & 0x7)
-	{
-		case 0:	taListEnd();		break;
-		case 1:	doUserClip();		break;
-		case 2:	objectListSet();	break;
-		case 4:	taPolyModifier();	break;
-		case 7:	taVertexHandler();	break;
-	}
-}
-
 OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 {
 	short n = (arg >> 8) & 0x0F;
@@ -498,9 +471,10 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 			// store queue. Antes era & 0xFF, que no coincidia con el indice de
 			// ta_write() en cuanto el guest pasaba de 0x100.
 			//
-			// El switch por tipo de palabra de control vive en graficos.c: el
-			// CH2 DMA entrega bloques a esta misma FIFO y tiene que decodificar
-			// igual.
+			// El decodificador vive en ta.c: el CH2 DMA entrega bloques a esta
+			// misma FIFO y tiene que interpretarlos igual. Es el que junta los
+			// parametros de 64 bytes, que llegan en dos bloques -- uno por
+			// store queue.
 			ta_procesar_bloque(&ta_mem[addr & 0x3F]); // 0x00 o 0x20
 // 			ta_check(addr);
 		}

@@ -156,6 +156,12 @@ void traza_resumen(void)
 
 	fprintf(stderr, "traza: %d direcciones distintas sin emular.\n", tabla_usadas);
 
+	/* Cuanta geometria trajeron las ultimas escenas. Lo de arriba reporta las
+	   tres primeras, que es lo que sirve para arrancar; esto contesta la otra
+	   pregunta -- si la ventana quedo con contenido o si el guest dejo de
+	   mandar --, que es la que separa un parpadeo de una demo terminada. */
+	traza_ta_resumen();
+
 	/* Cuanto mas lento que una consola corrio el emulador. Antes no habia con
 	   que compararlo. Ver docs/clock-plan.md, fase 4. */
 	{

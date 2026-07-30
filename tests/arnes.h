@@ -103,6 +103,7 @@ extern int dobles_ta_list_end;
 extern int dobles_user_clip;
 extern int dobles_object_list_set;
 extern int dobles_poly_modifier;
+extern int dobles_sprite;
 extern int dobles_vertex_handler;
 
 /* Bandera de intc.c: RTE tiene que apagarla al volver de la excepcion.

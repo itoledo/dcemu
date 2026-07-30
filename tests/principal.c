@@ -33,6 +33,7 @@ static const dc_suite * const suites[] =
 	&suite_decodificacion,
 	&suite_sistema,
 	&suite_gdrom,
+	&suite_ta,
 	&suite_mmu,
 	&suite_wdt,
 	&suite_tmu,

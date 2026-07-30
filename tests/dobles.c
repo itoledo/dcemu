@@ -18,16 +18,19 @@
 
 #include "main.h"
 #include "arnes.h"
+#include "ta.h"
 
 /* --- graficos.c ---------------------------------------------------------- */
 
-DWORD * ta_address_pointer;
+/* ta_address_pointer lo define ta.c, que las pruebas enlazan de verdad: es el
+   que junta los parametros de 64 bytes y decide a quien despachar. */
 
 int dobles_ta_list_end;
 int dobles_user_clip;
 int dobles_object_list_set;
 int dobles_poly_modifier;
 int dobles_vertex_handler;
+int dobles_sprite;
 
 /* pref142() manda aca los bloques de 0x10800000, la entrada del convertidor
    YUV del TA. Las pruebas no lo ejercitan; el doble solo evita arrastrar
@@ -41,6 +44,7 @@ void doUserClip()		{ dobles_user_clip++; }
 void objectListSet()	{ dobles_object_list_set++; }
 void taPolyModifier()	{ dobles_poly_modifier++; }
 void taVertexHandler()	{ dobles_vertex_handler++; }
+void taSprite()			{ dobles_sprite++; }
 
 /* --- traza.c ------------------------------------------------------------- */
 
@@ -173,10 +177,12 @@ void dobles_reset(void)
 	dobles_object_list_set	= 0;
 	dobles_poly_modifier	= 0;
 	dobles_vertex_handler	= 0;
+	dobles_sprite			= 0;
 
 	inside_int = true;	/* RTE debe dejarlo en false */
 
-	ta_address_pointer = NULL;
+	/* Por si una prueba dejo un parametro de 64 bytes a medio armar. */
+	ta_reiniciar();
 
 	dobles_int_normal			= 0;
 	dobles_int_ext				= 0;

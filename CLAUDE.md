@@ -51,9 +51,10 @@ ctest --test-dir build -C Debug --output-on-failure
 ```
 
 `tests/` holds unit tests for every implemented row of `opcodes[]` (one suite per handler
-file, plus one for the dispatch-table expansion), plus two suites that are not opcodes:
-`sistema` (PDTRA handshake, flash synthesis, RTC) and `gdrom` (the drive's state machine,
-driven exactly as the boot ROM drives it). They link the real handlers and the real
+file, plus one for the dispatch-table expansion), plus three suites that are not opcodes:
+`sistema` (PDTRA handshake, flash synthesis, RTC), `gdrom` (the drive's state machine,
+driven exactly as the boot ROM drives it) and `ta` (the TA parameter format — the
+classification table and the reassembly of the 64-byte parameters). They link the real handlers and the real
 `opcodes.c`; `tests/memoria_prueba.c` replaces `mem.c` and `tests/dobles.c` replaces the
 `graficos.c` / `iso.c` / `intc.c` / `traza.c` symbols the code references, which keeps SDL
 and OpenGL out of the link. SDL *headers* are still needed to compile (`opcodes.h` pulls in
@@ -173,6 +174,9 @@ boot ROM checks `COREID` against `0x17FD11DB` *and* demands revision `>= 17` and
 had no read case, fell through to the control-block backing store, read zero, and parked
 itself in a deliberate `BRA` to itself at `0x8C0DBDFC` forever. Same shape as `SB_G1SYSM`.
 
+The window title carries the name of what is running (`titulo_poner()` in `graficos.c`, called
+before `screeninit()`), which is what makes a sweep of demos opened one after another readable.
+
 Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, **F6 dump the GL buffer**,
 F9 step, F10 stop, F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad,
 `q`/`e` triggers, `y h g j` analog stick, keypad `+`/`-` scroll the memory dump. A gamepad
@@ -187,6 +191,15 @@ in `graficos.c`), so it shows what the guest drew rather than what GL rasterized
 `--captura-gl=ARCHIVO` does the same automatically before every swap, so the file holds the
 last frame when the emulator exits — pair it with `--salir-tras` and a sweep needs no window
 at all.
+
+**It reads the window, which is 800×600, not the emulated 640×480 — and getting that wrong
+invalidated a whole sweep.** `screeninit()` stretches the guest's 640×480 over the entire window
+with `glOrtho`, so a `glReadPixels(0, 0, 640, 480)` returns the bottom-left rectangle: the top
+20% and the right 20% are simply missing. Anything drawing in the top band — the whole `conio`
+family, which puts its text there — came out an almost-black BMP and read as "draws nothing".
+`conio-basic` went from 8 non-black pixels to 2742 with that one line, and no PVR change at all.
+The lesson generalises: when the capture says blank, check the strip counts at exit before
+believing it.
 
 **SDL 1.2 redirects `stdout` and `stderr` to files on Windows** — `stdout.txt` and
 `stderr.txt` in the working directory. Redirecting the process's output from the shell (or
@@ -437,24 +450,61 @@ state machine (`TA_ALLOC_CTRL`, `TA_LIST_INIT`, each end of list, `STARTRENDER`)
 each strip goes out with, which is how both bugs above were found.
 
 Still open: KOS logs `pvr_prim: attempt to submit to unopened list` thousands of times per run in
-some demos. Also note `pvr_registered` is `DWORD` in `graficos.c` but `extern int` in `intc.c`.
+some demos. The obvious suspect was the 64-byte parameter whose second half decoded as an
+end-of-list — see `ta.c` below — but fixing that did **not** silence it, so the cause is
+elsewhere. Also note `pvr_registered` is `DWORD` in `graficos.c` but `extern int` in `intc.c`.
 
 **`--traza-mem` reports TA activity** for the first three renders: strips, vertices,
 end-of-strip count, vertex types, and the min/max of the vertex coordinates. The TA receives
 vertices already in screen space, so x must land in `0..width` and y in `0..height`; if not,
-the fault is in the vertex layout or the store queues, not in the rasteriser.
+the fault is in the vertex layout or the store queues, not in the rasteriser. At exit it also
+prints how many scenes were rendered and the strip count of the last twelve — which is what
+separates "the demo stopped submitting" from "the capture is wrong", a distinction that has
+already cost a whole sweep.
 
 The guest submits geometry through the SH-4 store queues, not through a normal write:
 `pref142()` in `syscontrol.c` flushes SQ0/SQ1, and when the target lands in the TA FIFO
-(`0x10000000`) it decodes the parameter control word and dispatches on the para-type to
-`taListEnd()`, `doUserClip()`, `objectListSet()`, `taPolyModifier()` or
-`taVertexHandler()` in `graficos.c`.
+(`0x10000000`) it hands the 32-byte block to `ta_procesar_bloque()` in `ta.c`, which dispatches
+on the para-type to `taListEnd()`, `doUserClip()`, `objectListSet()`, `taPolyModifier()`,
+`taSprite()` or `taVertexHandler()` in `graficos.c`. The CH2 DMA (`mem.c`) feeds the same
+function.
+
+**`ta.c` exists because not every TA parameter is 32 bytes.** Headers carrying a face color,
+vertices with floating-point color, all six two-volume textured vertices, both sprite vertices
+and the modifier-volume vertex are 64, and they arrive as *two* blocks — one per store queue.
+Dispatching each block separately reads the second half as a parameter control word, and since
+its first word is usually a float the para-type comes out of the garbage: when that float is
+`0.0` the type is **0**, which is end-of-list, so a list closes that the guest never closed.
+`ta_clasificar()` is the table — PCW → global parameter type and the vertex type it leaves in
+force — and `ta_procesar_bloque()` joins the halves before dispatching. Both `taPolyModifier()`
+and the block assembler use that one table, so they cannot drift. `ta.c` is free of SDL and GL
+on purpose, like `sistema.c`, so `tests/` links it for real.
+
+**`taVertexHandler()` implemented four of the fifteen vertex types** — 0, 1, 3 and 5. The other
+eleven fell through to a `logxmsg` and were dropped: the vertex never entered `VertexBuffer`, the
+strip closed with `count` 0, and nothing drew. That is what left the modifier-volume demos black —
+`pvr-modifier_volume` lost 41 of its 42 vertices, all type 9. `--traza-mem` names the guilty type
+directly: `[0]=1 [9]=41` with every strip at `n=0`. The three axes are how the color arrives
+(packed / floating / intensity), whether the UVs are 32 or 16 bits, and whether there are two
+parameter sets. Intensity types multiply the header's **face color**, which survives past its own
+header on purpose: intensity mode 2 reuses the one left by the last polygon in mode 1.
+
+Two-volume vertices carry everything twice — set 0 outside the modifier volume, set 1 inside.
+With no volume clipping, dcemu uses set 0, which is what covers most of the screen.
 
 Those build up `VertexBuffer[]` and `TriangleStrip[]` (declared — and *defined* — in
 `render.h`, which only `graficos.c` may include for that reason). A write to `TA_LIST_INIT`
 triggers `cb_tastart()`, which sorts the strips so translucent geometry draws last, sets
 per-strip GL state, uploads/binds textures via `get_texture()` (handles twiddled and VQ
 formats), and issues `glDrawArrays(GL_TRIANGLE_STRIP, ...)`.
+
+**That sort has to be stable and was not.** `qsort` is not, so two strips of the same list type
+came out in an order that depends on the algorithm's internal state — different from one frame to
+the next even when the scene was identical. Opaque geometry does not care, the depth test decides;
+translucent geometry draws with Z write off and the order *is* the result, so the same frame came
+out different every time and the screen flickered. `compare()` now breaks the tie with `index`,
+which only grows within a frame, so ties resolve in submission order — which is also what the chip
+does inside a list.
 
 `glops.c/h` is an **older, now-bypassed** path: a recorded display list of `GLOP_*`
 commands replayed by `glop_process()`. `graficos.c` has its `#include "glops.h"` commented

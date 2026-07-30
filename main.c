@@ -989,9 +989,13 @@ int main(int argc, char *argv[])
 
 //	screen = SDL_SetVideoMode(320, 240, 16, SDL_DOUBLEBUF);
 
+	/* Antes de screeninit(), que es quien pone el caption. Con --bios lo que se
+	   ejecuta es el boot ROM y la imagen es solo lo que ve la lectora. */
+	titulo_poner(opciones.imagen ? opciones.imagen : "1st_read.bin");
+
 	if (glinit() != 0)
 		return 1;
-	
+
 	screeninit();
 
 //	SDL_SetAlpha(screen, SDL_RLEACCEL, 128);

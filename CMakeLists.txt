@@ -106,6 +106,7 @@ set(DCEMU_SOURCES
 	shift.c
 	simdx86_stub.c
 	sistema.c
+	ta.c
 	tmu.c
 	wdt.c
 	syscontrol.c

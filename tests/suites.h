@@ -20,6 +20,9 @@ extern const dc_suite suite_cobertura;
 extern const dc_suite suite_sistema;
 extern const dc_suite suite_gdrom;
 
+/* El formato de los parametros del tile accelerator. Tampoco es un opcode. */
+extern const dc_suite suite_ta;
+
 /* La ventana de control P4 (docs/mmu-plan.md, fase 1). Tampoco es un opcode. */
 extern const dc_suite suite_mmu;
 

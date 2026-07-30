@@ -55,6 +55,15 @@ int volcar_framebuffer(const char * ruta);
    Ver el comentario en graficos.c. */
 int volcar_gl(const char * ruta);
 
+/* Cuantas escenas se rindieron y con cuantas tiras las ultimas. Lo llama
+   traza_resumen() al salir; solo dice algo con --traza-mem. */
+void traza_ta_resumen(void);
+
+/* Barra de titulo: el nombre de la imagen o del binario que se esta corriendo.
+   Hay que llamarla antes de screeninit(), que es quien la aplica. */
+extern	char	titulo_ventana[256];
+void titulo_poner(const char * ruta);
+
 /* Convertidor YUV del TA (0x10800000). Un bloque de 32 bytes; cuando se junta
    un macrobloque entero se convierte y se escribe en PVR_YUV_ADDR. */
 void pvr_yuv_bloque(void * datos);
@@ -81,7 +90,7 @@ void cb_fb_r_sof1(DWORD addr, void * p, size_t size);
 extern	SDL_Surface *screen;
 extern SDL_Surface *outputscreen;
 
-extern DWORD * ta_address_pointer;
+/* ta_address_pointer lo declara ta.h, que es donde vive. */
 
 // it is better to have ta_check split up into smaller functions
 
@@ -90,5 +99,6 @@ void	 doUserClip();
 void objectListSet();
 void taPolyModifier();
 void  taVertexHandler();
+void taSprite();
 
 #endif // _GRAFICOS_H

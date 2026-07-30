@@ -14,7 +14,7 @@
 #include "mmu.h"
 #include "wdt.h"
 #include "tmu.h"
-#include "syscontrol.h"		/* ta_procesar_bloque(), para el CH2 DMA */
+#include "ta.h"				/* ta_procesar_bloque(), para el CH2 DMA */
 
 
 #define DWREF(p) (*(DWORD *)(p))

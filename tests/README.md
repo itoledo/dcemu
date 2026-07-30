@@ -261,6 +261,16 @@ no son filas de `opcodes[]` --, asi que van con el prefijo `dc.` en CTest.
 | --- | --- | --- |
 | `sistema` | `test_sistema.c` | el handshake de PDTRA/PCTRA, la sintesis de una flash minima y la cuenta de segundos desde 1950 del RTC |
 | `gdrom` | `test_gdrom.c` | la maquina de estados de la lectora: fases del comando PACKET, los comandos SPI del arranque, la TOC, la lectura de sectores por PIO y por DMA, y el estado con y sin disco |
+| `ta` | `test_ta.c` | el formato de los parametros del tile accelerator: la tabla que cruza textura, tipo de color, volumen y ancho de UV para dar el tipo de parametro global y el de vertice, los tamanos de cada uno, y el rearmado de los que miden 64 bytes |
+
+La suite `ta` cubre una clase de error que no deja rastro. Un parametro de 64
+bytes llega en **dos** bloques de 32, uno por store queue, y despachar cada uno
+por separado hace que la segunda mitad se lea como palabra de control; cuando su
+primera palabra es un float que vale 0.0 el tipo sale 0, o sea fin de lista, y se
+cierra una lista que el guest nunca cerro. `la_segunda_mitad_en_cero_no_cierra_la_lista`
+es exactamente ese caso. El resto de la suite fija la tabla del manual casilla
+por casilla, que es donde un error se paga leyendo el vertice desde el
+desplazamiento equivocado.
 
 `dobles.c` crecio para servirlas: cuenta las interrupciones que levanta la
 lectora (normales y externas), simula la bandeja vacia con
