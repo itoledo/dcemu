@@ -202,6 +202,15 @@ served by `bios_read()`.
 `sistema_pdtra()`, the video cable detector handshake. Without it the boot ROM sleeps
 forever.
 
+`pvr_read()` has one too, and for the same kind of reason: **`0x005F74B0` is `SB_G1SYSM`, the
+G1 bus system-mode register, not a GD-ROM register**, even though it falls inside the
+`0x005F7400-0x005F74FF` block that `mem.c` hands to `gdrom.c` wholesale. It has to be caught
+before that dispatch. Its high nibble is the machine type and the low one the region, and a
+retail console answers zero in both (`G1_SYSM_RETAIL` in `sistema.h`) — the real region comes
+from the flash. With the value the drive used to return, `0x2422211F`, `hardware_sys_mode()`
+reported type 1, KOS concluded it was a Set5 devkit, and `spu_init()` cleared **8 MB** of sound
+RAM instead of 2 — so 6 MB of store-queue writes landed outside everything mapped.
+
 SH-4 on-chip registers (TMU, DMA, SCIF, INTC, ports) are plain pointers into the `regmem`
 block, bound once in `regmem_setup()` (`mem.c`) and declared `extern` in `sh4emu.h`. So
 `*TCNT0`, `*DMAOR`, `*IPRA` are both the emulated register and the guest-visible memory.
@@ -245,19 +254,33 @@ written and `glBlendFunc()` got an invalid enum — which GL ignores, leaving wh
 was set before. And vertex type 3 took its alpha from bits 23-16, the same field as red,
 instead of 31-24.
 
-**Still open:** KOS logs `pvr_prim: attempt to submit to unopened list` thousands of times
-per run. `taListEnd()` raises a list-completion interrupt only `if (pvr_registering != -1)`,
-i.e. only for a list that actually received a polygon — so a list KOS opens and closes empty
-never completes and its state machine stalls. Also note `pvr_registered` is `DWORD` in
-`graficos.c` but `extern int` in `intc.c`.
+**Two more that between them lost the whole `conio/*` family**, which draws one textured quad
+per character straight through `pvr_prim()`:
 
-`conio/*` is the demo family that hangs on this. It ends up in `thd_idle_task` with
-`run_queue` empty — *every* thread blocked, nothing runnable — which `--traza-mem` reports as
-a 12-instruction loop ending in `SLEEP`. Nothing is unemulated and the serial stops right
-after the maple scan, so it never reaches the point of logging anything. `libconio` links
-`pvr_wait_ready`, `pvr_scene_begin`, `pvr_list_begin`/`_finish` and `pvr_prim`, so the
-missing wakeup is a PVR completion. (It also links `bfont_draw`, so it was hitting the font
-lock too; that part is fixed.)
+- **Global parameters did not survive past the first strip.** On the PVR a polygon header sets
+  depth mode, culling, Z write, alpha, both blend factors and everything about the texture,
+  and those stay in effect until the *next* header. `taPolyModifier()` wrote them into whatever
+  `TriangleStrip[]` entry happened to be open, so a second strip under the same header started
+  from zero: `depthmode` came out `0`, which is not a valid enum, so `glDepthFunc()` was ignored
+  and the previous strip's value stuck — or `GL_NEVER`, which draws nothing. End-of-strip now
+  copies the finished entry into the new one; `index` and `count` refill themselves.
+- **Culling ignored the winding.** The PVR field has four values: 0 none, 1 "cull if small" (an
+  area threshold, which GL has no equivalent for), 2 cull negative area, 3 cull positive. Any
+  non-zero value was treated as `glCullFace(GL_BACK)` with GL's default `GL_CCW`. The TA hands
+  over screen-space coordinates with y downwards and `screeninit()`'s `glOrtho()` flips it, so
+  the winding GL sees is the opposite of the one the PVR assumes — and every quad conio drew
+  was culled. Modes 2 and 3 now set `glFrontFace()` explicitly.
+
+`taListEnd()` raising a list-completion interrupt only `if (pvr_registering != -1)` turned out
+**not** to be a problem in practice: `pvr_list_finish()` always submits a blank polygon header
+with the right list type before the end-of-list marker, precisely because opening a list and
+submitting nothing is a hardware error. The marker itself is 32 zero bytes, so its own list-type
+field is useless and `pvr_registering` is the only source. `--traza-mem` now prints the list
+state machine (`TA_ALLOC_CTRL`, `TA_LIST_INIT`, each end of list, `STARTRENDER`) and the GL state
+each strip goes out with, which is how both bugs above were found.
+
+Still open: KOS logs `pvr_prim: attempt to submit to unopened list` thousands of times per run in
+some demos. Also note `pvr_registered` is `DWORD` in `graficos.c` but `extern int` in `intc.c`.
 
 **`--traza-mem` reports TA activity** for the first three renders: strips, vertices,
 end-of-strip count, vertex types, and the min/max of the vertex coordinates. The TA receives
