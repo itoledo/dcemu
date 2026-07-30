@@ -71,7 +71,11 @@ RGB565 y ARGB4444.
 | --- | --- |
 | `pvr-yuv_converter-YUV420`, `pvr-yuv_converter-YUV422` | YUV422, y el convertidor YUV del TA |
 | `pvr-bumpmap` | formato BUMP |
-| `pvr-strided_texture` | el stride de textura solo se registra en el log, no se aplica |
+| `pvr-strided_texture` | **no es el stride.** La demo se mata sola en un `BRA` a sí misma a los 2,14 s de tiempo emulado, que es como KOS termina un `panic`, y para entonces solo ha dibujado un cuadro. Falta encontrar qué la mata |
+
+El **stride sí está implementado** desde el 31 de julio de 2026 (`get_texture()` copia fila a
+fila cuando `TEXT_CONTROL` dice que el ancho en memoria no es el declarado), pero **queda sin
+verificar**: la única demo que lo ejercita muere antes por lo de arriba.
 
 **Las tres de paleta ya funcionan** (31 de julio de 2026): `pvr-palette-4bpp` dibuja su degradado
 radial con las bandas de 16 niveles que corresponden a 4 bpp, `pvr-palette-8bpp` el mismo suave, y

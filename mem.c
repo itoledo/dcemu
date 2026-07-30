@@ -1803,11 +1803,16 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		case 0xa05f80e4: // TEXTURESTRIDE (3D) (Width of rectangular texture)
+		case 0xa05f80e4: // TEXT_CONTROL: ancho de las texturas rectangulares
 		{
-			long valor = dw & 0x1F; // 5 bits
+			/* Los cinco bits bajos son el ancho en unidades de 32 texels. El
+			   log leia dw *antes* de cargarlo del puntero, asi que reportaba el
+			   valor de la escritura anterior. El respaldo del bloque de control
+			   ya lo guarda; get_texture() lo lee de ahi. */
 			dw = *(DWORD *) p;
-			logxmsg(LOG_PVR, "pvr_write: TEXTURESTRIDE [SPG_WIDTH] : %02x %d\n", valor, valor);
+
+			logxmsg(LOG_PVR, "pvr_write: TEXT_CONTROL: stride %d texels\n",
+				(int) ((dw & 0x1F) * 32));
 		}
 		break;
 

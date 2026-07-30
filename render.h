@@ -122,6 +122,10 @@ typedef struct TriangleStripInfo
 		   los bancos de la RAM de paleta usan. Ver get_texture(). */
 		DWORD pvr_texture_bpp;
 		DWORD pvr_texture_paleta;
+
+		/* Textura rectangular: el ancho en memoria sale de TEXT_CONTROL y no
+		   del tamano declarado. 0 si no la usa. */
+		DWORD pvr_texture_stride;
 	}texture;
 	DWORD index;
 }TSI;

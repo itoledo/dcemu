@@ -213,8 +213,16 @@ prints them next to the bytes it read out of video RAM.
 
 `taPolyModifier()` maps the texture control word's `pixelformat` onto a GL format triple;
 `get_texture()` untwiddles and uploads. ARGB1555, RGB565, ARGB4444 and the two palette
-formats are handled, and VQ has its own path. YUV422, BUMP and texture stride still fall
+formats are handled, and VQ and stride have their own paths. YUV422 and BUMP still fall
 through `CTT()`, which leaves the triple at -1.
+
+**Stride** (bit 25) means the rows in memory are `TEXT_CONTROL & 0x1F` × 32 texels wide
+rather than the declared `usize` — it is how a non-power-of-two texture is stored, and the
+declared size is rounded up (640×480 is submitted as 1024×512). `get_texture()` copies row by
+row; handing GL the raw block skews the image a little further on every row. **This path is
+implemented but not verified by any demo**: `pvr-strided_texture` dies in KOS's own
+`BRA` -to-itself at 2.14 s of emulated time, before the stride matters. Whatever kills it is
+a separate bug.
 
 **The palette formats do not fit the rest of the pipeline, in three ways** (`decodificar_paleta()`):
 

@@ -280,6 +280,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	int i, j;
 	DWORD bpp    = TriangleStrip[strip].texture.pvr_texture_bpp;
 	DWORD paleta = TriangleStrip[strip].texture.pvr_texture_paleta;
+	DWORD stride = TriangleStrip[strip].texture.pvr_texture_stride;
 
 	if (cur_tex_count > 0)
     	for (i = 0; i < cur_tex_count; i++)
@@ -372,6 +373,47 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
     		}
 		}
     	cached_textures[cur_tex_count].twiddled = true;
+	}
+	else
+	if (stride != 0 && stride != (DWORD) usize)
+	{
+		/*
+			Textura rectangular: en memoria las filas miden `stride` texels y no
+			`usize`, asi que entregarle el bloque crudo a GL sale con la imagen
+			corrida un poco mas en cada fila. Se copia fila a fila.
+
+			Nunca va twiddled -- el bit de stride y el de orden de barrido son
+			excluyentes en el chip --, y si el stride es menor que el ancho
+			declarado lo que sobra queda en cero en vez de leerse de la fila
+			siguiente.
+		*/
+		Uint16 *	d;
+		int			copiar = (stride < (DWORD) usize) ? (int) stride : usize;
+
+		cached_textures[cur_tex_count].data =
+			(void *) calloc((size_t) usize * vsize, sizeof(Uint16));
+
+		d = cached_textures[cur_tex_count].data;
+
+		if (d != NULL)
+			for (i = 0; i < vsize; i++)
+				memcpy(&d[(size_t) i * usize], &v[(size_t) i * stride],
+					(size_t) copiar * sizeof(Uint16));
+
+		cached_textures[cur_tex_count].twiddled = true;	/* hay que liberarlo */
+
+		if (traza_activa)
+		{
+			static DWORD ultimo = 0;
+
+			if (stride != ultimo)
+			{
+				ultimo = stride;
+				fprintf(stderr, "traza: textura con stride %lu en %dx%d,"
+					" se copian %d por fila\n",
+					(unsigned long) stride, usize, vsize, copiar);
+			}
+		}
 	}
 	else
 	{
@@ -510,7 +552,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 			for (t = 0; t < strip_count && t < 4; t++)
 			{
 				fprintf(stderr, "traza:   tira %d: tipo=%d idx=%d n=%d alpha=%d "
-					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d fmt=%04x\n",
+					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d fmt=%04x "
+					"bpp=%d stride=%d\n",
 					t, (int) TriangleStrip[t].type, (int) TriangleStrip[t].index,
 					(int) TriangleStrip[t].count, (int) TriangleStrip[t].alpha,
 					(unsigned) TriangleStrip[t].pvr_srcblend,
@@ -522,7 +565,9 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 					(int) TriangleStrip[t].texture.pvr_texture_size_vsize,
 					(int) TriangleStrip[t].texture.twiddled,
 					(int) TriangleStrip[t].texture.vq,
-					(unsigned) TriangleStrip[t].texture.pvr_texture_pixelpack);
+					(unsigned) TriangleStrip[t].texture.pvr_texture_pixelpack,
+					(int) TriangleStrip[t].texture.pvr_texture_bpp,
+					(int) TriangleStrip[t].texture.pvr_texture_stride);
 
 				/* Con que coordenadas de textura se muestrea. */
 				{
@@ -1151,6 +1196,28 @@ void taPolyModifier()
 		}
 		
 	
+		/*
+			Textura rectangular. El bit dice "el ancho en memoria no es el
+			declarado, sino el de TEXT_CONTROL (0x005F80E4), en unidades de 32
+			texels"; se usa para texturas cuyo ancho no es potencia de dos. Solo
+			se logueaba.
+
+			En los formatos indexados ese mismo bit 25 es parte del selector de
+			banco, asi que ahi no significa nada.
+		*/
+		if (TriangleStrip[strip_count].texture.pvr_texture_bpp)
+			TriangleStrip[strip_count].texture.pvr_texture_stride = 0;
+		else
+		{
+			DWORD control = 0;
+
+			if (TexInfo.registers.stride)
+				memread_fisico(0xA05F80E4, &control, 4);
+
+			TriangleStrip[strip_count].texture.pvr_texture_stride =
+				(control & 0x1F) * 32;
+		}
+
 		if (TexInfo.registers.stride)
 			logxmsg(LOG_PVR, "texture: stride\n");
 		else
