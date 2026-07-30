@@ -6,13 +6,16 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **95** binarios |
-| Fallan por algo que falta emular | **12** |
+| Funcionan | **92** binarios |
+| Fallan por algo que falta emular | **15** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
-El 1 de agosto de 2026 pasaron cuatro más: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
-`pvr-cheap_shadow` al implementar los once tipos de vértice que faltaban y el rearmado de los
-parámetros de 64 bytes, y `pvr-pvrline`, que **nunca estuvo roto** — ver más abajo.
+El 1 de agosto de 2026 pasó uno: `pvr-pvrline`, que **nunca estuvo roto** — ver más abajo.
+
+Las tres de volumen modificador siguen contadas como fallando, pero cambiaron de sitio dentro de
+esa lista: `pvr-modifier_volume` y `pvr-modifier_volume_tex` pasaron de pantalla negra a dibujar su
+escena entera, y a las tres les falta ahora **solo** el efecto del volumen, no la geometría. Es una
+distinción que importa para saber qué queda por hacer: lo que falta es el recorte, no el decodificador.
 
 El 31 de julio de 2026 pasaron siete de la segunda fila a la primera: `parallax-serpent_dma`
 con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las dos de
@@ -133,10 +136,11 @@ bits. El selector de banco va en el propio texture control word, encima de los b
 demás formatos son «sin usar», «stride» y «scan order»; por eso estas texturas van siempre
 twiddled.
 
-### Otras rutas del PVR (2)
+### Otras rutas del PVR (5)
 
 | demo | qué falta |
 | --- | --- |
+| `pvr-modifier_volume`, `pvr-modifier_volume_tex`, `pvr-cheap_shadow` | el **efecto** del volumen modificador. La geometría ya se dibuja entera; falta el recorte, que en OpenGL de función fija pide el buffer de plantilla |
 | `pvr-fb_tex`, `pvr-pvr_rtt_sized` | render a textura (`pvr_scene_begin_rtt`). La geometría sí llega y se dibuja; lo que falta es el contenido de la textura |
 
 **`pvr-pvrline` nunca necesitó primitivas de línea.** El PVR no las tiene y la demo tampoco las
@@ -146,9 +150,15 @@ arranca con **una** línea —`linecount = 1`—, así que un BMP con 632 píxel
 exactamente lo que corresponde. Esta fila era una conjetura del inventario, no una medición.
 
 **Las tres de volumen modificador ya dibujan** (1 de agosto de 2026), por lo que se cuenta en la
-sección de tipos de vértice. Lo que todavía no está es el efecto del volumen: `modifier_volume`
-pinta sus cuadrados azules pero no el recorte que los vuelve verdes por dentro, y `cheap_shadow`
-no oscurece. Para eso hace falta el buffer de plantilla, y es trabajo aparte.
+sección de tipos de vértice. `modifier_volume` pinta sus cuadrados azules —antes salía todo
+negro— y `modifier_volume_tex` su escena texturada. Lo que falta es el efecto: los vértices de dos
+volúmenes traen **dos** juegos de color y de UV, el 0 para fuera del volumen y el 1 para dentro, y
+sin recorte se usa siempre el 0. Así que `modifier_volume` no vuelve verdes los cuadrados por
+dentro y `cheap_shadow` no oscurece. `cheap_shadow` ya dibujaba antes de este cambio: sus polígonos
+son de tipo 0, porque el modo de sombra barata no necesita dos juegos de parámetros.
+
+`pvr-modifier_volume_zclip` también dibujaba antes, y por la misma razón: su geometría es casi toda
+de tipos ya implementados (`[0]=15 [3]=18` contra un solo vértice de tipo 9).
 
 **`parallax-serpent_dma` ya funciona** (31 de julio de 2026). La sospecha de este documento era
 correcta: entregaba la geometría por el CH2 DMA (`pvr_dma_load_ta`), que no estaba emulado —
