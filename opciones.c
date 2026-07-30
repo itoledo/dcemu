@@ -5,6 +5,7 @@
 *****************************************************************************/
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "opciones.h"
@@ -19,9 +20,17 @@ struct opciones_t opciones =
 	0,
 #endif
 	0,					/* traza_mem */
+	0,					/* limitar */
+	0,					/* salir_tras */
 	CABLE_VGA,
 	BANDEJA_AUTO,
-	NULL
+	NULL,
+	0,					/* watchpoint: apagado */
+	4,					/* watchpoint_tam */
+	{ { 0, 0 } },		/* desensamblar */
+	0,
+	{ { 0, 0 } },		/* volcar */
+	0
 };
 
 void opciones_ayuda(const char * programa)
@@ -38,6 +47,15 @@ void opciones_ayuda(const char * programa)
 		"                        emular y donde se traba el PC.\n"
 		"  --limitar             no dejar que la emulacion corra mas rapido que\n"
 		"                        una consola. Solo frena, nunca acelera.\n"
+		"  --watchpoint=D[:T]    informa cada escritura que toque la direccion D\n"
+		"                        (hexadecimal), de T bytes (1, 2 o 4; 4 por\n"
+		"                        omision), con el PC y el PR que la hicieron.\n"
+		"  --salir-tras=N        sale solo a los N segundos de tiempo emulado,\n"
+		"                        por el mismo camino que cerrar la ventana.\n"
+		"  --desensamblar=D:N    al salir, desensambla N instrucciones desde la\n"
+		"                        direccion D (hexadecimal). Repetible.\n"
+		"  --volcar=D:N          al salir, vuelca N bytes desde D en hexadecimal.\n"
+		"                        Repetible.\n"
 		"  --hacks-bios          fuerza los hooks de syscall de la BIOS.\n"
 		"  --sin-hacks-bios      los desactiva (obligatorio para arrancar de verdad\n"
 		"                        por el boot ROM: los hooks pisan la RAM baja).\n"
@@ -65,6 +83,48 @@ static int parsear_bandeja(const char * valor)
 	if (strcmp(valor, "abierta") == 0)	return BANDEJA_ABIERTA;
 
 	return -1;
+}
+
+/*
+	"D:N" o "D" -- direccion y cantidad, las dos en hexadecimal porque todo lo
+	que se mira en el arranque son direcciones. Sin ":N" se usa el valor por
+	omision que pase el llamador.
+*/
+static int parsear_rango(const char * valor, struct rango_t * rangos, int * n,
+	unsigned long por_omision)
+{
+	char *			fin;
+	unsigned long	direccion, cantidad = por_omision;
+
+	if (*n >= RANGOS_MAX)
+	{
+		fprintf(stderr, "no caben mas de %d rangos\n", RANGOS_MAX);
+		return 1;
+	}
+
+	direccion = strtoul(valor, &fin, 16);
+
+	if (fin == valor)
+		return 1;
+
+	if (*fin == ':')
+	{
+		const char * resto = fin + 1;
+
+		cantidad = strtoul(resto, &fin, 16);
+
+		if (fin == resto)
+			return 1;
+	}
+
+	if (*fin != '\0' || cantidad == 0)
+		return 1;
+
+	rangos[*n].direccion = direccion;
+	rangos[*n].cantidad  = cantidad;
+	(*n)++;
+
+	return 0;
 }
 
 int opciones_parsear(int argc, char ** argv)
@@ -98,6 +158,55 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-hacks-bios") == 0)
 		{
 			opciones.hacks_bios = 0;
+		}
+		else
+		if (strncmp(arg, "--watchpoint=", 13) == 0)
+		{
+			struct rango_t	r[1];
+			int				n = 0;
+
+			/* Misma sintaxis "D:N" que los rangos, con el tamano en lugar de
+			   la cantidad: 1, 2 o 4 bytes. */
+			if (parsear_rango(&arg[13], r, &n, 4) != 0 ||
+				(r[0].cantidad != 1 && r[0].cantidad != 2 && r[0].cantidad != 4))
+			{
+				fprintf(stderr, "watchpoint invalido: %s (DIR[:1|2|4])\n", &arg[13]);
+				return 1;
+			}
+
+			opciones.watchpoint     = r[0].direccion;
+			opciones.watchpoint_tam = r[0].cantidad;
+		}
+		else
+		if (strncmp(arg, "--salir-tras=", 13) == 0)
+		{
+			opciones.salir_tras = atoi(&arg[13]);
+
+			if (opciones.salir_tras <= 0)
+			{
+				fprintf(stderr, "segundos invalidos: %s\n", &arg[13]);
+				return 1;
+			}
+		}
+		else
+		if (strncmp(arg, "--desensamblar=", 15) == 0)
+		{
+			if (parsear_rango(&arg[15], opciones.desensamblar,
+					&opciones.desensamblar_n, 32) != 0)
+			{
+				fprintf(stderr, "rango invalido: %s\n", &arg[15]);
+				return 1;
+			}
+		}
+		else
+		if (strncmp(arg, "--volcar=", 9) == 0)
+		{
+			if (parsear_rango(&arg[9], opciones.volcar,
+					&opciones.volcar_n, 0x100) != 0)
+			{
+				fprintf(stderr, "rango invalido: %s\n", &arg[9]);
+				return 1;
+			}
 		}
 		else
 		if (strncmp(arg, "--cable=", 8) == 0)

@@ -14,6 +14,7 @@
 #include "mmu.h"
 #include "wdt.h"
 #include "tmu.h"
+#include "syscontrol.h"		/* ta_procesar_bloque(), para el CH2 DMA */
 
 
 #define DWREF(p) (*(DWORD *)(p))
@@ -591,6 +592,26 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		/*** CH2 DMA. SB_C2DST siempre se lee 0: la transferencia se hace
+		     entera dentro de la escritura que la arranca. ***/
+		case 0xa05f6800: // SB_C2DSTAT
+		{
+			memcpy(p, &SB_C2DSTAT, size);
+		}
+		break;
+
+		case 0xa05f6804: // SB_C2DLEN
+		{
+			memcpy(p, &SB_C2DLEN, size);
+		}
+		break;
+
+		case 0xa05f6808: // SB_C2DST
+		{
+			memcpy(p, &SB_C2DST, size);
+		}
+		break;
+
 		case 0xa05f6900: // Pending Interrupts 1
 		{
 			memcpy(p, &ASIC_ACK_A, size);
@@ -953,6 +974,73 @@ void ta_write(unsigned long direccion, void * p, size_t size)
 	memcpy(&ta_mem[direccion & 0x3F], p, size);
 }
 
+/*
+	CH2 DMA -- el canal por el que el guest sube geometria y texturas al TA sin
+	pasar por las store queues. Lo conduce el Holly, no el DMAC: el SH-4 solo
+	pone el origen en SAR2 y arma CHCR2 en modo de peticion externa, y el
+	arranque real es escribir 1 en SB_C2DST. Por eso dma_check() no lo ve --
+	solo atiende los canales en auto-request-- y por eso el canal se quedaba
+	colgado sin que nada lo reportara.
+
+	Es lo que detenia el arranque por BIOS: el boot ROM anota la transferencia
+	en su tabla de descriptores con los bits 0-1 en "en curso" y espera a que
+	los baje el fin de DMA, que no llegaba nunca. Ver docs/bios-boot-plan.md.
+
+	La transferencia se hace entera y de una vez, como el resto de los DMA de
+	dcemu (Maple, GD-ROM). El destino manda:
+
+	  - 0x10000000-0x107FFFFF es la FIFO de poligonos: cada bloque de 32 bytes
+	    va al decodificador del TA, igual que si lo hubiera vaciado una store
+	    queue;
+	  - cualquier otro destino (FIFO de texturas en 0x11xxxxxx, RAM de video)
+	    es una copia y ya.
+*/
+static void ch2_dma_ejecutar(void)
+{
+	DWORD	origen  = *SAR2;
+	DWORD	destino = SB_C2DSTAT;
+	DWORD	largo   = SB_C2DLEN;
+	DWORD	i;
+
+	if (traza_activa)
+		fprintf(stderr, "traza: CH2 DMA %08lx -> %08lx, %lu bytes\n",
+			(unsigned long) origen, (unsigned long) destino,
+			(unsigned long) largo);
+
+	if ((destino & 0xFF800000) == 0x10000000)
+	{
+		for (i = 0; i + 32 <= largo; i += 32)
+		{
+			BYTE bloque[32];
+
+			memread_fisico(origen + i, bloque, 32);
+			ta_procesar_bloque(bloque);
+		}
+	}
+	else
+	{
+		for (i = 0; i + 4 <= largo; i += 4)
+		{
+			DWORD palabra;
+
+			memread_fisico(origen + i, &palabra, 4);
+			memwrite_fisico(destino + i, &palabra, 4);
+		}
+	}
+
+	/* Como la deja el hardware al terminar: el canal libre, el largo consumido
+	   y el origen avanzado. El DMAC tambien marca su fin -- el guest puede
+	   estar mirando CHCR2.TE en vez de la interrupcion. */
+	*SAR2    = origen + largo;
+	*DMATCR2 = 0;
+	*CHCR2  |= 0x2;			/* TE: transfer end */
+
+	SB_C2DLEN = 0;
+	SB_C2DST  = 0;
+
+	intc_add(ASIC_EVT_PVR_DMA, 0);
+}
+
 void pvr_write(unsigned long direccion, void * p, size_t size)
 {
 	DWORD dw;
@@ -989,10 +1077,42 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
-		case 0xa05f6900: // Pending Interrupts 1
+		/*** CH2 DMA: la subida al TA. Ver ch2_dma_ejecutar(). ***/
+		case 0xa05f6800: // SB_C2DSTAT
+		{
+			memcpy(&SB_C2DSTAT, p, size);
+		}
+		break;
+
+		case 0xa05f6804: // SB_C2DLEN
+		{
+			memcpy(&SB_C2DLEN, p, size);
+		}
+		break;
+
+		case 0xa05f6808: // SB_C2DST
+		{
+			memcpy(&dw, p, size);
+
+			/* Escribir 0 con una transferencia en curso la aborta; aca nunca
+			   hay una en curso, porque se hacen enteras. */
+			if (dw & 1)
+				ch2_dma_ejecutar();
+			else
+				SB_C2DST = 0;
+		}
+		break;
+
+		case 0xa05f6900: // SB_ISTNRM, acuse de los eventos normales
 		{
 			memcpy(&dw, p, size);
 			REMOVE_BIT(ASIC_ACK_A, dw);
+
+			/* El acuse del guest es lo unico que baja un evento pendiente.
+			   check_ints() ya no los tira por su cuenta cuando la mascara no
+			   los deja pasar; ver el comentario en intc.c. */
+			REMOVE_BIT(intc_queuemask, dw);
+
 			logxmsg(LOG_INTC, "pvr_write: ASIC_ACK_A: quitando bits %x, quedamos en %x\r\n", dw, ASIC_ACK_A);
 		}
 		break;
@@ -1098,24 +1218,34 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 		
-		case 0xa05f6c10: // MAPLE_RESET2
+		case 0xa05f6c10: // SB_MDTSEL, seleccion de disparo
 		{
 			memcpy(&MAPLE_RESET2, p, size);
 //			logmsg( "pvr_write: MAPLE_RESET2: %x\r\n", MAPLE_RESET2);
+
+			if (traza_activa)
+				fprintf(stderr, "traza: maple SB_MDTSEL=%08lx (%s)\n",
+					(unsigned long) MAPLE_RESET2,
+					(MAPLE_RESET2 & 1) ? "disparo por hardware" : "por software");
 		}
 		break;
 
-		case 0xa05f6c14: // MAPLE_ENABLE
+		case 0xa05f6c14: // SB_MDEN, habilitacion del DMA
 		{
 			memcpy(&MAPLE_ENABLE, p, size);
 //			logmsg( "pvr_write: MAPLE_ENABLE: %x\r\n", MAPLE_ENABLE);
+
+			if (traza_activa)
+				fprintf(stderr, "traza: maple SB_MDEN=%08lx\n",
+					(unsigned long) MAPLE_ENABLE);
 		}
 		break;
 
-		case 0xa05f6c18: // MAPLE_STATE
+		case 0xa05f6c18: // SB_MDST, arranque del DMA
 		{
 			logmsg("MAPLE_STATE\r\n");
 			memcpy(&MAPLE_STATE, p, size);
+
 			if (MAPLE_STATE & 0x1)
 			{
 				DWORD td1 = 0, td2, curaddr;
@@ -1135,9 +1265,36 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					   una instruccion: nada de esto pasa por la MMU. */
 					memread_fisico(curaddr,  &td1, sizeof(DWORD));
 					memread_fisico(curaddr + 4, &td2, sizeof(DWORD));
-					if (td1 == 0)
+					/*
+						Cortar por la direccion de respuesta y no por el
+						descriptor.
+
+						El descriptor tiene la longitud en los bits 0-7, el
+						patron en 8-15, el puerto en 16-17 y el fin de lista en
+						el 31; un marco de una sola palabra al puerto A que no
+						sea el ultimo de la lista los deja los cuatro en cero,
+						o sea que **cero es un descriptor perfectamente valido**.
+						El chequeo era "td1 == 0 -> tabla mal puesta", y por eso
+						el boot ROM no encontraba nunca el mando: su primer
+						sondeo es exactamente eso, un Device Request al puerto A.
+						KOS nunca lo delata porque siempre marca la ultima
+						transferencia y sus listas de un elemento dan
+						0x80000000.
+
+						Lo que si distingue una tabla sin inicializar es la
+						direccion de respuesta: el guest la pone siempre en RAM
+						del sistema. Sin esta guarda, una tabla en cero da mil
+						vueltas escribiendo "no hay nada" en direcciones
+						arbitrarias.
+					*/
+					if ((td2 & 0x1F000000) != 0x0C000000)
 					{
 						logmsg( "pvr_write: MAPLE_DMAADDR: dir %x erronea\r\n", MAPLE_DMAADDR);
+
+						if (traza_activa)
+							fprintf(stderr, "traza: maple respuesta a %08lx, que no es"
+								" RAM: se corta la lista\n", (unsigned long) td2);
+
 						return;
 					}
 //					logmsg( "le�dos td1:%x, td2:%x\r\n", td1, td2);
@@ -1173,8 +1330,28 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 //						logmsg( "adit.w.: %x\r\n", (paquete[0] >> 24) & 0xFF);
 						recadr = (paquete[0] >> 8) & 0xFF;
 						sendadr = (paquete[0] >> 16) & 0xFF;
-						
+
 						logmsg("recadr:%x, sendadr:%x\r\n", recadr, sendadr);
+
+						/* Quien pregunta que, y a quien: una vez por cada par
+						   (puerto, comando). Sin deduplicar son ~77 lineas por
+						   segundo de tiempo emulado en cuanto el guest empieza
+						   a leer el mando. */
+						if (traza_activa)
+						{
+							static unsigned char vistos[4][32];
+							unsigned puerto = (td1 >> 16) & 0x3;
+							unsigned cmd    = paquete[0] & 0xFF;
+
+							if (!(vistos[puerto][cmd >> 3] & (1 << (cmd & 7))))
+							{
+								vistos[puerto][cmd >> 3] |= (unsigned char) (1 << (cmd & 7));
+
+								fprintf(stderr, "traza: maple puerto %u comando %02x"
+									" para %02x de %02x, %d palabras\n",
+									puerto, cmd, recadr, sendadr, tam);
+							}
+						}
 
 						if (recadr != 0x20)
 						{
@@ -1185,17 +1362,35 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						else
 						if ((paquete[0] & 0xFF) == 1) // Request Device Info
 						{
-							// tenemos que guardar el deviceinfo!
+							/*
+								El descriptor de un mando HKT-7700 de serie.
+
+								Estaba casi entero en cero, y eso no es
+								inofensivo: function_data[0] es el que dice
+								**que botones y ejes tiene** el mando, y el boot
+								ROM lo mira. Los nombres van rellenos con
+								espacios hasta el largo del campo, como en el
+								bus -- no terminados en NUL --, asi que se
+								arranca de un memset y se copia sin el cero.
+							*/
+							memset(&devinfo, 0, sizeof(devinfo));
+
 							devinfo.func = (1 << 24); // controlador
-							devinfo.function_data[0] = 0;
-							devinfo.function_data[1] = 0;
-							devinfo.function_data[2] = 0;
-							devinfo.area_code = 0;
+							devinfo.function_data[0] = 0xFE060F00;
+							devinfo.area_code = 0xFF;
 							devinfo.connector_direction = 0;
-							strcpy(devinfo.product_name, "Controlador DC");
-							strcpy(devinfo.product_license, "SEGA");
-							devinfo.standby_power = 0;
-							devinfo.max_power = 0;
+
+							memset(devinfo.product_name, ' ', sizeof(devinfo.product_name));
+							memcpy(devinfo.product_name, "Dreamcast Controller",
+								strlen("Dreamcast Controller"));
+
+							memset(devinfo.product_license, ' ', sizeof(devinfo.product_license));
+							memcpy(devinfo.product_license,
+								"Produced By or Under License From SEGA ENTERPRISES,LTD.",
+								strlen("Produced By or Under License From SEGA ENTERPRISES,LTD."));
+
+							devinfo.standby_power = 0x01AE;
+							devinfo.max_power = 0x01F4;
 							// a hacer el paquete de respuesta
 							paquete[0] = 0x05 | // device info (response)
 								((sendadr << 8) & 0xFF00) |
@@ -1213,6 +1408,21 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							cont_cond_t ct;
 							
 							ct.buttons = joystick; // CONT_START
+
+							/* Solo cuando cambia: si no, son ~77 lineas por
+							   segundo de tiempo emulado. */
+							if (traza_activa)
+							{
+								static WORD ultimo = 0xFFFF;
+
+								if (joystick != ultimo)
+								{
+									fprintf(stderr, "traza: maple botones %04x\n",
+										(unsigned) joystick);
+									ultimo = joystick;
+								}
+							}
+
 							ct.rtrig = rtrig;
 							ct.ltrig = ltrig;
 							ct.joyx = joyx;
@@ -1235,6 +1445,10 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						else
 						{
 							logmsg("comando MAPLE no implementado: %x\r\n", paquete[0]);
+
+							if (traza_activa)
+								fprintf(stderr, "traza: maple comando %02lx sin emular\n",
+									(unsigned long) (paquete[0] & 0xFF));
 						}
 						intc_add(ASIC_EVT_MAPLE_DMA, 0);
 						free(paquete);
@@ -1247,6 +1461,13 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					curaddr += ((td1 & 0xFF) + 1) * 4 + 8; // para que se salte el descriptor + el paquete
 					i++;
 				}
+
+				/* La transferencia se hizo entera aca mismo, asi que el canal
+				   ya esta libre. Antes el bit se bajaba en la *lectura* del
+				   registro, que hacia que la primera consulta viera un DMA en
+				   curso que no existia. */
+				REMOVE_BIT(MAPLE_STATE, 0x1);
+
 				maple_dma = true;
 			}
 			else

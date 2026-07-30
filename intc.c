@@ -506,7 +506,24 @@ void check_ints()
       	return;
 	}
 
-	REMOVE_BIT(intc_queuemask,ASIC_ACK_A);
+	/*
+		Aca estaba REMOVE_BIT(intc_queuemask, ASIC_ACK_A), o sea: si en este
+		instante ninguna de las tres mascaras cubria el evento, se tiraba.
+
+		En el chip no funciona asi. El bit de SB_ISTNRM queda puesto hasta que
+		el guest lo acusa escribiendo el registro, y si habilita la mascara
+		despues la interrupcion llega igual. Es el mismo error que tenian los
+		temporizadores antes de intc_revisar_sh4() -- ver docs/clock-plan.md --,
+		solo que del lado del ASIC, y lo que se pierde asi no deja rastro.
+
+		Lo que si lo delata: el boot ROM habilita el DMA del Maple, lo arranca y
+		espera el fin por interrupcion. La habilita despues de encolarla, asi
+		que la perdia siempre y no volvia a sondear el bus nunca mas -- por eso
+		llegaba a su pantalla pero no veia el mando.
+
+		Ahora el bit se queda pendiente y lo limpia el guest, en el caso
+		SB_ISTNRM de pvr_write().
+	*/
 
 	/* Registro externo. La lectora avisa el fin de comando por aca. */
 	if (intc_queuemask_ext == 0)

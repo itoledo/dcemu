@@ -42,16 +42,17 @@ void taVertexHandler()	{ dobles_vertex_handler++; }
    SDL --, y en las pruebas la traza estorbaria de todos modos. */
 int traza_activa = 0;
 
-/* El gancho de mem.h llama a esto cuando WATCHPOINT esta encendido en
-   options.h. traza.c no se enlaza aca, asi que el doble lo calla: encender el
-   watchpoint no tiene que romper la compilacion de las pruebas. */
-#ifdef WATCHPOINT
+/* El gancho de mem.h consulta watchpoint_dir en cada escritura y solo llama si
+   no es cero. traza.c no se enlaza aca, asi que el doble lo deja apagado; la
+   funcion tiene que existir igual porque la macro la nombra. */
+unsigned long	watchpoint_dir = 0;
+size_t			watchpoint_tam = 4;
+
 void watchpoint_escritura(unsigned long direccion, size_t tam)
 {
 	(void) direccion;
 	(void) tam;
 }
-#endif
 
 /* --- intc.c -------------------------------------------------------------- */
 

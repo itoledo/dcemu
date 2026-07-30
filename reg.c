@@ -18,6 +18,10 @@ DWORD	ASIC_ACK_C		= 0x0;	// 0xa05f6908
 DWORD	SB_PDTNRM		= 0x0;	//	(0x005F 6940)	PVR-DMA trigger select from normal interrupt
 DWORD	SB_PDTEXT		= 0x0;	//	(0x005F 6944)	PVR-DMA trigger select from external interrupt
 
+DWORD	SB_C2DSTAT		= 0x10000000;	//	(0x005F 6800)	destino: FIFO de poligonos
+DWORD	SB_C2DLEN		= 0x0;			//	(0x005F 6804)
+DWORD	SB_C2DST		= 0x0;			//	(0x005F 6808)
+
 // sync pulse generator
 DWORD	pvr_spg_vblank_int = 0x00280208;	// VGA 640x480
 DWORD	pvr_spg_load_vcount = 0x20C;		// VGA 640x480

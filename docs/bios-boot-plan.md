@@ -1,13 +1,13 @@
 # Plan: arrancar dcemu desde el boot ROM
 
-Estado: **fases 0 a 5 implementadas**. Julio de 2026, sobre `master` (`39d76c8`). El
+Estado: **fases 0 a 5 implementadas, hito B alcanzado**. Julio de 2026, sobre `master`. El
 inventario de lo que faltaba, y cómo se midió, está en [bios-boot.md](bios-boot.md); este
 documento es el orden de trabajo, y al final está lo que quedó andando y lo que no.
 
-Resumen: el emulador ya no se cuelga, corre el boot ROM real y le habla al GD-ROM hasta
-leer la TOC. El hito A está verificado. El B no se alcanza: la BIOS termina la conversación
-con la lectora y se queda dando vueltas en su propio planificador de tareas sin dibujar
-nada. Ver [Lo que quedó](#lo-que-quedó).
+Resumen: **la BIOS arranca**. Llega a su pantalla de fecha y hora, responde al mando, y
+desde el menú principal se entra a Play, File, Music y Settings. Ver
+[Tercera corrida](#tercera-corrida-el-ch2-dma-y-el-mando), que es lo último y lo que lo
+destrabó; las secciones anteriores son la historia de cómo se llegó.
 
 ## Objetivo
 
@@ -472,12 +472,14 @@ alrededor de `0x8C0D9C50`.
 **Direcciones sin emular: siguen siendo cero.** Y la pantalla sigue en negro: la traza
 reporta que el guest escribió 0 bytes al framebuffer, así que todavía no llega a dibujar.
 
-### Lo que no se alcanzó
+### Lo que no se alcanzó en esa corrida
 
 - **Hito B: no.** La BIOS no llega a su pantalla de «sin disco». Se detiene esperando que
   una variable de su máquina de estados llegue a un valor que no llega —ver la segunda
   corrida, más arriba—. Lo que sí quedó verificado es que la lectora contesta bien todo lo
   que le preguntan, y que no queda ninguna dirección sin emular.
+
+  *(Resuelto en la [tercera corrida](#tercera-corrida-el-ch2-dma-y-el-mando).)*
 - **Hito C: no.** Requiere una imagen que arranque en hardware, que no hay en el
   repositorio, y probablemente además la geometría de GD-ROM.
 - **Hito D: no**, y depende del C.
@@ -486,6 +488,131 @@ reporta que el guest escribió 0 bytes al framebuffer, así que todavía no lleg
   negro hoy. Vale la pena mirarlo aparte —probablemente sea la cadena
   sdl12-compat → sdl2-compat → SDL3 o el driver—, y mientras tanto F5 alcanza para
   verificar.
+
+  *(Falso: la ventana **sí** se ve. Una captura GDI del área de cliente muestra el
+  contenido correcto, y así se verificó toda la tercera corrida. Ver `CLAUDE.md`, sección
+  de captura de la ventana, y `docs/demos-kos.md`.)*
+
+## Tercera corrida: el CH2 DMA y el mando
+
+Aquí arranca la BIOS. Tres cosas, y las tres tenían la misma forma: **algo que el guest
+pide y que dcemu acepta sin hacer nada y sin decir nada**.
+
+### 1. El CH2 DMA, que es el que la tenía parada
+
+Donde quedó la segunda corrida —dando vueltas alrededor de `0x8C0D9C50`— la BIOS está en
+un bucle de espera. Desensamblando la rutina y volcando su tabla:
+
+```
+8c0d9cc6: BSR    8c0d9c2a      ; busca en la tabla de descriptores
+8c0d9cca: CMP/EQ #1, R0        ; 1 = "no queda ninguno en curso"
+8c0d9ccc: BF     8c0d9cc6      ; si queda alguno, vuelve a mirar. Para siempre
+```
+
+`0x8C0D9C2A` recorre 2 grupos de 8 descriptores de 32 bytes desde `0x8C204D74` y devuelve 0
+en cuanto encuentra uno con los bits 0-1 de su palabra `+0x18` distintos de cero. Un
+descriptor tenía `+0x18 = 0x1A`, o sea el estado 2: **transferencia en curso**.
+
+El watchpoint sobre esa palabra dio el código que la pone en 2, y ahí estaba todo:
+
+```
+8c0d9a5e: MOV.L R0, @(6, R4)   ; estado = 2, "en curso"
+8c0d9a64: MOV.L R3, @R0        ; R0 = 0xFFA00020 -> SAR2 del DMAC
+8c0d9aa4: MOV.L R3, @R2        ; R2 = 0xA05F6800 -> SB_C2DSTAT, destino
+8c0d9aaa: MOV.L R0, @R3        ; R3 = 0xA05F6804 -> SB_C2DLEN,  0x4800 bytes
+8c0d9ab0: MOV.L R1, @R0        ; R0 = 0xA05F6808 -> SB_C2DST = 1, arranca
+```
+
+Es el **CH2 DMA**: el canal por el que el guest sube geometría y texturas al TA sin pasar
+por las store queues. Lo conduce el Holly, no el DMAC — el SH-4 solo pone el origen en
+`SAR2` y arma `CHCR2` en modo de petición externa —, así que `dma_check()` no lo ve: solo
+atiende los canales en auto-request, y con razón. Los tres registros no tenían caso en
+`pvr_write()`, caían en el respaldo de `control_mem` y se perdían en silencio.
+
+Emularlo son cuarenta líneas (`ch2_dma_ejecutar()` en `mem.c`). El destino manda: si cae en
+`0x10000000-0x107FFFFF` cada bloque de 32 bytes va al decodificador del TA —el mismo switch
+que usa `pref142()`, extraído a `ta_procesar_bloque()`—, y si no, es una copia. Al terminar
+deja `SB_C2DST` en 0, `DMATCR2` en 0, `CHCR2.TE` puesto, y levanta `ASIC_EVT_PVR_DMA`.
+
+**Con eso la BIOS pasa de un bucle infinito a renderizar 51 tiras por cuadro** y muestra su
+pantalla de fecha y hora, con el fondo del planeta. De paso arregla
+`parallax-serpent_dma`, que estaba en la lista de demos rotas por exactamente esto.
+
+### 2. El descriptor de Maple que valía cero
+
+Con la BIOS en pantalla, el mando no hacía nada: la traza mostraba que el DMA de Maple
+arrancaba y no procesaba ni una transferencia.
+
+El descriptor era `td1 = 0x00000000`, `td2 = 0x0C3688E0`, marco `0x00002001`. Y `mem.c`
+tenía:
+
+```c
+if (td1 == 0) { /* "SB_MDSTAR mal puesto" */ return; }
+```
+
+El descriptor tiene la longitud en los bits 0-7, el patrón en 8-15, el puerto en 16-17 y el
+fin de lista en el 31. **Un marco de una sola palabra al puerto A que no sea el último de
+la lista los deja los cuatro en cero**, así que cero es un descriptor perfectamente válido —
+y es justo el primer sondeo del boot ROM, un `Device Request` al puerto A. KOS nunca lo
+delata porque siempre marca la última transferencia y sus listas de un elemento dan
+`0x80000000`.
+
+Ahora se corta por la dirección de respuesta, que el guest pone siempre en RAM. De paso, el
+descriptor de dispositivo que contesta dcemu estaba casi entero en cero: `function_data[0]`
+—el campo que dice qué botones y ejes tiene el mando— y los nombres, que van rellenos con
+espacios y no terminados en NUL.
+
+### 3. El evento del ASIC que se descartaba
+
+Con el sondeo arreglado la BIOS preguntaba `Device Request` **dos veces en toda la corrida**
+y nunca `GetCondition`. Espera el fin del DMA por interrupción, y `check_ints()` terminaba
+con:
+
+```c
+REMOVE_BIT(intc_queuemask, ASIC_ACK_A);
+```
+
+es decir: si en ese instante ninguna de las tres máscaras cubría el evento, se tiraba. En el
+chip el bit de `SB_ISTNRM` queda puesto hasta que el guest lo acusa, y si habilita la
+máscara después la interrupción llega igual. **Es el mismo error que tenían los
+temporizadores** antes de `intc_revisar_sh4()` (ver [clock-plan.md](clock-plan.md)), solo
+que del lado del ASIC. El boot ROM habilita la máscara después de arrancar el DMA, así que
+perdía el fin de transferencia siempre y no volvía a sondear el bus nunca más.
+
+Ahora el bit se queda pendiente y lo limpia el guest al acusar en `SB_ISTNRM`. El sondeo
+pasa de 2 veces por corrida a 77 por segundo de tiempo emulado.
+
+### Hasta dónde llega
+
+Con `--bios` y sin imagen:
+
+1. Pantalla **Set Date/Clock**, con el fondo del planeta y el texto legible.
+2. El mando responde: las flechas mueven el cursor y cambian los campos.
+3. Confirmando en *Select* se entra al **menú principal** —Play, File, Music, Settings—
+   con la fecha del RTC del anfitrión en la barra superior.
+4. Los submenús funcionan: *Music* abre el reproductor de CD con el disco animado.
+
+O sea, **hito B alcanzado y algo más**: no es la pantalla de «sin disco», es la interfaz
+completa de la consola.
+
+**Hito C: sigue sin verificarse.** Hace falta una imagen que arranque en hardware, y sigue
+en pie lo de [El riesgo real](#el-riesgo-real) y la geometría de GD-ROM. La imagen de prueba
+del repositorio no tiene área de alta densidad: `iso.c` reporta *error al tratar de leer 7
+sectores desde sector 45150*.
+
+### Herramientas que hicieron falta
+
+Todo esto se midió con cuatro opciones nuevas, y ninguna existía al empezar:
+
+| opción | para qué |
+| --- | --- |
+| `--desensamblar=D:N` | leer el código del boot ROM, que vive en RAM y no está en `bios.bin` en la misma dirección |
+| `--volcar=D:N` | leer sus tablas — así se vio que el descriptor estaba en estado 2 |
+| `--salir-tras=N` | salir solo a los N segundos de tiempo **emulado**, por el mismo camino que cerrar la ventana, para que el desensamblado y el volcado alcancen a imprimirse. Matar el proceso desde afuera se los lleva por delante |
+| `--watchpoint=D[:T]` | era un `#define` y cada pregunta costaba recompilar el emulador entero |
+
+Y dos trazas nuevas bajo `--traza-mem`: el CH2 DMA (origen, destino y tamaño) y el Maple
+(selección de disparo, habilitación, y una línea por cada par puerto/comando).
 
 ### Lo que quedó afuera a propósito
 

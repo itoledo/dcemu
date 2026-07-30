@@ -6,9 +6,12 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **84** binarios (82 demos: `bfont` y `tunnel` están duplicados) |
-| Fallan por algo que falta emular | **23** |
+| Funcionan | **85** binarios (83 demos: `bfont` y `tunnel` están duplicados) |
+| Fallan por algo que falta emular | **22** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
+
+`parallax-serpent_dma` pasó de la segunda fila a la primera el 31 de julio de 2026, al emular
+el CH2 DMA; el resto del inventario es el del 30.
 
 ## Cómo se mide
 
@@ -55,17 +58,22 @@ RGB565 y ARGB4444.
 | `pvr-bumpmap` | formato BUMP |
 | `pvr-strided_texture` | el stride de textura solo se registra en el log, no se aplica |
 
-### Otras rutas del PVR (6)
+### Otras rutas del PVR (5)
 
 | demo | qué falta |
 | --- | --- |
 | `pvr-modifier_volume`, `pvr-modifier_volume_tex`, `pvr-cheap_shadow` | volúmenes modificadores. `taPolyModifier()` reconoce el tipo de lista pero no hay recorte por volumen |
 | `pvr-fb_tex`, `pvr-pvr_rtt_sized` | render a textura (`pvr_scene_begin_rtt`) |
 | `pvr-pvrline` | primitivas de línea |
-| `parallax-serpent_dma` | negro después de reservar los stacks. Probablemente el DMA del PVR hacia el TA (`pvr_dma_load_ta`), que es por donde esta demo entrega la geometría |
 
 `pvr-modifier_volume_zclip` sí dibuja, pero eso no dice que los volúmenes funcionen: lo que se ve
 puede ser la geometría sin recortar.
+
+**`parallax-serpent_dma` ya funciona** (31 de julio de 2026). La sospecha de este documento era
+correcta: entregaba la geometría por el CH2 DMA (`pvr_dma_load_ta`), que no estaba emulado —
+sus tres registros caían en el respaldo del bloque de control y se perdían en silencio. Dibuja
+la serpiente de esferas con su contador de cuadros. El mismo arreglo es el que hace arrancar la
+BIOS; ver [bios-boot-plan.md](bios-boot-plan.md).
 
 ### Sonido y AICA (7)
 
@@ -203,12 +211,12 @@ texto, por la razón que explica la sección de MMU: no es del emulador.
 corresponde es el patrón XOR y esperar Start. Su `flashrom_get_region: unknown code '00111'`
 viene del contenido de `bios/flash.bin`, no de un fallo del emulador.
 
-### Dibujan; la captura tiene contenido pero no se revisó una por una (33)
+### Dibujan; la captura tiene contenido pero no se revisó una por una (34)
 
 `2ndmix`, `cdrom-stream`, `cpp-clock`, `cpp-dcplib`, `filesystem-sd-mke2fs`,
 `libdream-320x240`, `libdream-640x480`, `libdream-keyboard`, `libdream-rgb888`, `lua-basic`,
 `mie-basic`, `parallax-delay_cube`, `parallax-font`, `parallax-raster_melt`,
-`parallax-rotocube`, `parallax-sinus`, `plasma`, `pthread-general`,
+`parallax-rotocube`, `parallax-serpent_dma`, `parallax-sinus`, `plasma`, `pthread-general`,
 `pvr-modifier_volume_zclip`, `pvr-plasma`, `pvr-pvrmark`, `pvr-pvrmark_strips`,
 `pvr-pvrmark_strips_direct`, `roto`, `rumble`, `sound-ghettoplay-vorbis`, `sound-hello-mp3`,
 `sound-hello-ogg`, `tsunami-banner`, `tsunami-genmenu`, `vmu-vmu_beep`, `vmu-vmu_game`,

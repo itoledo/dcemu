@@ -416,6 +416,21 @@ void main_loop(void)
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
 
+		// Salida automatica por tiempo emulado. Va aca, en el fin de frame, para
+		// que salga por el mismo camino que SDL_QUIT y traza_resumen() alcance a
+		// correr: matar el proceso desde afuera se lleva por delante el
+		// desensamblado y el volcado, que es justo lo que se fue a buscar.
+		//
+		// Es tiempo emulado y no real a proposito: asi dos corridas se detienen
+		// en el mismo punto del arranque aunque la maquina este mas cargada.
+		if (opciones.salir_tras > 0 &&
+			reloj_ms() >= (unsigned long long) opciones.salir_tras * 1000)
+		{
+			fprintf(stderr, "salida automatica a los %d s de tiempo emulado.\n",
+				opciones.salir_tras);
+			return;
+		}
+
 		// Fin de frame: el unico sitio donde tiene sentido frenar. Con --limitar,
 		// si el tiempo emulado se adelanto al real se duerme la diferencia. Solo
 		// frena: donde dcemu ya es mas lento que una consola no hace nada. Ver
@@ -633,6 +648,7 @@ void main_loop(void)
 					// Con la traza puesta, F5 sirve ademas para preguntar
 					// "donde esta el PC ahora mismo".
 					traza_volcar("a pedido (F5)");
+					traza_rangos();
 					break;
                     case SDLK_F2:
 					if(gui_visible == true) gui_visible=false;
@@ -884,6 +900,9 @@ int main(int argc, char *argv[])
 	}
 
 	traza_activa = opciones.traza_mem;
+
+	watchpoint_dir = opciones.watchpoint;
+	watchpoint_tam = (size_t) opciones.watchpoint_tam;
 
 	inicializar_logs();
 

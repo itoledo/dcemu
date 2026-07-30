@@ -26,6 +26,16 @@
 #define BANDEJA_VACIA		2
 #define BANDEJA_ABIERTA		3
 
+/* Cuantos rangos de --desensamblar/--volcar se aceptan. Cuatro alcanzan para
+   mirar una rutina, su llamador y las dos tablas que tocan. */
+#define RANGOS_MAX			8
+
+struct rango_t
+{
+	unsigned long	direccion;
+	unsigned long	cantidad;		/* instrucciones al desensamblar, bytes al volcar */
+};
+
 struct opciones_t
 {
 	int				arranque_bios;	/* 1: PC = 0xA0000000 en vez del bootstrap */
@@ -36,9 +46,25 @@ struct opciones_t
 	   nunca acelera, asi que en las partes donde dcemu ya es mas lento no hace
 	   nada. Ver docs/clock-plan.md, fase 4. */
 	int				limitar;
+
+	/* Segundos de tiempo *emulado* tras los cuales el emulador sale solo, por
+	   el mismo camino que cerrar la ventana. 0: no salir. */
+	int				salir_tras;
 	int				cable;			/* CABLE_* */
 	int				bandeja;		/* BANDEJA_* */
 	const char *	imagen;			/* .iso/.cue/.bin, o NULL */
+
+	/* Watchpoint de escritura: direccion (0 = apagado) y tamano en bytes.
+	   Ver options.h. */
+	unsigned long	watchpoint;
+	unsigned long	watchpoint_tam;
+
+	/* Rangos que se desensamblan y se vuelcan al salir. Son la forma de leer el
+	   codigo y las tablas del boot ROM, que viven en RAM y no en el archivo. */
+	struct rango_t	desensamblar[RANGOS_MAX];
+	int				desensamblar_n;
+	struct rango_t	volcar[RANGOS_MAX];
+	int				volcar_n;
 };
 
 extern struct opciones_t opciones;

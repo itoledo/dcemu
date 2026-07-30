@@ -60,28 +60,23 @@
 	direccion vigilada, con el PC y el PR que la hicieron y el valor que queda.
 
 	Es para responder "quien escribe esta variable", que es la pregunta que
-	aparece al depurar el arranque por BIOS. La direccion que quedo configurada
-	abajo es el caso con el que se estreno: el boot ROM se detenia esperando que
-	la palabra de 0x8C22FF94 valiera 6 y se quedaba en 5, y el watchpoint
-	llevo derecho a que faltaba el registro REVISION del PVR. La historia esta
-	en docs/bios-boot-plan.md.
+	aparece al depurar el arranque por BIOS. Se estreno con 0x8C22FF94: el boot
+	ROM se detenia esperando que esa palabra valiera 6 y se quedaba en 5, y el
+	watchpoint llevo derecho a que faltaba el registro REVISION del PVR. La
+	historia esta en docs/bios-boot-plan.md.
 
-	Apagado no cuesta nada: el gancho de mem.h desaparece con el #ifdef.
-	Encendido cuesta dos comparaciones por escritura.
+	**Se configura por linea de comandos**, con --watchpoint=DIR[:TAM]; era un
+	#define y cada pregunta costaba una recompilacion del emulador entero.
+	Apagado cuesta una comparacion contra cero por escritura, al lado de la
+	llamada indirecta que ya hay ahi.
 
 	La direccion se compara por su parte fisica, asi que vigilar 0x8C22FF94
 	atrapa tambien las escrituras por 0x0C22FF94 y 0xAC22FF94. Pensado para
 	RAM: si se apunta a un registro, la lectura del valor actual puede tener
 	efectos secundarios.
 */
-// #define WATCHPOINT
-
-#ifdef WATCHPOINT
-#define WATCHPOINT_DIR		0x8C22FF94u	/* que direccion vigilar */
-#define WATCHPOINT_TAM		4			/* cuantos bytes, 1 2 o 4 */
 #define WATCHPOINT_MAX		200			/* cortar despues de tantos informes */
 // #define WATCHPOINT_SOLO_CAMBIOS		/* callar las escrituras que no cambian nada */
 // #define WATCHPOINT_ANILLO			/* volcar ademas el anillo de PC de --traza-mem */
-#endif
 
 #endif // _OPTIONS_H_

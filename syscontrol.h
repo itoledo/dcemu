@@ -59,4 +59,8 @@ OPCODE(trapa169); 	// TRAPA #imm (11000011 iiiiiiii)
 OPCODE(stcn154); // STC SGR, Rn : SGR -> Rn (0000nnnn 00111010)
 OPCODE(stc153); // STC SPC, Rn : SPC -> Rn (0000nnnn 01000010)
 
+/* No es un opcode: el despachador de la FIFO de poligonos del TA, compartido
+   entre pref142() y el CH2 DMA de mem.c. Ver el comentario en syscontrol.c. */
+void ta_procesar_bloque(void * bloque);
+
 #endif // _SYSCONTROL_H_

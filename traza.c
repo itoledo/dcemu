@@ -15,6 +15,8 @@
 
 #include "traza.h"
 #include "tmu.h"
+#include "opciones.h"
+#include "mem.h"
 
 int traza_activa = 0;
 
@@ -78,8 +80,77 @@ void traza_acceso(int tipo, unsigned long direccion, size_t tam, DWORD pc)
 		direccion, (int) tam, (unsigned long) pc);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Rangos a pedido (--desensamblar, --volcar)                               */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El codigo del boot ROM que interesa vive en RAM -- se copia ahi al arrancar
+	y no esta en bios.bin en la misma direccion --, asi que la unica forma de
+	leerlo es desde adentro del emulador. Estas dos salidas son lo que convierte
+	"se traba en 0x8C0D9C2A" en "esta esperando esto".
+
+	Van fuera de traza_activa a proposito: pedir un desensamblado no obliga a
+	arrastrar todo el ruido de --traza-mem.
+*/
+void traza_rangos(void)
+{
+	int i;
+
+	for (i = 0; i < opciones.desensamblar_n; i++)
+	{
+		DWORD			dir = (DWORD) opciones.desensamblar[i].direccion;
+		unsigned long	n   = opciones.desensamblar[i].cantidad;
+		unsigned long	j;
+
+		fprintf(stderr, "traza: desensamblado de %08lx, %lu instrucciones:\n",
+			(unsigned long) dir, n);
+
+		for (j = 0; j < n; j++)
+		{
+			char buffer[256];
+
+			buffer[0] = '\0';
+			disasm(dir, buffer);
+			fprintf(stderr, "  %08lx: %s\n", (unsigned long) dir, buffer);
+
+			dir += 2;
+		}
+	}
+
+	for (i = 0; i < opciones.volcar_n; i++)
+	{
+		DWORD			dir = (DWORD) opciones.volcar[i].direccion;
+		unsigned long	n   = opciones.volcar[i].cantidad;
+		unsigned long	j;
+
+		fprintf(stderr, "traza: volcado de %08lx, %lu bytes:\n",
+			(unsigned long) dir, n);
+
+		for (j = 0; j < n; j += 16)
+		{
+			unsigned long	k;
+			unsigned long	fin = (n - j < 16) ? (n - j) : 16;
+
+			fprintf(stderr, "  %08lx:", (unsigned long) (dir + j));
+
+			for (k = 0; k < fin; k++)
+			{
+				BYTE b = 0;
+
+				memread_fisico(dir + j + k, &b, 1);
+				fprintf(stderr, " %02x", (unsigned) b);
+			}
+
+			fprintf(stderr, "\n");
+		}
+	}
+}
+
 void traza_resumen(void)
 {
+	traza_rangos();
+
 	if (!traza_activa)
 		return;
 
@@ -277,8 +348,6 @@ void traza_paso(DWORD pc)
 /* Watchpoint de escritura                                                  */
 /* ------------------------------------------------------------------------ */
 
-#ifdef WATCHPOINT
-
 /*
 	Lo llama el gancho de memwrite_fisico() en mem.h, despues de escribir.
 
@@ -288,6 +357,9 @@ void traza_paso(DWORD pc)
 	del PVR dispara el DMA del Maple, que vuelve a escribir memoria.
 */
 
+unsigned long	watchpoint_dir = 0;		/* 0: apagado. Lo pone --watchpoint= */
+size_t			watchpoint_tam = 4;
+
 static DWORD	wp_anterior = 0;
 static int		wp_arrancado = 0;
 static int		wp_informes = 0;
@@ -295,18 +367,18 @@ static int		wp_informes = 0;
 void watchpoint_escritura(unsigned long direccion, size_t tam)
 {
 	DWORD escrita  = (DWORD) direccion & 0x1FFFFFFFu;
-	DWORD vigilada = WATCHPOINT_DIR & 0x1FFFFFFFu;
+	DWORD vigilada = (DWORD) watchpoint_dir & 0x1FFFFFFFu;
 	DWORD ahora    = 0;
 
 	/* Solapamiento de rangos: escribir un byte dentro de la palabra vigilada
 	   tambien cuenta. */
-	if (escrita + tam <= vigilada || escrita >= vigilada + WATCHPOINT_TAM)
+	if (escrita + tam <= vigilada || escrita >= vigilada + watchpoint_tam)
 		return;
 
 	if (wp_informes >= WATCHPOINT_MAX)
 		return;
 
-	memread_fisico(WATCHPOINT_DIR, &ahora, WATCHPOINT_TAM);
+	memread_fisico(watchpoint_dir, &ahora, watchpoint_tam);
 
 	/* La primera vez no hay con que comparar: se toma como valor de partida. */
 	if (!wp_arrancado)
@@ -323,7 +395,7 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 	fprintf(stderr,
 		"watchpoint: %08lx = %08lx (antes %08lx)%s"
 		" -- escritura de %u en %08lx, PC %08lx, PR %08lx, %llu ciclos\n",
-		(unsigned long) WATCHPOINT_DIR,
+		(unsigned long) watchpoint_dir,
 		(unsigned long) ahora,
 		(unsigned long) wp_anterior,
 		(ahora == wp_anterior) ? ", sin cambio" : "",
@@ -343,5 +415,3 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 		fprintf(stderr, "watchpoint: %d informes, no se reporta mas\n",
 			WATCHPOINT_MAX);
 }
-
-#endif /* WATCHPOINT */

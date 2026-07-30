@@ -49,16 +49,24 @@ void traza_volcar(const char * motivo);
 /* Resumen final: cuantas direcciones distintas quedaron sin emular. */
 void traza_resumen(void);
 
+/* Los rangos de --desensamblar y --volcar. Los llama traza_resumen() al salir
+   y F5 a pedido; no dependen de --traza-mem. */
+void traza_rangos(void);
+
 /*
-	Watchpoint de escritura, detras de WATCHPOINT en options.h. Lo llama el
+	Watchpoint de escritura, configurado con --watchpoint=DIR[:TAM]. Lo llama el
 	gancho de memwrite_fisico() en mem.h **despues** de escribir, asi que ve el
 	valor que quedo; el anterior lo recuerda de la vez pasada.
 
 	Va aca y no en mem.c porque es diagnostico de arranque, igual que el resto
 	de este archivo, y porque asi puede volcar el anillo de PC.
+
+	watchpoint_dir en cero significa apagado, y es lo que consulta el gancho
+	antes de llamar: sin watchpoint la instrumentacion es una comparacion.
 */
-#ifdef WATCHPOINT
+extern unsigned long	watchpoint_dir;
+extern size_t			watchpoint_tam;
+
 void watchpoint_escritura(unsigned long direccion, size_t tam);
-#endif
 
 #endif /* _TRAZA_H_ */

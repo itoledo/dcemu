@@ -114,6 +114,12 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--traza-mem` | reporta a stderr las direcciones sin emular y dónde se traba el PC, con el tiempo emulado, y al salir la relación con el tiempo real |
 | `--limitar` | no dejar que la emulación corra más rápido que una consola. Solo frena |
 | `--hacks-bios` / `--sin-hacks-bios` | fuerza o desactiva los hooks de syscall |
+| `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
+| `--desensamblar=D:N` | al salir, desensambla `N` instrucciones desde `D`. Repetible |
+| `--volcar=D:N` | al salir, vuelca `N` bytes desde `D` en hexadecimal. Repetible |
+| `--salir-tras=N` | sale solo a los `N` segundos de tiempo **emulado** |
+
+Los cuatro últimos son de diagnóstico y **todos los números van en hexadecimal**.
 
 **`--traza-mem` is the tool for working on the BIOS boot.** It prints each unemulated
 address once with the PC that asked for it, and when the last 96 PCs collapse into 64 or
@@ -124,17 +130,42 @@ through it. See `docs/bios-boot-plan.md`.
 Not every loop it reports is a hang — a `memset` over 600 KB and a wait for vsync both trip
 the same heuristic. Read the disassembly, not the fact that it fired.
 
-**`WATCHPOINT` in `options.h` is the other tool**: a write watchpoint that reports every
+**`--watchpoint=DIR[:TAM]` is the other tool**: a write watchpoint that reports every
 write touching a given address, with the PC and PR that did it. The hook is in
 `memwrite_fisico()` (`mem.h`) — the one place *every* write goes through, guest and
-internal alike — and the implementation is in `traza.c`. Off it costs nothing; on, two
-comparisons per write. It is what answers "who writes this variable", which is the question
-the BIOS boot keeps raising; `docs/bios-boot-plan.md` walks through the case it solved.
+internal alike — and the implementation is in `traza.c`. It costs a compare against zero
+per write when off. It is what answers "who writes this variable", which is the question the
+BIOS boot keeps raising; `docs/bios-boot-plan.md` walks through the two cases it solved.
 
-**Where the BIOS boot stands**: it gets through the drive conversation and the video setup
-and now runs past 23 s of emulated time, looping in its own state machine around
-`0x8C0D9C50`. No unemulated addresses remain, and the framebuffer is still untouched, so it
-does not reach drawing yet.
+**`--desensamblar` and `--volcar` are how you read the boot ROM.** Its code lives in RAM —
+it copies itself there and is *not* at the same address inside `bios.bin` — so the only way
+to read a routine or one of its tables is from inside the emulator. Both print at exit,
+which is why **`--salir-tras=N` matters**: it leaves through the same path as closing the
+window, so `traza_resumen()` runs. Killing the process from outside takes the disassembly
+and the dump with it.
+
+**Where the BIOS boot stands: it boots.** With `--bios` it reaches the Set Date/Clock
+screen, responds to the pad, and from the main menu you can enter Play, File, Music and
+Settings. What was missing was three things, all of the same shape — something the guest
+asks for that dcemu accepts without doing anything and without saying anything. See
+`docs/bios-boot-plan.md`, "Tercera corrida":
+
+- **the CH2 DMA** (`SB_C2DSTAT`/`SB_C2DLEN`/`SB_C2DST`, `0x005F6800-08`) — see below;
+- **a Maple descriptor whose first word is legitimately zero** — see the Maple section;
+- **ASIC events being dropped when no mask covered them** — see "Interrupts and timing".
+
+Hito C (booting a game *through* the BIOS) is still unverified: it needs an image that
+would boot on hardware, and the GD-ROM geometry.
+
+**`0x005F6800-0x005F6808` is the CH2 DMA, and it is how the guest feeds the TA.** The Holly
+drives it, not the DMAC: the SH-4 only puts the source in `SAR2` and arms `CHCR2` for
+external request, and writing 1 to `SB_C2DST` is what starts it. So `dma_check()` never sees
+it — it only handles auto-request channels, correctly — and the three registers had no case
+in `pvr_write()`, fell through to the `control_mem` backing store and vanished. The boot ROM
+records the transfer in its own descriptor table with bits 0-1 of `+0x18` set to "in
+progress" and waits for the end of DMA to clear them, which never came: that is the loop
+around `0x8C0D9C50` it used to sit in forever. `ch2_dma_ejecutar()` in `mem.c` does it, and
+the same fix makes `parallax-serpent_dma` work.
 
 **`0x005F8004` is the PVR `REVISION` register and a retail console answers `0x11`.** The
 boot ROM checks `COREID` against `0x17FD11DB` *and* demands revision `>= 17` and `!= 1`; it
@@ -370,6 +401,17 @@ events.
 `intc.c` queues ASIC events with `intc_add()` into `intc_queuemask`; `check_ints()` drains
 them and `intc()` performs the actual SH-4 exception entry (SSR/SPC save, VBR jump).
 
+**A queued ASIC event that no mask covers stays queued.** `check_ints()` used to end with
+`REMOVE_BIT(intc_queuemask, ASIC_ACK_A)` — if none of the three masks covered the event at
+that instant, it was thrown away. On the chip the `SB_ISTNRM` bit stays set until the guest
+acknowledges it by writing the register, and if the guest enables the mask afterwards the
+interrupt still arrives. Same mistake the timers had before `intc_revisar_sh4()` (see
+`docs/clock-plan.md`), on the ASIC side, and what it loses leaves no trace. The boot ROM is
+what exposed it: it enables the Maple DMA, starts it, and waits for the end by interrupt —
+enabling the mask *after* queueing it — so it lost that event every time and never polled
+the bus again. Only the guest's acknowledge clears a pending event now, in the `SB_ISTNRM`
+case of `pvr_write()`.
+
 `wdt.c/h` is the SH-4 watchdog timer: two key-protected registers and an 8-bit up-counter
 that either resets the machine (watchdog mode) or raises `EXC_WDT_ITI` (interval mode).
 `tmu.c/h` is the three TMU channels. Both take a cycle count from `main_loop()` and keep
@@ -424,6 +466,28 @@ The register map and command codes are checked against two independent sources �
 kernel's GD-ROM driver and reicast's core. Data goes out either as chained DRQ blocks
 through the data register or through the G2 DMA (`SB_GDSTAR`/`SB_GDST`), depending on bit 0
 of FEATURES at the time of the `PACKET` command.
+
+### Maple
+
+The controller bus lives inside `pvr_write()`, in the `SB_MDST` case (`0x005F6C18`): writing
+1 walks the command list at `SB_MDSTAR` and answers each transfer in place. Only port A has
+a device — a standard HKT-7700 controller — and the other ports get `0xFFFFFFFF`, which is
+"nothing here". Two commands are implemented: `Device Request` (1) and `GetCondition` (9).
+
+**The first word of a transfer descriptor is legitimately zero.** It holds the length in
+bits 0-7, the pattern in 8-15, the port in 16-17 and end-of-list in bit 31, so a one-word
+frame to port A that is not the last of the list leaves all four at zero. The code used to
+read that as "`SB_MDSTAR` is wrong" and bail out — and that is *exactly* the boot ROM's
+first probe, a `Device Request` to port A, so the BIOS never found the controller. KOS never
+shows it because it always marks the last transfer and its single-element lists come out
+`0x80000000`. The bail-out now tests the response address, which the guest always puts in
+system RAM.
+
+The device descriptor was also nearly all zeros. `function_data[0]` is the field that says
+**which buttons and axes the controller has**, and the name fields are space-padded to their
+full width on the bus, not NUL-terminated.
+
+`--traza-mem` reports the trigger select, the enable, and one line per (port, command) pair.
 
 ### BIOS syscall emulation
 
@@ -527,7 +591,8 @@ renderer. `log.c` writes `logs/{disasm,memoria,serial,pvr,intc,glop}.txt`.
 
 - **`options.h` is the feature switchboard.** Nearly all debug output and several
   behaviours are compile-time `#define` toggles there. Check it before adding a `printf`.
-  `WATCHPOINT` (write watchpoint) lives there too — see "Run" above.
+  The write watchpoint used to live there too; it is `--watchpoint=` now, because every
+  question cost a full rebuild. Only its report cap stayed behind (`WATCHPOINT_MAX`).
 - **Logging is compiled out by default.** `logmsg()` / `logxmsg()` expand to nothing
   unless `LOGGING` is defined in `options.h`; `LOG_FFLUSH` makes it survive a crash.
   Runtime toggles also exist (`filelogging`, keys `l`/`m`/`v`/`r`).
