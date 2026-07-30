@@ -1,7 +1,12 @@
 # Qué falta para bootear la BIOS
 
-Estado: **investigación**. Julio de 2026, sobre `master` (`52355a5`), con `bios/bios.bin`
-(2 MB) y `bios/flash.bin` del repositorio de trabajo.
+Estado: **investigación, ya ejecutada**. Julio de 2026, sobre `master` (`52355a5`), con
+`bios/bios.bin` (2 MB) y `bios/flash.bin` del repositorio de trabajo.
+
+> Este documento es el inventario original y se deja como quedó: es lo que se midió antes
+> de tocar nada. Los puntos 0 a 8 y el 11 ya están implementados; qué se hizo con cada uno
+> y qué se verificó está en [bios-boot-plan.md](bios-boot-plan.md), sección "Lo que quedó".
+> La tabla del final lleva el estado de cada punto.
 
 Hoy dcemu nunca ejecuta el boot ROM: `main()` carga `ip.bin` y `1st_read.bin` a mano y
 arranca en `0x8C00B800`, saltándose el arranque real. Este documento es la lista de lo que
@@ -209,20 +214,20 @@ a un bloque de descarte, como hace `tests/memoria_prueba.c`.
 
 ## Orden sugerido
 
-| # | qué | tamaño | desbloquea |
-| --- | --- | --- | --- |
-| 0 | Modo de arranque por BIOS | trivial | poder probar |
-| 1 | Handshake PDTRA/PCTRA | chico | **el halt actual** |
-| 7 | Sondeo G2 determinista | trivial | reproducibilidad |
-| 11 | Zonas no mapeadas a descarte | trivial | no caerse |
-| 2 | Cargar y mapear la flash | chico | configuración del sistema |
-| 3 | Respaldo del bloque de control | chico | 89 registros fantasma |
-| 6 | RTC | chico | hora en el menú |
-| 4 | **GD-ROM (registros ATA + SPI)** | **grande** | **llegar al menú** |
-| 8 | DMA del SH-4 y del G2 | mediano | transferencias reales |
-| 5 | AICA (RAM, registros, ARM7) | grande | sonido del arranque |
-| 9 | PVR: YUV, modificadores | mediano | animación del logo |
-| 10 | Excepciones generales | mediano | diagnóstico |
+| # | qué | tamaño | desbloquea | estado |
+| --- | --- | --- | --- | --- |
+| 0 | Modo de arranque por BIOS | trivial | poder probar | hecho (`--bios`) |
+| 1 | Handshake PDTRA/PCTRA | chico | **el halt actual** | hecho, el halt desapareció |
+| 7 | Sondeo G2 determinista | trivial | reproducibilidad | hecho |
+| 11 | Zonas no mapeadas a descarte | trivial | no caerse | hecho |
+| 2 | Cargar y mapear la flash | chico | configuración del sistema | hecho (lectura; escritura no) |
+| 3 | Respaldo del bloque de control | chico | 89 registros fantasma | hecho |
+| 6 | RTC | chico | hora en el menú | hecho |
+| 4 | **GD-ROM (registros ATA + SPI)** | **grande** | **llegar al menú** | hecho; el boot ROM llega a la TOC |
+| 8 | DMA del SH-4 y del G2 | mediano | transferencias reales | hecho |
+| 5 | AICA (RAM, registros, ARM7) | grande | sonido del arranque | RAM y registros; el ARM7 no |
+| 9 | PVR: YUV, modificadores | mediano | animación del logo | pendiente |
+| 10 | Excepciones generales | mediano | diagnóstico | pendiente |
 
 Los cuatro primeros son una tarde. El punto 4 es el que decide si esto llega al menú o no.
 

@@ -1,4 +1,4 @@
-# Pruebas unitarias de los opcodes del SH-4
+# Pruebas unitarias
 
 Ejercitan los handlers reales del emulador -- `arith.c`, `logic.c`, `shift.c`,
 `mov.c`, `branch.c`, `syscontrol.c`, `floatsimple.c`, `floatcontrol.c`,
@@ -7,7 +7,11 @@ OpenGL y sin imagen de disco. Cada caso arma una instruccion, la ejecuta como
 lo hace `main_loop()` y compara el estado resultante contra lo que dice el
 manual del SH-4.
 
-Estado actual: **387 casos, todos en verde**, sobre **239 filas implementadas
+Ademas de los opcodes hay dos suites que no son del nucleo, `sistema` y
+`gdrom`: son las piezas del arranque por BIOS que resultaron ser logica pura
+sobre registros. Ver "Mas alla de los opcodes" al final.
+
+Estado actual: **413 casos, todos en verde**, sobre **239 filas implementadas
 de `opcodes[]`, todas ejercitadas y sin desviaciones pendientes**.
 
 ## Compilar y correr
@@ -18,9 +22,9 @@ cmake --build build --config Debug --target dcemu_tests
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-Hay una prueba de CTest por suite (`sh4.arith`, `sh4.mov`, ...) mas `sh4.todo`,
-que corre todo junto y ademas mide la cobertura de la tabla de opcodes. La
-corrida completa toma menos de un segundo.
+Hay una prueba de CTest por suite (`sh4.arith`, `sh4.mov`, ..., `dc.sistema`,
+`dc.gdrom`) mas `sh4.todo`, que corre todo junto y ademas mide la cobertura de
+la tabla de opcodes. La corrida completa toma menos de un segundo.
 
 Tambien se puede correr el binario a mano, con filtros por subcadena sobre el
 nombre de la suite o del caso:
@@ -40,7 +44,7 @@ Para dejar las pruebas fuera del build: `cmake -S . -B build -DDCEMU_BUILD_TESTS
 | `dctest.{h,c}` | micro framework: suites, casos, aserciones blandas, runner |
 | `arnes.{h,c}` | reset determinista del nucleo, `ejecutar()`, constructores de instrucciones |
 | `memoria_prueba.c` | reemplazo de `mem.c`: las dos tablas de 256 entradas, RAM, video, store queues |
-| `dobles.c` | reemplazos de `graficos.c`, `iso.c` e `intc.c` |
+| `dobles.c` | reemplazos de `graficos.c`, `iso.c`, `intc.c` y `traza.c` |
 | `test_*.c` | una suite por archivo de handlers |
 | `principal.c` | enumera las suites |
 
@@ -159,9 +163,10 @@ T y los registros de sistema. Quedan tres cosas afuera, y no por descuido:
   (modo de redondeo) se ignoran: la aritmetica usa la del host, que es
   redondeo al mas cercano. Un programa que lea FPSCR despues de una operacion
   invalida no vera lo que veria en hardware.
-- **`LDTLB`, `OCBP`, `OCBI` y `OCBWB`** avanzan PC y nada mas. `LDTLB` carga la
-  TLB, y dcemu no emula la MMU; las tres de cache no tienen efecto observable
-  sin cache emulada. `MOVCA.L` si escribe, que es su unico efecto visible.
+- **`OCBP`, `OCBI` y `OCBWB`** avanzan PC y nada mas: sin cache emulada no
+  tienen efecto observable. `MOVCA.L` si escribe, que es su unico efecto
+  visible. `LDTLB` ya no esta en esta lista: carga la UTLB de verdad (suite
+  `mmu`, y `ldtlb_carga_la_tlb` en la suite `syscontrol`).
 - **`LDC Rm,SGR` (0x403A) y `LDC.L @Rm+,SGR` (0x4036)**: las dos filas venian
   marcadas "INSERTADA" por los autores originales. El resumen de instrucciones
   del manual del SH-4 lista SGR solo para `STC` y `STC.L`, asi que puede que no
@@ -176,3 +181,27 @@ T y los registros de sistema. Quedan tres cosas afuera, y no por descuido:
 
 Para un opcode nuevo no hace falta tocar nada mas: la suite `cobertura` recorre
 `opcodes[]` sola y avisa si la fila nueva quedo sin probar.
+
+## Mas alla de los opcodes
+
+El arranque por el boot ROM (ver `docs/bios-boot-plan.md`) trajo dos piezas que
+se prueban con el mismo arnes porque tampoco necesitan SDL: son funciones de
+(estado, registro escrito) y nada mas. La suite `cobertura` no aplica --
+no son filas de `opcodes[]` --, asi que van con el prefijo `dc.` en CTest.
+
+| suite | archivo | que cubre |
+| --- | --- | --- |
+| `sistema` | `test_sistema.c` | el handshake de PDTRA/PCTRA, la sintesis de una flash minima y la cuenta de segundos desde 1950 del RTC |
+| `gdrom` | `test_gdrom.c` | la maquina de estados de la lectora: fases del comando PACKET, los comandos SPI del arranque, la TOC, la lectura de sectores por PIO y por DMA, y el estado con y sin disco |
+
+`dobles.c` crecio para servirlas: cuenta las interrupciones que levanta la
+lectora (normales y externas), simula la bandeja vacia con
+`dobles_hay_disco` y aporta `traza_activa` en cero, porque `traza.c` no se
+puede enlazar aca (desensambla, y eso arrastra `debug.c` con SDL).
+
+La suite del GD-ROM verifica la secuencia completa tal como la ejecuta el boot
+ROM, no funciones sueltas: escribe el byte count y el comando `0xA0`, comprueba
+que la lectora pida el paquete con CoD=1, manda los 12 bytes de a palabra, y
+recorre los bloques DRQ leyendo el registro de datos hasta que el comando
+termina. Un cambio que rompa una transicion se ve como un caso rojo, no como
+una pantalla negra.

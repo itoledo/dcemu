@@ -225,3 +225,9 @@ El riesgo de aliasing que preocupaba no se materializó: el type-punning de `mem
 - **Fase 5** — reponer la ventana de log y el backend libcdio.
 - **Fase 6** — x64.
 - Probar algo más grande que un 256b: Doom o MAME, que es lo que llegó a correr en su momento.
+- **La ventana sale en negro.** En julio de 2026, al verificar el arranque por BIOS, se
+  descubrió que `roto.bin` ya no se ve, ni en Debug ni en Release. Se bisectó y **este
+  mismo commit (`a04be29`) también sale en negro hoy**, así que no lo rompió ningún cambio
+  posterior: es del entorno. La emulación está bien — el volcado del framebuffer (tecla
+  F5, agregada entonces) muestra el rotozoomer correcto —, lo que falla es la presentación.
+  Sospechosos: la cadena sdl12-compat → sdl2-compat → SDL3, o el driver de OpenGL.
