@@ -98,6 +98,15 @@ extern int dobles_vertex_handler;
    dobles_reset() la deja prendida para que la prueba vea el cambio. */
 extern bool inside_int;
 
+/* Dobles de intc.c: la lectora interrumpe al terminar cada comando. */
+extern int		dobles_int_normal;
+extern int		dobles_int_ext;
+extern DWORD	dobles_ultima_int_normal;
+extern DWORD	dobles_ultima_int_ext;
+
+/* Doble de iso.c: 0 simula la bandeja vacia. */
+extern int		dobles_hay_disco;
+
 void dobles_reset(void);
 
 #endif /* _ARNES_H_ */

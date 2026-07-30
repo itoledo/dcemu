@@ -3,6 +3,8 @@
 #include "opcodes.h"
 #include <math.h>
 #include "iso.h"
+#include "gdrom.h"
+#include "sistema.h"
 
 #define PI 3.1415926535
 
@@ -35,6 +37,168 @@ OPCODE(NOIMP)
 {
 	logmsg("opcode no implementado: %s (%d)\r\n", opcodes[find_opcode(PC)].opdesc, find_opcode(PC));
 	PC += 2;
+}
+
+/*
+	El syscall de la fuente del BIOS, vector 0x8C0000B4.
+
+	A diferencia del resto, este lleva el numero de funcion en R1 -- ver
+	syscall_font.s de KOS -- y son solo tres: 0 devuelve la direccion de la
+	fuente, 1 toma el mutex y 2 lo suelta. El lock responde 0 si lo concedio.
+
+	El stub antes era RTS + MOV.L @(0,PC),R0 con la direccion como literal, o
+	sea que respondia la direccion a las tres funciones. Eso dejaba colgado a
+	lock_bfont() de KOS, que hace thd_poll(bfont_lock) hasta que el syscall
+	devuelva 0: con la direccion de vuelta -- distinta de cero -- giraba para
+	siempre y ningun bfont_draw_str() llegaba a dibujar.
+*/
+static void hack_romfont(void)
+{
+	logmsg("HACK_ROMFONT: func=%d\r\n", R(1));
+
+	switch (R(1))
+	{
+		case 0:		/* direccion de la fuente */
+#ifdef USE_BIOS_FONT
+		R(0) = 0x00100020;	/* la fuente real, dentro de bios.bin */
+#else
+		R(0) = FONT_BASE;	/* la que rasteriza inicializar_fonts() */
+#endif
+		break;
+
+		case 1:		/* tomar el mutex: nadie mas lo pide, siempre se concede */
+		R(0) = 0;
+		break;
+
+		case 2:		/* soltarlo */
+		R(0) = 0;
+		break;
+
+		default:
+		logmsg("HACK_ROMFONT: funcion %d desconocida\r\n", R(1));
+		R(0) = -1;
+		break;
+	}
+}
+
+/*
+	El syscall de la flash ROM, vector 0x8C0000B8.
+
+	La convencion es syscall(r4, r5, r6, func): el numero de funcion viaja en R7
+	y el resultado sale por R0. Las funciones son 0 info, 1 lectura, 2 escritura
+	y 3 borrado.
+
+	Hacia falta porque flashrom_get_region() de KOS pregunta por la particion 0
+	a traves de este syscall en vez de parsear la flash, y sin respuesta reporta
+	"flashrom_get_region: can't find partition 0" -- que es lo que decia el
+	ejemplo video/palmenu.
+*/
+static void hack_flashrom(void)
+{
+	/* Offset y tamano de cada particion, en el orden en que las numera KOS
+	   (dc/flashrom.h): 0 ajustes de fabrica, 1 reservada, 2 y 4 bloques, 3
+	   ajustes de juegos. Los offsets ya estaban en sistema.h. */
+	static const DWORD offset[5] =
+	{
+		FLASH_PART0_OFF, FLASH_PART1_OFF, FLASH_PART2_OFF,
+		FLASH_PART3_OFF, FLASH_PART4_OFF
+	};
+	static const DWORD tamano[5] =
+	{
+		 8 * 1024,		/* 0: ajustes de fabrica  */
+		 8 * 1024,		/* 1: reservada           */
+		16 * 1024,		/* 2: bloques             */
+		32 * 1024,		/* 3: ajustes de juegos   */
+		64 * 1024		/* 4: bloques             */
+	};
+
+	logmsg("HACK_FLASHROM: func=%d, r4=%x, r5=%x, r6=%x\r\n", R(7), R(4), R(5), R(6));
+
+	switch (R(7))
+	{
+		case 0:		/* info: R4 = particion, R5 -> {offset, tamano} */
+		{
+			DWORD parte = R(4);
+
+			if (parte >= 5)
+			{
+				logmsg("HACK_FLASHROM: particion %d inexistente\r\n", parte);
+				R(0) = (DWORD) -1;
+				break;
+			}
+
+			memwrite(R(5),     (void *) &offset[parte], sizeof(DWORD));
+			memwrite(R(5) + 4, (void *) &tamano[parte], sizeof(DWORD));
+
+			R(0) = 0;
+		}
+		break;
+
+		case 1:		/* lectura: R4 = offset, R5 = destino, R6 = cuantos */
+		{
+			DWORD desde = R(4);
+			DWORD cuantos = R(6);
+
+			if (desde + cuantos > FLASH_SIZE)
+			{
+				logmsg("HACK_FLASHROM: lectura fuera de rango (%x + %x)\r\n", desde, cuantos);
+				R(0) = (DWORD) -1;
+				break;
+			}
+
+			memwrite(R(5), &flash_mem[desde], cuantos);
+
+			R(0) = cuantos;
+		}
+		break;
+
+		case 2:		/* escritura */
+		{
+			DWORD hacia = R(4);
+			DWORD cuantos = R(6);
+			DWORD i;
+
+			if (hacia + cuantos > FLASH_SIZE)
+			{
+				logmsg("HACK_FLASHROM: escritura fuera de rango (%x + %x)\r\n", hacia, cuantos);
+				R(0) = (DWORD) -1;
+				break;
+			}
+
+			/* La flash real solo puede pasar bits de 1 a 0 sin borrar antes, y
+			   el guest cuenta con eso para los bloques de ajustes. */
+			for (i = 0; i < cuantos; i++)
+			{
+				BYTE b;
+
+				memread(R(5) + i, &b, sizeof(BYTE));
+				flash_mem[hacia + i] &= b;
+			}
+
+			R(0) = cuantos;
+		}
+		break;
+
+		case 3:		/* borrado de un bloque: todo a 0xFF */
+		{
+			DWORD parte = R(4);
+
+			if (parte >= 5)
+			{
+				R(0) = (DWORD) -1;
+				break;
+			}
+
+			memset(&flash_mem[offset[parte]], 0xFF, tamano[parte]);
+			R(0) = 0;
+		}
+		break;
+
+		default:
+		logmsg("HACK_FLASHROM: funcion %d sin implementar\r\n", R(7));
+		R(0) = (DWORD) -1;
+		break;
+	}
 }
 
 void hack_gdrom()
@@ -74,17 +238,15 @@ void hack_gdrom()
 					DWORD targetaddr;
 					struct TOC toc;
 
-		        	// hay que leer el # de sesión, es el 1er numero que apunta esa dir
+		        	// hay que leer el # de sesiï¿½n, es el 1er numero que apunta esa dir
 		        	memread(R(5), &session, sizeof(int));
-		        	logmsg("read toc: sesión n° %d\n", session);
+		        	logmsg("read toc: sesion n %d\n", session);
 
-		        	// a llenar un TOC "mula"
-//					        	toc.entry[0] = 0x40002DB4; // CTRL = 4, LBA = 11700
-//					        	toc.entry[0] = 0x40000000; // CTRL = 4, LBA = 0
-					toc.entry[0] = 0x40000000 | iso_get_lba();
-		        	toc.first = 0x00010000;
-		        	toc.last  = 0x00010000;
-		        	toc.dunno = 0;
+					// La misma TOC que arma la lectora de verdad. Antes se
+					// llenaban a mano tres campos y los otros 98 quedaban con
+					// lo que hubiera en la pila.
+					gdrom_construir_toc(&toc);
+
 		        	memread(R(5) + 4, &targetaddr, sizeof(DWORD));
 		        	logmsg("escribiendo TOC a %x\n", targetaddr);
 		        	memwrite(targetaddr, &toc, sizeof(struct TOC));
@@ -115,11 +277,12 @@ void hack_gdrom()
 
 			case 4: // GDROM_CHECK_DRIVE
 			logmsg("GDROM_CHECK_DRIVE\r\n");
-//			valor = 7; // lid closed, no disc
-			valor = 2; // drive is in standby
+			// Los mismos codigos que usa el protocolo: 2 = standby, 6 =
+			// bandeja abierta, 7 = sin disco. Asi --bandeja tambien vale por
+			// este camino.
+			valor = gdrom.unidad;
 			WriteMemoryL(R(4), &valor);
-//			valor = 0x80; // GD-ROM
-			valor = 0x10; // CD-ROM
+			valor = (DWORD) gdrom.formato << 4;	// 0x10 = CD-ROM, 0x80 = GD-ROM
 			WriteMemoryL(R(4) + 4, &valor);
 			R(0) = 0;
 			break;
@@ -156,7 +319,9 @@ OPCODE(BIOS_HACK)
 
     switch(PC)
     {
-        case HACK_BASE + HACK_GDROM + 2: hack_gdrom(); break;
+        case HACK_BASE + HACK_ROMFONT + 2:  hack_romfont(); break;
+        case HACK_BASE + HACK_GDROM + 2:    hack_gdrom();   break;
+        case HACK_BASE + HACK_FLASHROM + 2: hack_flashrom(); break;
         default:	logmsg("bios_hack: error\n"); break;
     }
     

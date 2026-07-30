@@ -26,6 +26,12 @@
 #include "iso.h"
 #include "gui.h"
 #include "sh4emu.h"
+#include "gdrom.h"
+#include "opciones.h"
+#include "sistema.h"
+#include "traza.h"
+#include "wdt.h"
+#include "tmu.h"
 #include "SIMDx86/version.h"
 
 DWORD snd_dbg;			// ...
@@ -77,60 +83,23 @@ bool gui_visible=true;
 
 #define TMU_INT
 
-void timer_check();
+void timer_check(DWORD ciclos);
 
-void timer_check(void)
+/*
+	El cuerpo vive en tmu.c: es logica pura sobre registros y asi se puede
+	probar sin SDL.
+
+	Lo que habia antes bajaba cada TCNT de a uno por llamada e ignoraba el
+	campo TPSC de TCR, o sea que el ritmo era una constante. Ver
+	docs/clock-plan.md, fase 1.
+
+	La entrega de las interrupciones NO se hace aca: tmu_tick() deja UNF puesto
+	en el TCR del canal y intc_revisar_sh4() la entrega cuando SR lo permite.
+	Hacerlo en el momento del subdesborde perdia el evento si BL estaba puesto.
+*/
+void timer_check(DWORD ciclos)
 {
-	    if (*TSTR & 4)
-	    {
-	        if ((long) (*TCNT2) < 0) // underflow
-	        {
-	                *TCNT2 = *TCOR2;
-	                *TCR2 |= TMU_TCR_UNF;
-#ifdef TMU_INT
-					if ((*TCR2 & TMU_TCR_UNIE))
-    	            	intc(EXC_TMU2_TUNI2);
-#endif
-	   	     }
-   		     else
-   		     {
-					(*TCNT2)--;
-			}
-	   	 }
-
-	    if (*TSTR & 2)
-	    {
-	        if ((long) (*TCNT1) < 0) // underflow
-	        {
-	                *TCNT1 = *TCOR1;
-	                *TCR1 |= TMU_TCR_UNF;
-#ifdef TMU_INT
-				if ((*TCR1 & TMU_TCR_UNIE))
-	                intc(EXC_TMU1_TUNI1);
-#endif
-	        }
-	        else
-   		     {
-					(*TCNT1)--;
-			}
-	    }
-
-	    if (*TSTR & 1)
-	    {
-	        if ((long) (*TCNT0) < 0) // underflow
-	        {
-	                (*TCNT0) = *TCOR0;
-	                (*TCR0) |= TMU_TCR_UNF;
-#ifdef TMU_INT
- 					if ((*TCR0 & TMU_TCR_UNIE))
-		                intc(EXC_TMU0_TUNI0);
-#endif
-	        }
-	        else
-   		     {
-					(*TCNT0)--;
-			}
-	    }
+	tmu_tick(ciclos);
 }
 
 
@@ -177,33 +146,125 @@ Uint32 VBlankCallback(Uint32 interval, void * param)
 	return 1;
 }
 
-void dma_check()
+/*
+	DMA del SH-4. Hasta ahora dma_check() solo escribia al log y ni siquiera se
+	llamaba: las transferencias no se hacian. Ver el punto 8 de docs/bios-boot.md.
+
+	Campos de CHCR que importan aca:
+
+	  bit    0  DE   canal activado
+	  bit    1  TE   transferencia terminada
+	  bit    2  IE   interrumpir al terminar
+	  bits 6-4  TS   tamano de cada unidad
+	  bits 11-8 RS   quien pide la transferencia
+	  bits 13-12 SM  como avanza la direccion de origen
+	  bits 15-14 DM  como avanza la de destino
+*/
+#define CHCR_TE			(1 << 1)
+#define CHCR_IE			(1 << 2)
+#define CHCR_TS(chcr)	(((chcr) >> 4) & 0x7)
+#define CHCR_RS(chcr)	(((chcr) >> 8) & 0xF)
+#define CHCR_SM(chcr)	(((chcr) >> 12) & 0x3)
+#define CHCR_DM(chcr)	(((chcr) >> 14) & 0x3)
+
+#define CHCR_RS_AUTO	0x4		// auto-request: la transferencia sale sola
+
+static int dma_unidad(DWORD chcr)
 {
-	if (*DMAOR & DME)
+	switch (CHCR_TS(chcr))
 	{
-/*		logxmsg(LOG_MEM, "DMA activado\n");
-		logxmsg(LOG_MEM, "SAR0: %08x SAR1:%08x SAR2:%08x SAR3:%08x\n",
-			*SAR0, *SAR1, *SAR2, *SAR3);
-		logxmsg(LOG_MEM, "DAR0: %08x DAR1:%08x DAR2:%08x DAR3:%08x\n",
-			*DAR0, *DAR1, *DAR2, *DAR3); */
-		if (IS_SET_REG(CHCR0, DE))
-		{
-			logxmsg(LOG_MEM, "DMA: canal 0 activado, SAR0: %x, DAR0: %x, DMATCR0: %x\r\n", *SAR0, *DAR0, *DMATCR0);
-		}
-		if (IS_SET_REG(CHCR1, DE))
-		{
-			logxmsg(LOG_MEM, "DMA: canal 1 activado, SAR1: %x, DAR1: %x, DMATCR1: %x\r\n", *SAR1, *DAR1, *DMATCR1);
-		}
-		if (IS_SET_REG(CHCR2, DE))
-		{
-			logxmsg(LOG_MEM, "DMA: canal 2 activado, SAR2: %x, DAR2: %x, DMATCR2: %x\r\n", *SAR2, *DAR2, *DMATCR2);
-		}
-		if (IS_SET_REG(CHCR3, DE))
-		{
-			logxmsg(LOG_MEM, "DMA: canal 3 activado, SAR3: %x, DAR3: %x, DMATCR3: %x\r\n", *SAR3, *DAR3, *DMATCR3);
-		}
+		case 0:		return 8;	// quadword
+		case 1:		return 1;
+		case 2:		return 2;
+		case 3:		return 4;
+		case 4:		return 32;	// bloque de cache
+		default:	return 4;
 	}
 }
+
+// 01 incrementa, 10 decrementa, el resto deja la direccion fija.
+static long dma_paso(DWORD modo, int unidad)
+{
+	switch (modo)
+	{
+		case 1:		return  unidad;
+		case 2:		return -unidad;
+		default:	return 0;
+	}
+}
+
+static void dma_canal(int n, DWORD * sar, DWORD * dar, DWORD * dmatcr, DWORD * chcr)
+{
+	int		unidad;
+	long	paso_o, paso_d;
+	DWORD	origen, destino, cuenta;
+	BYTE	buf[32];
+
+	if (!(*chcr & DE) || (*chcr & CHCR_TE))
+		return;
+
+	if (CHCR_RS(*chcr) != CHCR_RS_AUTO)
+	{
+		// La pide un periferico. En la Dreamcast esas transferencias las hace
+		// el ASIC (PVR, GD-ROM, Maple, G2), no el DMAC del SH-4.
+		logxmsg(LOG_MEM, "DMA: canal %d con RS=%x, no es auto-request\n", n, CHCR_RS(*chcr));
+		return;
+	}
+
+	unidad  = dma_unidad(*chcr);
+	paso_o  = dma_paso(CHCR_SM(*chcr), unidad);
+	paso_d  = dma_paso(CHCR_DM(*chcr), unidad);
+	origen  = *sar;
+	destino = *dar;
+	cuenta  = *dmatcr ? *dmatcr : 0x1000000;	// 0 significa 16M unidades
+
+	logxmsg(LOG_MEM, "DMA: canal %d, %x -> %x, %d x %d bytes\n",
+		n, origen, destino, cuenta, unidad);
+
+	while (cuenta--)
+	{
+		// El DMAC trabaja con direcciones fisicas: SAR y DAR los programa el
+		// guest ya resueltos. Ademas esto corre entre instrucciones, donde no
+		// hay salto armado al que abortar.
+		memread_fisico(origen, buf, unidad);
+		memwrite_fisico(destino, buf, unidad);
+
+		origen  += paso_o;
+		destino += paso_d;
+	}
+
+	*sar    = origen;
+	*dar    = destino;
+	*dmatcr = 0;
+	*chcr  |= CHCR_TE;
+	*chcr  &= ~((DWORD) DE);
+
+	if (*chcr & CHCR_IE)
+		logxmsg(LOG_MEM, "DMA: canal %d pide interrupcion (no implementada)\n", n);
+}
+
+void dma_check()
+{
+	if (!(*DMAOR & DME))
+		return;
+
+	dma_canal(0, SAR0, DAR0, DMATCR0, CHCR0);
+	dma_canal(1, SAR1, DAR1, DMATCR1, CHCR1);
+	dma_canal(2, SAR2, DAR2, DMATCR2, CHCR2);
+	dma_canal(3, SAR3, DAR3, DMATCR3, CHCR3);
+}
+
+/* Instantanea para reejecutar la instruccion que falla por MMU. Global y no
+   local a main_loop() a proposito: una local viva a traves de setjmp/longjmp
+   tendria que ser volatile, y copiar un struct volatile es incomodo. */
+static context_t contexto_previo;
+
+/* Marca del contador monotono para el barrido de pantalla. Fuera del contexto:
+   restaurar la instantanea de la MMU no debe hacer retroceder el reloj. */
+static unsigned long long marca_linea = 0;
+
+/* Tiempo real (SDL_GetTicks) al entrar a main_loop, para --limitar. */
+static unsigned long real_inicio = 0;
 
 void main_loop(void)
 {
@@ -212,7 +273,11 @@ void main_loop(void)
 //	DWORD valor;
 //	int timer_cnt = 0;
 
-	timer_check(); // we need to check the timer on when 0 cycles have been ran
+	// Referencia de tiempo real para --limitar. Se toma aca y no al arrancar el
+	// programa para no contar la carga de la BIOS y de la imagen.
+	real_inicio = SDL_GetTicks();
+
+	timer_check(0); // arranca sin ciclos transcurridos: solo fija el TSTR previo
 
 	for (;;)
 	{
@@ -227,22 +292,70 @@ void main_loop(void)
 #endif	
 //		instr = *(WORD *) str_PC;
 
-			core.execute(*(WORD *) get_memory_pointer(PC));
+			if (traza_activa)
+				traza_paso(PC);
+
+			if (!mmu_activa)
+			{
+				// Camino rapido: sin MMU no hay fallo que abortar, asi que no
+				// se saca instantanea ni se arma el salto. Es todo lo que
+				// corre hoy y tiene que costar exactamente lo de antes.
+				core.execute(*(WORD *) get_memory_pointer(PC));
+			}
+			else if (setjmp(mmu_salto) == 0)
+			{
+				// Las excepciones de MMU del SH-4 son reejecutables: el
+				// manejador arregla la tabla, hace RTE y la instruccion se
+				// repite entera. Pero los handlers de dcemu mutan registros
+				// alrededor del acceso (MOV.L @Rn+, MOV.L Rm,@-Rn), asi que
+				// hay que poder deshacerlo. Ver docs/mmu-plan.md, fase 5.
+				memcpy(&contexto_previo, &core.context, sizeof(context_t));
+
+				mmu_salto_armado = 1;
+				core.execute(*(WORD *) get_memory_pointer(PC));
+				mmu_salto_armado = 0;
+			}
+			else
+			{
+				// Volvimos de un fallo. Restaurar deja PC en la instruccion
+				// que fallo -- o en el salto, si el fallo fue en su ranura de
+				// retardo, porque el longjmp desenrolla los dos niveles.
+				mmu_salto_armado = 0;
+				memcpy(&core.context, &contexto_previo, sizeof(context_t));
+
+				excepcion_entrar(mmu_exc_codigo, mmu_exc_vector);
+			}
 
 //			(*PC_func) ();
-
-//			dma_check();
 
 			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
 			// por lo que en un segundo tenemos 781250 ticks.
 			// cada 1 ms -> 781,25 ticks.
 			if (core.context.cycles >= 50)
 			{
-				core.context.cycles_v_int +=  core.context.cycles;
-				core.context.cycles=core.context.cycles-50;
-				timer_check();
+				// Consumir el acumulado entero y pasarlo al contador monotono.
+				// Los consumidores periodicos comparan contra su propia marca:
+				// ya no hay acumuladores que sumen y resten cantidades
+				// distintas. Ver docs/clock-plan.md, fase 2.
+				DWORD ciclos = core.context.cycles;
+
+				core.context.cycles -= ciclos;
+				reloj_total += ciclos;
+
+				// Los dos temporizadores reciben la cantidad de ciclos y llevan
+				// su propio resto, cada uno con su divisor. Ninguno entrega su
+				// interrupcion: solo dejan su bandera puesta.
+				timer_check(ciclos);
+				wdt_tick(ciclos);
+
+				// Y aca se entrega la que corresponda, si SR lo permite. Si no
+				// se puede, la bandera sigue puesta y se reintenta en la vuelta
+				// siguiente, que es lo que hace el chip.
+				intc_revisar_sh4();
+
+				dma_check();
 			}
-			if(intc_queuemask)
+			if(intc_queuemask || intc_queuemask_ext)
 				check_ints();
 
 /*			if (PC == BreakPoint)
@@ -257,11 +370,18 @@ void main_loop(void)
 // 			core.context.cycles++;
 
 //			if (cnt % (500000 / 0x1FF) == 0)
-			if ( core.context.cycles_v_int  >= 978) // 978)
+			// Antes era 978 fijo, una constante empirica que hacia los frames
+			// 6,5 veces mas rapidos. Ahora sale de SPG_LOAD y SPG_CONTROL:
+			// DC_CPU_HZ / (lineas * campos por segundo). Ver
+			// docs/clock-plan.md, fase 3.
+			//
+			// Y la cuenta va contra una marca del contador monotono, no contra
+			// un acumulador que se suma y se resta (fase 2).
+			if (reloj_total - marca_linea >= pvr_ciclos_linea)
 			{
 				pvr_scanline++;
-   				
-				core.context.cycles_v_int = core.context.cycles_v_int - 978;
+
+				marca_linea += pvr_ciclos_linea;
 
 				if (pvr_scanline == pvr_spg_vblank_int_out)
 				{
@@ -288,6 +408,28 @@ void main_loop(void)
 
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
+
+		// Fin de frame: el unico sitio donde tiene sentido frenar. Con --limitar,
+		// si el tiempo emulado se adelanto al real se duerme la diferencia. Solo
+		// frena: donde dcemu ya es mas lento que una consola no hace nada. Ver
+		// docs/clock-plan.md, fase 4.
+		if (opciones.limitar)
+		{
+			unsigned long long emulado = reloj_ms();
+			unsigned long      real    = SDL_GetTicks() - real_inicio;
+
+			if (emulado > real)
+			{
+				unsigned long sobra = (unsigned long) (emulado - real);
+
+				// Techo por si la cuenta se desmadra: mejor ir rapido que
+				// congelar el emulador esperando.
+				if (sobra > 100)
+					sobra = 100;
+
+				SDL_Delay(sobra);
+			}
+		}
 //		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
 		while (SDL_PollEvent(&event))
@@ -478,6 +620,13 @@ void main_loop(void)
                     case SDLK_F1:
 					SDL_WM_ToggleFullScreen(outputscreen);
 					break;
+
+                    case SDLK_F5:
+					volcar_framebuffer("captura.bmp");
+					// Con la traza puesta, F5 sirve ademas para preguntar
+					// "donde esta el PC ahora mismo".
+					traza_volcar("a pedido (F5)");
+					break;
                     case SDLK_F2:
 					if(gui_visible == true) gui_visible=false;
 					else gui_visible=true;
@@ -635,7 +784,7 @@ int cargar_bios()
 	
 	idx = 0;
 
-	for (c = fgetc(fp); c != EOF && !feof(fp); c = fgetc(fp))
+	for (c = fgetc(fp); c != EOF && !feof(fp) && idx < BIOS_SIZE; c = fgetc(fp))
 		bios_mem[idx++] = c;
 
 	fclose(fp);
@@ -672,6 +821,7 @@ void inicializar_fonts()
 
 		p = lbuf->pixels;
 		bits = 0;
+		nibble = 0;	// si no, el primer byte de la primera letra sale con basura
 
 		for (y = 0; y < 24; y++)
 		{
@@ -717,7 +867,16 @@ int main(int argc, char *argv[])
 //	SDL_TimerID vblank_id;
 //	SDL_Thread * timer_thread;
 
-	//FILE * fp; 
+	//FILE * fp;
+
+	{
+		int r = opciones_parsear(argc, argv);
+
+		if (r)
+			return (r < 0) ? 0 : 1;	// -1 es --ayuda, que no es un error
+	}
+
+	traza_activa = opciones.traza_mem;
 
 	inicializar_logs();
 
@@ -785,12 +944,43 @@ int main(int argc, char *argv[])
 ///*	
 	logmsg("cargando bios (bios.bin)\n");
     if (cargar_bios())
-		return 1; 
+		return 1;
 //*/
 
+	// La flash de 128 KB: region, idioma, fecha y nombre de la consola. Si el
+	// archivo no esta se sintetiza una minima en vez de fallar.
+	logmsg("cargando flash (flash.bin)\n");
+	if (sistema_flash_iniciar("bios/flash.bin"))
+		return 1;
+
+	// Arranque por el boot ROM: no se carga nada a mano, la imagen (si la hay)
+	// se monta para que la vea la lectora. Ver la fase 1.1 del plan.
+	if (opciones.arranque_bios)
+	{
+		if (opciones.imagen != NULL)
+		{
+			fprintf(stderr, "montando %s en la lectora.\n", opciones.imagen);
+
+			if (iso_init((char *) opciones.imagen))
+			{
+				// Sin imagen valida se sigue igual: con la bandeja vacia la
+				// BIOS tiene que llegar a su pantalla de "sin disco".
+				fprintf(stderr, "No se pudo montar la imagen; se arranca sin disco.\n");
+				iso_init(NULL);
+			}
+		}
+		else
+		{
+			fprintf(stderr, "arranque por BIOS sin imagen: bandeja vacia.\n");
+			iso_init(NULL);
+		}
+	}
+	else
+	{
+
 	// determinemos qu� vamos a cargar
-	char * ejecutable = argv[1] ? argv[1] : "1st_read.bin";
-	
+	char * ejecutable = opciones.imagen ? (char *) opciones.imagen : "1st_read.bin";
+
 	fprintf(stderr, "usando %s como parametro.\n", ejecutable);
 
 	if (strncmp(&ejecutable[strlen(ejecutable) - 4], ".bin", 4) == 0)
@@ -851,10 +1041,18 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "leidos %ld bytes\n", tam);
 	}
 
+	} // fin del camino sin --bios
+
+	// La lectora ya puede saber si hay disco.
+	gdrom_iniciar(opciones.bandeja);
+
 	// we start the cpu
 	// allocating the current cpu
 	initCpuSubSystem();
-	PC = mem_base + ip_bs1_offset; // ip_bs1_offset; // + mem_offset;
+
+	// Con --bios se parte en el vector de reset y el boot ROM hace todo el
+	// trabajo; si no, en el bootstrap de IP.BIN, que es el camino de siempre.
+	PC = opciones.arranque_bios ? 0xA0000000 : (mem_base + ip_bs1_offset);
  //	PC = 0x8c010000;
 //	PC = 0x8c000000;
 //	PC = 0x00000000;
@@ -897,6 +1095,11 @@ int main(int argc, char *argv[])
 #endif	
 
 #ifdef BIOS_HACKS
+	// Los hooks de syscall: siguen siendo la forma de correr un .bin suelto
+	// sin IP.BIN valido, pero ahora son opcionales. Con --bios estorban, asi
+	// que opciones_parsear() los apaga solo. Ver la fase 4 del plan.
+	if (opciones.hacks_bios)
+	{
 	// HACK!
  	dwvalor = HACK_BASE + HACK_ROMFONT;	memwrite(SYSCALL_ROMFONT, &dwvalor, sizeof(DWORD));
 	dwvalor = HACK_BASE + HACK_GDROM;	memwrite(SYSCALL_GDROM, &dwvalor, sizeof(DWORD));
@@ -904,18 +1107,13 @@ int main(int argc, char *argv[])
  	dwvalor = HACK_BASE + HACK_FLASHROM; memwrite(SYSCALL_FLASHROM, &dwvalor, sizeof(DWORD));
  	dwvalor = HACK_BASE + HACK_UNKNOWN; memwrite(SYSCALL_UNKNOWN, &dwvalor, sizeof(DWORD));
 
-//	vamos a hacer esto:
-//		HACK_BASE       :	RTS
-//		HACK_BASE + 2	:	MOV.L (disp*4 + PC & 0xFFFFFFFC + 4), R0
-// 		HACK_BASE + 4	:	<POSICION DEL FONT EN LA MEMORIA>
- 
- 	wvalor = 0x000B;		memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);
- 	wvalor = 0xD000;		memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
-#ifdef USE_BIOS_FONT 	
- 	dwvalor = 0x00100020;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
-#else 	
- 	dwvalor = FONT_BASE;	memwrite(HACK_BASE + HACK_ROMFONT + 4, &dwvalor, 4);
-#endif 	
+	// Igual que el del GD-ROM y el de la flash: RTS y el opcode ilegal en la
+	// ranura de retardo, que dcopcodes.c despacha a hack_romfont(). Antes era
+	// RTS + MOV.L @(0,PC),R0 con la direccion de la fuente como literal en
+	// HACK_BASE + 4, o sea que las tres funciones del syscall respondian lo
+	// mismo. Ver hack_romfont() por que eso colgaba a lock_bfont() de KOS.
+	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_ROMFONT + 0, &wvalor, 2);
+	wvalor = 0xFFFF; /* BIOS_HACK */	memwrite(HACK_BASE + HACK_ROMFONT + 2, &wvalor, 2);
 
 	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
 	wvalor = 0xFFFF; /* BIOS_HACK*/		memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
@@ -923,11 +1121,16 @@ int main(int argc, char *argv[])
 	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_SYSINFO, &wvalor, 2);
 	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_SYSINFO + 2, &wvalor, 2);
 
-	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_FLASHROM, &wvalor, 2);
-	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_FLASHROM + 2, &wvalor, 2);
+	// Igual que el del GD-ROM: RTS y el opcode ilegal en la ranura de retardo,
+	// que dcopcodes.c despacha a hack_flashrom(). Antes era RTS + NOP, o sea
+	// que el syscall volvia sin hacer nada y flashrom_get_region() de KOS
+	// reportaba "can't find partition 0".
+	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_FLASHROM, &wvalor, 2);
+	wvalor = 0xFFFF; /* BIOS_HACK */	memwrite(HACK_BASE + HACK_FLASHROM + 2, &wvalor, 2);
 
 	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_UNKNOWN, &wvalor, 2);
 	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_UNKNOWN + 2, &wvalor, 2);
+	}
 #endif // BIOS_HACKS
 
 	start_time = time(NULL);
@@ -955,6 +1158,8 @@ int main(int argc, char *argv[])
 	#endif
 
 	main_loop();
+
+	traza_resumen();
 
 //	SDL_RemoveTimer(timer_id);
 //	SDL_RemoveTimer(vblank_id);

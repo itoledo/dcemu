@@ -66,9 +66,10 @@ OPCODE(sets144) // SETS (00000000 01011000)
 
 OPCODE(ldtlb136) // LDTLB (00000000 00111000)
 {
-	/* Carga la TLB desde PTEH/PTEL/PTEA. dcemu no emula la MMU -- todos los
-	   accesos son directos -- asi que no hay TLB que cargar. Se deja como
-	   instruccion valida que no hace nada, en vez de un opcode ilegal. */
+	/* Carga la entrada de la UTLB que apunta MMUCR.URC desde PTEH, PTEL y
+	   PTEA. No toca URC: el contador lo mueve la busqueda, no la carga. */
+	mmu_ldtlb(*PTEH, *PTEL, *PTEA, MMUCR_URC(*MMUCR));
+
 	PC += 2;
 
 	core.context.cycles += 1;
@@ -450,10 +451,18 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 //		logxmsg(LOG_MEM, "PREF %x\n", addr);
 		memwrite(addr, src, 32); // 32 bytes por cada SQ
 
-		if (addr & 0x10000000) // debieran ser 0x10000000 o 0x10000020
+		/* Solo la FIFO de poligonos, 0x10000000-0x107FFFFF. El chequeo de antes
+		   era "addr & 0x10000000", un AND de bits que tambien daba verdadero
+		   para 0x11xxxxxx -- la FIFO de texturas del TA, por donde KOS sube las
+		   texturas con sq_fast_cpy(). Cada bloque de 32 bytes de textura se
+		   interpretaba como una palabra de control de poligono. */
+		if ((addr & 0xFF800000) == 0x10000000)
 		{
 //			logxmsg(LOG_MEM, "PREF %x\n", addr);
-			ta_address_pointer =  (DWORD *) &ta_mem[addr & 0xFF]; // 0x00 o 0x20
+			// Misma mascara que ta_write(): dos ranuras de 32 bytes, una por
+			// store queue. Antes era & 0xFF, que no coincidia con el indice de
+			// ta_write() en cuanto el guest pasaba de 0x100.
+			ta_address_pointer =  (DWORD *) &ta_mem[addr & 0x3F]; // 0x00 o 0x20
 			pcw = *ta_address_pointer;
 			switch ((pcw >> 29) & 0x7)
 			{

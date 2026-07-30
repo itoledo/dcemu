@@ -1,8 +1,8 @@
 CPP  = g++
 CC   = gcc
 
-OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
-LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
 
 
 LIBS = `sdl-config --libs` -Llib/linux -lSDLmain -lSDL -lcdio -lGL -liso9660 -lguichan_opengl -lguichan_sdl -lguichan -lSIMDx86
@@ -25,14 +25,17 @@ clean: clean-custom
 $(BIN): $(OBJ)
 	$(CC) $(LINKOBJ) -o "dcemu" $(LIBS)
 
-./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h   graficos.h intc.h gui.h
+./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h   graficos.h intc.h gui.h render.h
 	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
 
-./obj/main.o: main.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h BFont.h branch.h intc.h debug.h graficos.h iso.h gui.h
+./obj/main.o: main.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h BFont.h branch.h intc.h debug.h graficos.h iso.h gui.h gdrom.h opciones.h sistema.h traza.h
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
 
-./obj/mem.o: mem.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h intc.h   graficos.h gui.h
+./obj/mem.o: mem.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h intc.h   graficos.h gui.h gdrom.h opciones.h sistema.h traza.h mmu.h
 	$(CC) -c mem.c -o ./obj/mem.o $(CFLAGS)
+
+./obj/mmu.o: mmu.c mmu.h lnxdefs.h log.h
+	$(CC) -c mmu.c -o ./obj/mmu.o $(CFLAGS)
 
 ./obj/log.o: log.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h gui.h
 	$(CC) -c log.c -o ./obj/log.o $(CFLAGS)
@@ -52,8 +55,26 @@ $(BIN): $(OBJ)
 ./obj/branch.o: branch.c sh4emu.h log.h mem.h options.h opcodes.h
 	$(CC) -c branch.c -o ./obj/branch.o $(CFLAGS)
 
-./obj/dcopcodes.o: dcopcodes.c main.h options.h reg.h log.h sh4emu.h mem.h   opcodes.h iso.h
+./obj/dcopcodes.o: dcopcodes.c main.h options.h reg.h log.h sh4emu.h mem.h   opcodes.h iso.h gdrom.h
 	$(CC) -c dcopcodes.c -o ./obj/dcopcodes.o $(CFLAGS)
+
+./obj/gdrom.o: gdrom.c gdrom.h main.h options.h reg.h log.h sh4emu.h mem.h   intc.h iso.h opciones.h traza.h
+	$(CC) -c gdrom.c -o ./obj/gdrom.o $(CFLAGS)
+
+./obj/opciones.o: opciones.c opciones.h options.h
+	$(CC) -c opciones.c -o ./obj/opciones.o $(CFLAGS)
+
+./obj/sistema.o: sistema.c sistema.h lnxdefs.h
+	$(CC) -c sistema.c -o ./obj/sistema.o $(CFLAGS)
+
+./obj/wdt.o: wdt.c wdt.h lnxdefs.h log.h
+	$(CC) -c wdt.c -o ./obj/wdt.o $(CFLAGS)
+
+./obj/tmu.o: tmu.c tmu.h lnxdefs.h log.h sh4emu.h
+	$(CC) -c tmu.c -o ./obj/tmu.o $(CFLAGS)
+
+./obj/traza.o: traza.c traza.h lnxdefs.h main.h options.h reg.h log.h sh4emu.h mem.h   opcodes.h debug.h
+	$(CC) -c traza.c -o ./obj/traza.o $(CFLAGS)
 
 ./obj/floatcontrol.o: floatcontrol.c sh4emu.h log.h mem.h options.h opcodes.h
 	$(CC) -c floatcontrol.c -o ./obj/floatcontrol.o $(CFLAGS)
@@ -85,7 +106,7 @@ $(BIN): $(OBJ)
 ./obj/debug.o: debug.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h   debug.h graficos.h BFont.h
 	$(CC) -c debug.c -o ./obj/debug.o $(CFLAGS)
 
-./obj/iso.o: iso.c include/cdio/cdio_config.h include/cdio/cdio.h   include/cdio/version.h include/cdio/types.h include/cdio/cdio_config.h   include/cdio/sector.h include/cdio/device.h include/cdio/disc.h   include/cdio/read.h include/cdio/cdtext.h include/cdio/track.h   include/cdio/iso9660.h include/cdio/ds.h include/cdio/xa.h   include/cdio/rock.h include/cdio/cd_types.h iso.h iso9660_min.h lnxdefs.h
+./obj/iso.o: iso.c iso.h iso9660_min.h include/cdio/cdio_config.h include/cdio/cdio.h   include/cdio/version.h include/cdio/types.h include/cdio/cdio_config.h   include/cdio/sector.h include/cdio/device.h include/cdio/disc.h   include/cdio/read.h include/cdio/cdtext.h include/cdio/track.h   include/cdio/iso9660.h include/cdio/ds.h include/cdio/xa.h   include/cdio/rock.h include/cdio/cd_types.h iso.h iso9660_min.h lnxdefs.h
 	$(CC) -c iso.c -o ./obj/iso.o $(CFLAGS)
 
 ./obj/iso9660_min.o: iso9660_min.c iso9660_min.h

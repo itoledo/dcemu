@@ -5,6 +5,7 @@
 #include "graficos.h"
 #include "intc.h"
 #include "gui.h"
+#include "traza.h"
 //#include "glops.h"
 #include "render.h"
 
@@ -64,6 +65,14 @@ DWORD total_polygon_count=0;
 DWORD strip_polygon_count = 0;
 DWORD strip_count =0;
 
+/* Contadores de diagnostico del TA, solo activos con --traza-mem. Contestan la
+   pregunta que hay que hacer primero cuando no se dibuja nada: llega
+   geometria, se cierran las tiras, y las coordenadas caen en pantalla. */
+static int   traza_ta_vertices = 0;
+static int   traza_ta_fin_tira = 0;
+static int   traza_ta_tipos[16];
+static float traza_ta_min[3], traza_ta_max[3];
+
 static int blend_modes [ ] = {GL_ZERO,GL_ONE,GL_DST_COLOR,GL_ONE_MINUS_DST_COLOR,GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,GL_DST_ALPHA,GL_ONE_MINUS_DST_ALPHA};
 
 static int depth_modes [ ] = {GL_NEVER,GL_LESS,GL_EQUAL,GL_LEQUAL,GL_GREATER,GL_NOTEQUAL,GL_GEQUAL,GL_ALWAYS };
@@ -100,9 +109,9 @@ Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
 #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
 struct cached_texture
 {
-	int		usize;		// tamaño horizontal
-	int		vsize;		// tamaño vertical
-	DWORD	memorypos;	// posición en memoria de la textura
+	int		usize;		// tamaï¿½o horizontal
+	int		vsize;		// tamaï¿½o vertical
+	DWORD	memorypos;	// posiciï¿½n en memoria de la textura
 	void *	data;		// datos de la textura 'twiddled'
  	GLuint	texture;
  	bool	twiddled;
@@ -169,7 +178,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 	logxmsg(LOG_PVR, "get_texture: creando textura %d\n", cur_tex_count);
 
-	// si llegamos aquí, la textura no está.
+	// si llegamos aquï¿½, la textura no estï¿½.
 	cached_textures[cur_tex_count].usize = usize;
 	cached_textures[cur_tex_count].vsize = vsize;
 	cached_textures[cur_tex_count].memorypos = memorypos;
@@ -271,12 +280,17 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 	pvr_bkg_poly_t bkg;
 	DWORD bgplane = 0;
 
+	if (traza_activa)
+		fprintf(stderr, "traza: STARTRENDER: hechas=%02x habilitadas=%02x tiras=%d\n",
+			(unsigned) pvr_listdone, (unsigned) pvr_registered, strip_count);
+
 	logxmsg(LOG_PVR, "tag address: %08x\n", (pvr_isp_backgnd_t >> 3) & 0x1FFFFF);
 	logxmsg(LOG_PVR, "param_base:  %08x\n", (pvr_param_base));
 
 	if (bgplane > 0)
 	{
-    	memread(bgplane, &bkg, sizeof(pvr_bkg_poly_t));
+    	/* bgplane sale de los registros del PVR: ya es una direccion resuelta. */
+	memread_fisico(bgplane, &bkg, sizeof(pvr_bkg_poly_t));
 
     	logxmsg(LOG_PVR, "bkg: (%f,%f,%f), (%f,%f,%f), (%f,%f,%f)\n",
     		bkg.x1, bkg.y1, bkg.z1,
@@ -301,9 +315,47 @@ int compare(const void *  f,const void * s)
 }
 
 void cb_tastart(DWORD addr, void * p, size_t size)
-{	
+{
 	int i;
 	DWORD debug;
+
+	/* Con --traza-mem, reportar las primeras rendidas: cuantas tiras llegaron y
+	   cuantos vertices. Es la pregunta que hay que contestar antes de mirar
+	   matrices o test de profundidad -- si no llega geometria, el resto sobra. */
+	if (traza_activa)
+	{
+		static int rendidas = 0;
+
+		if (rendidas < 3)
+		{
+			int t;
+
+			fprintf(stderr, "traza: render %d: %d tiras, %d vertices en buffer, "
+				"%d vertices vistos, %d con fin-de-tira\n",
+				rendidas, (int) strip_count, (int) total_polygon_count,
+				traza_ta_vertices, traza_ta_fin_tira);
+
+			fprintf(stderr, "traza:   tipos de vertice:");
+			for (t = 0; t < 16; t++)
+				if (traza_ta_tipos[t])
+					fprintf(stderr, " [%d]=%d", t, traza_ta_tipos[t]);
+			fprintf(stderr, "\n");
+
+			fprintf(stderr, "traza:   encuadre: x %.1f..%.1f  y %.1f..%.1f  z %g..%g"
+				"  (pantalla %dx%d)\n",
+				traza_ta_min[0], traza_ta_max[0],
+				traza_ta_min[1], traza_ta_max[1],
+				traza_ta_min[2], traza_ta_max[2],
+				screenancho, screenheight);
+		}
+
+		traza_ta_vertices = 0;
+		traza_ta_fin_tira = 0;
+		memset(traza_ta_tipos, 0, sizeof(traza_ta_tipos));
+
+		rendidas++;
+	}
+
 	glEnable(GL_DEPTH_TEST);
 	glDepthMask(GL_TRUE);
 
@@ -312,6 +364,49 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	// transparent polygons should appear first
 	
 	qsort(TriangleStrip,strip_count,sizeof(TSI),compare);
+
+	/* El estado con que sale cada tira. Si la geometria llega bien y no se ve
+	   nada, esto es lo que queda por mirar: es lo que descubrio que a conio se
+	   le iba la pantalla entera en el culling. */
+	if (traza_activa && strip_count > 0)
+	{
+		static int volcadas = 0;
+
+		if (volcadas < 2)
+		{
+			int t;
+
+			for (t = 0; t < strip_count && t < 4; t++)
+			{
+				fprintf(stderr, "traza:   tira %d: tipo=%d idx=%d n=%d alpha=%d "
+					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d fmt=%04x\n",
+					t, (int) TriangleStrip[t].type, (int) TriangleStrip[t].index,
+					(int) TriangleStrip[t].count, (int) TriangleStrip[t].alpha,
+					(unsigned) TriangleStrip[t].pvr_srcblend,
+					(unsigned) TriangleStrip[t].pvr_dstblend,
+					(unsigned) TriangleStrip[t].depthmode,
+					(int) TriangleStrip[t].zwrite, (int) TriangleStrip[t].culling,
+					(unsigned) TriangleStrip[t].texture.surface,
+					(int) TriangleStrip[t].texture.pvr_texture_size_usize,
+					(int) TriangleStrip[t].texture.pvr_texture_size_vsize,
+					(int) TriangleStrip[t].texture.twiddled,
+					(int) TriangleStrip[t].texture.vq,
+					(unsigned) TriangleStrip[t].texture.pvr_texture_pixelpack);
+
+				/* Con que coordenadas de textura se muestrea. */
+				{
+					DWORD ix = TriangleStrip[t].index;
+					fprintf(stderr, "traza:     v0=(%.1f,%.1f,%g) uv=(%.3f,%.3f) rgba=(%.2f,%.2f,%.2f,%.2f)\n",
+						VertexBuffer[ix].x, VertexBuffer[ix].y, VertexBuffer[ix].z,
+						VertexBuffer[ix].t1, VertexBuffer[ix].t2,
+						VertexBuffer[ix].r, VertexBuffer[ix].g,
+						VertexBuffer[ix].b, VertexBuffer[ix].a);
+				}
+			}
+
+			volcadas++;
+		}
+	}
 
 	debug = TriangleStrip[1].type;
 
@@ -329,16 +424,47 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 			glDepthFunc(TriangleStrip[i].depthmode);		
 
-			if(TriangleStrip[strip_count].culling)
+			/* Iban indexadas con strip_count, que en este bucle ya es la
+			   cantidad total: uno mas que el ultimo indice valido. O sea que
+			   culling y zwrite salian de un elemento sin escribir y se
+			   aplicaban igual a todas las tiras. El indice es i. */
+			/*
+				El campo de culling del PVR tiene cuatro valores: 0 sin culling,
+				1 "cull if small" -- un umbral de area, no una prueba de sentido
+				de giro, asi que GL no tiene equivalente --, 2 descarta el area
+				negativa y 3 la positiva. O sea que 2 y 3 son la misma prueba con
+				el sentido de giro opuesto.
+
+				Antes cualquier valor distinto de cero se trataba como
+				glCullFace(GL_BACK) con el GL_CCW por omision de GL, y eso
+				descartaba la pantalla entera de conio, que manda todo con
+				culling 2. El TA entrega coordenadas de pantalla con la y hacia
+				abajo y el glOrtho() de screeninit() la invierte, asi que el giro
+				que ve GL sale al revÃ©s del que supone el PVR: hay que decirle
+				cual es la cara delantera en vez de dejar la de por omision.
+			*/
+			switch(TriangleStrip[i].culling)
 			{
+				case 2:
 				glEnable(GL_CULL_FACE);
 				glCullFace(GL_BACK);
-			}
-			else
-			{
+				glFrontFace(GL_CW);
+				break;
+
+				case 3:
+				glEnable(GL_CULL_FACE);
+				glCullFace(GL_BACK);
+				glFrontFace(GL_CCW);
+				break;
+
+				default:	/* 0 sin culling, 1 sin equivalente en GL */
 				glDisable(GL_CULL_FACE);
+				break;
 			}
-			if(TriangleStrip[strip_count].zwrite)
+
+			/* El campo lleva el bit "Z Write Disable" de la palabra ISP del
+			   PVR, asi que en 1 hay que APAGAR la escritura de profundidad. */
+			if(TriangleStrip[i].zwrite)
 			{
 				glDepthMask(GL_FALSE);
 			}
@@ -397,13 +523,16 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 //	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso ??? VBLINT?
 
 	logxmsg(LOG_PVR, "cb_tastart\n");
+	if (traza_activa)
+		fprintf(stderr, "traza: TA_LIST_INIT: hechas=%02x habilitadas=%02x, se ponen en cero\n",
+			(unsigned) pvr_listdone, (unsigned) pvr_registered);
 	pvr_listdone = 0;
 	limpiar_texturas();
 //	cur_tex_count = 0;
 
 	// ???
-	memread(0xa05f8128, &dw, sizeof(DWORD)); // leer TA_ISP_BASE
-	memwrite(0xa05f8138, &dw, sizeof(DWORD)); // grabar en TA_ITP_CURRENT
+	memread_fisico(0xa05f8128, &dw, sizeof(DWORD)); // leer TA_ISP_BASE
+	memwrite_fisico(0xa05f8138, &dw, sizeof(DWORD)); // grabar en TA_ITP_CURRENT
 
 	limpiar_pantalla();
 
@@ -473,6 +602,10 @@ void cb_ppblocksize(DWORD addr, void * p, size_t size)
 	pvr_registered = 0;
 	pvr_3dscene = 1;
 
+	if (traza_activa)
+		fprintf(stderr, "traza: TA_ALLOC_CTRL=%08x op=%d opmod=%d tr=%d trmod=%d pt=%d\n",
+			(unsigned) dw, opaquepoly, opaquemod, transpoly, transmod, punch_through);
+
 	if (punch_through > 0)
 		SET_BIT(pvr_registered, 1 << 4);
 	else
@@ -502,6 +635,10 @@ void cb_ppblocksize(DWORD addr, void * p, size_t size)
 
 void taListEnd()
 {
+	if (traza_activa)
+		fprintf(stderr, "traza: fin de lista: registrando=%d hechas=%02x habilitadas=%02x\n",
+			pvr_registering, (unsigned) pvr_listdone, (unsigned) pvr_registered);
+
 	if (pvr_registering != -1)
 	{
 		pvr_listdone |= (1 << pvr_registering);
@@ -512,6 +649,8 @@ void taListEnd()
 	if (pvr_listdone == pvr_registered)
 	{
 //		logxmsg(LOG_PVR, "pcw: taListEnd: RENDER_DONE\n");
+		if (traza_activa)
+			fprintf(stderr, "traza: fin de lista: todas hechas, RENDERDONE\n");
 		intc_add(ASIC_EVT_PVR_RENDERDONE, 200);
 	}
 }
@@ -574,10 +713,10 @@ void taPolyModifier()
 		
 	// obj control
 
-	// acá tenemos que determinar qué tipo de parámetros hay que leer
+	// acï¿½ tenemos que determinar quï¿½ tipo de parï¿½metros hay que leer
 	global_parameter = vertex_parameter = -1;
 				
-	// revisemos los parámetros para la lista de vertex
+	// revisemos los parï¿½metros para la lista de vertex
 	if (TA.registers.pcw_texture == 0)
 	{
 		if (TA.registers.pcw_volume == 0)
@@ -770,9 +909,14 @@ void taPolyModifier()
 		TriangleStrip[strip_count].zwrite = RendCtrl.registers.zwrite;
 	}
 	
-	TriangleStrip[strip_count].pvr_srcblend = blend_modes[(ta_address_pointer[2] >> 29) & 0x7]; // srcblend
-	
-	TriangleStrip[strip_count].pvr_srcblend = blend_modes[(ta_address_pointer[2] >> 26) & 0x7]; // srcblend
+	/* En la palabra TSP: bits 31-29 el factor de origen y 28-26 el de destino.
+	   Las dos lineas asignaban a pvr_srcblend, asi que pvr_dstblend nunca se
+	   escribia y glBlendFunc() recibia basura -- con un enum invalido la llamada
+	   se ignora y queda el blend anterior. Por eso el panel translucido del
+	   demo tunnel salia negro opaco. */
+	TriangleStrip[strip_count].pvr_srcblend = blend_modes[(ta_address_pointer[2] >> 29) & 0x7];
+
+	TriangleStrip[strip_count].pvr_dstblend = blend_modes[(ta_address_pointer[2] >> 26) & 0x7];
 	
 	pvr_srcblendmode = (ta_address_pointer[2] >> 25) & 0x1;
 	pvr_dstblendmode = (ta_address_pointer[2] >> 24) & 0x1;
@@ -856,6 +1000,17 @@ void taVertexHandler()
 	
 	TA.control = *ta_address_pointer;
 
+	if (traza_activa)
+	{
+		traza_ta_vertices++;
+
+		if (TA.registers.pcw_end_of_strip)
+			traza_ta_fin_tira++;
+
+		if (vertex_parameter >= 0 && vertex_parameter < 16)
+			traza_ta_tipos[vertex_parameter]++;
+	}
+
 	if(vertexstart == true)
 	{
 		TriangleStrip[strip_count].index = total_polygon_count+1;
@@ -901,7 +1056,7 @@ void taVertexHandler()
 
 #ifdef DEBUG_VERTEX_NEW
 			logxmsg(LOG_PVR, "vertex tipo 1: color %f %f %f %f\n", data[4], data[5], data[6], data[3]);
-			logxmsg(LOG_PVR, "posición: %f %f %f\n", data[0], data[1], data[2]);
+			logxmsg(LOG_PVR, "posiciï¿½n: %f %f %f\n", data[0], data[1], data[2]);
 #endif
 
 			total_polygon_count++;
@@ -922,11 +1077,13 @@ void taVertexHandler()
 		}
 		break;
 				
-		case 3: // Packed Color
-		{			
-			
-			
-			memcpy(&coords[0], &ta_address_pointer[6], sizeof(float)*5);
+		case 3: // Texturado, color empaquetado, UV de 32 bits
+		{
+			/* Layout del tipo 3: +0x04 x, +0x08 y, +0x0C z, +0x10 u, +0x14 v,
+			   +0x18 color base, +0x1C color de offset. Las coordenadas leian
+			   desde [6] -- o sea +0x18, el color -- y se pasaban 12 bytes del
+			   registro de 32. El caso 5 ya lo hacia bien desde [1]. */
+			memcpy(&coords[0], &ta_address_pointer[1], sizeof(float)*5);
 			memcpy(&base_colour, &ta_address_pointer[6], sizeof(DWORD));
 
 #ifdef DEBUG_VERTEX_NEW
@@ -946,7 +1103,11 @@ void taVertexHandler()
 
 			VertexBuffer[total_polygon_count].t2 = coords[4];		
 
-			VertexBuffer[total_polygon_count].a = ((base_colour >> 16) & 0xFF) / 255.0;
+			/* El color empaquetado es ARGB: alpha en 31-24, no en 23-16. Estaba
+			   tomando el alpha del mismo campo que el rojo, asi que la
+			   geometria texturada quedaba con alpha = rojo. El caso 0 ya lo
+			   hacia bien. */
+			VertexBuffer[total_polygon_count].a = ((base_colour >> 24) & 0xFF) / 255.0;
 
 			VertexBuffer[total_polygon_count].r = ((base_colour >> 16) & 0xFF) / 255.0;
 
@@ -996,6 +1157,25 @@ void taVertexHandler()
 		break;
 	}
 
+	if (traza_activa && vertex_parameter >= 0)
+	{
+		/* Rango de las coordenadas que quedaron en el buffer. El TA recibe
+		   vertices ya en coordenadas de pantalla, asi que x tiene que caer en
+		   0..ancho, y en 0..alto, y z es 1/w. Si no, el problema esta en el
+		   layout del vertice o en la transformacion, no en el rasterizado. */
+		vertex * v = &VertexBuffer[total_polygon_count];
+		float c[3];
+		int k;
+
+		c[0] = v->x; c[1] = v->y; c[2] = v->z;
+
+		for (k = 0; k < 3; k++)
+		{
+			if (traza_ta_vertices == 1 || c[k] < traza_ta_min[k]) traza_ta_min[k] = c[k];
+			if (traza_ta_vertices == 1 || c[k] > traza_ta_max[k]) traza_ta_max[k] = c[k];
+		}
+	}
+
 	if (TA.registers.pcw_end_of_strip)
 	{
 #ifdef DEBUG_VERTEX_NEW
@@ -1014,6 +1194,25 @@ void taVertexHandler()
 			TriangleStrip[strip_count].texture.surface = TexInfo.registers.texture_surface << 3;
 		}
 		
+		/*
+			Los parametros globales del PVR -- modo de profundidad, culling,
+			escritura de Z, alpha, los dos factores de blend y todo lo de la
+			textura -- siguen vigentes hasta el proximo encabezado de poligono,
+			no solo para la primera tira que venga detras.
+
+			taPolyModifier() los escribe en la entrada que estaba abierta en ese
+			momento, asi que la tira siguiente arrancaba en cero: depthmode salia
+			0, que no es un enum valido y hace que glDepthFunc() se ignore y
+			quede el de la tira anterior, o GL_NEVER, con lo que no se dibujaba
+			nada. Por eso conio salia negro: manda un encabezado y detras una
+			tira por caracter.
+
+			index y count se rellenan solos: el primero al llegar el proximo
+			vertice, el segundo al cerrar esta tira.
+		*/
+		if (strip_count + 1 < sizeof(TriangleStrip) / sizeof(TriangleStrip[0]))
+			TriangleStrip[strip_count + 1] = TriangleStrip[strip_count];
+
 		strip_count++;
 
 		vertexstart = true;
@@ -1059,43 +1258,218 @@ SDL_Surface * draw_backscreen()
 	return tmp;
 }
 
-void DibujarFramebuffer()
+/*
+	Vuelca el framebuffer emulado a un BMP de 24 bits.
+
+	Lee la RAM de video, no el buffer de OpenGL: es lo que la Dreamcast tiene
+	para mostrar, independiente de si la ventana lo llega a presentar. Sirve
+	para verificar el arranque sin depender de una captura de pantalla, y para
+	distinguir un problema de emulacion de uno de presentacion.
+
+	Solo tiene sentido con el PVR en modo 2D (framebuffer plano), que es como
+	arrancan la BIOS y los demos que escriben directo a la RAM de video.
+*/
+int volcar_framebuffer(const char * ruta)
 {
-	glEnable(GL_TEXTURE_2D);
-	
-	glBindTexture(GL_TEXTURE_2D, background_texture);
-	glPixelStorei(GL_UNPACK_ROW_LENGTH, screenancho);
-	switch(screenformat)
+	FILE *			fp;
+	unsigned char *	origen = (unsigned char *) get_memory_pointer(0xA5000000 + pvr_fb_r_sof1);
+	int				ancho = screenancho;
+	int				alto = screenheight;
+	int				bpp, x, y, relleno;
+	unsigned char	cabecera[54];
+	long			tam_datos;
+
+	switch (screenformat)
 	{
 		case FRAMEBUFFER_ARGB0555:
-		{
-			logxmsg(LOG_PVR, "DibujarFramebuffer: ARGB0555\n");
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_5_5_1, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
-
-		case FRAMEBUFFER_RGB565:
-		{
-			logxmsg(LOG_PVR, "DibujarFramebuffer: RGB565\n");
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
-
-		case FRAMEBUFFER_RGB888:
-		{
-			// FIXME?
-			logxmsg(LOG_PVR, "DibujarFramebuffer: RGB888\n");
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_RGB, GL_UNSIGNED_BYTE, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
-
-		case FRAMEBUFFER_ARGB0888:
-		{
-			logxmsg(LOG_PVR, "DibujarFramebuffer: ARGB0888\n");
-	  		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screentexwidth, screentexheight, 0, GL_BGRA_EXT, GL_UNSIGNED_INT_8_8_8_8_REV, get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
-		}
-		break;
+		case FRAMEBUFFER_RGB565:	bpp = 2;	break;
+		case FRAMEBUFFER_RGB888:	bpp = 3;	break;
+		case FRAMEBUFFER_ARGB0888:	bpp = 4;	break;
+		default:					return 1;
 	}
+
+	if (ancho <= 0 || alto <= 0)
+		return 1;
+
+	fp = fopen(ruta, "wb");
+
+	if (!fp)
+	{
+		fprintf(stderr, "no se pudo crear %s\n", ruta);
+		return 1;
+	}
+
+	/* Cada fila del BMP se alinea a 4 bytes. */
+	relleno = (4 - ((ancho * 3) % 4)) % 4;
+	tam_datos = (long) (ancho * 3 + relleno) * alto;
+
+	memset(cabecera, 0, sizeof(cabecera));
+	cabecera[0] = 'B';	cabecera[1] = 'M';
+	*(DWORD *) &cabecera[2]  = (DWORD) (54 + tam_datos);
+	*(DWORD *) &cabecera[10] = 54;
+	*(DWORD *) &cabecera[14] = 40;				/* BITMAPINFOHEADER */
+	*(long  *) &cabecera[18] = ancho;
+	*(long  *) &cabecera[22] = alto;			/* positivo: de abajo hacia arriba */
+	*(WORD  *) &cabecera[26] = 1;				/* planos */
+	*(WORD  *) &cabecera[28] = 24;
+	*(DWORD *) &cabecera[34] = (DWORD) tam_datos;
+
+	fwrite(cabecera, 1, sizeof(cabecera), fp);
+
+	for (y = alto - 1; y >= 0; y--)
+	{
+		unsigned char * fila = origen + (long) y * ancho * bpp;
+
+		for (x = 0; x < ancho; x++)
+		{
+			unsigned char * p = fila + x * bpp;
+			unsigned char	rgb[3];		/* el BMP los guarda como B, G, R */
+
+			switch (screenformat)
+			{
+				case FRAMEBUFFER_ARGB0555:
+				{
+					WORD v = *(WORD *) p;
+
+					rgb[0] = (unsigned char) (((v      ) & 0x1F) << 3);
+					rgb[1] = (unsigned char) (((v >>  5) & 0x1F) << 3);
+					rgb[2] = (unsigned char) (((v >> 10) & 0x1F) << 3);
+				}
+				break;
+
+				case FRAMEBUFFER_RGB565:
+				{
+					WORD v = *(WORD *) p;
+
+					rgb[0] = (unsigned char) (((v      ) & 0x1F) << 3);
+					rgb[1] = (unsigned char) (((v >>  5) & 0x3F) << 2);
+					rgb[2] = (unsigned char) (((v >> 11) & 0x1F) << 3);
+				}
+				break;
+
+				default:	/* RGB888 y ARGB0888 ya vienen en B, G, R */
+					rgb[0] = p[0];
+					rgb[1] = p[1];
+					rgb[2] = p[2];
+				break;
+			}
+
+			fwrite(rgb, 1, 3, fp);
+		}
+
+		for (x = 0; x < relleno; x++)
+			fputc(0, fp);
+	}
+
+	fclose(fp);
+
+	fprintf(stderr, "framebuffer volcado a %s (%dx%d, formato %d)\n",
+		ruta, ancho, alto, screenformat);
+
+	return 0;
+}
+
+void DibujarFramebuffer()
+{
+	/* Formato y tipo de GL que corresponden al formato del framebuffer. */
+	GLenum formato, tipo;
+
+	/* Lo ultimo que se reservo, para no rehacer la textura cada frame. */
+	static int ultimo_formato = -1;
+	static int ultimo_ancho   = 0;
+	static int ultimo_alto    = 0;
+
+	int traza_este_frame = 0;
+
+	switch(screenformat)
+	{
+		case FRAMEBUFFER_ARGB0555:	formato = GL_RGB;		tipo = GL_UNSIGNED_SHORT_5_5_5_1;	break;
+		case FRAMEBUFFER_RGB565:	formato = GL_RGB;		tipo = GL_UNSIGNED_SHORT_5_6_5;		break;
+		case FRAMEBUFFER_RGB888:	formato = GL_RGB;		tipo = GL_UNSIGNED_BYTE;			break;
+		case FRAMEBUFFER_ARGB0888:	formato = GL_BGRA_EXT;	tipo = GL_UNSIGNED_INT_8_8_8_8_REV;	break;
+
+		default:
+		logxmsg(LOG_PVR, "DibujarFramebuffer: formato %d desconocido\n", screenformat);
+		return;
+	}
+
+	if (traza_activa)
+	{
+		static int vueltas = 0;
+
+		traza_este_frame = (vueltas < 2 || vueltas % 300 == 0);
+
+		/* Los primeros frames y despues de tanto en tanto: lo interesante pasa
+		   cuando el demo ya lleva un rato dibujando, no al arrancar. */
+		if (traza_este_frame)
+		{
+			/* De donde lee dcemu, en que formato, y que hay ahi. */
+			BYTE * base = get_memory_pointer(0xA5000000 + pvr_fb_r_sof1);
+			int i;
+
+			fprintf(stderr, "traza: framebuffer %d: sof1=%08x formato=%d %dx%d tex %dx%d\n",
+				vueltas, (unsigned) pvr_fb_r_sof1, screenformat,
+				screenancho, screenheight,
+				(int) screentexwidth, (int) screentexheight);
+
+			fprintf(stderr, "traza:   primeros 16 bytes:");
+			for (i = 0; i < 16; i++)
+				fprintf(stderr, " %02x", base[i]);
+			fprintf(stderr, "\n");
+
+			fprintf(stderr, "traza:   el guest escribio %u veces / %u bytes, "
+				"offsets %lx..%lx, ventanas %04x\n",
+				(unsigned) traza_video_escrituras, (unsigned) traza_video_bytes,
+				traza_video_min, traza_video_max,
+				(unsigned) traza_video_ventanas);
+		}
+
+		vueltas++;
+	}
+
+	glEnable(GL_TEXTURE_2D);
+	glBindTexture(GL_TEXTURE_2D, background_texture);
+
+	/*
+		La textura tiene que ser potencia de dos y el framebuffer del guest no lo
+		es, asi que son 1024x512 para 640x480.
+
+		Antes esto hacia un glTexImage2D() de 1024x512 leyendo directo del
+		framebuffer con GL_UNPACK_ROW_LENGTH en 640: GL pedia 512 filas de 1024
+		pixeles avanzando 640 por fila, o sea que leia muy por fuera del
+		framebuffer y solapaba filas entre si. El resultado no era la pantalla
+		del guest sino un patron regular armado con lo que hubiera en la RAM de
+		video -- tanto que dos demos distintos mostraban la misma imagen.
+
+		Ahora la textura se reserva entera una sola vez y cada frame se sube solo
+		el rectangulo que existe de verdad. Las coordenadas del quad de abajo ya
+		limitan el muestreo a ese rectangulo.
+	*/
+	if (ultimo_formato != screenformat
+	||  ultimo_ancho   != (int) screentexwidth
+	||  ultimo_alto    != (int) screentexheight)
+	{
+		logxmsg(LOG_PVR, "DibujarFramebuffer: reservando textura %dx%d, formato %d\n",
+			(int) screentexwidth, (int) screentexheight, screenformat);
+
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+			(GLsizei) screentexwidth, (GLsizei) screentexheight, 0,
+			formato, tipo, NULL);
+
+		ultimo_formato = screenformat;
+		ultimo_ancho   = (int) screentexwidth;
+		ultimo_alto    = (int) screentexheight;
+	}
+
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, screenancho);
+
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+		screenancho, screenheight,
+		formato, tipo,
+		get_memory_pointer(0xA5000000 + pvr_fb_r_sof1));
+
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
 	glDisable(GL_BLEND);
 	glDisable(GL_DEPTH_TEST);
 #define PROFUNDIDAD (-1000.0f)
@@ -1105,7 +1479,31 @@ void DibujarFramebuffer()
 	glTexCoord2f(screenancho / screentexwidth, 0.0f); glVertex3f((float) screenancho, 0.0f, PROFUNDIDAD);
 	glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, 0.0f, PROFUNDIDAD);
 	glEnd();
-	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+	/* Diagnostico temporal: que quedo de verdad en el buffer de GL. Si la RAM de
+	   video tiene la imagen y esto sale negro, el problema es la subida o el
+	   quad; si esto tiene color y la pantalla no, es el swap o la captura. */
+	if (traza_este_frame)
+	{
+		static const int px[4] = {  20, 320, 100, 600 };
+		static const int py[4] = {  20, 240, 400, 460 };
+		GLenum err;
+		int i;
+
+		fprintf(stderr, "traza:   GL leyo:");
+		for (i = 0; i < 4; i++)
+		{
+			BYTE p[4] = { 0, 0, 0, 0 };
+
+			/* glReadPixels tiene el origen abajo, el quad arriba. */
+			glReadPixels(px[i], screenheight - 1 - py[i], 1, 1,
+				GL_RGBA, GL_UNSIGNED_BYTE, p);
+			fprintf(stderr, " (%d,%d)=%02x%02x%02x", px[i], py[i], p[0], p[1], p[2]);
+		}
+		err = glGetError();
+		fprintf(stderr, "  glGetError=%04x\n", (unsigned) err);
+	}
+
 	glEnable(GL_BLEND);
 	glDisable(GL_TEXTURE_2D);
 	glEnable(GL_DEPTH_TEST);
@@ -1307,7 +1705,7 @@ int screeninit(void)
 
 	screenancho = screenwidth * ((screenbits == 32) ? 1 : 2);
 
-	// definamos el tamaño de la textura
+	// definamos el tamaï¿½o de la textura
 	if (screenancho > 512)
 		screentexwidth = 1024.0f;
 	else

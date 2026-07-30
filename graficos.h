@@ -18,6 +18,10 @@ extern	DWORD	pvr_fb_r_sof1;
 // sync pulse generator
 extern	DWORD	pvr_spg_load;
 extern	DWORD	pvr_spg_load_vcount;
+
+/* Ciclos de CPU por linea de barrido, derivado de SPG_LOAD y SPG_CONTROL.
+   Lo recalcula mem.c cuando el guest los escribe. */
+extern	DWORD	pvr_ciclos_linea;
 extern	DWORD	pvr_spg_vblank_int;
 
 extern	DWORD	pvr_isp_backgnd_t;
@@ -42,6 +46,9 @@ int glinit(void);
 int screeninit(void);
 SDL_Surface * draw_backscreen(void);
 void DibujarFramebuffer();
+
+/* Vuelca la RAM de video a un BMP, sin pasar por OpenGL. Tecla F5. */
+int volcar_framebuffer(const char * ruta);
 void DibujarGL(SDL_Surface * sfc);
 void limpiar_pantalla();
 

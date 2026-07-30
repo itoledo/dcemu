@@ -8,7 +8,16 @@
 
 sh4_cpu core;
 
+/* Registros de la MMU. Solo PTEL estaba enlazado; el resto se agrego en la
+   fase 1 de docs/mmu-plan.md. Todavia nadie los obedece: son respaldo, para
+   que escribirlos y volver a leerlos de el mismo valor. */
+DWORD *		PTEH;		// Page Table Entry High register
 DWORD *		PTEL;		// Page Table Entry Low register
+DWORD *		TTB;		// Translation Table Base register
+DWORD *		TEA;		// TLB Exception Address register
+DWORD *		MMUCR;		// MMU Control Register
+DWORD *		PTEA;		// Page Table Entry Assistance register
+
 DWORD *		CCR;		// Cache Control Register
 DWORD *		INTEVT;		// Interrupt Event Register
 DWORD *		EXPEVT;		// Exception Event Register

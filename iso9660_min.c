@@ -13,6 +13,7 @@
 #define PVD_LBA				16
 #define PVD_TIPO			1
 #define PVD_ROOT_OFFSET		156		/* registro de directorio raiz, 34 bytes */
+#define PVD_ESPACIO_OFFSET	80		/* tamano del volumen en sectores, both-endian */
 
 /* Campos de un registro de directorio. */
 #define DR_LARGO			0
@@ -28,6 +29,7 @@ struct min_iso_s
 	FILE *			fp;
 	unsigned int	root_lba;
 	unsigned int	root_size;		/* en bytes */
+	unsigned int	sectores;		/* tamano del volumen */
 };
 
 static unsigned int leer_le32(const unsigned char * p)
@@ -99,6 +101,7 @@ min_iso_t * min_iso_open(const char * path)
 	root = &pvd[PVD_ROOT_OFFSET];
 	iso->root_lba  = leer_le32(&root[DR_EXTENT]);
 	iso->root_size = leer_le32(&root[DR_SIZE]);
+	iso->sectores  = leer_le32(&pvd[PVD_ESPACIO_OFFSET]);
 
 	if (iso->root_size == 0)
 	{
@@ -134,6 +137,11 @@ long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned i
 	leidos = fread(buf, 1, (size_t) nblocks * MIN_ISO_BLOCKSIZE, iso->fp);
 
 	return (long) leidos;
+}
+
+unsigned int min_iso_sectores(min_iso_t * iso)
+{
+	return (iso == NULL) ? 0 : iso->sectores;
 }
 
 int min_iso_stat_root(min_iso_t * iso, const char * nombre,

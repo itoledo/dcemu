@@ -22,6 +22,12 @@ DWORD	SB_PDTEXT		= 0x0;	//	(0x005F 6944)	PVR-DMA trigger select from external in
 DWORD	pvr_spg_vblank_int = 0x00280208;	// VGA 640x480
 DWORD	pvr_spg_load_vcount = 0x20C;		// VGA 640x480
 
+/* Ciclos de CPU por linea de barrido. Se recalcula al escribir SPG_LOAD o
+   SPG_CONTROL; el valor inicial corresponde al modo VGA de arriba. Antes
+   main_loop() usaba 978 fijo, 6,5 veces mas rapido de lo que toca.
+   Ver docs/clock-plan.md, fase 3. */
+DWORD	pvr_ciclos_linea = 6345;			// DC_CPU_HZ / (0x20C * 60)
+
 DWORD	pvr_spg_control = 0x100;
 DWORD	pvr_spg_hblank = 0x007E0345;
 DWORD	pvr_spg_load = 0x020C0359;

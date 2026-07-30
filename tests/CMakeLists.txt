@@ -17,14 +17,20 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/floatcontrol.c
 	${CMAKE_SOURCE_DIR}/floatgraph.c
 	${CMAKE_SOURCE_DIR}/floatsimple.c
+	${CMAKE_SOURCE_DIR}/gdrom.c
 	${CMAKE_SOURCE_DIR}/log.c
 	${CMAKE_SOURCE_DIR}/logic.c
+	${CMAKE_SOURCE_DIR}/mmu.c
 	${CMAKE_SOURCE_DIR}/mov.c
+	${CMAKE_SOURCE_DIR}/opciones.c
 	${CMAKE_SOURCE_DIR}/opcodes.c
 	${CMAKE_SOURCE_DIR}/sh4emu.c
 	${CMAKE_SOURCE_DIR}/shift.c
 	${CMAKE_SOURCE_DIR}/simdx86_stub.c
+	${CMAKE_SOURCE_DIR}/sistema.c
 	${CMAKE_SOURCE_DIR}/syscontrol.c
+	${CMAKE_SOURCE_DIR}/tmu.c
+	${CMAKE_SOURCE_DIR}/wdt.c
 )
 
 set(DCEMU_PRUEBAS
@@ -40,10 +46,15 @@ set(DCEMU_PRUEBAS
 	test_fpu_control.c
 	test_fpu_graph.c
 	test_fpu_simple.c
+	test_gdrom.c
 	test_logic.c
+	test_mmu.c
 	test_mov.c
 	test_shift.c
+	test_sistema.c
 	test_syscontrol.c
+	test_tmu.c
+	test_wdt.c
 )
 
 add_executable(dcemu_tests ${DCEMU_NUCLEO} ${DCEMU_PRUEBAS})
@@ -70,6 +81,12 @@ target_compile_options(dcemu_tests PRIVATE
 # sin tener que leer la salida entera.
 foreach(_suite mov arith logic shift branch syscontrol fpu-simple fpu-control fpu-graph decodificacion)
 	add_test(NAME sh4.${_suite} COMMAND dcemu_tests ${_suite})
+endforeach()
+
+# Las piezas del arranque por BIOS no son opcodes, asi que van con otro prefijo.
+# La MMU tampoco lo es: es la ventana de control P4 (docs/mmu-plan.md, fase 1).
+foreach(_suite sistema gdrom mmu wdt tmu)
+	add_test(NAME dc.${_suite} COMMAND dcemu_tests ${_suite})
 endforeach()
 
 # La corrida sin filtros, que ademas mide la cobertura de la tabla de opcodes:

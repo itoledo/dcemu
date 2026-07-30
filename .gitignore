@@ -24,3 +24,4 @@ bios/
 *.gdi
 1st_read.bin
 ip.bin
+.vs/

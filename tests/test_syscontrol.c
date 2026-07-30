@@ -108,13 +108,29 @@ static void ocbp_solo_avanza(void)
 	ESPERAR_PC_SIGUIENTE();
 }
 
-/* Sin MMU emulada, LDTLB no tiene TLB que cargar: solo avanza. */
-static void ldtlb_solo_avanza(void)
+/* LDTLB carga la entrada de la UTLB que apunta MMUCR.URC desde PTEH, PTEL y
+   PTEA. No toca registros generales. El detalle del formato se prueba en la
+   suite mmu; aca alcanza con ver que la instruccion llega a la TLB. */
+static void ldtlb_carga_la_tlb(void)
 {
 	arnes_reset();
+	mmu_reset();
+
+	*PTEH  = 0x12345000 | 0x2A;			/* VPN y ASID */
+	*PTEL  = 0x0C001000 | MMU_BIT_V;	/* PPN y valida */
+	*PTEA  = 0;
+	*MMUCR = 7ul << 10;					/* URC = 7 */
 
 	R(1) = 0x12345678;
 	ejecutar(0x0038);					/* LDTLB */
+
+	ESPERAR_U32(mmu_utlb_dir[7] & 0xFFFFFC00, 0x12345000);
+	ESPERAR_U32(mmu_utlb_dir[7] & 0xFF, 0x2A);
+	ESPERAR_U32(mmu_utlb_dir[7] & MMU_BIT_V, MMU_BIT_V);
+	ESPERAR_U32(mmu_utlb_dat1[7] & 0x1FFFFC00, 0x0C001000);
+
+	/* Y no eligio otra entrada. */
+	ESPERAR_U32(mmu_utlb_dir[6], 0);
 
 	ESPERAR_U32(R(1), 0x12345678);
 	ESPERAR_PC_SIGUIENTE();
@@ -964,7 +980,7 @@ static const dc_caso casos[] =
 	CASO(ocbi_solo_avanza),
 	CASO(ocbwb_solo_avanza),
 	CASO(ocbp_solo_avanza),
-	CASO(ldtlb_solo_avanza),
+	CASO(ldtlb_carga_la_tlb),
 	CASO(clrmac_borra_los_dos_registros),
 	CASO(clrs_apaga_s),
 	CASO(sets_prende_s),

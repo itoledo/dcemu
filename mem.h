@@ -2,6 +2,7 @@
 #define _MEM_H_
 
 #include "options.h"
+#include "mmu.h"
 
 #define VIDEO_SIZE		(8 * 1024 * 1024)
 #define MEM_SIZE		(16 * 1024 * 1024)
@@ -18,18 +19,51 @@ typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size)
 extern mem_access_read_t * mem_hash_read[0x100];
 extern mem_access_write_t * mem_hash_write[0x100];
 
+/* Contadores de escrituras a RAM de video, solo con --traza-mem. */
+extern DWORD traza_video_escrituras;
+extern DWORD traza_video_bytes;
+extern DWORD traza_video_ventanas;
+extern long  traza_video_min;
+extern long  traza_video_max;
+
 int inicializar_memoria();
 void mem_hash_setup(void);
 void regmem_setup();
 DWORD float_to_dword(float x);
 void dump_registers();
 
+/* Acceso interno del emulador. La direccion ya es la definitiva y no pasa por
+   la MMU: la usan la carga de archivos, el DMAC, la vista de depuracion, el
+   DMA del GD-ROM y los propios handlers de mem.c, que reciben direcciones ya
+   despachadas. */
+#define memread_fisico(direccion, target, size)   (*mem_hash_read[(direccion) >> 24]) ((direccion), (target), (size))
+#define memwrite_fisico(direccion, source, size)  (*mem_hash_write[(direccion) >> 24]) ((direccion), (source), (size))
+
+/* Acceso del programa emulado: pasa por la MMU. Es el que usan los handlers de
+   instrucciones, directamente o a traves de las macros ReadMemory y
+   WriteMemory de mas abajo.
+
+   Con mmu_activa en cero -- o sea, en todo lo que corre hoy -- cuesta una
+   comparacion contra cero y nada mas. Si la traduccion falla, mmu_traducir()
+   no vuelve: salta a main_loop(), que restaura la instantanea de registros y
+   entra a la excepcion. Ver docs/mmu-plan.md, fases 3 a 5. */
 #ifdef MEMORY_FUNCTIONS
 void memread(unsigned long direccion, void * target, size_t size);
 void memwrite(unsigned long direccion, void * source, size_t size);
 #else
-#define memread(direccion, target, size)    (*mem_hash_read[(direccion) >> 24]) ((direccion), (target), (size))
-#define memwrite(direccion, source, size)   (*mem_hash_write[(direccion) >> 24]) ((direccion), (source), (size))
+#define memread(direccion, target, size) \
+	do { \
+		unsigned long _mmu_d = (direccion); \
+		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_LECTURA); \
+		memread_fisico(_mmu_d, (target), (size)); \
+	} while (0)
+
+#define memwrite(direccion, source, size) \
+	do { \
+		unsigned long _mmu_d = (direccion); \
+		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_ESCRITURA); \
+		memwrite_fisico(_mmu_d, (source), (size)); \
+	} while (0)
 #endif
 
 #ifdef MEMORY_MACROS

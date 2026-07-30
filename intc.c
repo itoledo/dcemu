@@ -1,5 +1,6 @@
 #include "main.h"
 #include "intc.h"
+#include "wdt.h"
 
 //  #define INT_QUEUE
 
@@ -14,6 +15,64 @@ extern	int		pvr_registering;
 extern	int		pvr_listdone;
 static	DWORD	pending_ints = 0;
 DWORD	intc_queuemask = 0;
+DWORD	intc_queuemask_ext = 0;
+
+/*
+	Entrada generica a una excepcion. intc() hace lo mismo para el camino de
+	interrupcion, con INTEVT y el vector 0x600; esto es para todo lo demas.
+
+	La usa la MMU (docs/mmu-plan.md, fase 4). Ojo: a diferencia de intc(), no
+	mira SR.BL. Las excepciones de re-ejecucion con BL puesto son causa de
+	reset en el chip, y aca se registra y se entra igual, que es mas util para
+	depurar que reiniciar en silencio.
+*/
+void excepcion_entrar(DWORD codigo, DWORD vector)
+{
+	SSR = SR;
+	SPC = PC;
+	SGR = R(15);
+
+	*EXPEVT = codigo;
+
+	SET_SH4_BIT(SR_BL);
+	SET_SH4_BIT(SR_MD);
+	SET_SH4_BIT(SR_RB);
+	UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN);
+
+	PC = VBR + vector;
+
+	logxmsg(LOG_INTC, "excepcion: EXPEVT %03x, SPC %08x, salta a %08x\n",
+		codigo, SPC, PC);
+}
+
+/*
+	Las peticiones de los perifericos del SH-4 se derivan de sus banderas, no de
+	un evento puntual: asi una interrupcion que no se puede entregar ahora sigue
+	pendiente hasta que se pueda, que es lo que hace el chip. Ver intc.h.
+*/
+void intc_revisar_sh4(void)
+{
+	/* Si no se puede entregar ninguna, ni vale mirar las banderas. */
+	if (IS_SH4_REG_SET(SR_BL) || VBR == 0)
+		return;
+
+	/* Una por vez: entrar a una deja BL puesto, asi que el resto espera. El
+	   orden entre ellas lo decide intc() por IPR; aca solo se ofrecen. */
+	if ((*TCR0 & TMU_TCR_UNF) && (*TCR0 & TMU_TCR_UNIE) && intc(EXC_TMU0_TUNI0))
+		return;
+
+	if ((*TCR1 & TMU_TCR_UNF) && (*TCR1 & TMU_TCR_UNIE) && intc(EXC_TMU1_TUNI1))
+		return;
+
+	if ((*TCR2 & TMU_TCR_UNF) && (*TCR2 & TMU_TCR_UNIE) && intc(EXC_TMU2_TUNI2))
+		return;
+
+	/* El WDT solo interrumpe en modo temporizador de intervalo; en modo
+	   watchdog el desborde reinicia la maquina y marca WOVF, no IOVF. */
+	if ((wdt_control() & WTCSR_IOVF) && !(wdt_control() & WTCSR_WTIT)
+		&& intc(EXC_WDT_ITI))
+		return;
+}
 
 bool intc(DWORD irq)
 {
@@ -39,9 +98,11 @@ bool intc(DWORD irq)
 
 	switch(irq)
 	{
-/* 2 */	case EXC_IRQD:			v = 0x1;	break; // más de 0001, no corre
-/* 4 */	case EXC_IRQB:			v = 0x3;	break; // más de 0011, no corre
-/* 6 */	case EXC_IRQ9:			v = 0x5;	break; // más de 0101, no corre
+/* 2 */	case EXC_IRQD:			v = 0x1;	break; // mï¿½s de 0001, no corre
+/* 4 */	case EXC_IRQB:			v = 0x3;	break; // mï¿½s de 0011, no corre
+/* 6 */	case EXC_IRQ9:			v = 0x5;	break; // mï¿½s de 0101, no corre
+		/* La prioridad del WDT vive en IPRB, bits 15-12. */
+		case EXC_WDT_ITI:		v = ((*IPRB) >> 12) & 0xf;	break;
 		case EXC_TMU0_TUNI0:	v = ((*IPRA) >> 12) & 0xf;	break;
 		case EXC_TMU1_TUNI1:	v = ((*IPRA) >>  8) & 0xf;	break;
 		case EXC_TMU2_TUNI2:	v = ((*IPRA) >>  4) & 0xf;	break;
@@ -153,7 +214,7 @@ void intc_add(DWORD inttoadd, int cnt)
 /*	pending_ints |= inttoadd; */
 	SET_BIT(ASIC_ACK_A, inttoadd);
 	intc_queuemask |= inttoadd;
-	logxmsg(LOG_INTC, "añadiendo int %x, total %x, count %d\n", inttoadd, intc_queuemask, interrupt_queue);
+	logxmsg(LOG_INTC, "aï¿½adiendo int %x, total %x, count %d\n", inttoadd, intc_queuemask, interrupt_queue);
 #else
 	if (intc_queuemask & inttoadd)
 	{
@@ -162,8 +223,30 @@ void intc_add(DWORD inttoadd, int cnt)
 	}
 	SET_BIT(ASIC_ACK_A, inttoadd);
 	intc_queuemask |= inttoadd;
-	logxmsg(LOG_INTC, "añadiendo int %x, total %x\n", inttoadd, intc_queuemask);
+	logxmsg(LOG_INTC, "aï¿½adiendo int %x, total %x\n", inttoadd, intc_queuemask);
 #endif
+}
+
+/* Cola del registro externo (SB_ISTEXT). Es la misma mecanica que intc_add()
+   pero contra ASIC_ACK_B y las mascaras _B. */
+void intc_add_ext(DWORD inttoadd)
+{
+	if (intc_queuemask_ext & inttoadd)
+	{
+		logxmsg(LOG_INTC, "descartando int externa %x\n", inttoadd);
+		return;
+	}
+
+	SET_BIT(ASIC_ACK_B, inttoadd);
+	intc_queuemask_ext |= inttoadd;
+
+	logxmsg(LOG_INTC, "anadiendo int externa %x, total %x\n", inttoadd, intc_queuemask_ext);
+}
+
+void intc_remove_ext(DWORD int2remove)
+{
+	REMOVE_BIT(ASIC_ACK_B, int2remove);
+	REMOVE_BIT(intc_queuemask_ext, int2remove);
 }
 
 #ifdef INT_QUEUE
@@ -451,6 +534,33 @@ void check_ints()
 	}
 
 	REMOVE_BIT(intc_queuemask,ASIC_ACK_A);
+
+	/* Registro externo. La lectora avisa el fin de comando por aca. */
+	if (intc_queuemask_ext == 0)
+		return;
+
+ 	if (intc_queuemask_ext & ASIC_IRQ9_B
+ 	&&  intc(EXC_IRQ9))
+ 	{
+		REMOVE_BIT(intc_queuemask_ext, ASIC_IRQ9_B);
+      	return;
+	}
+
+ 	if (intc_queuemask_ext & ASIC_IRQB_B
+ 	&&  intc(EXC_IRQB))
+ 	{
+		REMOVE_BIT(intc_queuemask_ext, ASIC_IRQB_B);
+      	return;
+	}
+
+ 	if (intc_queuemask_ext & ASIC_IRQD_B
+ 	&&  intc(EXC_IRQD))
+ 	{
+		REMOVE_BIT(intc_queuemask_ext, ASIC_IRQD_B);
+      	return;
+	}
+
+	REMOVE_BIT(intc_queuemask_ext, ASIC_ACK_B);
 #endif
 }
 

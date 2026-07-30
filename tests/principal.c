@@ -30,6 +30,11 @@ static const dc_suite * const suites[] =
 	&suite_fpu_control,
 	&suite_fpu_graph,
 	&suite_decodificacion,
+	&suite_sistema,
+	&suite_gdrom,
+	&suite_mmu,
+	&suite_wdt,
+	&suite_tmu,
 	&suite_cobertura,	/* al final: mira lo que ejecutaron las demas */
 };
 

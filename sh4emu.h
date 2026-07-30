@@ -18,8 +18,14 @@
 
 // data format on the sh4
 							
+/* Registros de la MMU. Ver docs/mmu-plan.md, fase 1.1. */
+extern DWORD *	PTEH;		// Page Table Entry High register
 extern DWORD *	PTEL;		// Page Table Entry Low register
-							
+extern DWORD *	TTB;		// Translation Table Base register
+extern DWORD *	TEA;		// TLB Exception Address register
+extern DWORD *	MMUCR;		// MMU Control Register
+extern DWORD *	PTEA;		// Page Table Entry Assistance register
+
 extern DWORD *	CCR;		// Cache Control Register
 extern WORD *	SCFSR2;		
 extern DWORD *	QACR0;		// Queue Address Control Register 0
@@ -225,8 +231,12 @@ typedef struct context_t context_t;
 struct context_t
 {
 	DWORD cycles; // cycles count
-	DWORD cycles_v_int; // the cycles we can run between each VINT max is 978
-	DWORD cycles_v_int_total; // we need to redraw the screen
+	// Sin usar desde la fase 2 de docs/clock-plan.md: el barrido compara contra
+	// una marca de reloj_total y ya no necesita acumuladores. Se dejan para no
+	// cambiar el tamano del contexto, que main_loop() copia entero para
+	// reejecutar instrucciones que fallan por MMU.
+	DWORD cycles_v_int; // sin usar
+	DWORD cycles_v_int_total; // sin usar, nunca se leyo
 	DWORD registers [24]; // GENERAL PURPOSE REGISTERS
 	FPSCR_t FPSCR_REG; 
 	unsigned long SSR_REG;

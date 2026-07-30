@@ -134,6 +134,26 @@ int iso_get_lba()
 	}
 }
 
+int iso_hay_disco()
+{
+	return formato_imagen != FORMATO_NULL;
+}
+
+int iso_num_sectores()
+{
+	switch(formato_imagen)
+	{
+		case FORMATO_ISO9660:	return (int) min_iso_sectores(iso);
+#ifdef USE_LIBCDIO
+		/* cdio_get_track_lsn de la pista de lead-out (0xAA) da donde termina
+		   el area de datos. */
+		case FORMATO_CDIO:		return (int) cdio_get_track_lsn(cdio, CDIO_CDROM_LEADOUT_TRACK);
+#endif
+		case FORMATO_NULL:		return 0;
+		default:				return 0;
+	}
+}
+
 int iso_get_mode()
 {
 #ifdef USE_LIBCDIO

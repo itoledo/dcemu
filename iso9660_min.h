@@ -24,6 +24,10 @@ void min_iso_close(min_iso_t * iso);
 /* Lee nblocks sectores desde lba. Devuelve los bytes leidos, o <= 0 si falla. */
 long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned int nblocks);
 
+/* Sectores que ocupa el volumen, segun el descriptor primario. Es lo que hace
+   falta para saber donde va el lead-out de la TOC. */
+unsigned int min_iso_sectores(min_iso_t * iso);
+
 /* Busca un archivo en el directorio raiz, comparando con el nombre ya
    traducido (minusculas, sin el ";version"). Devuelve 1 si lo encuentra.
    secsize queda en sectores, size en bytes. */

@@ -40,6 +40,15 @@ unsigned char * video_mem;
 unsigned char * regmem;
 unsigned char * ta_mem;
 
+/* Respaldo de los registros del TMU. En el emulador viven en regmem, en
+   0xD800xx; aqui van en su propio bloque para no reservar 14 MB de mas. */
+static unsigned char tmu_regs[0x40];
+
+/* Respaldo del bloque de control del sistema. gdrom.c lo usa para los
+   registros del bus G1 que no emula pero que igual tienen que poder leerse
+   despues de escribirse. */
+unsigned char * control_mem;
+
 /* Respaldo de las zonas sin mapear: solo existe para que get_memory_pointer()
    nunca devuelva un puntero a NULL + offset. */
 static unsigned char * basura;
@@ -144,6 +153,7 @@ void memoria_prueba_iniciar(void)
 	basura		= reservar(BLOQUE, "basura");
 	regmem		= reservar(REGMEM_PRUEBA, "registros");
 	ta_mem		= reservar(TA_SIZE, "TA");
+	control_mem	= reservar(CONTROL_SIZE, "control");
 
 	for (i = 0; i < 0x100; i++)
 	{
@@ -195,11 +205,35 @@ void memoria_prueba_iniciar(void)
 	EXPEVT	= (DWORD *) &regmem[0x24];
 	QACR0	= (DWORD *) &regmem[0x38];
 	QACR1	= (DWORD *) &regmem[0x3C];
+
+	/* Los de la MMU: LDTLB lee PTEH/PTEL/PTEA y MMUCR.URC, y un fallo de
+	   traduccion deja TEA y PTEH. */
+	PTEH	= (DWORD *) &regmem[0x00];
+	PTEL	= (DWORD *) &regmem[0x04];
+	TTB		= (DWORD *) &regmem[0x08];
+	TEA		= (DWORD *) &regmem[0x0C];
+	MMUCR	= (DWORD *) &regmem[0x10];
+	PTEA	= (DWORD *) &regmem[0x34];
+
+	/* Los del TMU. Van fuera del bloque de 0x1000 que usa el resto, asi que
+	   viven en un bloque propio: solo hacen falta como respaldo para tmu.c. */
+	TOCR	= (BYTE *)  &tmu_regs[0x00];
+	TSTR	= (BYTE *)  &tmu_regs[0x04];
+	TCOR0	= (DWORD *) &tmu_regs[0x08];
+	TCNT0	= (DWORD *) &tmu_regs[0x0C];
+	TCR0	= (WORD *)  &tmu_regs[0x10];
+	TCOR1	= (DWORD *) &tmu_regs[0x14];
+	TCNT1	= (DWORD *) &tmu_regs[0x18];
+	TCR1	= (WORD *)  &tmu_regs[0x1C];
+	TCOR2	= (DWORD *) &tmu_regs[0x20];
+	TCNT2	= (DWORD *) &tmu_regs[0x24];
+	TCR2	= (WORD *)  &tmu_regs[0x28];
 }
 
 void arnes_registros_en_cero(void)
 {
 	memset(regmem, 0, REGMEM_PRUEBA);
+	memset(tmu_regs, 0, sizeof(tmu_regs));
 	memset(SQ0, 0, sizeof(SQ0));
 	memset(SQ1, 0, sizeof(SQ1));
 	memset(ta_mem, 0, TA_SIZE);

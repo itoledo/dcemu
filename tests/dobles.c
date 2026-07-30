@@ -35,14 +35,56 @@ void objectListSet()	{ dobles_object_list_set++; }
 void taPolyModifier()	{ dobles_poly_modifier++; }
 void taVertexHandler()	{ dobles_vertex_handler++; }
 
+/* --- traza.c ------------------------------------------------------------- */
+
+/* gdrom.c reporta los paquetes por stderr cuando la traza esta activa.
+   traza.c no se puede enlazar aca -- desensambla, y eso arrastra debug.c con
+   SDL --, y en las pruebas la traza estorbaria de todos modos. */
+int traza_activa = 0;
+
 /* --- intc.c -------------------------------------------------------------- */
 
 bool inside_int = false;
 
+DWORD	intc_queuemask = 0;
+DWORD	intc_queuemask_ext = 0;
+
+/* La lectora avisa el fin de cada comando; las pruebas del GD-ROM miran estos
+   contadores para verificar que interrumpio cuando correspondia. */
+int dobles_int_normal;
+int dobles_int_ext;
+DWORD dobles_ultima_int_normal;
+DWORD dobles_ultima_int_ext;
+
+void intc_add(DWORD inttoadd, int cnt)
+{
+	(void) cnt;
+
+	dobles_int_normal++;
+	dobles_ultima_int_normal = inttoadd;
+	intc_queuemask |= inttoadd;
+}
+
+void intc_add_ext(DWORD inttoadd)
+{
+	dobles_int_ext++;
+	dobles_ultima_int_ext = inttoadd;
+	intc_queuemask_ext |= inttoadd;
+}
+
+void intc_remove_ext(DWORD int2remove)
+{
+	intc_queuemask_ext &= ~int2remove;
+}
+
 /* --- iso.c --------------------------------------------------------------- */
 
-#define DOBLE_LBA	11700
-#define DOBLE_MODO	2
+#define DOBLE_LBA		11700
+#define DOBLE_MODO		2
+#define DOBLE_SECTORES	1000
+
+/* Las pruebas del GD-ROM cambian esto para simular la bandeja vacia. */
+int dobles_hay_disco = 1;
 
 int iso_get_lba()
 {
@@ -52,6 +94,16 @@ int iso_get_lba()
 int iso_get_mode()
 {
 	return DOBLE_MODO;
+}
+
+int iso_hay_disco()
+{
+	return dobles_hay_disco;
+}
+
+int iso_num_sectores()
+{
+	return dobles_hay_disco ? DOBLE_SECTORES : 0;
 }
 
 /* Patron reproducible: el byte i del sector s vale (s * 7 + i) & 0xFF. Deja
@@ -78,4 +130,13 @@ void dobles_reset(void)
 	inside_int = true;	/* RTE debe dejarlo en false */
 
 	ta_address_pointer = NULL;
+
+	dobles_int_normal			= 0;
+	dobles_int_ext				= 0;
+	dobles_ultima_int_normal	= 0;
+	dobles_ultima_int_ext		= 0;
+	dobles_hay_disco			= 1;
+
+	intc_queuemask		= 0;
+	intc_queuemask_ext	= 0;
 }

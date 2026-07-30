@@ -83,6 +83,7 @@ set(DCEMU_SOURCES
 	floatcontrol.c
 	floatgraph.c
 	floatsimple.c
+	gdrom.c
 	glops.c
 	graficos.c
 	intc.c
@@ -92,14 +93,20 @@ set(DCEMU_SOURCES
 	logic.c
 	main.c
 	mem.c
+	mmu.c
 	mov.c
+	opciones.c
 	opcodes.c
 	reg.c
 	scramble.c
 	sh4emu.c
 	shift.c
 	simdx86_stub.c
+	sistema.c
+	tmu.c
+	wdt.c
 	syscontrol.c
+	traza.c
 	gui.cpp
 	dcemu_private.rc
 )

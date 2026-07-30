@@ -7,9 +7,27 @@
 #include "graficos.h"
 #include "intc.h"
 #include "gui.h"
+#include "gdrom.h"
+#include "opciones.h"
+#include "sistema.h"
+#include "traza.h"
+#include "mmu.h"
+#include "wdt.h"
+#include "tmu.h"
 
 
 #define DWREF(p) (*(DWORD *)(p))
+
+/* Registros del AICA. No se emula el sintetizador, pero tienen que tener
+   respaldo real: el boot ROM escribe y vuelve a leer. Ver la fase 5 del plan. */
+#define AICA_REG_BASE	0x00700000
+#define AICA_REG_SIZE	0x00008000		// 32 KB: canales, comunes y el bloque 0x4xxx
+
+/* RAM de sonido, 2 MB. Estaba reservada desde siempre y nunca se mapeo. */
+#define SOUND_BASE		0x00800000
+
+/* El bloque de control del sistema: 0x005F0000-0x005FFFFF sobre control_mem. */
+#define ES_CONTROL(fisica)	(((fisica) & 0x00FF0000) == 0x005F0000)
 // extern SDL_mutex * regmap_mutex; // en main.c
 
 DWORD SQ0[8];
@@ -22,6 +40,13 @@ unsigned char * bios_mem;
 unsigned char * ta_mem;
 unsigned char * control_mem;
 unsigned char * sound_mem;
+unsigned char * aica_mem;
+
+/* Respaldo de las zonas sin mapear. get_memory_pointer() no chequea nada, asi
+   que sin esto cualquier acceso a una zona libre es una desreferencia nula.
+   Ver la fase 1.3 del plan. */
+unsigned char * descarte_mem;
+#define DESCARTE_SIZE	(16 * 1024 * 1024)	// el rango de 24 bits de una zona
 
 BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
@@ -49,6 +74,14 @@ mem_access_write_t * mem_hash_write[0x100];
 
 unsigned char * control_mem;	// empezando en 0x005f0000, 64 kbytes
 
+/* Contadores de escrituras a RAM de video, solo con --traza-mem. Sirven para
+   distinguir "el guest no dibuja" de "dcemu lee del sitio equivocado". */
+DWORD traza_video_escrituras = 0;
+DWORD traza_video_bytes = 0;
+DWORD traza_video_ventanas = 0;
+long  traza_video_min = 0x7FFFFFFF;
+long  traza_video_max = -1;
+
 int inicializar_memoria()
 {
 	logmsg("creando memoria\n");
@@ -63,7 +96,7 @@ int inicializar_memoria()
 
 //	orig_mem = memoria;
 
-/*	memoria = memoria - mem_n_base; // lo corremos n_base bytes hacia atrás,
+/*	memoria = memoria - mem_n_base; // lo corremos n_base bytes hacia atrï¿½s,
  									// para aprovechar el offset */
 
 	logmsg("creando memoria de video\n");
@@ -111,15 +144,30 @@ int inicializar_memoria()
 	}
 
 
-	sound_mem = (unsigned char *) malloc(sizeof(unsigned char) * SOUND_SIZE); // 2 MB
+	sound_mem = (unsigned char *) calloc(1, SOUND_SIZE); // 2 MB
 
 	if (!sound_mem)
 	{
-		fprintf(stderr, "No se pudo crear bios_mem.\r\n");
+		fprintf(stderr, "No se pudo crear sound_mem.\r\n");
 		return 1;
 	}
-	
-	
+
+	aica_mem = (unsigned char *) calloc(1, AICA_REG_SIZE);
+
+	if (!aica_mem)
+	{
+		fprintf(stderr, "No se pudo crear aica_mem.\r\n");
+		return 1;
+	}
+
+	descarte_mem = (unsigned char *) calloc(1, DESCARTE_SIZE);
+
+	if (!descarte_mem)
+	{
+		fprintf(stderr, "No se pudo crear descarte_mem.\r\n");
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -195,7 +243,20 @@ void check_registers()
 
 void regmem_setup(void)
 {
+	/* Registros de la MMU (fase 1.1 de docs/mmu-plan.md). Los atiende
+	   regmap_read/regmap_write como al resto del bloque en pagina 0xFF; lo
+	   unico que hace falta es que existan y arranquen en cero. */
+	PTEH	= (DWORD *) &regmem[0x000000];	*PTEH = 0;
 	PTEL	= (DWORD *) &regmem[0x000004];	*PTEL = 0;
+	TTB		= (DWORD *) &regmem[0x000008];	*TTB = 0;
+	TEA		= (DWORD *) &regmem[0x00000C];	*TEA = 0;
+	MMUCR	= (DWORD *) &regmem[0x000010];	*MMUCR = 0;
+	PTEA	= (DWORD *) &regmem[0x000034];	*PTEA = 0;
+
+	mmu_reset();
+	wdt_reset();
+	tmu_reset();
+
 	CCR		= (DWORD *)	&regmem[0x00001C];	*CCR = 0;
 	EXPEVT	= (DWORD *)	&regmem[0x000024];	*EXPEVT = 0;
 	INTEVT	= (DWORD *) &regmem[0x000028];	*INTEVT = 0;
@@ -267,16 +328,19 @@ void mem_hash_setup(void)
 {
 	int i, i2;
 	
-	for (i = 0; i < 0xFF; i++)
+	// Las zonas libres apuntan a un bloque de descarte en vez de quedar en
+	// NULL: los handlers de error siguen reportando, pero un acceso perdido
+	// ya no tumba el emulador. Ojo con el <=: la zona 0xFF tambien cuenta.
+	for (i = 0; i <= 0xFF; i++)
 	{
 		mem_hash_read[i] = mem_read_error;
   		mem_hash_write[i] = mem_write_error;
-  		mem_zone[i] = NULL;
+  		mem_zone[i] = descarte_mem;
 	}
 
 	// -------------------------------------------------------------------------------
 	// Inicializacion para traz las zonas de la memoria para 
- 	// la traduccion de logico a física. 
+ 	// la traduccion de logico a fï¿½sica. 
   	// Utilizado por las funciones que tienen acceso a memoria	
 	// -------------------------------------------------------------------------------
 	// 00 - 7f = User or Privil. Mode, Cacheable, MMU Available
@@ -324,9 +388,15 @@ void mem_hash_setup(void)
  	
  	mem_zone[0x70] = &bios_mem[0];
  	
-	// Inicializacion de la tabla de funciones tenía acceso 
+	// Inicializacion de la tabla de funciones tenï¿½a acceso 
  	// a bloques de la memoria	
-	mem_hash_read[0x00] = bios_read;
+	// La ventana fisica de los 16 MB bajos. Iba solo a bios_read, que cubre el
+	// boot ROM y la flash pero nada mas: por eso KOS perdia las escrituras a la
+	// RAM de sonido (0x00800000), donde carga el firmware ARM de la AICA.
+	// pvr_read/pvr_write reparten por direccion fisica y ya delegan el rango de
+	// la BIOS en bios_read, asi que cubren las dos cosas.
+	mem_hash_read[0x00] = pvr_read;
+	mem_hash_write[0x00] = pvr_write;
  	mem_hash_read[0x04] = video_read;
 	mem_hash_read[0x05] = video_read;
 	mem_hash_read[0x0C] = ram_read;
@@ -345,6 +415,12 @@ void mem_hash_setup(void)
 	mem_hash_write[0x05] = video_write;
  	mem_hash_write[0x0C] = ram_write;
 	mem_hash_write[0x10] = ta_write;
+	// 0x11000000-0x11FFFFFF es la FIFO de texturas del TA: lo que se escribe
+	// ahi va a la RAM de video con el mismo desplazamiento, que es lo que hace
+	// video_write. Sin esto, las texturas que sube KOS por store queue se
+	// perdian. 0x13 es su espejo.
+	mem_hash_write[0x11] = video_write;
+	mem_hash_write[0x13] = video_write;
  	mem_hash_write[0x1F] = regmap_write;
  	mem_hash_write[0x7E] = ram_write;
  	mem_hash_write[0x8C] = ram_write;
@@ -358,16 +434,56 @@ void mem_hash_setup(void)
  	mem_hash_write[0xE2] = sq_write;
  	mem_hash_write[0xE3] = sq_write;
  	mem_hash_write[0xFF] = regmap_write;
+
+	// Los 16 MB de RAM se repiten cuatro veces en cada ventana de 64 MB, y el
+	// software cuenta con eso: el _start de KOS decide si la maquina tiene 16 o
+	// 32 MB escribiendo en 0xACFFFFFF y en 0xADFFFFFF y comparando. Sin los
+	// espejos, la segunda escritura se pierde, la relectura da 0, KOS cree que
+	// hay 32 MB y arma la pila en 0x8E000000 -- una zona que no existe, asi que
+	// todo push se descarta y todo pop devuelve basura.
+	//
+	// mem_zone[] ya tenia los espejos (get_memory_pointer resolvia bien); lo
+	// que faltaba era enlazarlos en las tablas de handlers.
+	for (i = 1; i < 4; i++)
+	{
+		mem_hash_read[0x0C + i]  = ram_read;
+		mem_hash_read[0x8C + i]  = ram_read;
+		mem_hash_read[0xAC + i]  = ram_read;
+
+		mem_hash_write[0x0C + i] = ram_write;
+		mem_hash_write[0x8C + i] = ram_write;
+		mem_hash_write[0xAC + i] = ram_write;
+	}
+
+	// La ventana de control P4: 0xF0-0xF7 son los arreglos de la cache y de la
+	// TLB. Hasta ahora caian en mem_read_error/mem_write_error, asi que un
+	// binario de KOS inundaba --traza-mem con las 512 escrituras del barrido de
+	// la cache de operandos. Ver docs/mmu-plan.md, fases 1.2 y 1.3.
+	for (i = MMU_P4_IC_DIR; i <= MMU_P4_UTLB_DAT; i++)
+	{
+		mem_hash_read[i]  = mmu_p4_read;
+		mem_hash_write[i] = mmu_p4_write;
+	}
 }
 
 void mem_read_error(unsigned long direccion, void * p, size_t size)
 {
-	logxmsg(LOG_MEM, "mem_read_error: dir %x, tamaño %d\r\n", direccion, size);
+	// Devolver ceros en vez de dejar el destino como estaba: si no, el
+	// programa emulado lee lo que hubiera en la variable del llamador y la
+	// corrida no es reproducible.
+	if (p)
+		memset(p, 0, size);
+
+	traza_acceso(TRAZA_LECTURA, direccion, size, PC);
+
+	logxmsg(LOG_MEM, "mem_read_error: dir %x, tamaï¿½o %d\r\n", direccion, size);
 //	dump_registers();
 }
 
 void mem_write_error(unsigned long direccion, void * p, size_t size)
 {
+	traza_acceso(TRAZA_ESCRITURA, direccion, size, PC);
+
 	switch(size)
 	{
 		case 1:	logxmsg(LOG_MEM, "mem_write_error: dir %x, byte %02x %d '%c'\n", direccion, *(BYTE *)p, *(BYTE *)p, *(BYTE *)p);	break;
@@ -380,18 +496,20 @@ void mem_write_error(unsigned long direccion, void * p, size_t size)
 
 void sq_write(unsigned long direccion, void * p, size_t size)
 {
-    short pos;
+    // El bit 5 elige la cola; los cinco bits bajos son el desplazamiento
+    // dentro de los 32 bytes.
+    DWORD *       sq  = (direccion & 0x20) ? SQ1 : SQ0;
+    unsigned long off = direccion & 0x1F;
 
-    pos = (direccion >> 2) & 7; // 3 bits
+    // Antes esto hacia "SQ[pos] = *(DWORD *) p" e ignoraba size, o sea que
+    // copiaba 4 bytes y nada mas. KOS llena la store queue con fmov.d, de 8
+    // bytes, asi que cada escritura perdia su mitad alta: quedaban buenos los
+    // dwords pares y basura los impares. En un vertice del TA eso daba x y z
+    // corruptos (dwords 1 y 3) con y bueno (dword 2).
+    if (off + size > sizeof(DWORD) * 8)
+        size = sizeof(DWORD) * 8 - off;
 
-    if (direccion & 0x20) // 0: SQ0, 1: SQ1
-    {
-        SQ1[pos] = *(DWORD *) p;
-    }
-    else
-    {
-        SQ0[pos] = *(DWORD *) p;
-    }
+    memcpy((unsigned char *) sq + off, p, size);
 }
 
 void video_read(unsigned long direccion, void * p, size_t size)
@@ -434,7 +552,29 @@ void video_read(unsigned long direccion, void * p, size_t size)
 void pvr_read(unsigned long direccion, void * p, size_t size)
 {
 	DWORD dw;
-	switch(direccion)
+	unsigned long fisica = direccion & 0x00FFFFFF;
+
+	/* SB_G1SYSM no es de la lectora aunque caiga en su rango. Va antes que
+	   GDROM_ES_REGISTRO() justamente por eso. Ver sistema.h. */
+	if (fisica == G1_SYSM)
+	{
+		dw = G1_SYSM_RETAIL;
+		memcpy(p, &dw, size > sizeof(dw) ? sizeof(dw) : size);
+		return;
+	}
+
+	if (GDROM_ES_REGISTRO(fisica))
+	{
+		gdrom_read(direccion, p, size);
+		return;
+	}
+
+	/* Las etiquetas de abajo estan escritas en forma P2 (0xa0...), pero esta
+	   funcion atiende tambien la ventana fisica (zona 0x00), por donde KOS
+	   llega a la RAM de sonido y a la AICA. Normalizar aca hace que las dos
+	   ventanas se comporten igual en vez de que una vea los registros vivos y
+	   la otra solo el respaldo. */
+	switch(fisica | 0xa0000000)
 	{
 	case 0xa080ffc0: // snd_dbg
 		{
@@ -617,6 +757,8 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8114:
 		{
+			dw = 0;
+			memcpy(p, &dw, size);
 			logxmsg(LOG_PVR, "pvr_read: FB_C_SOF: framebuffer current read address\n");
 		}
 		break;
@@ -635,29 +777,72 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8144:
 		{
+			dw = 0;
+			memcpy(p, &dw, size);
 			logxmsg(LOG_PVR, "pvr_read: ta_init\r\n");
 		}
 		break;
 
-		case 0xa0710000: // Dreamcast RTC, reg 1
+		// El RTC cuenta segundos desde 1950 partidos en dos registros de 16
+		// bits. Se toma del reloj del host.
+		case 0xa0710000:
+		{
+			dw = sistema_rtc_alto();
+			memcpy(p, &dw, size);
+		}
+		break;
+
 		case 0xa0710004:
 		{
-			logmsg("pvr_read: RTC\r\n");
+			dw = sistema_rtc_bajo();
+			memcpy(p, &dw, size);
 		}
 		break;
 
 		default:
-		if (direccion >= 0xA0000000 && direccion <= 0xA01FFFFF) // Boot ROM & Flash ROM
 		{
-			bios_read(direccion, p, size);
-		}
-		else
-		{
-			if ((direccion & 0x00FF0000) == 0x005F0000)
+			// Bloque de control del sistema. Antes se copiaba desde
+			// control_mem y ademas se reportaba el acceso como error; ahora
+			// es respaldo de verdad y solo el switch de arriba dispara
+			// trabajo. Ver la fase 2.2 del plan.
+			if (ES_CONTROL(fisica))
 			{
-				memcpy(p, &control_mem[direccion & 0xFFFF], size);
+				memcpy(p, &control_mem[fisica & 0xFFFF], size);
 				logxmsg(LOG_MEM, "leyendo desde control_mem: DW %x\n", *(DWORD *) p);
+				break;
 			}
+
+			// RAM de sonido: 2 MB en 0x00800000. Estaba reservada y sin mapear.
+			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
+			{
+				memcpy(p, &sound_mem[fisica - SOUND_BASE], size);
+				break;
+			}
+
+			// Registros del AICA: respaldo real, sin sintetizador detras.
+			if (fisica >= AICA_REG_BASE && fisica + size <= AICA_REG_BASE + AICA_REG_SIZE)
+			{
+				memcpy(p, &aica_mem[fisica - AICA_REG_BASE], size);
+				break;
+			}
+
+			// Bus G2, area de dispositivos externos (modem, BBA). No se emula
+			// ninguno, pero hay que contestar algo fijo.
+			if (fisica >= G2_EXT_BASE && fisica <= G2_EXT_FIN)
+			{
+				dw = G2_EXT_VACIO;
+				memcpy(p, &dw, size);
+				break;
+			}
+
+			// Boot ROM y flash.
+			if (fisica < BIOS_SIZE
+			||  (fisica >= FLASH_BASE && fisica < FLASH_BASE + FLASH_SIZE))
+			{
+				bios_read(direccion, p, size);
+				break;
+			}
+
 			mem_read_error(direccion, p, size);
 		}
 		break;
@@ -666,14 +851,33 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 void bios_read(unsigned long direccion, void * p, size_t size)
 {
-//	memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
-	if ((direccion & 0x00FF0000) == 0x005F0000)
+	// El area de ROM son 4 MB de espacio de direcciones: los 2 primeros MB son
+	// el boot ROM y en 0x200000 estan los 128 KB de flash con la configuracion
+	// del sistema (region, idioma, fecha, nombre de la consola).
+	unsigned long fisica = direccion & 0x3FFFFF;
+
+	if (ES_CONTROL(direccion))
 	{
 		memcpy(p, &control_mem[direccion & 0xFFFF], size);
 		logxmsg(LOG_MEM, "leyendo control_mem en bios_read, dir %x\n", direccion);
+		return;
 	}
-	else
-		memcpy(p, &bios_mem[direccion & 0x3FFFFF], size);
+
+	if (fisica >= FLASH_BASE && fisica + size <= FLASH_BASE + FLASH_SIZE)
+	{
+		memcpy(p, &flash_mem[fisica - FLASH_BASE], size);
+		return;
+	}
+
+	if (fisica + size <= BIOS_SIZE)
+	{
+		memcpy(p, &bios_mem[fisica], size);
+		return;
+	}
+
+	// Entre el final de la flash y los 4 MB no hay nada. Antes se leia fuera
+	// de bios_mem, que solo tiene 2 MB reservados.
+	mem_read_error(direccion, p, size);
 }
 
 /* void bios_write(unsigned long direccion, void * p, size_t size)
@@ -683,25 +887,40 @@ void bios_read(unsigned long direccion, void * p, size_t size)
 
 void ta_write(unsigned long direccion, void * p, size_t size)
 {
-	if (direccion >= 0x10000000 + TA_SIZE)
-	{
-		logxmsg(LOG_PVR, "TA: ERROR! direccion %x\n", direccion);
-	}
-	else
-		memcpy(&ta_mem[direccion - 0x10000000], p, size);
+	/* La FIFO del TA no es memoria direccionable: la direccion dentro de la
+	   ventana no importa, solo cual de las dos store queues llego. KOS escribe
+	   con direcciones crecientes (sq_cpy incrementa el destino), asi que usar
+	   el desplazamiento crudo se pasaba de TA_SIZE y descartaba todo despues de
+	   512 bytes -- y peor, dejaba de coincidir con el indice que usa pref142()
+	   para releer el registro, que entonces veia siempre el mismo dato viejo.
+
+	   Los dos usan ahora & 0x3F: dos ranuras de 32 bytes, una por store queue. */
+	memcpy(&ta_mem[direccion & 0x3F], p, size);
 }
 
 void pvr_write(unsigned long direccion, void * p, size_t size)
 {
 	DWORD dw;
 	bool last;
+	unsigned long fisica = direccion & 0x00FFFFFF;
 
-	if ((direccion & 0x00FF0000) == 0x005F0000)
+	if (GDROM_ES_REGISTRO(fisica))
 	{
-		memcpy(&control_mem[direccion & 0xFFFF], p, size);
+		gdrom_write(direccion, p, size);
+		return;
 	}
 
-	switch(direccion)
+	// Respaldo del bloque de control: todo 0x005F0000-0x005FFFFF se escribe de
+	// verdad, y el switch de abajo queda para los registros que ademas
+	// disparan trabajo. Ver la fase 2.2 del plan.
+	if (ES_CONTROL(fisica))
+	{
+		memcpy(&control_mem[fisica & 0xFFFF], p, size);
+	}
+
+	/* Igual que en pvr_read: las etiquetas son P2 y la ventana fisica tiene que
+	   resolver a lo mismo. */
+	switch(fisica | 0xa0000000)
 	{
 	case 0xa080ffc0: // snd_dbg
 		{
@@ -855,16 +1074,20 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				curaddr = MAPLE_DMAADDR;
 				while (last == false && i < 1000)
 				{
-					memread(curaddr,  &td1, sizeof(DWORD));
-					memread(curaddr + 4, &td2, sizeof(DWORD));
+					/* El DMA del Maple lo hace el ASIC con direcciones fisicas
+					   que el guest dejo en la lista de comandos, y esto se
+					   dispara desde una escritura a registro, o sea dentro de
+					   una instruccion: nada de esto pasa por la MMU. */
+					memread_fisico(curaddr,  &td1, sizeof(DWORD));
+					memread_fisico(curaddr + 4, &td2, sizeof(DWORD));
 					if (td1 == 0)
 					{
 						logmsg( "pvr_write: MAPLE_DMAADDR: dir %x erronea\r\n", MAPLE_DMAADDR);
 						return;
 					}
-//					logmsg( "leídos td1:%x, td2:%x\r\n", td1, td2);
+//					logmsg( "leï¿½dos td1:%x, td2:%x\r\n", td1, td2);
 					last = (td1 & 0x80000000) ? true : false;
-//					logmsg( "tamaño del paquete: %x\r\n", (tam = (td1 & 0xFF) + 1));
+//					logmsg( "tamaï¿½o del paquete: %x\r\n", (tam = (td1 & 0xFF) + 1));
 					tam = (td1 & 0xFF) + 1;
 					// ahora tenemos el paquetito! a tratar de leerlo.
 
@@ -886,7 +1109,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						for (j = 0; j < tam; j++)
 						{
 //							logmsg( "Leyendo paquete en %x\r\n", curaddr + 8 + j*4);
-							memread(curaddr + 8 + j*4, &paquete[j], sizeof(DWORD));
+							memread_fisico(curaddr + 8 + j*4, &paquete[j], sizeof(DWORD));
 						}
 						// ya tenemos el paquete en memoria!
 //						logmsg( "comando: %x\r\n", (paquete[0]) & 0xFF);
@@ -902,7 +1125,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						{
 							logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
 							dw = 0xFFFFFFFF;
-							memwrite(td2, &dw, sizeof(DWORD));
+							memwrite_fisico(td2, &dw, sizeof(DWORD));
 						}
 						else
 						if ((paquete[0] & 0xFF) == 1) // Request Device Info
@@ -924,9 +1147,9 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								((((recadr == 0x20) ? 0x20 : 0) << 16) & 0xFF0000) |
 								(((sizeof(maple_devinfo_t)/4) << 24) & 0xFF000000);
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
-							memwrite(td2, &paquete[0], sizeof(DWORD));
+							memwrite_fisico(td2, &paquete[0], sizeof(DWORD));
 //							logmsg( "Escribiendo devinfo en %x\r\n", td2 + 4);
-							memwrite(td2 + 4, &devinfo, sizeof(maple_devinfo_t));
+							memwrite_fisico(td2 + 4, &devinfo, sizeof(maple_devinfo_t));
 						}
 						else
 						if ((paquete[0] & 0xFF) == 9) // MAPLE_COMMAND_GETCOND
@@ -948,11 +1171,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								(((sizeof(cont_cond_t)/4 + 1) << 24) & 0xFF000000);
 								
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
-							memwrite(td2, &paquete[0], sizeof(DWORD));
+							memwrite_fisico(td2, &paquete[0], sizeof(DWORD));
 							dw = (1 << 24); // MAPLE_FUNC_CONTROLLER
-							memwrite(td2 + 4, &dw, sizeof(DWORD));
+							memwrite_fisico(td2 + 4, &dw, sizeof(DWORD));
 //							logmsg( "Escribiendo cont_cond en %x\r\n", td2 + 8);
-							memwrite(td2 + 8, &ct, sizeof(cont_cond_t));
+							memwrite_fisico(td2 + 8, &ct, sizeof(cont_cond_t));
 						}
 						else
 						{
@@ -963,7 +1186,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					}
 					else
 					{
-						logmsg("MAPLE: tamaño = %d\r\n", tam);
+						logmsg("MAPLE: tamaï¿½o = %d\r\n", tam);
 	 				}
 //					curaddr += ((td1 & 0xFF) + 1);
 					curaddr += ((td1 & 0xFF) + 1) * 4 + 8; // para que se salte el descriptor + el paquete
@@ -1143,7 +1366,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 			if (screenheight == 0)
 			{
-				logxmsg(LOG_PVR, "modo inválido. valores por defecto.\n");
+				logxmsg(LOG_PVR, "modo invï¿½lido. valores por defecto.\n");
 				screenheight = 480;
 				screenwidth = 640;
 				screenbits = 16;
@@ -1251,6 +1474,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		    logxmsg(LOG_PVR, "SPG_CONTROL: mvsync_pol = %d\n", (DWREF(p) >> 1) & 1);
 		    logxmsg(LOG_PVR, "SPG_CONTROL: mhsync_pol = %d\n", (DWREF(p) >> 0) & 1);
 		    pvr_spg_control = DWREF(p);
+
+			// La norma decide los campos por segundo, y con eso el ritmo del
+			// barrido. Ver docs/clock-plan.md.
+			pvr_ciclos_linea = reloj_ciclos_por_linea(pvr_spg_load_vcount, pvr_spg_control);
+			logxmsg(LOG_PVR, "SPG_CONTROL: %d ciclos por linea\n", pvr_ciclos_linea);
 		}
 		break;
 
@@ -1271,6 +1499,10 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
    				dw & 0x3ff);
 			pvr_spg_load = dw;
 			pvr_spg_load_vcount = (dw >> 16) & 0x3ff;
+
+			// El ritmo del barrido depende de esto. Ver docs/clock-plan.md.
+			pvr_ciclos_linea = reloj_ciclos_por_linea(pvr_spg_load_vcount, pvr_spg_control);
+			logxmsg(LOG_PVR, "SPG_LOAD: %d ciclos por linea\n", pvr_ciclos_linea);
 		}
 		break;
 
@@ -1317,24 +1549,43 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		case 0xa0710000: // Dreamcast RTC, reg 1
 		case 0xa0710004:
 		{
+			// Poner el reloj en hora no se emula: el RTC sigue al del host.
 			logmsg("pvr_write: RTC\r\n");
 		}
 		break;
 
 		default:
-		if ((direccion & 0xfff00000) == 0xa0700000)
 		{
-			logmsg( "pvr_write: SPU Registers (%x)\r\n", direccion);
-		}
-		else
-		if ((direccion & 0xfff00000) == 0xa0800000
-		||  (direccion & 0xfff00000) == 0xa0900000)
-		{
-//			logmsg( "pvr_write: sound ram (%x)\r\n", direccion);
-			SET_BIT(G2_FIFO, AICA_FIFO);
-		}
-		else
+			// El bloque de control ya quedo escrito arriba.
+			if (ES_CONTROL(fisica))
+				break;
+
+			// RAM de sonido. Antes solo se levantaba el bit del FIFO del G2 y
+			// los datos se perdian; el caso puntual 0xa080ffc0 de mas arriba
+			// era un parche que tapaba justo esto.
+			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
+			{
+				memcpy(&sound_mem[fisica - SOUND_BASE], p, size);
+				SET_BIT(G2_FIFO, AICA_FIFO);
+				break;
+			}
+
+			if (fisica >= AICA_REG_BASE && fisica + size <= AICA_REG_BASE + AICA_REG_SIZE)
+			{
+				memcpy(&aica_mem[fisica - AICA_REG_BASE], p, size);
+				logxmsg(LOG_MEM, "pvr_write: registro del AICA (%x)\r\n", direccion);
+				break;
+			}
+
+			if (fisica >= G2_EXT_BASE && fisica <= G2_EXT_FIN)
+			{
+				// No hay dispositivo: la escritura se descarta en silencio,
+				// pero sin reportarla como error.
+				break;
+			}
+
 			mem_write_error(direccion, p, size);
+		}
 		break;
 	}
 }
@@ -1346,6 +1597,19 @@ void video_write(unsigned long direccion, void * p, size_t size)
 //	Uint8 * target = (Uint8 *) screen->pixels + (direccion - video_base);
 //	long addr = direccion & 0x0FFFFFFF;
 	long addr = direccion & 0x00FFFFFF;
+
+	// Contar las escrituras a RAM de video por ventana. Si el guest cree que
+	// dibuja y esto no sube, el problema esta en el camino de escritura y no en
+	// el de lectura.
+	if (traza_activa)
+	{
+		traza_video_escrituras++;
+		traza_video_bytes += (DWORD) size;
+		traza_video_ventanas |= 1u << ((direccion >> 24) & 0x0F);
+
+		if (addr < traza_video_min)	traza_video_min = addr;
+		if (addr > traza_video_max)	traza_video_max = addr;
+	}
 
 #ifdef DEBUG_MEM_VIDEO
 //	if (logvideomem)
@@ -1398,6 +1662,26 @@ void video_write(unsigned long direccion, void * p, size_t size)
 
 void regmap_read(unsigned long direccion, void * p, size_t size)
 {
+	// PDTRA (0xFF800030): el puerto A del SH-4 esta cableado al detector de
+	// tipo de cable de video. El boot ROM escribe un patron en PCTRA y espera
+	// que los bits bajos de PDTRA respondan; si no lo consigue en diez vueltas
+	// se duerme para siempre. Ver la fase 1.2 del plan.
+	if ((direccion & 0x00FFFFFF) == 0x800030)
+	{
+		DWORD valor = sistema_pdtra(*PCTRA, *PDTRA, opciones.cable);
+
+		memcpy(p, &valor, (size > sizeof(DWORD)) ? sizeof(DWORD) : size);
+		return;
+	}
+
+	// El WDT lleva su estado en wdt.c, no en regmem: escribirlo exige un byte
+	// alto de clave que no debe quedar en el respaldo.
+	if (wdt_es_registro(direccion & 0x00FFFFFF))
+	{
+		wdt_leer(direccion & 0x00FFFFFF, p, size);
+		return;
+	}
+
 	memcpy(p, &regmem[direccion & 0x00FFFFFF], size);
 
 /*    if ((direccion & 0x00FF0000) == 0xD80000)
@@ -1443,6 +1727,13 @@ void regmap_read(unsigned long direccion, void * p, size_t size)
 
 void regmap_write(unsigned long direccion, void * p, size_t size)
 {
+	// Antes del respaldo: el WDT valida una clave y guarda su estado aparte.
+	if (wdt_es_registro(direccion & 0x00FFFFFF))
+	{
+		wdt_escribir(direccion & 0x00FFFFFF, p, size);
+		return;
+	}
+
 //	SDL_mutexP(regmap_mutex);
 	memcpy(&regmem[direccion & 0x00FFFFFF], p, size);
 //	SDL_mutexV(regmap_mutex);
@@ -1471,6 +1762,15 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 
 	switch(direccion & 0x00FFFFFF)
 	{
+		case 0x000010: // MMUCR, MMU Control Register
+		{
+			mmu_mmucr_escrito(*MMUCR);
+
+			// TI es de un solo disparo: invalida y no queda puesto.
+			*MMUCR &= ~MMUCR_TI;
+		}
+		break;
+
 		case 0xD80004: // TSTR, Timer Start Register
 		{
 			logxmsg(LOG_INTC, "TSTR: %02x\n", *(BYTE *)TSTR);
@@ -1700,7 +2000,7 @@ void ReadMemoryF(unsigned long direccion, float * valor)
 	}
 
 #ifdef DEBUG_MEM
-	logmsg( "Leído: %f\r\n", *valor);
+	logmsg( "Leï¿½do: %f\r\n", *valor);
 #endif */
 	memread(direccion, valor, sizeof(DWORD));
 }
@@ -1724,7 +2024,7 @@ void ReadMemoryB(unsigned long direccion, unsigned char * valor)
 		*valor = *addr;
 
 #ifdef DEBUG_MEM
-	logmsg( "Leído: %x\r\n", *valor);
+	logmsg( "Leï¿½do: %x\r\n", *valor);
 #endif */
 	memread(direccion, valor, sizeof(BYTE));
 }
@@ -1748,7 +2048,7 @@ void ReadMemoryL(unsigned long direccion, DWORD * valor)
 		*valor = *addr;
 
 #ifdef DEBUG_MEM_READ
-	logmsg( "Leído: %x\r\n", *valor);
+	logmsg( "Leï¿½do: %x\r\n", *valor);
 #endif
 */
 	memread(direccion, valor, sizeof(DWORD));
@@ -1773,7 +2073,7 @@ void ReadMemoryW(unsigned long direccion, WORD * valor)
 	}
 
 #ifdef DEBUG_MEM_READ
-	logmsg( "Leído: %x\r\n", *valor);
+	logmsg( "Leï¿½do: %x\r\n", *valor);
 #endif
 */
 	memread(direccion, valor, sizeof(WORD));

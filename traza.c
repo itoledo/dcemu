@@ -1,0 +1,274 @@
+/****************************************************************************
+
+	TRAZA - ver traza.h.
+
+*****************************************************************************/
+
+#include <stdio.h>
+#include <string.h>
+
+/* Para desensamblar el bucle donde se trabo y volcar los registros. traza.c
+   solo se enlaza en el emulador, nunca en las pruebas. */
+#include "main.h"
+#include "debug.h"
+#include "sh4emu.h"
+
+#include "traza.h"
+#include "tmu.h"
+
+int traza_activa = 0;
+
+/* ------------------------------------------------------------------------ */
+/* Direcciones sin emular                                                   */
+/* ------------------------------------------------------------------------ */
+
+/* Tabla abierta, potencia de dos. Si se llena se deja de deduplicar y se
+   reporta todo, que es ruidoso pero no pierde informacion. */
+#define TABLA_TAM	2048
+
+struct entrada_t
+{
+	unsigned long	direccion;
+	int				tipo;
+	int				usada;
+};
+
+static struct entrada_t	tabla[TABLA_TAM];
+static int				tabla_usadas = 0;
+
+static int ya_vista(unsigned long direccion, int tipo)
+{
+	unsigned int	h = (unsigned int) ((direccion * 2654435761u) >> 11) & (TABLA_TAM - 1);
+	int				i;
+
+	for (i = 0; i < TABLA_TAM; i++)
+	{
+		struct entrada_t * e = &tabla[(h + i) & (TABLA_TAM - 1)];
+
+		if (!e->usada)
+		{
+			if (tabla_usadas >= TABLA_TAM - 1)
+				return 0;	/* tabla llena: no se anota, se reporta siempre */
+
+			e->direccion	= direccion;
+			e->tipo			= tipo;
+			e->usada		= 1;
+			tabla_usadas++;
+
+			return 0;
+		}
+
+		if (e->direccion == direccion && e->tipo == tipo)
+			return 1;
+	}
+
+	return 0;
+}
+
+void traza_acceso(int tipo, unsigned long direccion, size_t tam, DWORD pc)
+{
+	if (!traza_activa)
+		return;
+
+	if (ya_vista(direccion, tipo))
+		return;
+
+	fprintf(stderr, "traza: %s sin emular en %08lx (%d bytes) desde PC %08lx\n",
+		(tipo == TRAZA_ESCRITURA) ? "escritura" : "lectura",
+		direccion, (int) tam, (unsigned long) pc);
+}
+
+void traza_resumen(void)
+{
+	if (!traza_activa)
+		return;
+
+	fprintf(stderr, "traza: %d direcciones distintas sin emular.\n", tabla_usadas);
+
+	/* Cuanto mas lento que una consola corrio el emulador. Antes no habia con
+	   que compararlo. Ver docs/clock-plan.md, fase 4. */
+	{
+		unsigned long long emulado = reloj_ms();
+		unsigned long real = SDL_GetTicks();
+
+		if (emulado > 0 && real > 0)
+			fprintf(stderr, "traza: %llu ms emulados en %lu ms reales (%.2fx)\n",
+				emulado, real, (double) emulado / (double) real);
+	}
+
+	traza_volcar("al salir");
+}
+
+/* ------------------------------------------------------------------------ */
+/* Anillo de PC                                                             */
+/* ------------------------------------------------------------------------ */
+
+#define ANILLO_TAM		96
+
+/* Cada cuantas instrucciones se revisa si el PC sigue avanzando. Tiene que ser
+   bastante mas que el anillo para no confundir un bucle normal con un halt. */
+#define REVISION		4000000
+
+/* Si en toda una revision el anillo tiene menos PC distintos que esto, el
+   emulador esta dando vueltas en un bucle de espera. Se cuenta por PC
+   distintos y no por rango de direcciones porque un bucle con una llamada
+   adentro salta lejos y aun asi es un bucle. */
+#define BUCLE_MAX		64
+
+static DWORD	anillo[ANILLO_TAM];
+static int		anillo_pos = 0;
+static int		anillo_lleno = 0;
+
+static unsigned long	pasos = 0;
+static DWORD			atasco_reportado = 0xFFFFFFFF;
+
+/* Los PC distintos del anillo, en orden de aparicion. Devuelve cuantos hay. */
+static int pc_distintos(DWORD * dest, int max)
+{
+	int n = anillo_lleno ? ANILLO_TAM : anillo_pos;
+	int desde = anillo_lleno ? anillo_pos : 0;
+	int i, j, cantidad = 0;
+
+	for (i = 0; i < n; i++)
+	{
+		DWORD pc = anillo[(desde + i) % ANILLO_TAM];
+
+		for (j = 0; j < cantidad; j++)
+			if (dest[j] == pc)
+				break;
+
+		if (j == cantidad)
+		{
+			if (cantidad >= max)
+				return max + 1;		/* mas de los que caben: no es un bucle */
+
+			dest[cantidad++] = pc;
+		}
+	}
+
+	return cantidad;
+}
+
+static void volcar_registros(void)
+{
+	int i;
+
+	fprintf(stderr, "traza: SR=%08lx PR=%08lx\n",
+		(unsigned long) SR, (unsigned long) PR);
+
+	for (i = 0; i < 16; i++)
+	{
+		fprintf(stderr, " r%-2d=%08lx", i, (unsigned long) R(i));
+
+		if ((i % 4) == 3)
+			fprintf(stderr, "\n");
+	}
+}
+
+void traza_volcar(const char * motivo)
+{
+	/* El volcado a pedido desensambla todo lo que haya en el anillo, no solo
+	   los bucles chicos: un bucle de espera con llamadas adentro pasa de
+	   BUCLE_MAX y es justo el que hay que poder mirar. */
+	DWORD	distintos[ANILLO_TAM];
+	int		i, n, desde, cantidad;
+
+	if (!traza_activa)
+		return;
+
+	n = anillo_lleno ? ANILLO_TAM : anillo_pos;
+
+	if (n == 0)
+		return;
+
+	/* Con el tiempo emulado al lado, dos corridas se pueden comparar: "se trabo
+	   a los 3,4 s" dice mucho mas que "a los cuatro millones de instrucciones".
+	   Ver docs/clock-plan.md, fase 4. */
+	fprintf(stderr, "traza: %s, a los %llu.%03llu s de tiempo emulado. Ultimos %d PC:\n",
+		motivo,
+		(unsigned long long) (reloj_ms() / 1000),
+		(unsigned long long) (reloj_ms() % 1000),
+		n);
+
+	desde = anillo_lleno ? anillo_pos : 0;
+
+	for (i = 0; i < n; i++)
+	{
+		fprintf(stderr, " %08lx", (unsigned long) anillo[(desde + i) % ANILLO_TAM]);
+
+		if ((i % 8) == 7)
+			fprintf(stderr, "\n");
+	}
+
+	if ((n % 8) != 0)
+		fprintf(stderr, "\n");
+
+	/* Desensamblarlos es la diferencia entre "se traba aca" y "se traba
+	   esperando esto". */
+	cantidad = pc_distintos(distintos, ANILLO_TAM);
+
+	{
+		char buffer[256];
+
+		fprintf(stderr, "traza: %d instrucciones distintas:\n", cantidad);
+
+		for (i = 0; i < cantidad; i++)
+		{
+			buffer[0] = '\0';
+			disasm(distintos[i], buffer);
+			fprintf(stderr, "  %08lx: %s\n", (unsigned long) distintos[i], buffer);
+		}
+	}
+
+	volcar_registros();
+}
+
+void traza_paso(DWORD pc)
+{
+	DWORD	distintos[BUCLE_MAX];
+	int		cantidad;
+
+	anillo[anillo_pos] = pc;
+	anillo_pos = (anillo_pos + 1) % ANILLO_TAM;
+
+	if (anillo_pos == 0)
+		anillo_lleno = 1;
+
+	if (++pasos < REVISION)
+		return;
+
+	pasos = 0;
+
+	if (!anillo_lleno)
+		return;
+
+	cantidad = pc_distintos(distintos, BUCLE_MAX);
+
+	if (cantidad > BUCLE_MAX)
+	{
+		atasco_reportado = 0xFFFFFFFF;
+		return;
+	}
+
+	/* Solo se reporta cada bucle nuevo. La clave es el PC mas bajo del bucle y
+	   no el primero del anillo, que cambia segun donde caiga el corte. */
+	{
+		DWORD	menor = distintos[0];
+		int		i;
+
+		for (i = 1; i < cantidad; i++)
+			if (distintos[i] < menor)
+				menor = distintos[i];
+
+		if (atasco_reportado != menor)
+		{
+			char buf[128];
+
+			atasco_reportado = menor;
+
+			sprintf(buf, "el PC lleva %d instrucciones en un bucle de %d",
+				REVISION, cantidad);
+			traza_volcar(buf);
+		}
+	}
+}
