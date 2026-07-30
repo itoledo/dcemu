@@ -29,6 +29,13 @@ int dobles_object_list_set;
 int dobles_poly_modifier;
 int dobles_vertex_handler;
 
+/* pref142() manda aca los bloques de 0x10800000, la entrada del convertidor
+   YUV del TA. Las pruebas no lo ejercitan; el doble solo evita arrastrar
+   graficos.c, que trae SDL y OpenGL. */
+int dobles_yuv_bloques;
+
+void pvr_yuv_bloque(void * datos)	{ (void) datos; dobles_yuv_bloques++; }
+
 void taListEnd()		{ dobles_ta_list_end++; }
 void doUserClip()		{ dobles_user_clip++; }
 void objectListSet()	{ dobles_object_list_set++; }

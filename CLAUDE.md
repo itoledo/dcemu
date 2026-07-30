@@ -212,17 +212,48 @@ prints them next to the bytes it read out of video RAM.
 ### Texture formats
 
 `taPolyModifier()` maps the texture control word's `pixelformat` onto a GL format triple;
-`get_texture()` untwiddles and uploads. ARGB1555, RGB565, ARGB4444 and the two palette
-formats are handled, and VQ and stride have their own paths. YUV422 and BUMP still fall
+`get_texture()` untwiddles and uploads. ARGB1555, RGB565, ARGB4444, YUV422 and the two
+palette formats are handled, and VQ and stride have their own paths. Only BUMP still falls
 through `CTT()`, which leaves the triple at -1.
+
+**`glTexParameteri` applies to whatever texture is bound, and the filters used to be set
+before `glBindTexture`.** So they landed on the *previous* frame's texture and the new one
+kept the GL defaults — and the default `GL_TEXTURE_MIN_FILTER` is `GL_NEAREST_MIPMAP_LINEAR`,
+which **requires mipmaps**. Without them the texture is incomplete and GL samples it as solid
+white. A demo that draws many frames hides this (from the second frame on, the texture is
+already bound and does receive the parameters); one that draws a single frame and then waits
+for a button came out entirely white. That was `pvr-yuv_converter-*` and `pvr-strided_texture`
+— three demos, one line. `aplicar_filtros()` now runs inside `get_texture()`, after both
+binds (new texture and cache hit).
 
 **Stride** (bit 25) means the rows in memory are `TEXT_CONTROL & 0x1F` × 32 texels wide
 rather than the declared `usize` — it is how a non-power-of-two texture is stored, and the
 declared size is rounded up (640×480 is submitted as 1024×512). `get_texture()` copies row by
-row; handing GL the raw block skews the image a little further on every row. **This path is
-implemented but not verified by any demo**: `pvr-strided_texture` dies in KOS's own
-`BRA` -to-itself at 2.14 s of emulated time, before the stride matters. Whatever kills it is
-a separate bug.
+row; handing GL the raw block skews the image a little further on every row.
+`pvr-strided_texture` draws its chessboard with the squares square and aligned, which is
+exactly what a wrong stride would ruin.
+
+**YUV422** packs two pixels into 32 bits — U, Y0, V, Y1 — sharing chroma. GL has no such
+format, so `decodificar_yuv422()` converts to RGB on upload, like the palettes. It is what
+the TA's YUV converter produces; see below.
+
+### The TA's YUV converter
+
+A separate TA input at `0x10800000` that takes planar YUV420 or YUV422 and leaves a packed
+YUV422 texture in video RAM — how video is uploaded without spending CPU on the conversion.
+It is fed 16×16 macroblocks; destination and image size come from `TA_YUV_TEX_BASE`
+(`0x005F8148`) and `TA_YUV_TEX_CTRL` (`0x005F814C`), and the chip counts what it converted in
+`TA_YUV_TEX_CNT` (`0x005F8150`).
+
+None of it was emulated: zone `0x10` went to `ta_write()` wholesale, which keeps 64 bytes for
+the polygon FIFO, so the macroblocks were dropped. `pref142()` now splits the two — the
+polygon FIFO is `0x10000000-0x107FFFFF` and the converter `0x10800000` up — and
+`pvr_yuv_bloque()` in `graficos.c` does the work.
+
+**The order inside a macroblock is not "all U, all V, all Y"**: it goes in 16×8 halves, each
+with its own U, V and Y. YUV420 has one chroma pass for all 16 rows and the macroblock is 384
+bytes; YUV422 has one per half and it is 512. Writing `TA_YUV_TEX_BASE` or `TA_YUV_TEX_CTRL`
+resets the macroblock count — the chip is starting another image.
 
 **The palette formats do not fit the rest of the pipeline, in three ways** (`decodificar_paleta()`):
 

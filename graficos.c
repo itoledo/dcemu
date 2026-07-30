@@ -165,6 +165,160 @@ unsigned short read_pixel() {
 }
 
 
+/* ------------------------------------------------------------------------ */
+/* Convertidor YUV del TA                                                   */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El TA tiene una entrada aparte, en 0x10800000, que recibe video en planos
+	YUV420 o YUV422 y deja en la RAM de video una textura YUV422 empaquetada.
+	Es como se sube video sin gastar CPU en la conversion, y es lo que usan las
+	dos demos de yuv_converter.
+
+	Se alimenta por macrobloques de 16x16 pixeles. La cuenta la lleva el propio
+	chip y la reporta en PVR_YUV_STAT; el destino y el tamano de la imagen salen
+	de PVR_YUV_ADDR y PVR_YUV_CFG. Nada de eso estaba emulado: la zona 0x10
+	entera iba a ta_write(), que solo guarda 64 bytes para la FIFO de poligonos,
+	asi que los macrobloques se perdian.
+
+	El orden dentro del macrobloque no es "U entero, V entero, Y entero": va
+	por mitades de 16x8, cada una con su U, su V y su Y. Para YUV420 hay una
+	sola tanda de croma para las 16 filas y el macrobloque mide 384 bytes; para
+	YUV422 hay una por mitad y mide 512.
+*/
+
+#define YUV_MB_MAX		512			/* el macrobloque mas grande, YUV422 */
+
+static BYTE	yuv_buffer[YUV_MB_MAX];
+static int	yuv_pos = 0;
+DWORD		pvr_yuv_convertidos = 0;	/* lo que devuelve PVR_YUV_STAT */
+
+void pvr_yuv_reiniciar(void)
+{
+	yuv_pos = 0;
+	pvr_yuv_convertidos = 0;
+}
+
+/* Y, U y V de 0 a 255 -> un pixel. BT.601 en rango completo, que es el que
+   usa el PVR. */
+static void yuv_a_yuv422(BYTE * destino, int y0, int y1, int u, int v)
+{
+	destino[0] = (BYTE) u;
+	destino[1] = (BYTE) y0;
+	destino[2] = (BYTE) v;
+	destino[3] = (BYTE) y1;
+}
+
+static void yuv_convertir_macrobloque(int es422)
+{
+	DWORD	cfg = 0, base = 0;
+	int		ancho_mb, alto_mb, ancho_px;
+	int		mbx, mby, x, y;
+
+	memread_fisico(0xA05F814C, &cfg, 4);
+	memread_fisico(0xA05F8148, &base, 4);
+
+	ancho_mb = (int) ((cfg & 0x3F) + 1);
+	alto_mb  = (int) (((cfg >> 8) & 0x3F) + 1);
+	ancho_px = ancho_mb * 16;
+
+	mbx = (int) (pvr_yuv_convertidos % (DWORD) ancho_mb);
+	mby = (int) (pvr_yuv_convertidos / (DWORD) ancho_mb);
+
+	pvr_yuv_convertidos++;
+
+	if (mby >= alto_mb)
+		return;					/* imagen completa: el resto se descarta */
+
+	for (y = 0; y < 16; y++)
+	{
+		for (x = 0; x < 16; x += 2)
+		{
+			/*
+				Y va en cuatro subbloques de 8x8, en el orden (0,0) (8,0)
+				(0,8) (8,8); en 422 los dos primeros son la mitad de arriba y
+				los dos ultimos la de abajo, cada mitad detras de su croma.
+			*/
+			int	mitad = y / 8;
+			int	sub   = (y / 8) * 2 + (x / 8);
+			int	fila  = y % 8;
+			int	col   = x % 8;
+
+			int	off_y, off_c, u, v, y0, y1;
+
+			if (es422)
+			{
+				/* 64 U + 64 V + 128 Y por cada mitad de 16x8. */
+				off_c = mitad * 256;
+				off_y = mitad * 256 + 128 + (sub % 2) * 64 + fila * 8;
+				u = yuv_buffer[off_c + fila * 8 + col / 2];
+				v = yuv_buffer[off_c + 64 + fila * 8 + col / 2];
+			}
+			else
+			{
+				/* 64 U + 64 V para las 16 filas, y despues 256 de Y. */
+				off_y = 128 + sub * 64 + fila * 8;
+				u = yuv_buffer[(y / 2) * 8 + x / 4];
+				v = yuv_buffer[64 + (y / 2) * 8 + x / 4];
+			}
+
+			y0 = yuv_buffer[off_y + col];
+			y1 = yuv_buffer[off_y + col + 1];
+
+			{
+				BYTE	pixel[4];
+				DWORD	destino = (base & 0xFFFFFF) +
+					(DWORD) (((mby * 16 + y) * ancho_px + (mbx * 16 + x)) * 2);
+
+				yuv_a_yuv422(pixel, y0, y1, u, v);
+				memwrite_fisico(0xA5000000 | destino, pixel, 4);
+			}
+		}
+	}
+}
+
+/*
+	Un bloque de 32 bytes entrando por 0x10800000. Lo llama pref142() al vaciar
+	una store queue; el guest tambien puede mandarlos por el CH2 DMA.
+*/
+void pvr_yuv_bloque(void * datos)
+{
+	DWORD	cfg = 0;
+	int		es422, tam;
+
+	memread_fisico(0xA05F814C, &cfg, 4);
+
+	es422 = (cfg & (1u << 24)) ? 1 : 0;
+	tam   = es422 ? 512 : 384;
+
+	if (yuv_pos + 32 > tam)
+		yuv_pos = 0;			/* desincronizado: se empieza de nuevo */
+
+	memcpy(&yuv_buffer[yuv_pos], datos, 32);
+	yuv_pos += 32;
+
+	if (yuv_pos < tam)
+		return;
+
+	yuv_pos = 0;
+
+	yuv_convertir_macrobloque(es422);
+
+	if (traza_activa && pvr_yuv_convertidos == 1)
+	{
+		DWORD base = 0;
+
+		memread_fisico(0xA05F8148, &base, 4);
+
+		fprintf(stderr, "traza: convertidor YUV%s a %08lx, %lu x %lu"
+			" macrobloques\n",
+			es422 ? "422" : "420",
+			(unsigned long) (base & 0xFFFFFF),
+			(unsigned long) ((cfg & 0x3F) + 1),
+			(unsigned long) (((cfg >> 8) & 0x3F) + 1));
+	}
+}
+
 /*
 	RAM de paleta del PVR: 1024 entradas de 32 bits en 0x005F9000, y el formato
 	de esas entradas en PAL_RAM_CTRL (0x005F8108), bits 0-1. Los dos viven en el
@@ -274,6 +428,91 @@ static DWORD * decodificar_paleta(const BYTE * origen, int usize, int vsize,
 	return destino;
 }
 
+/* Un componente de color, recortado a 0..255. */
+static BYTE recortar(int v)
+{
+	return (BYTE) ((v < 0) ? 0 : ((v > 255) ? 255 : v));
+}
+
+/*
+	Textura YUV422 -> RGBA8888. Cada 32 bits son dos pixeles que comparten
+	croma: U, Y0, V, Y1. La matriz es BT.601 en rango completo, que es la que
+	usa el PVR -- Y no se escala, asi que un Y de 0 sale negro y uno de 255
+	blanco.
+*/
+static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
+{
+	DWORD *	destino = (DWORD *) malloc(sizeof(DWORD) * usize * vsize);
+	int		i, j;
+
+	if (destino == NULL)
+		return NULL;
+
+	if (traza_activa)
+	{
+		static int visto = 0;
+
+		if (!visto)
+		{
+			visto = 1;
+			fprintf(stderr, "traza: textura YUV422 de %dx%d\n", usize, vsize);
+		}
+	}
+
+
+	for (i = 0; i < vsize; i++)
+	{
+		for (j = 0; j < usize; j += 2)
+		{
+			DWORD	par = origen[(i * usize + j) / 2];
+			int		u  = (int) ( par        & 0xFF);
+			int		y0 = (int) ((par >>  8) & 0xFF);
+			int		v  = (int) ((par >> 16) & 0xFF);
+			int		y1 = (int) ((par >> 24) & 0xFF);
+			int		du = u - 128, dv = v - 128;
+			int		k;
+
+			/* Los dos pixeles del par solo se diferencian en Y. */
+			for (k = 0; k < 2; k++)
+			{
+				int		y = k ? y1 : y0;
+				BYTE	r = recortar(y + ((11 * dv) >> 3));
+				BYTE	g = recortar(y - ((11 * du) >> 5) - ((11 * dv) >> 4));
+				BYTE	b = recortar(y + ((11 * du) >> 3));
+
+				/* GL_RGBA/GL_UNSIGNED_BYTE: R en el byte 0. */
+				destino[i * usize + j + k] =
+					(DWORD) r | ((DWORD) g << 8) | ((DWORD) b << 16) | 0xFF000000;
+			}
+		}
+	}
+
+	return destino;
+}
+
+/*
+	Los filtros de la textura que este ligada en este momento.
+
+	Iban en cb_tastart() **antes** de llamar aca, o sea antes del glBindTexture:
+	glTexParameteri no toma un nombre de textura, se aplica a la ligada, asi que
+	los parametros caian sobre la del cuadro anterior y la recien creada se
+	quedaba con los de fabrica. Y el de fabrica de GL_TEXTURE_MIN_FILTER es
+	GL_NEAREST_MIPMAP_LINEAR, que **exige mipmaps**: sin ellos la textura esta
+	incompleta y GL la muestrea blanca.
+
+	Con una demo que dibuja muchos cuadros no se nota -- a partir del segundo,
+	la textura ya quedo ligada del cuadro anterior y recibe los parametros --,
+	pero una que dibuja uno solo y espera un boton sale entera en blanco. Eso es
+	lo que le pasaba a las dos de yuv_converter.
+*/
+static void aplicar_filtros(int strip)
+{
+	GLint modo = TriangleStrip[strip].texture.filtermode ? GL_LINEAR : GL_NEAREST;
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, modo);
+}
+
 void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int strip)
 {
 	Uint16 * q, * v;
@@ -293,6 +532,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
     		{
           		logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
  			glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
+			aplicar_filtros(strip);
     			return;
     		}
     	}
@@ -316,6 +556,14 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 		/* twiddled aca significa "el buffer es nuestro y hay que liberarlo",
 		   que es lo unico que mira limpiar_texturas(). */
+		cached_textures[cur_tex_count].twiddled = true;
+	}
+	else
+	if (TriangleStrip[strip].texture.pvr_texture_yuv)
+	{
+		cached_textures[cur_tex_count].data =
+			decodificar_yuv422((const DWORD *) v, usize, vsize);
+
 		cached_textures[cur_tex_count].twiddled = true;
 	}
 	else
@@ -422,6 +670,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	}
 
 	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
+	   aplicar_filtros(strip);
 
     logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x\n", usize, vsize, memorypos | 0xA5000000);
    glTexImage2D(GL_TEXTURE_2D, 0, TriangleStrip[strip].texture.pvr_texture_components, usize, vsize, 0, TriangleStrip[strip].texture.pvr_texture_pixelformat, TriangleStrip[strip].texture.pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
@@ -664,18 +913,12 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 			if(TriangleStrip[i].texture.surface)
 			{
 				glEnable(GL_TEXTURE_2D);
-				if(TriangleStrip[i].texture.filtermode)
-				{
-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-				}
-				else
-				{
-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-				}
 
-				get_texture(TriangleStrip[i].texture.pvr_texture_size_usize, TriangleStrip[i].texture.pvr_texture_size_vsize, 
+				/* Los filtros los pone get_texture(), **despues** de ligar la
+				   textura: glTexParameteri afecta a la que este ligada en ese
+				   momento, y aca todavia lo esta la del cuadro anterior. Ver
+				   el comentario en get_texture(). */
+				get_texture(TriangleStrip[i].texture.pvr_texture_size_usize, TriangleStrip[i].texture.pvr_texture_size_vsize,
 				TriangleStrip[i].texture.surface, TriangleStrip[i].texture.twiddled, TriangleStrip[i].texture.vq,i);
 			}
 			else
@@ -686,17 +929,20 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 			glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
 		}
 
+	/* Antes de tocar strip_count y antes del swap: es el unico momento en que
+	   el buffer tiene el cuadro entero, porque despues de presentar se limpia.
+	   Sobrescribe el archivo en cada cuadro, asi que al salir queda el ultimo
+	   **con geometria**: una demo que dibuja una vez y se queda esperando un
+	   boton sigue generando cuadros vacios, y sin esa condicion el volcado
+	   terminaba siendo uno de esos. */
+	if (opciones.captura_gl != NULL && strip_count > 0)
+		volcar_gl(opciones.captura_gl);
+
 	strip_count = 0;
 
 	total_polygon_count = 0;
 
 	gui_refresh();
-
-	/* Antes del swap: es el unico momento en que el buffer tiene el cuadro
-	   entero, porque despues de presentar se limpia. Sobrescribe el archivo en
-	   cada cuadro, asi que al salir queda el ultimo. */
-	if (opciones.captura_gl != NULL)
-		volcar_gl(opciones.captura_gl);
 
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
@@ -1122,12 +1368,13 @@ void taPolyModifier()
 	
 #define CTT() { pvr_texture_pixelformat = -1; pvr_texture_components = -1; pvr_texture_pixelpack = -1; }
 
-		/* Sin paleta salvo que el formato diga lo contrario. Va antes del
-		   switch porque los parametros globales sobreviven a la tira: sin
+		/* Sin paleta ni YUV salvo que el formato diga lo contrario. Va antes
+		   del switch porque los parametros globales sobreviven a la tira: sin
 		   esto, una textura normal despues de una indexada se seguiria
 		   decodificando por la paleta. */
 		TriangleStrip[strip_count].texture.pvr_texture_bpp = 0;
 		TriangleStrip[strip_count].texture.pvr_texture_paleta = 0;
+		TriangleStrip[strip_count].texture.pvr_texture_yuv = 0;
 
 		switch (TexInfo.registers.pixelformat)
 		{
@@ -1154,7 +1401,21 @@ void taPolyModifier()
 			TriangleStrip[strip_count].texture.pvr_texture_components = 4;
 			break;
 	
-			case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;
+			/*
+				YUV422: cada 32 bits llevan dos pixeles -- U, Y0, V, Y1 --, o
+				sea croma compartido de a pares. GL no tiene ese formato, asi
+				que se convierte a RGB al subir la textura, como con las
+				paletas. Es lo que produce el convertidor del TA.
+			*/
+			case 3:
+			logxmsg(LOG_PVR, "texture: YUV422\n");
+			TriangleStrip[strip_count].texture.pvr_texture_yuv = 1;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelformat = GL_RGBA;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelpack = GL_UNSIGNED_BYTE;
+			TriangleStrip[strip_count].texture.pvr_texture_components = 4;
+			pvr_texture_pixelconvert = NULL;
+			break;
+
 			case 4: logxmsg(LOG_PVR, "texture: BUMP\n");	CTT();	break;
 
 			/*

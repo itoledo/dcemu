@@ -725,6 +725,18 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		case 0xa05f8000 + 0x54 * 4:		// TA_YUV_TEX_CNT
+		{
+			/* Cuantos macrobloques lleva convertidos el TA. El guest lo usa
+			   para saber si termino la imagen; sin esto leia el respaldo del
+			   bloque de control, o sea lo ultimo que el propio guest escribio
+			   ahi. */
+			memcpy(p, &pvr_yuv_convertidos, size);
+			logxmsg(LOG_PVR, "pvr_read: TA_YUV_TEX_CNT = %d\n",
+				(int) pvr_yuv_convertidos);
+		}
+		break;
+
 		case 0xa05f8000 + 0x11 * 4:		// FB_R_CTRL
 		{
 			memcpy(p, &pvr_fb_r_ctrl, size);
@@ -1839,8 +1851,19 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_CB_1(0xa05f8000 + 0x50 * 4, cb_ppblocksize, "PPBLOCKSIZE [TA_ALLOC_CTRL] (TA) (PP-block sizes), grabando %x", *(DWORD *) p);
 		PVR_WRITE_CB_1(0xa05f8000 + 0x51 * 4, cb_tastart, "TASTART [TA_LIST_INIT] (TA) (Start vertex enqueueing strobe), grabando %x", *(DWORD *) p);
 
-		PVR_WRITE_1(0xa05f8000 + 0x52 * 4, "[TA_YUV_TEX_BASE], grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x53 * 4, "[TA_YUV_TEX_CTRL], grabando %x", *(DWORD *) p);
+		/* Convertidor YUV del TA. Programar el destino o el formato reinicia la
+		   cuenta de macrobloques: el chip empieza otra imagen. El respaldo del
+		   bloque de control ya guarda los dos valores; el convertidor los lee
+		   de ahi. Ver pvr_yuv_bloque() en graficos.c. */
+		case 0xa05f8000 + 0x52 * 4:		// TA_YUV_TEX_BASE, destino
+		case 0xa05f8000 + 0x53 * 4:		// TA_YUV_TEX_CTRL, formato y tamano
+		{
+			logxmsg(LOG_PVR, "[TA_YUV_TEX_%s], grabando %x\n",
+				(fisica == 0x005F8148) ? "BASE" : "CTRL", *(DWORD *) p);
+			pvr_yuv_reiniciar();
+		}
+		break;
+
 		PVR_WRITE_1(0xa05f8000 + 0x54 * 4, "[TA_YUV_TEX_CNT], grabando %x", *(DWORD *) p);
 
 		PVR_WRITE_1(0xa05f8000 + 0x58 * 4, "[TA_LIST_CONT], grabando %x", *(DWORD *) p);

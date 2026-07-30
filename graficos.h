@@ -54,6 +54,13 @@ int volcar_framebuffer(const char * ruta);
    verificar una demo 3D sin depender de que la captura de la ventana funcione.
    Ver el comentario en graficos.c. */
 int volcar_gl(const char * ruta);
+
+/* Convertidor YUV del TA (0x10800000). Un bloque de 32 bytes; cuando se junta
+   un macrobloque entero se convierte y se escribe en PVR_YUV_ADDR. */
+void pvr_yuv_bloque(void * datos);
+void pvr_yuv_reiniciar(void);
+
+extern DWORD pvr_yuv_convertidos;	/* lo que devuelve PVR_YUV_STAT */
 void DibujarGL(SDL_Surface * sfc);
 void limpiar_pantalla();
 

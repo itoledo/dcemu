@@ -484,6 +484,13 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 		   para 0x11xxxxxx -- la FIFO de texturas del TA, por donde KOS sube las
 		   texturas con sq_fast_cpy(). Cada bloque de 32 bytes de textura se
 		   interpretaba como una palabra de control de poligono. */
+		/* 0x10800000 es la entrada del convertidor YUV del TA, no la FIFO de
+		   poligonos: mismo cuarto de la zona 0x10, otro destino. */
+		if ((addr & 0xFF800000) == 0x10800000)
+		{
+			pvr_yuv_bloque(src);
+		}
+		else
 		if ((addr & 0xFF800000) == 0x10000000)
 		{
 //			logxmsg(LOG_MEM, "PREF %x\n", addr);

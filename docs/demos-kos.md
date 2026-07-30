@@ -6,13 +6,15 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **88** binarios (86 demos: `bfont` y `tunnel` están duplicados) |
-| Fallan por algo que falta emular | **19** |
+| Funcionan | **91** binarios (89 demos: `bfont` y `tunnel` están duplicados) |
+| Fallan por algo que falta emular | **16** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
-El 31 de julio de 2026 pasaron cuatro de la segunda fila a la primera: `parallax-serpent_dma`
-con el CH2 DMA, y las tres de paleta al decodificar los formatos indexados. El resto del
-inventario es el del 30.
+El 31 de julio de 2026 pasaron siete de la segunda fila a la primera: `parallax-serpent_dma`
+con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las dos de
+`yuv_converter` con el convertidor YUV del TA y `pvr-strided_texture` con el stride — estas
+tres últimas también con el arreglo del filtro de textura, que era lo que de verdad las
+dejaba en blanco. El resto del inventario es el del 30.
 
 ## Cómo se mide
 
@@ -32,6 +34,12 @@ sí lo es.
 aviso. En una misma sesión, `tunnel` pasó de 3036 colores a 4 sin que cambiara una línea del
 emulador, y con `--captura-gl` seguía dando 1837. Un barrido entero puede salir en negro y parecer
 una regresión masiva.
+
+**Lo que este método no ve**: `--captura-gl` vuelca desde `cb_tastart()`, o sea sólo cuando el
+guest dibuja por el TA. Una demo que use el framebuffer 2D —`video-bfont` y compañía— no
+produce archivo, y eso significa «no pasó por el TA», no «falló». Para esas está F5, que vuelca
+la RAM de vídeo. Se vuelca además sólo el último cuadro **con geometría**, porque una demo que
+dibuja una vez y se queda esperando un botón sigue generando cuadros vacíos.
 
 Aparte se guarda `logs/serial.txt` y se extrae la última línea con marca de resultado. Secuencial
 a propósito: dos instancias se pelean por `logs/serial.txt` y los resultados salen cruzados.
@@ -60,22 +68,29 @@ captura tiene contenido real pero no se revisó imagen por imagen.
 
 ## Lo que falta
 
-### Formatos de textura del PVR (4)
+### Formatos de textura del PVR (1)
 
 `taPolyModifier()` en `graficos.c` despacha el `pixelformat` de la palabra de control de textura,
-y para estos casos llama a la macro `CTT()`, que deja formato, componentes y empaquetado
-sin definir. Hay que decodificarlos a algo que GL entienda, igual que se hace con ARGB1555,
-RGB565 y ARGB4444.
+y para este caso llama a la macro `CTT()`, que deja formato, componentes y empaquetado
+sin definir. Hay que decodificarlo a algo que GL entienda, igual que se hace con ARGB1555,
+RGB565, ARGB4444, YUV422 y los dos indexados.
 
 | demo | qué falta |
 | --- | --- |
-| `pvr-yuv_converter-YUV420`, `pvr-yuv_converter-YUV422` | YUV422, y el convertidor YUV del TA |
 | `pvr-bumpmap` | formato BUMP |
-| `pvr-strided_texture` | **no es el stride.** La demo se mata sola en un `BRA` a sí misma a los 2,14 s de tiempo emulado, que es como KOS termina un `panic`, y para entonces solo ha dibujado un cuadro. Falta encontrar qué la mata |
 
-El **stride sí está implementado** desde el 31 de julio de 2026 (`get_texture()` copia fila a
-fila cuando `TEXT_CONTROL` dice que el ancho en memoria no es el declarado), pero **queda sin
-verificar**: la única demo que lo ejercita muere antes por lo de arriba.
+Las otras seis se resolvieron el 31 de julio de 2026. Las tres de paleta por lo que se cuenta
+más abajo; `pvr-yuv_converter-YUV420` y `-YUV422` porque faltaba el convertidor YUV del TA
+—la entrada de `0x10800000`, que la zona `0x10` mandaba entera a la FIFO de polígonos— más el
+formato de textura YUV422; y `pvr-strided_texture` porque el stride no se aplicaba.
+
+**Pero las tres últimas fallaban además por lo mismo, y eso vale más que los tres formatos
+juntos**: `glTexParameteri` se aplica a la textura *ligada*, y los filtros se ponían **antes**
+del `glBindTexture`. Caían sobre la textura del cuadro anterior, y la nueva se quedaba con el
+`GL_TEXTURE_MIN_FILTER` de fábrica, que es `GL_NEAREST_MIPMAP_LINEAR` y **exige mipmaps**: sin
+ellos la textura está incompleta y GL la muestrea **blanca**. Una demo que dibuja muchos
+cuadros lo tapa —desde el segundo, la textura ya quedó ligada y sí recibe los parámetros—,
+pero una que dibuja uno solo y espera un botón salía entera en blanco.
 
 **Las tres de paleta ya funcionan** (31 de julio de 2026): `pvr-palette-4bpp` dibuja su degradado
 radial con las bandas de 16 niveles que corresponden a 4 bpp, `pvr-palette-8bpp` el mismo suave, y
@@ -224,12 +239,20 @@ la demo busca. Ver la sección de MMU.
 `filesystem-pty`, `library`, `objc-runtime`, `micropython`, `maple`, `conio-conio_dbgio`,
 `profiling-gprof`.
 
-### Gráficos verificados a ojo (18 binarios, 16 demos)
+### Gráficos verificados a ojo (24 binarios, 22 demos)
 
 `video-bfont` = `bfont`, `video-minifont`, `video-multibuffer`, `video-screenshot`,
 `video-palmenu`, `conio-basic`, `conio-kosh`, `conio-wump`, `conio-adventure`,
 `kgl-tunnel` = `tunnel`, `libdream-ta`, `parallax-bubbles`, `png`, `pvr-texture_render`,
-`tsunami-font`, `basic-mmu-pvrmap`.
+`tsunami-font`, `basic-mmu-pvrmap`, `pvr-palette-4bpp`, `pvr-palette-8bpp`,
+`pvr-palette-wormhole`, `pvr-yuv_converter-YUV420`, `pvr-yuv_converter-YUV422`,
+`pvr-strided_texture`.
+
+Las seis últimas se verificaron el 31 de julio de 2026 con `--captura-gl`: las de paleta
+dibujan su degradado radial —con las bandas de 16 niveles que le corresponden a 4 bpp— y el
+remolino; las de `yuv_converter`, una pared de ladrillos con el color correcto; y
+`pvr-strided_texture`, su tablero de ajedrez con las casillas cuadradas y alineadas, que es
+justo lo que un stride mal aplicado arruinaría.
 
 `basic-mmu-pvrmap` dibuja su patrón de círculos concéntricos —el `(x*x + y*y) & 0xff` de la
 demo— escribiéndolo entero a través de la traducción de la MMU, y espera Start. Le falta el

@@ -126,6 +126,9 @@ typedef struct TriangleStripInfo
 		/* Textura rectangular: el ancho en memoria sale de TEXT_CONTROL y no
 		   del tamano declarado. 0 si no la usa. */
 		DWORD pvr_texture_stride;
+
+		/* 1 si los texels son YUV422 y hay que convertirlos a RGB al subirlos. */
+		DWORD pvr_texture_yuv;
 	}texture;
 	DWORD index;
 }TSI;
