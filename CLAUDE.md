@@ -175,7 +175,8 @@ itself in a deliberate `BRA` to itself at `0x8C0DBDFC` forever. Same shape as `S
 
 Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, **F6 dump the GL buffer**,
 F9 step, F10 stop, F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad,
-`q`/`e` triggers, `y h g j` analog stick, keypad `+`/`-` scroll the memory dump.
+`q`/`e` triggers, `y h g j` analog stick, keypad `+`/`-` scroll the memory dump. A gamepad
+works too — see "Input".
 
 **F5 writes `captura.bmp` from video RAM, not from the GL buffer** (`volcar_framebuffer()`
 in `graficos.c`), so it shows what the guest drew rather than what GL rasterized. With
@@ -572,6 +573,22 @@ The register map and command codes are checked against two independent sources �
 kernel's GD-ROM driver and reicast's core. Data goes out either as chained DRQ blocks
 through the data register or through the G2 DMA (`SB_GDSTAR`/`SB_GDST`), depending on bit 0
 of FEATURES at the time of the `PACKET` command.
+
+### Input
+
+`mando.c` reads a host gamepad through **XInput**, loaded at runtime with `LoadLibrary` so
+the build gains no dependency and the emulator still starts where the DLL is absent. It maps
+almost 1:1 onto a Dreamcast pad — d-pad, four face buttons, Start, and a left stick, plus two
+triggers that are **analogue 0-255 on both consoles**, so those pass through untouched. LB/RB
+and the right stick have no counterpart and go unused.
+
+`main.c` polls it once per frame and `entrada_leer()` merges it with the keyboard: buttons
+with AND (they are active-low, so pressed on either is pressed), axes by whichever is not at
+rest, gamepad first. So the keys keep working with a pad plugged in.
+
+The `SDL_JOY*` handling in `main.c` is the 2005 path, behind an `#ifdef JOYSTICK` nobody
+defines. It maps buttons by index, which means nothing on a modern pad. XInput is the live
+one.
 
 ### Maple
 

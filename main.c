@@ -33,6 +33,7 @@
 #include "traza.h"
 #include "wdt.h"
 #include "tmu.h"
+#include "mando.h"
 #include "SIMDx86/version.h"
 
 DWORD snd_dbg;			// ...
@@ -70,10 +71,34 @@ short ultopcnt = 0;
 struct opcode_log_str ultop[OPMAXCNT];
 char lastop[128];
 bool pausa = false;
+/* Estado del **teclado**. El del gamepad va aparte y los dos se combinan en
+   entrada_leer(): asi las teclas siguen funcionando con un mando enchufado. */
 WORD joystick = 0xFFFF;
 unsigned char ltrig = TRIGGER_OFF, rtrig = TRIGGER_OFF;
 unsigned char joyx = JOYSTICK_NEUTRAL, joyy = JOYSTICK_NEUTRAL;
 SDL_Joystick * js;
+
+/* El gamepad del anfitrion, releido una vez por cuadro. */
+static struct mando_estado_t mando;
+
+/*
+	Lo que ve el Maple: teclado y mando juntos.
+
+	Los botones se combinan con AND porque son activos en bajo -- pulsado en
+	cualquiera de los dos es pulsado --, y en los ejes gana el que no este en
+	reposo, con prioridad para el mando: si el stick esta movido manda el
+	stick, y si no, las teclas.
+*/
+void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
+{
+	*botones = (WORD) (joystick & mando.botones);
+
+	*lt = (mando.ltrig != TRIGGER_OFF) ? mando.ltrig : ltrig;
+	*rt = (mando.rtrig != TRIGGER_OFF) ? mando.rtrig : rtrig;
+
+	*jx = (mando.joyx != JOYSTICK_NEUTRAL) ? mando.joyx : joyx;
+	*jy = (mando.joyy != JOYSTICK_NEUTRAL) ? mando.joyy : joyy;
+}
 bool gui_visible=true;
 
 
@@ -415,6 +440,10 @@ void main_loop(void)
 
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
+
+		// XInput no manda eventos: hay que preguntarle. Una vez por cuadro es
+		// mas seguido de lo que el guest sondea el Maple, asi que alcanza.
+		mando_leer(&mando);
 
 		// Salida automatica por tiempo emulado. Va aca, en el fin de frame, para
 		// que salga por el mismo camino que SDL_QUIT y traza_resumen() alcance a
@@ -943,6 +972,21 @@ int main(int argc, char *argv[])
 
 	joystick = 0xFFFF;
 
+	/*
+		El gamepad va por XInput y no por SDL: el camino de SDL de arriba es de
+		2005, esta detras de un #ifdef que nadie define, y mapea los botones por
+		indice, que con un mando moderno no significa nada. Ver mando.c.
+	*/
+	mando_reposo(&mando);
+
+	if (mando_iniciar())
+	{
+		struct mando_estado_t prueba;
+
+		fprintf(stderr, "mando: %s\n", mando_leer(&prueba)
+			? "gamepad conectado" : "sin gamepad conectado, solo teclado");
+	}
+
 //	screen = SDL_SetVideoMode(320, 240, 16, SDL_DOUBLEBUF);
 
 	if (glinit() != 0)
@@ -1200,6 +1244,7 @@ int main(int argc, char *argv[])
 	   arranque, porque nunca consigue guardar que ya esta configurada. */
 	sistema_flash_guardar();
 	sistema_rtc_guardar();
+	mando_terminar();
 
 	traza_resumen();
 

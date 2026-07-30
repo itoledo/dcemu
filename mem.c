@@ -1445,7 +1445,10 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							// recibe FUNC
 							cont_cond_t ct;
 							
-							ct.buttons = joystick; // CONT_START
+							/* Teclado y gamepad juntos: entrada_leer() esta en
+							   main.c y los combina. */
+							entrada_leer(&ct.buttons, &ct.ltrig, &ct.rtrig,
+								&ct.joyx, &ct.joyy);
 
 							/* Solo cuando cambia: si no, son ~77 lineas por
 							   segundo de tiempo emulado. */
@@ -1453,18 +1456,14 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							{
 								static WORD ultimo = 0xFFFF;
 
-								if (joystick != ultimo)
+								if (ct.buttons != ultimo)
 								{
 									fprintf(stderr, "traza: maple botones %04x\n",
-										(unsigned) joystick);
-									ultimo = joystick;
+										(unsigned) ct.buttons);
+									ultimo = ct.buttons;
 								}
 							}
 
-							ct.rtrig = rtrig;
-							ct.ltrig = ltrig;
-							ct.joyx = joyx;
-							ct.joyy = joyy;
 							ct.joy2x = 128;
 							ct.joy2y = 128;
 

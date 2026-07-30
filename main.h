@@ -91,6 +91,12 @@ extern unsigned char joyx, joyy;
 #define JOYSTICK_RIGHT	0xFF
 #define JOYSTICK_NEUTRAL	128
 
+/*
+	El estado del mando que ve el Maple: teclado y gamepad combinados. Vive en
+	main.c porque las teclas se procesan ahi. Ver mando.h.
+*/
+void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy);
+
 #define CONT_C  		(1<<0)
 #define CONT_B  		(1<<1)
 #define CONT_A  		(1<<2)
