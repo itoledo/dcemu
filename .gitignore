@@ -4,6 +4,10 @@ _cvsroot/
 # Resultado de la compilacion
 # (las librerias .a de lib/ si van versionadas: son dependencias en el arbol)
 *.o
+
+# Intermedios del toolchain de KOS en demos/. El .bin si va versionado, como
+# demos/roto/roto.bin: asi la demo se puede correr sin tener el SDK instalado.
+*.elf
 obj/*.res
 dcemu.exe
 /dcemu

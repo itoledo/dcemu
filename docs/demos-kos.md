@@ -6,8 +6,8 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **81** binarios (79 demos: `bfont` y `tunnel` están duplicados) |
-| Fallan por algo que falta emular | **26** |
+| Funcionan | **84** binarios (82 demos: `bfont` y `tunnel` están duplicados) |
+| Fallan por algo que falta emular | **23** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
 ## Cómo se mide
@@ -17,7 +17,7 @@ colores distintos muestreando uno de cada seis píxeles; aparte se guarda `logs/
 extrae la última línea con marca de resultado. Secuencial a propósito: dos instancias se pelean
 por `logs/serial.txt` y los resultados salen cruzados.
 
-**Dos trampas del método, las dos ya costaron tiempo:**
+**Cuatro trampas del método, las cuatro ya costaron tiempo:**
 
 - **La cuenta de colores es un indicio, no un veredicto.** Una demo de consola sale con 4
   colores — ventana negra — y está perfecta: su salida va por el serial. Al revés, una cuenta
@@ -27,6 +27,14 @@ por `logs/serial.txt` y los resultados salen cruzados.
   duerme 10 segundos y retorna, y el tiempo emulado corre ~2,5× rápido sin `--limitar`, así que
   se termina a los ~4 segundos de reloj real. Funciona; hay que mirarlo antes, o con el volcado
   de F5. Ver `CLAUDE.md`, sección de captura de la ventana.
+- **Un `panic` en el serial no siempre es un fallo.** `basic-mmu-nullptr` termina en
+  `kernel panic` **porque eso es lo que la demo quiere demostrar**: atrapa el uso de un puntero
+  nulo, imprime el diagnóstico y muere. Buscar «panic» y contarlo como rojo la clasificó mal
+  durante todo un barrido. Hay que leer la salida completa, no la última línea.
+- **SDL 1.2 desvía `stdout` y `stderr` a archivos en Windows.** Van a `stdout.txt` y
+  `stderr.txt` en el directorio de trabajo, así que redirigir la salida del proceso desde el
+  shell —o con `-RedirectStandardError` de PowerShell— captura cero bytes y parece que el
+  emulador no dijo nada. Ahí es donde salen los avisos de `--traza-mem` y el de la MMU.
 
 Por eso el inventario de abajo separa **verificado a ojo** de **dibuja**: en el segundo grupo la
 captura tiene contenido real pero no se revisó imagen por imagen.
@@ -77,24 +85,74 @@ Nota: `sound-ghettoplay-vorbis`, `sound-hello-mp3` y `sound-hello-ogg` sí dibuj
 llegan a crear el hilo del servidor de sonido, así que están en la lista de los que funcionan
 —en lo visual— aunque tampoco suenen.
 
-### MMU (2)
+### MMU (0)
 
-Las cinco fases del plan (`docs/mmu-plan.md`) están implementadas y las 24 pruebas unitarias
-pasan, pero las dos demos que ejercitan la MMU de verdad todavía caen:
+Las dos demos de MMU funcionan. Estaban aquí por dos razones distintas y ninguna era la MMU.
 
-| demo | síntoma |
-| --- | --- |
-| `basic-mmu-nullptr` | `kernel panic: unhandled MMU exception`. KOS imprime `PTEH = 0, PTEL = 1b4, TTB = 0, TEA = 0, MMUCR = 00f40201` y decide que no la puede atender, o sea que el código de excepción o los registros no son los que espera |
-| `basic-mmu-pvrmap` | `kernel panic: double fault`. Llega a listar los hilos, así que arranca bien y se cae al mapear la RAM del PVR |
+**`basic-mmu-pvrmap` caía por un `memwrite` que tenía que ser `memwrite_fisico`.** El volcado
+decía `Unhandled exception: PC 8c01ad68, code 2, evt 0060` con `SR 600000f0` —`RB=1`, o sea el
+banco de excepción—, y detrás `kernel panic: double fault`. Desensamblando ese PC:
 
-### SH-4, resto (4)
+```
+8c01ad64 <_maple_dma_start>:
+8c01ad64:	mov.l	8c01ad70,r1	! a05f6c18
+8c01ad66:	mov	#1,r2
+8c01ad68:	mov.l	r2,@r1          <- aquí
+```
+
+Es la escritura a `SB_MDST` que arranca el DMA del Maple, y `0xA05F6C18` está en **P2**, que
+no se traduce. Lo que fallaba era lo que esa escritura dispara: `pvr_write()` ejecuta el DMA
+del Maple ahí mismo, dentro de la instrucción, y una de sus escrituras —`mem.c:1099`, la que
+rellena `0xFFFFFFFF` para un puerto sin dispositivo— usaba `memwrite` en vez de
+`memwrite_fisico`. Todo el resto del bloque ya usaba la versión física, con el comentario que
+explica por qué; esa línea se quedó atrás. Con `AT=1` la dirección del descriptor
+(`0x0C04A00C`, física) se traducía, no estaba mapeada, y levantaba un fallo de TLB en
+escritura desde dentro del manejador de VBlank —de ahí el `RB=1` y el doble fallo.
+
+Solo se veía con la MMU encendida, que es lo que hacía que solo esta demo lo destapara.
+Arreglado, `pvrmap` dibuja su patrón completo a través de la traducción y llega al bucle que
+espera START.
+
+**Le falta el texto «Press START!», y eso no es de dcemu.** `bfont` pide la dirección de la
+fuente al syscall del boot ROM, que responde `0x00100020` —P0—. `pvrmap` mapea las páginas
+virtuales de 0 a 8 MB sobre la RAM del PVR, y `0x00100020` cae justo dentro: la lectura de la
+fuente se traduce y lee la RAM de video en vez de la ROM. Es la demo pisándose su propia
+fuente. Que la causa es esa está comprobado: reportando `0xA0100020` el texto sale. No se
+cambió, porque **P0 es lo que devuelve el hardware** — `bios/bios.bin` trae dos veces la
+constante `0x00100020` y ninguna `0xA0100020`, así que en una consola real pasaría lo mismo.
+
+**`basic-mmu-nullptr` estaba aquí por un falso positivo.** Su `kernel panic: unhandled MMU
+exception` **es el final previsto de la demo**, no un fallo. `catchnull` devuelve `NULL`
+incondicionalmente, así que KOS imprime `cannot map virtual address 00000000` y entra en
+pánico a propósito; el fuente lo dice (`/* We shouldn't get here... */`) y GCC hasta emitió
+un `abort()` justo detrás de la escritura, porque desreferenciar `NULL` es comportamiento
+indefinido. Lo que la demo pide, dcemu lo hace bien:
+
+- la escritura a `NULL` con `AT=1` falla en la UTLB y levanta el código 0x060 por el vector
+  0x400, que KOS clasifica como `dtlb_miss_write` —es una escritura, correcto—;
+- `SPC` apunta a **la instrucción que falló**, `8c01013a`, que es exactamente el
+  `mov.w r1,@r1` del desensamblado, no la siguiente;
+- `TEA` y `PTEH.VPN` quedan en 0, que es la dirección que falló, con el `ASID` conservado;
+- el callback del usuario recibe la página y el PC correctos y los imprime.
+
+Lo que `nullptr` **no** prueba es el otro medio camino —mapear y reejecutar—, porque su
+callback nunca devuelve una página. Eso lo cubre `demos/mmu-mapeo`, escrito para esto:
+mapea una página, escribe por la virtual, y comprueba por la física (P1, sin traducir) que
+la escritura llegó. Reporta `TEST SUCCEEDED!`. Con eso, **las cinco fases del plan
+(`docs/mmu-plan.md`) están verificadas sobre un programa real**, no solo por las 24 pruebas
+unitarias.
+
+### SH-4, resto (3)
 
 | demo | qué falta |
 | --- | --- |
 | `basic-breaking` | `Breakpoint Test: FAILURE`. Necesita el UBC, el controlador de breakpoints por hardware |
-| `basic-fpu-exc` | `TEST FAILED!`. Excepciones de FPU. Es una de las tres desviaciones que `tests/README.md` documenta a propósito |
 | `basic-dma-speedtest` | el serial se corta después del escaneo del maple: se traba antes de medir |
 | — | `tunnel` y otras siguen logueando `pvr_prim: attempt to submit to unopened list` en cantidad, aunque dibujen bien. Ver `CLAUDE.md` |
+
+`basic-fpu-exc` estaba en esta lista con `TEST FAILED!` y ya no: solo pedía los campos
+Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
+Ver `docs/sh4-conformidad.md`.
 
 ## Lo que no aplica (28)
 
@@ -116,22 +174,30 @@ hay nada que arreglar salvo que se decida emular el periférico.
 
 ## Lo que funciona
 
-### Consola, con veredicto explícito en el serial (31)
+### Consola, con veredicto explícito en el serial (33)
 
-`hello`, `basic-asserthnd`, `basic-exec`, `basic-memtest32`, `basic-posix_resource`,
-`basic-stackprotector`, `basic-stacktrace`, `basic-watchdog`, las diez de
+`basic-mmu-nullptr` está en esta lista aunque su veredicto sea un `kernel panic`: es el que
+la demo busca. Ver la sección de MMU.
+
+`hello`, `basic-asserthnd`, `basic-exec`, `basic-fpu-exc`, `basic-memtest32`,
+`basic-mmu-nullptr`, `basic-posix_resource`, `basic-stackprotector`, `basic-stacktrace`,
+`basic-watchdog`, las diez de
 `basic-threading-*` (`atomics`, `barrier`, `compiler_tls`, `general`, `once`,
 `recursive_lock`, `reentrant_mutex`, `rwsem`, `spinlock_test`, `tls`), `cpp-concurrency`,
 `cpp-filesystem`, `cpp-modplug_test`, `cpp-out_of_memory`, `dev-devroot`, `dev-random`,
 `filesystem-pty`, `library`, `objc-runtime`, `micropython`, `maple`, `conio-conio_dbgio`,
 `profiling-gprof`.
 
-### Gráficos verificados a ojo (17 binarios, 15 demos)
+### Gráficos verificados a ojo (18 binarios, 16 demos)
 
 `video-bfont` = `bfont`, `video-minifont`, `video-multibuffer`, `video-screenshot`,
 `video-palmenu`, `conio-basic`, `conio-kosh`, `conio-wump`, `conio-adventure`,
 `kgl-tunnel` = `tunnel`, `libdream-ta`, `parallax-bubbles`, `png`, `pvr-texture_render`,
-`tsunami-font`.
+`tsunami-font`, `basic-mmu-pvrmap`.
+
+`basic-mmu-pvrmap` dibuja su patrón de círculos concéntricos —el `(x*x + y*y) & 0xff` de la
+demo— escribiéndolo entero a través de la traducción de la MMU, y espera Start. Le falta el
+texto, por la razón que explica la sección de MMU: no es del emulador.
 
 `video-palmenu` es correcto tal como sale: sin consola europea ni cable distinto de VGA lo que
 corresponde es el patrón XOR y esperar Start. Su `flashrom_get_region: unknown code '00111'`

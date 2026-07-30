@@ -62,9 +62,20 @@ and OpenGL out of the link. SDL *headers* are still needed to compile (`opcodes.
 Every row of `opcodes[]` is now implemented — the only one left on `NOIMP` is the
 catch-all that covers bit patterns which are not SH-4 instructions. The 16 deviations the
 suite originally found have been fixed; `tests/README.md` lists them, plus the three
-things that still do not match the manual on purpose (no FPU exception/flag machinery, no
-cache behind `OCB*`, and two `LDC ...,SGR` rows of doubtful existence). `LDTLB` and the MMU
-are no longer on that list — see `docs/mmu-plan.md`.
+things that still do not match the manual on purpose (the parts of the FPU that are
+neither Cause nor Flag, no cache behind `OCB*`, and two `LDC ...,SGR` rows of doubtful
+existence). `LDTLB` and the MMU are no longer on that list — see `docs/mmu-plan.md`.
+
+**FPSCR's Cause and Flag fields are written now** (suite `fpu-excepciones`), which is what
+KOS's `basic/fpu/exc` checks. Three rules there are easy to get backwards, and
+`docs/sh4-conformidad.md` explains why: `inf/0` is *not* a divide-by-zero, a NaN that
+merely passes through raises nothing (invalid is recognised by the result coming out NaN
+when no input was), and add/sub can never underflow — a sum that lands below the smallest
+normal is exact. Still missing: the I cause on its own, and the DN and RM bits.
+
+**Enable and the three FPU exceptions are wired too** — 0x120 when a cause meets its Enable
+bit, 0x800/0x820 when `SR.FD` is set. See "Synchronous exceptions" below for the mechanism
+and `demos/fpu-trampa` for the end-to-end test.
 
 A case marked `CASO_XFAIL` documents a known deviation and is expected to fail; if it
 starts passing the runner reports `XPASS` and exits non-zero, so the note cannot go stale.
@@ -110,6 +121,26 @@ fewer distinct values over four million instructions it dumps the ring, **disass
 loop** and prints the registers. `gdrom.c` also reports ATA commands and SPI packets
 through it. See `docs/bios-boot-plan.md`.
 
+Not every loop it reports is a hang — a `memset` over 600 KB and a wait for vsync both trip
+the same heuristic. Read the disassembly, not the fact that it fired.
+
+**`WATCHPOINT` in `options.h` is the other tool**: a write watchpoint that reports every
+write touching a given address, with the PC and PR that did it. The hook is in
+`memwrite_fisico()` (`mem.h`) — the one place *every* write goes through, guest and
+internal alike — and the implementation is in `traza.c`. Off it costs nothing; on, two
+comparisons per write. It is what answers "who writes this variable", which is the question
+the BIOS boot keeps raising; `docs/bios-boot-plan.md` walks through the case it solved.
+
+**Where the BIOS boot stands**: it gets through the drive conversation and the video setup
+and now runs past 23 s of emulated time, looping in its own state machine around
+`0x8C0D9C50`. No unemulated addresses remain, and the framebuffer is still untouched, so it
+does not reach drawing yet.
+
+**`0x005F8004` is the PVR `REVISION` register and a retail console answers `0x11`.** The
+boot ROM checks `COREID` against `0x17FD11DB` *and* demands revision `>= 17` and `!= 1`; it
+had no read case, fell through to the control-block backing store, read zero, and parked
+itself in a deliberate `BRA` to itself at `0x8C0DBDFC` forever. Same shape as `SB_G1SYSM`.
+
 Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, F9 step, F10 stop,
 F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad, `q`/`e` triggers,
 `y h g j` analog stick, keypad `+`/`-` scroll the memory dump.
@@ -117,6 +148,11 @@ F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad, `q`/`e` triggers
 **F5 writes `captura.bmp` from video RAM, not from the GL buffer** (`volcar_framebuffer()`
 in `graficos.c`), so it shows what the guest drew rather than what GL rasterized. With
 `--traza-mem` it also dumps the PC ring and disassembles it.
+
+**SDL 1.2 redirects `stdout` and `stderr` to files on Windows** — `stdout.txt` and
+`stderr.txt` in the working directory. Redirecting the process's output from the shell (or
+with PowerShell's `-RedirectStandardError`) captures zero bytes and looks like the emulator
+said nothing. `--traza-mem` and the MMU's warnings come out there.
 
 **On screen-grabbing the window.** The framebuffer path does render — `video/bfont`,
 `video/multibuffer` and `video/screenshot` are all legible in a GDI capture of the client
@@ -216,6 +252,16 @@ retail console answers zero in both (`G1_SYSM_RETAIL` in `sistema.h`) — the re
 from the flash. With the value the drive used to return, `0x2422211F`, `hardware_sys_mode()`
 reported type 1, KOS concluded it was a Set5 devkit, and `spu_init()` cleared **8 MB** of sound
 RAM instead of 2 — so 6 MB of store-queue writes landed outside everything mapped.
+
+**`0x005F810C` is `SPG_STATUS`, and it is not just the scanline.** Bits 9:0 are the line,
+10 the field number, 11 vertical blanking, 12 hsync and 13 **vsync**. It used to return
+`pvr_scanline` and nothing else, so anyone waiting on vsync waited forever — that is where
+the real boot ROM sat (`0x8C00CB2E`, `TST #0x2000` on this register). vsync is now on for
+the first `SPG_WIDTH.vswidth` lines of the frame and blanking runs from
+`SPG_VBLANK.vbstart` to `vbend`, wrapping past the end; hsync and field stay zero, since
+dcemu tracks no horizontal position and no interlacing. Finding this also turned up that
+**`SPG_VBLANK` and `SPG_WIDTH` had read cases but no write cases**, so `pvr_spg_vblank` and
+`pvr_spg_width` kept `reg.c`'s defaults no matter what the guest programmed.
 
 SH-4 on-chip registers (TMU, DMA, SCIF, INTC, ports) are plain pointers into the `regmem`
 block, bound once in `regmem_setup()` (`mem.c`) and declared `extern` in `sh4emu.h`. So
@@ -425,6 +471,46 @@ asymmetry is what identifies this bug.
 `--bios` turns the hooks off: the stubs are written at `0x8C000100`-`0x8C000500`, which is
 exactly where the boot ROM installs itself.
 
+### Synchronous exceptions
+
+`excepciones.c/h` owns the general-exception path, shared by the MMU and the FPU. Two
+pieces: `excepcion_entrar()` (save SSR/SPC/SGR, set EXPEVT, jump to `VBR + vector` — it
+moved here from `intc.c`, since it is the processor's sequence and not the interrupt
+controller's), and the **instruction abort**.
+
+SH-4 general exceptions are re-execution type, but dcemu's handlers mutate registers around
+the access (`MOV.L @Rn+`, `FMUL` onto its own destination), so `main_loop()` snapshots state
+before each instruction and arms a `setjmp`; whoever detects the fault calls
+`excepcion_abortar()`, which does not return. The `longjmp` unwinds both levels of a delay
+slot for free, so SPC lands on the branch — which is what the manual wants.
+
+- **`excepcion_vigilar`** decides whether the loop snapshots at all. It generalises the old
+  test against `mmu_activa`: 1 if the MMU translates, `SR.FD` is set, or any FPSCR Enable
+  bit is on. Zero in everything that runs today, so the fast path costs what it did.
+- **The snapshot must include the float banks.** `core.context` holds only *pointers* to
+  them, so a plain `memcpy` of the context restores nothing of FR/XF — the MMU path had that
+  bug since phase 5 of `docs/mmu-plan.md` and nobody noticed. `excepcion_instantanea_tomar()`
+  and `..._restaurar()` copy both banks too.
+- **0x800/0x820 are checked in `run()`**, not in `main_loop()`, so delay slots are covered —
+  `branch.c` and `rte143()` run those through a nested `core.execute()`, and that is exactly
+  what distinguishes the two codes. `en_ranura_retardo` is raised by `EJECUTAR_RANURA()`;
+  `main_loop()` clears it on abort because the `longjmp` skips the lowering.
+- **`fpu_deshabilitada` is derived only in `excepcion_actualizar_vigilancia()`.** It is a
+  copy of `SR.FD` so the dispatcher need not extract a bitfield per instruction; writing it
+  anywhere else lets the two drift (`arnes_reset()` assigns `SR = 0` directly).
+
+Testing it needs the whole loop, not just a handler call: `ejecutar_vigilado()` in the test
+harness replays snapshot → `setjmp` → restore → `excepcion_entrar()`. End to end,
+`demos/fpu-trampa` installs a KOS handler for `EXC_FPU` and `demos/mmu-mapeo` maps a page
+and checks the write landed at the physical address. **`SR.FD` cannot be tested from KOS at
+all** — its exception entry starts with `sts.l fpscr,@-r0`, an FPU instruction, so with FD
+set it would fault forever. True on real hardware too; KOS never uses FD.
+
+**Both MMU demos pass**, and neither was failing because of the MMU. `basic/mmu/nullptr`'s
+`kernel panic` is the demo's intended ending (`catchnull` returns `NULL` on purpose) —
+reading only the last serial line misclassified it for a whole sweep. `basic/mmu/pvrmap`
+died on one `memwrite` that should have been `memwrite_fisico`; see below.
+
 ### Support modules
 
 `opciones.c` parses the command line into the global `opciones`. `sistema.c` holds the
@@ -441,6 +527,7 @@ renderer. `log.c` writes `logs/{disasm,memoria,serial,pvr,intc,glop}.txt`.
 
 - **`options.h` is the feature switchboard.** Nearly all debug output and several
   behaviours are compile-time `#define` toggles there. Check it before adding a `printf`.
+  `WATCHPOINT` (write watchpoint) lives there too — see "Run" above.
 - **Logging is compiled out by default.** `logmsg()` / `logxmsg()` expand to nothing
   unless `LOGGING` is defined in `options.h`; `LOG_FFLUSH` makes it survive a crash.
   Runtime toggles also exist (`filelogging`, keys `l`/`m`/`v`/`r`).
@@ -450,9 +537,17 @@ renderer. `log.c` writes `logs/{disasm,memoria,serial,pvr,intc,glop}.txt`.
   run inside an instruction must use the `_fisico` pair — that means the Maple and GD-ROM
   DMA, the PVR callbacks and the DMAC. Everything else internal uses `0x8C...` (P1), which
   is never translated either way. `mmu.c` owns the TLB and translation (`docs/mmu-plan.md`).
-- A failed translation does not return: it `longjmp`s to `main_loop()`, which restores a
-  snapshot of `core.context` and enters the exception, so the instruction re-executes. That
-  snapshot is only taken when `mmu_activa` — with the MMU off the loop is unchanged.
+  **One `memwrite` in the Maple DMA was missed** (`mem.c`, the `0xFFFFFFFF` fill for a port
+  with no device) and it cost `basic/mmu/pvrmap` a double fault. These only misbehave with
+  the MMU on, so nothing else in the tree shows them — grep before assuming they are all
+  converted.
+- **The ROM font lives at `0x00100020`, a P0 address, so the MMU translates it.** That is
+  what the real boot ROM answers — `bios.bin` holds that constant twice and never
+  `0xA0100020` — so it is correct, but a guest that maps the low pages shadows its own font.
+  `basic/mmu/pvrmap` does exactly that and loses its text; on hardware it would too.
+- A failed translation does not return: it `longjmp`s to `main_loop()`, which restores the
+  snapshot and enters the exception, so the instruction re-executes. The snapshot is only
+  taken when `excepcion_vigilar` — see "Synchronous exceptions" above.
 - Instruction handlers own `PC`. Forgetting `PC += 2` hangs the emulator silently.
 - `decode.h` and `dcemu_private.h` are not referenced by any source file.
 - The old `PC_func` / `str_PC` indirection in `sh4emu.c` is dead code behind

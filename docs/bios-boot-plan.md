@@ -362,11 +362,122 @@ más 1050 escrituras al AICA— quedó vacía.
 se comparó contra una compilación de `39d76c8` en un worktree aparte y la ventana se ve
 idéntica.
 
+## Segunda corrida: el vsync de SPG_STATUS
+
+Al volver a probar el arranque después del trabajo de MMU y FPU, el punto de parada ya no
+era el planificador de `0x8C003716`: era este bucle, a los 0,474 s de tiempo emulado.
+
+```
+8c00cb2e: MOV.L  @R5, R2      ; R5 = 0xA05F810C, SPG_STATUS
+8c00cb30: TST    R4, R2       ; R4 = 0x2000
+8c00cb32: BT     8c00cb2e     ; repite mientras el bit valga cero
+```
+
+`0x005F810C` es **SPG_STATUS**, y el bit 13 es el **vsync**. `pvr_read()` devolvía ahí
+`pvr_scanline` y nada más: solo el número de línea, sin ninguno de los bits de sincronía.
+El boot ROM esperaba un vsync que no llegaba nunca.
+
+El registro completo es:
+
+| bits | campo |
+| --- | --- |
+| 9:0 | línea de barrido |
+| 10 | número de campo |
+| 11 | blanking vertical |
+| 12 | hsync |
+| 13 | vsync |
+
+Ahora se compone: el vsync se enciende durante las primeras `SPG_WIDTH.vswidth` líneas del
+cuadro y el blanking entre `SPG_VBLANK.vbstart` y `vbend`, que envuelve por el final. hsync
+y el número de campo quedan en cero — dcemu no lleva posición horizontal ni entrelazado, y
+nadie los ha pedido todavía. Si `vswidth` sale cero se fuerza a una línea, porque si no
+quien espere el vsync se cuelga igual.
+
+Con eso aparecieron **dos escrituras que faltaban**: `SPG_VBLANK` (`0xA05F80DC`) y
+`SPG_WIDTH` (`0xA05F80E0`) solo tenían caso de lectura, así que `pvr_spg_vblank` y
+`pvr_spg_width` se quedaban para siempre en el valor por omisión de `reg.c` aunque el guest
+los programara. Sus vecinos `SPG_LOAD`, `SPG_CONTROL` y `SPG_HBLANK` sí se recogían.
+
+### Hasta dónde llega ahora
+
+Pasa el vsync, hace un `memset` de unos 630 KB, vuelve a esperar el vsync —y esta vez lo
+consigue—, programa una tanda de registros del PVR y se detiene a los **0,546 s** aquí:
+
+```
+8c0dbdf4: MOV.L  0x8c0dbe5c, R3   ! 8c22ff94
+8c0dbdf6: MOV.L  @R3, R0
+8c0dbdf8: CMP/EQ #6, R0
+8c0dbdfa: BT     8c0dbe00
+8c0dbdfc: BRA    8c0dbdfc         <== se queda aquí a propósito
+```
+
+Lee la variable de `0x8C22FF94`, la compara con **6** y, si no coincide, entra en un bucle
+infinito deliberado. Vale **5**. Es la misma clase de espera que la de `0x8C003716`
+—máquina de estados de la BIOS que no completa un paso—, pero varios pasos más adelante:
+antes esperaba un 2 y ni siquiera llegaba a este código.
+
+Con imagen montada llega exactamente al mismo sitio y con los mismos valores.
+
+## El watchpoint, y lo que encontró
+
+Para saber quién escribe `0x8C22FF94` hacía falta un watchpoint de escritura, así que se
+implementó: `WATCHPOINT` en `options.h`, con la dirección, el tamaño y un tope de informes.
+El gancho está en `memwrite_fisico()` (`mem.h`), que es el único sitio por el que pasan
+**todas** las escrituras —las del programa emulado llegan ahí después de traducir, y las
+internas del DMA y de los callbacks entran directo—. La implementación vive en `traza.c`,
+junto al resto del diagnóstico de arranque. Apagado no cuesta nada; encendido, dos
+comparaciones por escritura. Ver `WATCHPOINT` en `options.h`.
+
+Ocho informes en toda la corrida, y el último lo dijo todo:
+
+```
+watchpoint: 8c22ff94 = 00000005 (antes 00000000) -- escritura de 4 en 8c22ff94,
+            PC 8c0dbc74, PR 8c0dbc6e, 103211502 ciclos
+```
+
+Desensamblando ese PC:
+
+```
+8c0dbc62: JSR    @R3            ; R3 = 8c0dd46e, lee un registro del PVR
+8c0dbc66: MOV.L  R0, @(4,R15)   ; guarda el COREID
+8c0dbc6a: JSR    @R3            ; segunda llamada...
+8c0dbc6c: MOV    #4, R4         ; ...con el offset 4: la revisión
+8c0dbc74: MOV.L  R5, @R2        ; *0x8C22FF94 = 5
+8c0dbc7a: CMP/EQ R3, R1         ; ¿COREID == 0x17FD11DB?
+8c0dbc7c: BF     8c0dbc86       ;   no -> se queda en 5
+8c0dbc82: CMP/EQ #1, R0         ; ¿revisión == 1?
+8c0dbc84: BF     8c0dbc8c       ;   no -> sigue
+8c0dbc8e: CMP/HS R1, R4         ; ¿revisión >= 17?
+8c0dbc90: BF     8c0dbca0       ;   no -> se queda en 5
+8c0dbc96: MOV.L  R0, @R2        ; *0x8C22FF94 = 6   <== el 6
+```
+
+Es una **comprobación de identidad del chip PVR**. `COREID` (`0x005F8000`) ya devolvía
+`0x17FD11DB`, pero **`REVISION` (`0x005F8004`) no tenía caso de lectura**: caía en el
+respaldo del bloque de control, que vale cero, y cero no llega a 17. Una consola de serie
+responde `0x11` ahí — que es exactamente el umbral que la BIOS exige, y por eso rechaza
+también el 1.
+
+Es el mismo tipo de trampa que `SB_G1SYSM`: un registro de identificación que contesta
+cualquier cosa y manda al software por el camino equivocado, sin ningún mensaje de error.
+
+### Hasta dónde llega con eso
+
+La variable pasa a 6, el boot ROM sigue de largo y **corre hasta más allá de los 23 s de
+tiempo emulado**, contra los 0,546 s de antes. El watchpoint muestra el ciclo completo
+repitiéndose —la variable vuelve a 0, luego a 5 y otra vez a 6— o sea que está en un bucle
+de nivel superior reintentando algo, alternando entre dos bucles de 26 y 45 instrucciones
+alrededor de `0x8C0D9C50`.
+
+**Direcciones sin emular: siguen siendo cero.** Y la pantalla sigue en negro: la traza
+reporta que el guest escribió 0 bytes al framebuffer, así que todavía no llega a dibujar.
+
 ### Lo que no se alcanzó
 
-- **Hito B: no.** La BIOS no llega a su pantalla de «sin disco»: se queda esperando en su
-  planificador, como se describe arriba. Lo que sí quedó verificado es que la lectora
-  contesta bien todo lo que le preguntan.
+- **Hito B: no.** La BIOS no llega a su pantalla de «sin disco». Se detiene esperando que
+  una variable de su máquina de estados llegue a un valor que no llega —ver la segunda
+  corrida, más arriba—. Lo que sí quedó verificado es que la lectora contesta bien todo lo
+  que le preguntan, y que no queda ninguna dirección sin emular.
 - **Hito C: no.** Requiere una imagen que arranque en hardware, que no hay en el
   repositorio, y probablemente además la geometría de GD-ROM.
 - **Hito D: no**, y depende del C.

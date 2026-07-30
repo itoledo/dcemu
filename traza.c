@@ -272,3 +272,76 @@ void traza_paso(DWORD pc)
 		}
 	}
 }
+
+/* ------------------------------------------------------------------------ */
+/* Watchpoint de escritura                                                  */
+/* ------------------------------------------------------------------------ */
+
+#ifdef WATCHPOINT
+
+/*
+	Lo llama el gancho de memwrite_fisico() en mem.h, despues de escribir.
+
+	El valor anterior no se lee antes de cada escritura: se recuerda el de la
+	vez pasada. Asi la funcion no tiene que partirse en dos ni llevar estado a
+	traves de la escritura, que ademas puede reentrar -- escribir un registro
+	del PVR dispara el DMA del Maple, que vuelve a escribir memoria.
+*/
+
+static DWORD	wp_anterior = 0;
+static int		wp_arrancado = 0;
+static int		wp_informes = 0;
+
+void watchpoint_escritura(unsigned long direccion, size_t tam)
+{
+	DWORD escrita  = (DWORD) direccion & 0x1FFFFFFFu;
+	DWORD vigilada = WATCHPOINT_DIR & 0x1FFFFFFFu;
+	DWORD ahora    = 0;
+
+	/* Solapamiento de rangos: escribir un byte dentro de la palabra vigilada
+	   tambien cuenta. */
+	if (escrita + tam <= vigilada || escrita >= vigilada + WATCHPOINT_TAM)
+		return;
+
+	if (wp_informes >= WATCHPOINT_MAX)
+		return;
+
+	memread_fisico(WATCHPOINT_DIR, &ahora, WATCHPOINT_TAM);
+
+	/* La primera vez no hay con que comparar: se toma como valor de partida. */
+	if (!wp_arrancado)
+	{
+		wp_arrancado = 1;
+		wp_anterior  = ahora;
+	}
+
+#ifdef WATCHPOINT_SOLO_CAMBIOS
+	if (ahora == wp_anterior)
+		return;
+#endif
+
+	fprintf(stderr,
+		"watchpoint: %08lx = %08lx (antes %08lx)%s"
+		" -- escritura de %u en %08lx, PC %08lx, PR %08lx, %llu ciclos\n",
+		(unsigned long) WATCHPOINT_DIR,
+		(unsigned long) ahora,
+		(unsigned long) wp_anterior,
+		(ahora == wp_anterior) ? ", sin cambio" : "",
+		(unsigned) tam,
+		(unsigned long) direccion,
+		(unsigned long) PC,
+		(unsigned long) PR,
+		(unsigned long long) reloj_total);
+
+#ifdef WATCHPOINT_ANILLO
+	traza_volcar("watchpoint");
+#endif
+
+	wp_anterior = ahora;
+
+	if (++wp_informes >= WATCHPOINT_MAX)
+		fprintf(stderr, "watchpoint: %d informes, no se reporta mas\n",
+			WATCHPOINT_MAX);
+}
+
+#endif /* WATCHPOINT */

@@ -20,6 +20,7 @@
 #include "branch.h"
 #include "opcodes.h"
 #include "mem.h"
+#include "excepciones.h"
 #include "intc.h"
 #include "debug.h"
 #include "graficos.h"
@@ -254,10 +255,9 @@ void dma_check()
 	dma_canal(3, SAR3, DAR3, DMATCR3, CHCR3);
 }
 
-/* Instantanea para reejecutar la instruccion que falla por MMU. Global y no
-   local a main_loop() a proposito: una local viva a traves de setjmp/longjmp
-   tendria que ser volatile, y copiar un struct volatile es incomodo. */
-static context_t contexto_previo;
+/* La instantanea para reejecutar una instruccion que aborta vive en
+   excepciones.c: no alcanza con core.context, porque los dos bancos de
+   registros de punto flotante estan fuera de el. */
 
 /* Marca del contador monotono para el barrido de pantalla. Fuera del contexto:
    restaurar la instantanea de la MMU no debe hacer retroceder el reloj. */
@@ -295,35 +295,42 @@ void main_loop(void)
 			if (traza_activa)
 				traza_paso(PC);
 
-			if (!mmu_activa)
+			if (!excepcion_vigilar)
 			{
-				// Camino rapido: sin MMU no hay fallo que abortar, asi que no
-				// se saca instantanea ni se arma el salto. Es todo lo que
-				// corre hoy y tiene que costar exactamente lo de antes.
+				// Camino rapido: sin MMU, sin SR.FD y sin bits de Enable en
+				// FPSCR no hay falta que abortar, asi que no se saca
+				// instantanea ni se arma el salto. Es todo lo que corre hoy y
+				// tiene que costar exactamente lo de antes.
 				core.execute(*(WORD *) get_memory_pointer(PC));
 			}
-			else if (setjmp(mmu_salto) == 0)
+			else if (setjmp(excepcion_salto) == 0)
 			{
-				// Las excepciones de MMU del SH-4 son reejecutables: el
-				// manejador arregla la tabla, hace RTE y la instruccion se
-				// repite entera. Pero los handlers de dcemu mutan registros
-				// alrededor del acceso (MOV.L @Rn+, MOV.L Rm,@-Rn), asi que
-				// hay que poder deshacerlo. Ver docs/mmu-plan.md, fase 5.
-				memcpy(&contexto_previo, &core.context, sizeof(context_t));
+				// Las excepciones generales del SH-4 son reejecutables: el
+				// manejador arregla lo que haga falta, hace RTE y la
+				// instruccion se repite entera. Pero los handlers de dcemu
+				// mutan registros alrededor del acceso (MOV.L @Rn+,
+				// MOV.L Rm,@-Rn, FMUL sobre su propio destino), asi que hay
+				// que poder deshacerlo. Ver docs/mmu-plan.md, fase 5.
+				excepcion_instantanea_tomar();
 
-				mmu_salto_armado = 1;
+				excepcion_salto_armado = 1;
 				core.execute(*(WORD *) get_memory_pointer(PC));
-				mmu_salto_armado = 0;
+				excepcion_salto_armado = 0;
 			}
 			else
 			{
-				// Volvimos de un fallo. Restaurar deja PC en la instruccion
-				// que fallo -- o en el salto, si el fallo fue en su ranura de
+				// Volvimos de una falta. Restaurar deja PC en la instruccion
+				// que fallo -- o en el salto, si la falta fue en su ranura de
 				// retardo, porque el longjmp desenrolla los dos niveles.
-				mmu_salto_armado = 0;
-				memcpy(&core.context, &contexto_previo, sizeof(context_t));
+				excepcion_salto_armado = 0;
+				en_ranura_retardo = 0;
+				excepcion_instantanea_restaurar();
 
-				excepcion_entrar(mmu_exc_codigo, mmu_exc_vector);
+				// Lo poco que no se restaura: la excepcion de operacion de FPU
+				// deja Cause escrito, y Flag no.
+				excepcion_reponer();
+
+				excepcion_entrar(excepcion_codigo, excepcion_vector);
 			}
 
 //			(*PC_func) ();

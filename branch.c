@@ -5,7 +5,22 @@
 *****************************************************************************/
 
 #include "sh4emu.h"
+#include "excepciones.h"
 #include "mem.h"
+
+/*
+	La ranura de retardo se ejecuta con un core.execute() anidado. La bandera
+	solo la mira run(), para distinguir la excepcion de FPU deshabilitada
+	general (0x800) de la de ranura (0x820). Si la instruccion aborta, el
+	longjmp se salta el bajado: main_loop() la limpia al recibir el salto.
+*/
+#define EJECUTAR_RANURA()										\
+	do															\
+	{															\
+		en_ranura_retardo = 1;									\
+		core.execute(*(WORD *) get_memory_pointer(PC));			\
+		en_ranura_retardo = 0;									\
+	} while (0)
 
 OPCODE(bf) // BF label (10001011 ssssssss)
 {
@@ -38,7 +53,7 @@ OPCODE(bra) // BRA label (1010dddd dddddddd)
 	PC_func = PC_f_delayslot; */
 
 	PC += 2;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = ddisp;
 
@@ -58,7 +73,7 @@ OPCODE(braf) // BRAF Rn (0000dddd 00100011)
 	PC_func = PC_f_delayslot; */
 	
 	PC += 2;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = target;
 
@@ -83,7 +98,7 @@ OPCODE(bsr108) // BSR label (1011dddd dddddddd)
 
 	PC += 2;
 
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = ddisp;
 
@@ -108,7 +123,7 @@ OPCODE(bsrf109) // BSRF Rn (0000nnnn 00000011)
 	PC_func = PC_f_delayslot; */
 	
 	PC += 2;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = target;
 
@@ -131,7 +146,7 @@ OPCODE(jmp110) // JMP @Rn (0100nnnn 00101011)
 	PC_func = PC_f_delayslot; */
 
 	PC += 2;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = target;
 
@@ -156,7 +171,7 @@ OPCODE(jsr111) // JSR @Rn (0100nnnn 00001011)
 	PC_func = PC_f_delayslot; */
 
 	PC += 2;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = target;
 
@@ -174,7 +189,7 @@ OPCODE(rts112) // RTS (00000000 00001011)
 	DWORD target = PR;
 
 	PC += 2;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	EJECUTAR_RANURA();
 
 	PC = target;
 
@@ -202,7 +217,7 @@ OPCODE(bfs) // 10001111dddddddd
 		PC_func = PC_f_delayslot; */
 		DWORD ddisp =SignExtend8(arg & 0x00FF)*2 + PC + 4;
 		PC += 2;
-		core.execute(*(WORD *) get_memory_pointer(PC));
+		EJECUTAR_RANURA();
 
 		PC = ddisp;
 
@@ -252,7 +267,7 @@ OPCODE(bts105) // 10001101 dddddddd
 		DWORD ddisp = SignExtend8(arg & 0xFF)*2 + PC + 4;
 
 		PC += 2;
-  		core.execute(*(WORD *) get_memory_pointer(PC));
+  		EJECUTAR_RANURA();
   		
   		PC = ddisp;
 

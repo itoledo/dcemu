@@ -127,7 +127,7 @@ extern int mmu_activa;
 
 /*
 	Traduce una direccion virtual. Si falla NO devuelve: deja la excepcion
-	preparada y hace longjmp a mmu_salto, que arma main_loop().
+	preparada y sale por excepcion_abortar() (ver excepciones.h).
 
 	La direccion que devuelve es fisica *vista por la ventana P2*, o sea
 	fisica | 0xA0000000. No es capricho: la tabla de zonas de dcemu mezcla
@@ -162,21 +162,10 @@ void mmu_ldtlb(DWORD pteh, DWORD ptel, DWORD ptea, int urc);
 #define MMU_VEC_GENERAL		0x100
 
 /*
-	El salto de aborto. main_loop() lo arma con setjmp() antes de cada
-	instruccion cuando mmu_activa, y mmu_traducir() salta ahi ante un fallo.
-
-	Desenrollar con longjmp resuelve gratis el caso de la ranura de retardo:
-	los saltos de branch.c ejecutan la ranura con un core.execute() anidado,
-	asi que el salto sale de los dos niveles y la instantanea restaurada deja
-	PC en la instruccion de salto, que es justo lo que SPC tiene que valer.
+	El salto de aborto vive en excepciones.h: lo comparten la MMU y la FPU.
+	mmu_traducir() sale por excepcion_abortar() ante un fallo, y los datos de
+	la falta pendiente quedan en excepcion_codigo / excepcion_vector.
 */
-extern jmp_buf	mmu_salto;
-extern int		mmu_salto_armado;
-
-/* Datos del fallo pendiente, para que main_loop() arme la excepcion despues de
-   restaurar la instantanea. */
-extern DWORD	mmu_exc_codigo;
-extern DWORD	mmu_exc_vector;
 extern DWORD	mmu_exc_direccion;
 
 #endif /* _MMU_H_ */

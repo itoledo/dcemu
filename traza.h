@@ -29,6 +29,7 @@
 #endif
 
 #include "lnxdefs.h"
+#include "options.h"		/* WATCHPOINT y su configuracion */
 
 extern int traza_activa;
 
@@ -47,5 +48,17 @@ void traza_volcar(const char * motivo);
 
 /* Resumen final: cuantas direcciones distintas quedaron sin emular. */
 void traza_resumen(void);
+
+/*
+	Watchpoint de escritura, detras de WATCHPOINT en options.h. Lo llama el
+	gancho de memwrite_fisico() en mem.h **despues** de escribir, asi que ve el
+	valor que quedo; el anterior lo recuerda de la vez pasada.
+
+	Va aca y no en mem.c porque es diagnostico de arranque, igual que el resto
+	de este archivo, y porque asi puede volcar el anillo de PC.
+*/
+#ifdef WATCHPOINT
+void watchpoint_escritura(unsigned long direccion, size_t tam);
+#endif
 
 #endif /* _TRAZA_H_ */

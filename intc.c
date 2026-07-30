@@ -1,4 +1,5 @@
 #include "main.h"
+#include "excepciones.h"
 #include "intc.h"
 #include "wdt.h"
 
@@ -16,34 +17,6 @@ extern	int		pvr_listdone;
 static	DWORD	pending_ints = 0;
 DWORD	intc_queuemask = 0;
 DWORD	intc_queuemask_ext = 0;
-
-/*
-	Entrada generica a una excepcion. intc() hace lo mismo para el camino de
-	interrupcion, con INTEVT y el vector 0x600; esto es para todo lo demas.
-
-	La usa la MMU (docs/mmu-plan.md, fase 4). Ojo: a diferencia de intc(), no
-	mira SR.BL. Las excepciones de re-ejecucion con BL puesto son causa de
-	reset en el chip, y aca se registra y se entra igual, que es mas util para
-	depurar que reiniciar en silencio.
-*/
-void excepcion_entrar(DWORD codigo, DWORD vector)
-{
-	SSR = SR;
-	SPC = PC;
-	SGR = R(15);
-
-	*EXPEVT = codigo;
-
-	SET_SH4_BIT(SR_BL);
-	SET_SH4_BIT(SR_MD);
-	SET_SH4_BIT(SR_RB);
-	UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN);
-
-	PC = VBR + vector;
-
-	logxmsg(LOG_INTC, "excepcion: EXPEVT %03x, SPC %08x, salta a %08x\n",
-		codigo, SPC, PC);
-}
 
 /*
 	Las peticiones de los perifericos del SH-4 se derivan de sus banderas, no de

@@ -80,6 +80,7 @@ set(DCEMU_SOURCES
 	branch.c
 	dcopcodes.c
 	debug.c
+	excepciones.c
 	floatcontrol.c
 	floatgraph.c
 	floatsimple.c

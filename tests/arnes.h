@@ -39,6 +39,17 @@ void arnes_reset(void);		/* antes de cada caso */
 /* Escribe la instruccion en PC y la ejecuta, igual que main_loop(). */
 void ejecutar(WORD instr);
 
+/*
+	Igual, pero por el camino vigilado de main_loop(): instantanea del contexto,
+	salto armado, y si la instruccion aborta se restaura y se entra a la
+	excepcion. Devuelve 1 si hubo excepcion y 0 si no.
+
+	Es lo que hace falta para probar cualquier excepcion de reejecucion -- las
+	de la MMU y las tres de la FPU --, porque el efecto observable no es solo
+	EXPEVT y el salto a VBR: es tambien que el registro destino quedo sin tocar.
+*/
+int ejecutar_vigilado(WORD instr);
+
 /* Deja una instruccion en memoria sin ejecutarla (delay slots). */
 void poner_instr(DWORD dir, WORD instr);
 

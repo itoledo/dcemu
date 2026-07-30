@@ -149,6 +149,11 @@ core.context.FR_BANK = backup;\
 void UpdateSR(DWORD newSR);
 void UpdateFPSCR(DWORD newFPSCR);
 
+/* SR.FD, replicado para que el despacho no extraiga un campo de bits por
+   instruccion. Lo escribe UpdateSR(). Ver run() en sh4emu.c. */
+extern int fpu_deshabilitada;
+int es_instruccion_fpu(WORD instr);
+
 extern unsigned long delayslot;
 extern unsigned long NEXTPC;
 
@@ -284,15 +289,34 @@ typedef struct
 
 // some macros to acess some special registers
 //FPSCR stuff
-#define FPSCR_CAUSE core.context.FPSCR_REG.FPSCR_BITS.Cause_BF
+#define FPSCR_CAUSE core.context.FPSCR_REG.FPSCR_REG_BITS.Cause_BF
 #define FPSCR_PR_BIT core.context.FPSCR_REG.FPSCR_REG_BITS.PR_BF
 #define FPSCR_SZ_BIT core.context.FPSCR_REG.FPSCR_REG_BITS.SZ_BF
 #define FPSCR_FR core.context.FPSCR_REG.FPSCR_REG_BITS.FR_BF
 #define FPSCR_DN core.context.FPSCR_REG.FPSCR_REG_BITS.DN_BF
-#define FPSCR_FLAG core.context.FPSCR.FPSCR_REG_BITS.FLAG_BF
+#define FPSCR_FLAG core.context.FPSCR_REG.FPSCR_REG_BITS.FLAG_BF
 #define FPSCR_RM core.context.FPSCR_REG.FPSCR_REG_BITS.RM_BF
 #define FPSCR_ENABLE core.context.FPSCR_REG.FPSCR_REG_BITS.ENABLE_BF
 #define FPSCR core.context.FPSCR_REG.FPSCR_ALL
+
+/* Los campos Cause (bits 17-12) y Flag (bits 6-2) de FPSCR llevan las mismas
+   causas en el mismo orden, diez bits de distancia. La causa E -- error de
+   FPU -- solo existe en Cause, y por eso la conversion enmascara. */
+#define FPU_CAUSA_I		0x00001000u		/* inexacto */
+#define FPU_CAUSA_U		0x00002000u		/* subdesbordamiento */
+#define FPU_CAUSA_O		0x00004000u		/* desbordamiento */
+#define FPU_CAUSA_Z		0x00008000u		/* division por cero */
+#define FPU_CAUSA_V		0x00010000u		/* operacion invalida */
+#define FPU_CAUSA_E		0x00020000u		/* error de FPU */
+#define FPU_CAUSA_TODAS	0x0003F000u
+#define FPU_FLAG_TODAS	0x0000007Cu
+#define FPU_CAUSA_A_FLAG(c) (((c) >> 10) & FPU_FLAG_TODAS)
+
+/* Enable son los bits 11-7, con las mismas cinco causas en el mismo orden y
+   sin equivalente para E. Cinco bits mas arriba esta Cause, asi que alinear un
+   campo con el otro es un desplazamiento. */
+#define FPU_ENABLE_TODAS	0x00000F80u
+#define FPU_ENABLE_A_CAUSA(f) (((f) << 5) & FPU_CAUSA_TODAS)
 
 // register acess stuf
 

@@ -683,6 +683,27 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		case 0xa05f8004: // REVISION [CORETYPE], version del nucleo PVR2
+		{
+			/*
+				0x11 en una consola de serie, y el boot ROM lo verifica: en
+				0x8C0DBC7A compara COREID contra 0x17FD11DB y despues exige que
+				esta revision sea distinta de 1 y **mayor o igual que 17**. Si
+				no, deja su variable de estado en 5, nunca la sube a 6 y termina
+				colgado a proposito en el BRA de 0x8C0DBDFC.
+
+				Sin este caso la lectura caia en el respaldo del bloque de
+				control, que vale cero, y cero no llega a 17. Es el mismo tipo
+				de trampa que SB_G1SYSM: un registro de identificacion que
+				contesta cualquier cosa y manda al software por el camino
+				equivocado. Ver docs/bios-boot-plan.md.
+			*/
+			dw = 0x00000011;
+			memcpy(p, &dw, size);
+			logxmsg(LOG_PVR, "pvr_read: REVISION\n");
+		}
+		break;
+
 		case 0xa05f8000 + 0x11 * 4:		// FB_R_CTRL
 		{
 			memcpy(p, &pvr_fb_r_ctrl, size);
@@ -750,8 +771,42 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f810c: // SPG_STATUS
 		{
-//			dw = (instrucciones / 10) % 0x1FF;
-			memcpy(p, &pvr_scanline, size);
+			/*
+				No es solo el numero de linea. Los bits altos llevan la
+				sincronia, y el boot ROM real se queda esperando el vsync antes
+				de seguir: el bucle de 0x8C00CB2E lee este registro y repite
+				mientras el bit 13 valga cero.
+
+				  9:0  linea de barrido
+				  10   numero de campo
+				  11   blanking vertical
+				  12   hsync
+				  13   vsync
+
+				El vsync dura SPG_WIDTH.vswidth lineas al principio del cuadro,
+				y el blanking va de SPG_VBLANK.vbstart hasta vbend, que envuelve
+				por el final. hsync y el numero de campo quedan en cero: dcemu
+				no lleva posicion horizontal ni entrelazado.
+			*/
+			DWORD linea   = (DWORD) pvr_scanline;
+			DWORD vswidth = (pvr_spg_width >> 8) & 0x0F;
+			DWORD vbstart = pvr_spg_vblank & 0x3FF;
+			DWORD vbend   = (pvr_spg_vblank >> 16) & 0x3FF;
+
+			dw = linea & 0x3FF;
+
+			/* Sin vswidth programado no habria vsync nunca, y quien lo espera
+			   se cuelga. Una linea es el minimo que tiene sentido. */
+			if (vswidth == 0)
+				vswidth = 1;
+
+			if (linea < vswidth)
+				dw |= 0x2000;			/* vsync */
+
+			if (linea >= vbstart || linea < vbend)
+				dw |= 0x0800;			/* blanking vertical */
+
+			memcpy(p, &dw, size);
 		}
 		break;
 
@@ -1096,7 +1151,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						// grabemos 0xFFFFFFFF
 						logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
 						dw = 0xFFFFFFFF;
-						memwrite(td2, &dw, sizeof(DWORD));
+						memwrite_fisico(td2, &dw, sizeof(DWORD));
 					}
 					else
 					if (tam > 0)
@@ -1503,6 +1558,27 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			// El ritmo del barrido depende de esto. Ver docs/clock-plan.md.
 			pvr_ciclos_linea = reloj_ciclos_por_linea(pvr_spg_load_vcount, pvr_spg_control);
 			logxmsg(LOG_PVR, "SPG_LOAD: %d ciclos por linea\n", pvr_ciclos_linea);
+		}
+		break;
+
+		// Estos dos solo se leian: el valor por omision de reg.c se quedaba
+		// aunque el guest los programara. SPG_STATUS los necesita para saber
+		// cuando esta en vsync y cuando en blanking.
+		case 0xa05f8000 + 0x37 * 4: // 0xa05f80dc, SPG_VBLANK
+		{
+			pvr_spg_vblank = DWREF(p);
+			logxmsg(LOG_PVR, "SPG_VBLANK: vbstart = %x, vbend = %x\n",
+				pvr_spg_vblank & 0x3ff,
+				(pvr_spg_vblank >> 16) & 0x3ff);
+		}
+		break;
+
+		case 0xa05f8000 + 0x38 * 4: // 0xa05f80e0, SPG_WIDTH
+		{
+			pvr_spg_width = DWREF(p);
+			logxmsg(LOG_PVR, "SPG_WIDTH: hswidth = %x, vswidth = %x\n",
+				pvr_spg_width & 0x7f,
+				(pvr_spg_width >> 8) & 0x0f);
 		}
 		break;
 

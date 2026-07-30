@@ -262,6 +262,18 @@ El mecanismo de aborto puede ser `setjmp`/`longjmp` o un flag consultado al volv
 handlers no sigan trabajando después de un acceso fallido; `longjmp` corta de una pero
 complica cualquier estado a medio construir. **Empezar por `longjmp`** y medir.
 
+**Actualización.** El mecanismo terminó siendo `longjmp` y se mudó a `excepciones.c/h`, que
+lo comparten la MMU y la FPU: `mmu_salto` es hoy `excepcion_salto`, y `mmu_exc_codigo` /
+`mmu_exc_vector` son `excepcion_codigo` / `excepcion_vector`. `mmu_activa` como condición
+para sacar instantánea es hoy `excepcion_vigilar`, que además mira `SR.FD` y los bits de
+Enable de FPSCR. Ver `docs/sh4-conformidad.md`.
+
+Y una corrección: **la instantánea de esta fase no restauraba los registros de punto
+flotante.** Era un `memcpy` de `core.context`, y los dos bancos de FP viven fuera — el
+contexto solo guarda punteros. Un `FMOV.S @Rm+,FRn` que fallara por MMU dejaba `FRn`
+escrito. Lo destapó la trampa de FPU, cuyo requisito explícito es que el destino no se
+actualice. Ahora los copian `excepcion_instantanea_tomar()` y `..._restaurar()`.
+
 ## Fase 6 — Store queues
 
 `sq_write` resuelve hoy por `QACR0`/`QACR1`. Con `AT=1` las direcciones de SQ se traducen
@@ -484,6 +496,40 @@ riesgo 3 que este documento anticipó: la MMU está escrita, las unitarias pasan
 evidencia de que sirva.
 
 En particular, **la reejecución solo está probada por construcción**, no por observación.
+
+**Actualización: ya no, y por dos caminos.**
+
+`demos/fpu-trampa` ejercita el mecanismo compartido —instantánea, `longjmp`, restauración,
+entrada a la excepción— de punta a punta sobre KallistiOS: el manejador vuelve sin saltar la
+instrucción y la reejecución tiene que completarla. La falta la levanta la FPU y no la MMU,
+pero el camino es el mismo. Y encontró el bug de los bancos de punto flotante que la
+reejecución arrastraba desde esta fase.
+
+`demos/mmu-mapeo` cierra el hito D por el lado de la MMU: mapea una página virtual a una
+física de la RAM del sistema, escribe por la virtual —lo que falla en la TLB—, y comprueba
+por la dirección física, en P1 y sin traducir, que la escritura llegó. Después escribe por la
+física y lee por la virtual, para descartar que sean dos copias. Reporta `TEST SUCCEEDED!`.
+
+Y `basic/mmu/nullptr` de KOS **ya pasaba**: su `kernel panic` es el final que la demo busca,
+porque su callback devuelve `NULL` a propósito. Verifica la otra mitad —que el fallo se
+levanta con el código correcto y con `SPC` en la instrucción que falló, no en la siguiente—.
+Ver `docs/demos-kos.md`.
+
+Y `basic/mmu/pvrmap` también pasa ahora. No fallaba por la MMU: fallaba por **un `memwrite`
+que tenía que ser `memwrite_fisico`** en el DMA del Maple (`mem.c`, el relleno de
+`0xFFFFFFFF` para un puerto sin dispositivo). Ese DMA lo dispara `pvr_write()` dentro de la
+instrucción que escribe `SB_MDST`, con direcciones físicas que el guest dejó en la lista de
+comandos; con `AT=1` se traducían, no estaban mapeadas y levantaban un fallo de TLB en
+escritura desde el manejador de VBlank. Todo el resto del bloque ya usaba la versión física.
+Ver `docs/demos-kos.md`.
+
+Vale la pena quedarse con la forma del bug: **un `_fisico` que falta no se nota hasta que
+alguien enciende la MMU.** Los otros caminos internos —el DMAC en `main.c` y el del GD-ROM en
+`gdrom.c`— ya estaban bien; ese quedó atrás. Si aparecen más demos con MMU, es lo primero que
+hay que revisar.
+
+Con las dos demos pasando, lo que sigue faltando de la MMU son las fases 6 y 7, que no las
+pide ninguna de ellas.
 
 ### Lo que sigue faltando
 

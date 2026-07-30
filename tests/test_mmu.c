@@ -15,6 +15,7 @@
 #include "arnes.h"
 #include "suites.h"
 
+#include "excepciones.h"
 #include "mmu.h"
 
 /* ------------------------------------------------------------------------ */
@@ -421,7 +422,7 @@ static void el_asid_tiene_que_coincidir(void)
 	/* Con el ASID actual distinto del de la entrada, no acierta. */
 	*PTEH = (*PTEH & 0xFFFFFC00) | 0x99;
 	mmu_traducir(0x12345000, MMU_LECTURA);
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_FALLO_R);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_FALLO_R);
 
 	/* Con el mismo, si. */
 	*PTEH = (*PTEH & 0xFFFFFC00) | 0x11;
@@ -445,15 +446,15 @@ static void fallo_de_tlb_deja_codigo_vector_tea_y_pteh(void)
 
 	mmu_traducir(0x87654321 & 0x7FFFFFFF, MMU_LECTURA);
 
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_FALLO_R);
-	ESPERAR_U32(mmu_exc_vector, MMU_VEC_FALLO);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_FALLO_R);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_FALLO);
 	ESPERAR_U32(*TEA, 0x07654321);
 	ESPERAR_U32(*PTEH & 0xFFFFFC00, 0x07654000);
 	ESPERAR_U32(*PTEH & 0xFF, 0x55);
 
 	mmu_traducir(0x07654321, MMU_ESCRITURA);
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_FALLO_W);
-	ESPERAR_U32(mmu_exc_vector, MMU_VEC_FALLO);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_FALLO_W);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_FALLO);
 
 	mmu_activa = 0;
 }
@@ -472,8 +473,8 @@ static void escribir_en_pagina_limpia_es_primera_escritura(void)
 
 	/* Escribir da 0x080, no 0x0C0, y por el vector general. */
 	mmu_traducir(0x12345000, MMU_ESCRITURA);
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_PRIMERA_W);
-	ESPERAR_U32(mmu_exc_vector, MMU_VEC_GENERAL);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_PRIMERA_W);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_GENERAL);
 
 	mmu_activa = 0;
 }
@@ -489,8 +490,8 @@ static void pr_decide_quien_lee_y_quien_escribe(void)
 	ESPERAR_U32(mmu_traducir(0x12345000, MMU_LECTURA), 0xAC001000);
 
 	mmu_traducir(0x12345000, MMU_ESCRITURA);
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_PROT_W);
-	ESPERAR_U32(mmu_exc_vector, MMU_VEC_GENERAL);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_PROT_W);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_GENERAL);
 
 	mmu_activa = 0;
 }
@@ -510,12 +511,12 @@ static void modo_usuario_no_llega_a_la_pagina_privilegiada(void)
 	/* En usuario, violacion de proteccion. */
 	SR_MD = 0;
 	mmu_traducir(0x12345000, MMU_LECTURA);
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_PROT_R);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_PROT_R);
 
 	/* Y P1 desde usuario es error de direccion, no de proteccion. */
 	mmu_traducir(0x8C001000, MMU_LECTURA);
-	ESPERAR_U32(mmu_exc_codigo, MMU_EXC_DIR_R);
-	ESPERAR_U32(mmu_exc_vector, MMU_VEC_GENERAL);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_DIR_R);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_GENERAL);
 
 	SR_MD = 1;
 	mmu_activa = 0;

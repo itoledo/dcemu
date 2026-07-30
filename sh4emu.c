@@ -3,6 +3,7 @@
 #include "options.h"
 #include "branch.h"
 #include "opcodes.h"
+#include "excepciones.h"
 #include "floatsimple.h"
 #include "intc.h"
 
@@ -120,8 +121,49 @@ void Close()
 
 }
 
+/*
+	SR.FD apagada la FPU. Se mantiene aparte de SR para que el despacho no
+	tenga que extraer un campo de bits en cada instruccion: lo escribe
+	UpdateSR() y vale cero en todo lo que corre hoy.
+*/
+int fpu_deshabilitada = 0;
+
+/*
+	Que instrucciones cuentan como "de FPU" para SR.FD. Son todas las de punto
+	flotante mas las cuatro transferencias de FPUL y FPSCR, que el manual del
+	SH-4 lista junto con ellas porque tocan registros de la FPU aunque el
+	opcode no empiece con 1111.
+*/
+int es_instruccion_fpu(WORD instr)
+{
+	if ((instr & 0xF000) == 0xF000)
+		return 1;
+
+	switch (instr & 0xF0FF)
+	{
+		case 0x405A:	/* LDS   Rm, FPUL      */
+		case 0x406A:	/* LDS   Rm, FPSCR     */
+		case 0x4056:	/* LDS.L @Rm+, FPUL    */
+		case 0x4066:	/* LDS.L @Rm+, FPSCR   */
+		case 0x005A:	/* STS   FPUL, Rn      */
+		case 0x006A:	/* STS   FPSCR, Rn     */
+		case 0x4052:	/* STS.L FPUL, @-Rn    */
+		case 0x4062:	/* STS.L FPSCR, @-Rn   */
+			return 1;
+	}
+
+	return 0;
+}
+
 void run(WORD arg)
 {
+	/* El chequeo va aca y no en main_loop() porque asi cubre tambien las
+	   ranuras de retardo, que branch.c ejecuta con un core.execute() anidado.
+	   La distincion entre 0x800 y 0x820 es justamente esa. */
+	if (fpu_deshabilitada && es_instruccion_fpu(arg))
+		excepcion_abortar(en_ranura_retardo ? EXC_FPU_RANURA : EXC_FPU_GENERAL,
+						  EXC_VEC_GENERAL);
+
 #ifdef old_oplist
 	(opcodes[oplist[arg]].funcion) (arg);
 #else
@@ -184,6 +226,10 @@ void UpdateFPSCR(DWORD newFPSCR)
 		}
 	if(f != FPSCR_FR)
 		SWITCH_FLOAT_REG_BANKS();
+
+	// Cualquier bit de Enable arma la trampa de operacion de FPU, y para
+	// abortar la instruccion hace falta la instantanea de main_loop().
+	excepcion_actualizar_vigilancia();
 }
 /*
 	if (FPSCR & FPSCR_FR)
@@ -229,6 +275,11 @@ void UpdateSR(DWORD new)
 		swap_registers();
 		}
 	}
+
+	// SR.FD apaga la FPU entera: si esta puesto, main_loop() tiene que armar
+	// el salto para poder abortar la instruccion que la toque. La funcion
+	// tambien deriva fpu_deshabilitada de SR.FD.
+	excepcion_actualizar_vigilancia();
 }
 
 #ifdef PC_FUNCTIONS

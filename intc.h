@@ -3,9 +3,9 @@
 
 bool intc(DWORD irq);
 
-/* Entrada generica a una excepcion: guarda SSR/SPC/SGR, deja EXPEVT y salta a
-   VBR + vector. intc() es el caso particular de las interrupciones. */
-void excepcion_entrar(DWORD codigo, DWORD vector);
+/* La entrada generica a una excepcion --  excepcion_entrar() -- se mudo a
+   excepciones.h, que es donde la comparten la MMU y la FPU. intc() es el caso
+   particular de las interrupciones y la sigue usando. */
 
 /*
 	Mira las banderas de los perifericos del propio SH-4 -- los tres TMU y el

@@ -29,6 +29,7 @@ static const dc_suite * const suites[] =
 	&suite_fpu_simple,
 	&suite_fpu_control,
 	&suite_fpu_graph,
+	&suite_fpu_excepciones,
 	&suite_decodificacion,
 	&suite_sistema,
 	&suite_gdrom,

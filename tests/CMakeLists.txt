@@ -14,6 +14,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/arith.c
 	${CMAKE_SOURCE_DIR}/branch.c
 	${CMAKE_SOURCE_DIR}/dcopcodes.c
+	${CMAKE_SOURCE_DIR}/excepciones.c
 	${CMAKE_SOURCE_DIR}/floatcontrol.c
 	${CMAKE_SOURCE_DIR}/floatgraph.c
 	${CMAKE_SOURCE_DIR}/floatsimple.c
@@ -44,6 +45,7 @@ set(DCEMU_PRUEBAS
 	test_cobertura.c
 	test_decodificacion.c
 	test_fpu_control.c
+	test_fpu_excepciones.c
 	test_fpu_graph.c
 	test_fpu_simple.c
 	test_gdrom.c
@@ -79,7 +81,7 @@ target_compile_options(dcemu_tests PRIVATE
 
 # Una prueba de CTest por suite: asi el reporte dice cual categoria se rompio
 # sin tener que leer la salida entera.
-foreach(_suite mov arith logic shift branch syscontrol fpu-simple fpu-control fpu-graph decodificacion)
+foreach(_suite mov arith logic shift branch syscontrol fpu-simple fpu-control fpu-graph fpu-excepciones decodificacion)
 	add_test(NAME sh4.${_suite} COMMAND dcemu_tests ${_suite})
 endforeach()
 

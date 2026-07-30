@@ -60,6 +60,10 @@ static void hack_romfont(void)
 	{
 		case 0:		/* direccion de la fuente */
 #ifdef USE_BIOS_FONT
+		/* En P0, que es lo que devuelve el boot ROM real: bios.bin trae dos
+		   veces la constante 0x00100020 y ninguna vez 0xA0100020. Ojo con eso
+		   si el guest enciende la MMU y mapea la zona baja -- ver
+		   docs/demos-kos.md, `basic-mmu-pvrmap`. */
 		R(0) = 0x00100020;	/* la fuente real, dentro de bios.bin */
 #else
 		R(0) = FONT_BASE;	/* la que rasteriza inicializar_fonts() */

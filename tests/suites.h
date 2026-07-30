@@ -12,6 +12,7 @@ extern const dc_suite suite_syscontrol;
 extern const dc_suite suite_fpu_simple;
 extern const dc_suite suite_fpu_control;
 extern const dc_suite suite_fpu_graph;
+extern const dc_suite suite_fpu_excepciones;
 extern const dc_suite suite_decodificacion;
 extern const dc_suite suite_cobertura;
 

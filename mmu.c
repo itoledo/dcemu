@@ -9,17 +9,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "excepciones.h"
 #include "mmu.h"
 #include "log.h"
 #include "sh4emu.h"
 
 int mmu_activa = 0;
 
-jmp_buf	mmu_salto;
-int		mmu_salto_armado = 0;
-
-DWORD	mmu_exc_codigo;
-DWORD	mmu_exc_vector;
 DWORD	mmu_exc_direccion;
 
 DWORD mmu_itlb_dir[MMU_ITLB_ENTRADAS];
@@ -44,7 +40,8 @@ DWORD mmu_utlb_dat2[MMU_UTLB_ENTRADAS];
 void mmu_reset(void)
 {
 	mmu_activa = 0;
-	mmu_salto_armado = 0;
+	excepcion_salto_armado = 0;
+	excepcion_actualizar_vigilancia();
 
 	memset(mmu_itlb_dir,  0, sizeof(mmu_itlb_dir));
 	memset(mmu_itlb_dat1, 0, sizeof(mmu_itlb_dat1));
@@ -305,22 +302,15 @@ static DWORD mascara_de_pagina(DWORD dat1)
 */
 static DWORD fallar(DWORD codigo, DWORD vector, DWORD direccion)
 {
-	mmu_exc_codigo    = codigo;
-	mmu_exc_vector    = vector;
 	mmu_exc_direccion = direccion;
 
 	/* TEA lleva la direccion que fallo y PTEH.VPN su VPN; el ASID no se toca. */
 	*TEA  = direccion;
 	*PTEH = (direccion & 0xFFFFFC00) | (*PTEH & 0x000000FF);
 
-	if (mmu_salto_armado)
-	{
-		mmu_salto_armado = 0;
-		longjmp(mmu_salto, 1);
-	}
-
-	logxmsg(LOG_MEM, "mmu: fallo %03x en %08x fuera de una instruccion\n",
-		codigo, direccion);
+	/* No devuelve si hay salto armado. Si no lo hay -- un acceso del propio
+	   emulador, no de una instruccion -- deja la excepcion anotada y sigue. */
+	excepcion_abortar(codigo, vector);
 
 	return direccion;
 }
@@ -446,6 +436,7 @@ int mmu_mmucr_escrito(DWORD valor)
 	}
 
 	mmu_activa = (valor & MMUCR_AT) != 0;
+	excepcion_actualizar_vigilancia();
 
 	if (!mmu_activa)
 		return 0;

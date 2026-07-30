@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "main.h"
+#include "excepciones.h"
 #include "opcodes.h"
 #include "sh4emu.h"
 
@@ -129,6 +130,37 @@ void ejecutar(WORD instr)
 
 	/* Igual que main_loop(): el despacho lee la palabra desde memoria. */
 	core.execute(*(WORD *) get_memory_pointer(PC));
+}
+
+int ejecutar_vigilado(WORD instr)
+{
+	poner_instr(PC, instr);
+
+	anotar_handler(oplist[instr]);
+
+	/* El mismo ciclo que main_loop() cuando excepcion_vigilar esta puesto:
+	   instantanea, salto armado, y si la instruccion aborta se restaura y se
+	   entra a la excepcion. Las pruebas que verifican SPC, EXPEVT o que el
+	   registro destino quedo sin tocar necesitan las tres cosas. */
+	if (setjmp(excepcion_salto) == 0)
+	{
+		excepcion_instantanea_tomar();
+
+		excepcion_salto_armado = 1;
+		core.execute(*(WORD *) get_memory_pointer(PC));
+		excepcion_salto_armado = 0;
+
+		return 0;
+	}
+
+	excepcion_salto_armado = 0;
+	en_ranura_retardo = 0;
+	excepcion_instantanea_restaurar();
+
+	excepcion_reponer();
+	excepcion_entrar(excepcion_codigo, excepcion_vector);
+
+	return 1;
 }
 
 /* ------------------------------------------------------------------------ */

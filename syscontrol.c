@@ -6,6 +6,7 @@
  
 #include <stdio.h>
 #include "sh4emu.h"
+#include "excepciones.h"
 #include "graficos.h"
 
 void dump_llamadas()
@@ -512,7 +513,13 @@ OPCODE(rte143) // RTE (00000000 00101011)
 /*	delayslot = SPC;
 	PC_func = PC_f_delayslot; */
 	PC += 2;
+
+	/* RTE tambien tiene ranura de retardo. Igual que en branch.c: la bandera
+	   solo la mira run(), para 0x800 contra 0x820. */
+	en_ranura_retardo = 1;
 	core.execute(*(WORD *) get_memory_pointer(PC));
+	en_ranura_retardo = 0;
+
 	PC = SPC;
 	inside_int = false;
 

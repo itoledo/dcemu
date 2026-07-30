@@ -11,7 +11,7 @@ Ademas de los opcodes hay dos suites que no son del nucleo, `sistema` y
 `gdrom`: son las piezas del arranque por BIOS que resultaron ser logica pura
 sobre registros. Ver "Mas alla de los opcodes" al final.
 
-Estado actual: **413 casos, todos en verde**, sobre **239 filas implementadas
+Estado actual: **516 casos, todos en verde**, sobre **239 filas implementadas
 de `opcodes[]`, todas ejercitadas y sin desviaciones pendientes**.
 
 ## Compilar y correr
@@ -22,9 +22,10 @@ cmake --build build --config Debug --target dcemu_tests
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-Hay una prueba de CTest por suite (`sh4.arith`, `sh4.mov`, ..., `dc.sistema`,
-`dc.gdrom`) mas `sh4.todo`, que corre todo junto y ademas mide la cobertura de
-la tabla de opcodes. La corrida completa toma menos de un segundo.
+Hay una prueba de CTest por suite (`sh4.arith`, `sh4.mov`,
+`sh4.fpu-excepciones`, ..., `dc.sistema`, `dc.gdrom`) mas `sh4.todo`, que corre
+todo junto y ademas mide la cobertura de la tabla de opcodes. La corrida
+completa toma menos de un segundo.
 
 Tambien se puede correr el binario a mano, con filtros por subcadena sobre el
 nombre de la suite o del caso:
@@ -135,6 +136,12 @@ Fuera de los opcodes, `reset()` en `sh4emu.c` dejaba `FPSCR = 0x0004001` --
 0x4001, un cero de menos: en vez de DN prendia un bit de Cause. Ahora es
 `0x00040001`.
 
+Y en `sh4emu.h`, las macros `FPSCR_CAUSE` y `FPSCR_FLAG` no compilaban: la
+primera buscaba un miembro `FPSCR_BITS` que no existe -- es `FPSCR_REG_BITS` --
+y la segunda arrancaba en `core.context.FPSCR`, que tampoco existe, ademas de
+chocar con la macro `FPSCR`. Nadie las usaba, asi que el compilador nunca las
+vio. Se notaron al ir a escribir los campos de excepcion.
+
 ## Que se implemento
 
 29 filas de `opcodes[]` apuntaban a `NOIMP`. Ya no queda ninguna: la unica que
@@ -153,16 +160,77 @@ instrucciones del SH-4.
 `STC SPC,Rn` y `STC SGR,Rn` ya tenian handler escrito (`stc153` y `stcn154`),
 solo faltaba conectarlos a la tabla. Lo mismo `ADDV`.
 
+## Los campos Cause y Flag de FPSCR
+
+La suite `fpu-excepciones` (`test_fpu_excepciones.c`) cubre los dos campos que
+el SH-4 escribe en cada operacion de la FPU: **Cause** se rearma en cada
+instruccion y **Flag** acumula hasta que alguien escriba FPSCR. Las causas que
+dcemu detecta son V (invalida), Z (division por cero), O (desbordamiento) y U
+(subdesbordamiento); I aparece solo acompanando a O y a U.
+
+Los casos que mas costaron son los que distinguen una causa de algo que se le
+parece:
+
+- **`inf/0` no es division por cero**: el resultado esta definido. Solo lo es un
+  dividendo finito distinto de cero.
+- **Un NaN que entra y sale no levanta V.** La causa invalida se reconoce porque
+  el resultado sale NaN sin que ninguna entrada lo fuera -- eso cubre `inf-inf`,
+  `0*inf`, `0/0`, `inf/inf` y la raiz de un negativo.
+- **Un infinito que entra y sale no desborda**, por la misma razon.
+- **`x*0` no subdesborda** aunque el resultado sea cero.
+- **Las sumas y las restas nunca subdesbordan**: cuando su resultado cae por
+  debajo del minimo normal es exacto, y sin inexactitud no hay
+  subdesbordamiento. `fsub_con_resultado_subnormal_no_subdesborda` lo fija.
+
+Los valores de doble precision muy grandes y muy chicos se arman elevando al
+cuadrado, porque `FCNVSD` no deja entrar nada que no quepa en un float. Ojo con
+la cuenta: `FLT_MAX` es 2^128 *menos un poco*, y ese poco alcanza para que el
+tercer cuadrado quede por debajo de `DBL_MAX` en vez de desbordar.
+
+La verificacion de punta a punta es `basic/fpu/exc` de KallistiOS, que prueba
+las cuatro causas y ahora reporta `TEST SUCCEEDED!`.
+
+### La trampa: Enable y las tres excepciones
+
+La misma suite cubre el otro lado del registro: cuando una causa coincide con su
+bit de **Enable**, el SH-4 entra en la excepcion de FPU (0x120) y deja el
+registro destino y el campo Flag **sin tocar**. Mas las dos de FPU deshabilitada
+(`SR.FD`): 0x800, y 0x820 si la instruccion estaba en una ranura de retardo.
+
+Estos casos no se pueden escribir con `ejecutar()`: hace falta el ciclo entero
+de `main_loop()` -- instantanea, `setjmp`, restaurar, entrar a la excepcion --,
+porque lo que hay que verificar no es solo EXPEVT y el salto a VBR, sino que el
+destino quedo como estaba. Eso es `ejecutar_vigilado()` en el arnes, que
+devuelve 1 si la instruccion aborto y 0 si no.
+
+Cuatro casos de esta parte encontraron dos bugs de verdad, los dos en plomeria
+que ya existia para la MMU:
+
+- **La instantanea nunca copio los bancos de punto flotante.** Era un `memcpy`
+  de `core.context`, que solo guarda *punteros* a los dos bancos. O sea que la
+  reejecucion de la MMU tampoco restauraba los registros de FP desde la fase 5
+  de `docs/mmu-plan.md`. Ahora la toman y la restauran
+  `excepcion_instantanea_tomar()` y `..._restaurar()`.
+- **`fpu_deshabilitada` podia quedar desincronizada de `SR.FD`.** La escribia
+  `UpdateSR()`, y `arnes_reset()` asigna `SR = 0` directo. La deriva
+  `excepcion_actualizar_vigilancia()`, que es la unica que la escribe.
+
+`demos/fpu-trampa` es la version de punta a punta: un binario de KOS que
+instala un manejador con `irq_set_handler(EXC_FPU, ...)` y comprueba que la
+instruccion se reejecuta. La excepcion de FD no se puede probar asi -- el
+manejador de KOS empieza con `sts.l fpscr,@-r0` y con FD puesto se dispararia a
+si mismo --, por eso 0x800 y 0x820 solo tienen casos unitarios.
+
 ## Limites de "100% el manual"
 
 Lo que se corrigio es el **resultado** de cada instruccion: registros, memoria,
 T y los registros de sistema. Quedan tres cosas afuera, y no por descuido:
 
-- **La maquinaria de excepciones de la FPU.** Los campos Cause, Flag y Enable
-  de FPSCR no se actualizan nunca, y los bits DN (desnormalizados a cero) y RM
-  (modo de redondeo) se ignoran: la aritmetica usa la del host, que es
-  redondeo al mas cercano. Un programa que lea FPSCR despues de una operacion
-  invalida no vera lo que veria en hardware.
+- **Dos rincones de la FPU.** Cause, Flag, Enable y las tres excepciones estan
+  -- suite `fpu-excepciones` --, pero la causa I no se detecta por si sola,
+  solo acompanando a O y a U, y los bits DN (desnormalizados a cero) y RM (modo
+  de redondeo) se siguen ignorando. El detalle esta en
+  `docs/sh4-conformidad.md`.
 - **`OCBP`, `OCBI` y `OCBWB`** avanzan PC y nada mas: sin cache emulada no
   tienen efecto observable. `MOVCA.L` si escribe, que es su unico efecto
   visible. `LDTLB` ya no esta en esta lista: carga la UTLB de verdad (suite

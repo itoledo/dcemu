@@ -123,16 +123,152 @@ conectarlo a la tabla: `addv()` en `arith.c`, `stc153()` y `stcn154()` en `sysco
 `SHAL` es idéntica a `SHLL`: el desplazamiento aritmético a la izquierda y el lógico son la
 misma operación con dos encodings distintos.
 
+## Cause y Flag: los campos de excepción de FPSCR
+
+El SH-4 rearma el campo **Cause** (bits 17-12) en cada operación de la FPU y acumula las
+mismas causas en **Flag** (bits 6-2), que solo se limpia escribiendo FPSCR. Los dos campos
+llevan las causas en el mismo orden, diez bits de distancia: I (inexacto), U
+(subdesbordamiento), O (desbordamiento), Z (división por cero) y V (inválida).
+
+Nada de eso se escribía. Lo destapó `basic/fpu/exc` de KallistiOS, que hace subdesbordar,
+desbordar, dividir por cero y producir un NaN, y después revisa un bit de Flag por cada
+caso: los cuatro daban cero y la demo terminaba en `TEST FAILED!`.
+
+**Las dos macros que existían para esto no compilaban.** `FPSCR_CAUSE` buscaba un miembro
+`FPSCR_BITS` que no existe —la unión lo llama `FPSCR_REG_BITS`— y `FPSCR_FLAG` arrancaba en
+`core.context.FPSCR`, que tampoco existe y además choca con la macro `FPSCR`, definida ocho
+líneas más abajo como `core.context.FPSCR_REG.FPSCR_ALL`. Ningún archivo las referenciaba,
+así que el compilador nunca las vio.
+
+`floatsimple.c` clasifica ahora las causas a partir de los operandos y del resultado, sin
+tocar el entorno de punto flotante del anfitrión. Las reglas:
+
+| causa | cuándo |
+| --- | --- |
+| V | el resultado sale NaN sin que ninguna entrada lo fuera (`inf-inf`, `0*inf`, `0/0`, `inf/inf`, raíz de un negativo), o cualquier NaN en `FCMP`, o `FTRC` de NaN o fuera de rango |
+| Z | divisor cero con un dividendo finito distinto de cero |
+| O | el resultado es infinito y ninguna entrada lo era |
+| U | el resultado queda bajo el menor normal del formato con las dos entradas no nulas |
+| I | solo acompañando a O y a U |
+
+Tres distinciones que el camino obvio se lleva por delante:
+
+- **`inf/0` no es división por cero.** El resultado es infinito y está definido.
+- **Un NaN que entra y sale se propaga sin levantar nada**, que es lo que IEEE 754 pide
+  para un NaN silencioso. Por eso la regla de V mira el resultado y no las entradas.
+- **Las sumas y las restas nunca subdesbordan.** Si `a + b` cae por debajo del mínimo
+  normal, el resultado es exacto, y sin inexactitud no hay subdesbordamiento. Solo la
+  multiplicación, la división, `FMAC` y `FCNVDS` pueden levantar U.
+
+Se instrumentaron las 16 operaciones aritméticas y de conversión de `floatsimple.c` —
+`FADD`, `FSUB`, `FMUL`, `FDIV`, `FSQRT`, `FMAC`, `FLOAT`, `FTRC`, `FCMP/EQ` y `FCMP/GT` en
+simple y doble, más `FCNVDS` y `FCNVSD`—. `FABS`, `FNEG`, `FLDI`, `FMOV`, `FLDS` y `FSTS`
+no son operaciones aritméticas y no rearman Cause. `FIPR`, `FTRV` y `FSRRA` (`floatgraph.c`)
+y `FSCA` (`dcopcodes.c`) quedaron afuera a propósito: el manual mismo las describe como
+aproximaciones que no siguen el redondeo de IEEE.
+
+La suite `fpu-excepciones` cubre esto y `basic/fpu/exc` reporta `TEST SUCCEEDED!`. El
+barrido de regresión sobre catorce demos —consola, 3D y `pvrmark`— dio salida idéntica, y
+el rendimiento no se movió: la clasificación son tres o cuatro comparaciones por operación,
+sin recargas de MXCSR.
+
+## La trampa: Enable y las tres excepciones de la FPU
+
+Con Cause y Flag escritos falta el otro lado del registro. Cuando una causa coincide con su
+bit de **Enable** (bits 11-7), el SH-4 no completa la instrucción: entra en la excepción de
+FPU y deja el registro destino y el campo Flag **sin tocar**. Son tres códigos, y KOS marca
+los tres `[REEXEC]`:
+
+| código | cuándo | vector |
+| --- | --- | --- |
+| 0x120 | una causa coincidió con su Enable | VBR + 0x100 |
+| 0x800 | instrucción de FPU con `SR.FD` puesto | VBR + 0x100 |
+| 0x820 | igual, pero en una ranura de retardo | VBR + 0x100 |
+
+### La plomería ya existía, en `mmu.c`
+
+Reejecutar una instrucción es exactamente lo que hace la MMU desde la fase 5 de
+`docs/mmu-plan.md`: `main_loop()` saca una instantánea del contexto, arma un `setjmp`, y
+quien detecta la falta sale por un `longjmp` que desenrolla hasta ahí. Lo único que hacía
+falta era que dejara de llamarse `mmu_*`.
+
+`excepciones.c/h` es ese mecanismo, ahora compartido: `excepcion_entrar()` (que se mudó
+desde `intc.c` — es la secuencia del procesador, no del controlador de interrupciones),
+`excepcion_abortar()`, la instantánea, y `excepcion_vigilar`, que generaliza la vieja prueba
+contra `mmu_activa`. Vale 1 si la MMU traduce, si `SR.FD` está puesto o si hay algún bit de
+Enable; en todo lo que corre hoy vale cero y el camino rápido cuesta lo mismo que antes.
+
+**Y ahí apareció un bug que llevaba desde la fase 5.** La instantánea era un `memcpy` de
+`core.context`, y los dos bancos de registros de punto flotante **no están dentro**: el
+contexto solo guarda punteros a ellos. Es decir que la reejecución nunca restauró los
+registros de FP, y un `FMOV.S @Rm+,FRn` que fallara por MMU dejaba `FRn` escrito. No se
+notaba porque las dos demos de MMU fallan por otra cosa. La trampa de FPU lo destapó de
+inmediato, porque su requisito explícito es que el destino no se actualice:
+`excepcion_instantanea_tomar()` y `..._restaurar()` copian los dos bancos además del
+contexto.
+
+El segundo hallazgo fue más chico: `fpu_deshabilitada` —la copia de `SR.FD` que mira el
+despacho— se escribía en `UpdateSR()`, pero `arnes_reset()` de las pruebas asigna `SR = 0`
+directamente. Ahora la deriva `excepcion_actualizar_vigilancia()` y no hay dos fuentes.
+
+### Dónde se dispara cada una
+
+- **0x120** en `fpu_causa()` (`floatsimple.c`): si `causas & FPU_ENABLE_A_CAUSA(FPSCR)`,
+  aborta en vez de escribir. `excepcion_reponer()` escribe Cause *después* de restaurar,
+  porque la instantánea también se lo lleva; Flag no se toca, que es lo que pide el manual.
+- **0x800 y 0x820** en `run()` (`sh4emu.c`), antes del despacho. Va ahí y no en
+  `main_loop()` porque así cubre también las ranuras de retardo, que `branch.c` y `RTE`
+  ejecutan con un `core.execute()` anidado — y esa es justamente la diferencia entre los dos
+  códigos. `en_ranura_retardo` la suben y bajan `EJECUTAR_RANURA()` y `rte143()`.
+  `es_instruccion_fpu()` reconoce todo `0xFxxx` más las ocho transferencias de FPUL y FPSCR,
+  que no empiezan con 1111 pero el manual lista con ellas.
+
+Que SPC apunte al salto y no a la ranura sale gratis: el `longjmp` desenrolla los dos
+niveles y la instantánea deja PC donde empezó.
+
+### Cómo se prueba
+
+Tres niveles, porque ninguno solo alcanza:
+
+1. **Unitario**, suite `fpu-excepciones`. `ejecutar_vigilado()` en el arnés reproduce el
+   ciclo entero de `main_loop()` —instantánea, `setjmp`, restaurar, `excepcion_reponer()`,
+   `excepcion_entrar()`—, que es lo que hace falta para verificar que el registro destino
+   quedó sin tocar, y no solo que EXPEVT y PC son los correctos.
+2. **De punta a punta con KallistiOS**, `demos/fpu-trampa`. Instala un manejador con
+   `irq_set_handler(EXC_FPU, ...)`, habilita una causa por vez, y el manejador apaga Enable
+   y vuelve **sin saltar la instrucción**: la reejecución tiene que completarla. Reporta
+   `TEST SUCCEEDED!`.
+3. **`basic/fpu/exc` de KOS**, que no habilita nada. Es la prueba de que la trampa no se
+   dispara sola.
+
+**La excepción de FD no se puede probar desde KOS, y no por falta de ganas.** Lo primero que
+hace su manejador es `sts.l fpscr,@-r0`
+(`kernel/arch/dreamcast/kernel/entry.s`), que es una instrucción de FPU: con FD puesto se
+dispararía a sí misma para siempre. Eso vale igual en hardware real —KOS simplemente no usa
+FD—, así que 0x800 y 0x820 quedan cubiertos solo por las unitarias.
+
 ## Lo que sigue sin cumplir el manual, a propósito
 
 Lo que se corrigió es el **resultado** de cada instrucción: registros, memoria, T y los
 registros de sistema. Tres cosas quedan afuera, y no por descuido:
 
-- **La maquinaria de excepciones de la FPU.** Los campos Cause, Flag y Enable de FPSCR no
-  se actualizan nunca, y los bits DN (desnormalizados a cero) y RM (modo de redondeo) se
-  ignoran: la aritmética usa la del host, que redondea al más cercano. Un programa que lea
-  FPSCR después de una operación inválida no verá lo que vería en hardware. Emular eso es
-  un proyecto aparte y no lo pide ningún homebrew conocido.
+- **Lo que queda de las excepciones de la FPU.** Cause, Flag, Enable y las tres excepciones
+  están —ver "Cause y Flag" y "La trampa" más abajo—. Faltan dos cosas:
+
+  - **La causa I (inexacto) por sí sola.** Solo se levanta acompañando a O y a U, que son
+    los dos casos en que un resultado fuera de rango es inexacto por definición.
+    Detectarla en general obligaría a usar `<fenv.h>` y a recargar MXCSR antes de cada
+    instrucción emulada, que es lo más caro que se puede hacer en un intérprete. En
+    hardware real está encendida casi siempre, así que ningún programa saca información
+    de ella.
+  - **Los bits DN y RM.** Los desnormalizados no se vacían a cero y el modo de redondeo se
+    ignora: la aritmética usa la del anfitrión, que redondea al más cercano. RM no molesta
+    en la práctica porque KOS lo deja en 00, que es justo eso, pero el valor de reset es
+    01 (truncar) y el código del boot ROM corre con el redondeo equivocado.
+
+  Un NaN de señal que entra tampoco levanta V: la causa inválida se reconoce porque el
+  resultado sale NaN sin que ninguna entrada lo fuera, y esa regla no distingue un NaN
+  silencioso de uno de señal.
 - **`LDTLB`, `OCBP`, `OCBI` y `OCBWB`** avanzan PC y nada más. `LDTLB` carga la TLB y dcemu
   no emula la MMU; las tres de caché no tienen efecto observable sin caché emulada.
   `MOVCA.L` sí escribe, que es su único efecto visible. Se implementaron como
@@ -145,8 +281,8 @@ registros de sistema. Tres cosas quedan afuera, y no por descuido:
 
 ## Verificación
 
-387 casos, todos en verde, sobre 239 filas implementadas, todas ejercitadas. Once pruebas
-de CTest —una por suite más la corrida completa—, medio segundo en total.
+516 casos, todos en verde, sobre 239 filas implementadas, todas ejercitadas. Diecisiete
+pruebas de CTest —una por suite más la corrida completa—, menos de un segundo en total.
 
 ```sh
 cmake --build build --config Debug --target dcemu_tests
@@ -168,3 +304,7 @@ comprobación de que nada de esto rompió el camino que sí funcionaba.
   corresponden a la temporización real del SH-4. Las pruebas no los verifican. Si alguna
   vez importa la sincronía fina con el PVR o el TMU, hay que revisarlos con la tabla del
   manual.
+- Revisar el camino de reejecución de la MMU ahora que la instantánea sí restaura los
+  bancos de punto flotante. `basic-mmu-nullptr` y `basic-mmu-pvrmap` siguen cayendo por
+  otra cosa (ver `docs/demos-kos.md`), pero el bug que se encontró aquí estaba en ese
+  camino y conviene volver a mirarlas con esto arreglado.

@@ -4,6 +4,10 @@
 #include "options.h"
 #include "mmu.h"
 
+#ifdef WATCHPOINT
+#include "traza.h"			/* watchpoint_escritura() */
+#endif
+
 #define VIDEO_SIZE		(8 * 1024 * 1024)
 #define MEM_SIZE		(16 * 1024 * 1024)
 #define SOUND_SIZE		(2*1024*1024) // 2 Megabytes
@@ -37,7 +41,29 @@ void dump_registers();
    DMA del GD-ROM y los propios handlers de mem.c, que reciben direcciones ya
    despachadas. */
 #define memread_fisico(direccion, target, size)   (*mem_hash_read[(direccion) >> 24]) ((direccion), (target), (size))
+
+#ifndef WATCHPOINT
+
 #define memwrite_fisico(direccion, source, size)  (*mem_hash_write[(direccion) >> 24]) ((direccion), (source), (size))
+
+#else
+
+/* El gancho del watchpoint (options.h) va aca porque es el unico sitio por el
+   que pasan **todas** las escrituras: las del programa emulado llegan por
+   memwrite(), que traduce y termina aca, y las internas -- DMA del Maple y del
+   GD-ROM, DMAC, callbacks del PVR -- entran directo. Se llama despues de
+   escribir para que vea el valor que quedo. */
+#define memwrite_fisico(direccion, source, size)						\
+	do																	\
+	{																	\
+		unsigned long _wp_dir = (direccion);							\
+		size_t        _wp_tam = (size);									\
+																		\
+		(*mem_hash_write[_wp_dir >> 24]) (_wp_dir, (source), _wp_tam);	\
+		watchpoint_escritura(_wp_dir, _wp_tam);							\
+	} while (0)
+
+#endif
 
 /* Acceso del programa emulado: pasa por la MMU. Es el que usan los handlers de
    instrucciones, directamente o a traves de las macros ReadMemory y
