@@ -25,6 +25,7 @@ struct opciones_t opciones =
 	CABLE_VGA,
 	BANDEJA_AUTO,
 	NULL,
+	NULL,				/* captura_gl */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
 	{ { 0, 0 } },		/* desensamblar */
@@ -47,6 +48,8 @@ void opciones_ayuda(const char * programa)
 		"                        emular y donde se traba el PC.\n"
 		"  --limitar             no dejar que la emulacion corra mas rapido que\n"
 		"                        una consola. Solo frena, nunca acelera.\n"
+		"  --captura-gl=ARCHIVO  vuelca a un BMP lo que OpenGL rasterizo, en cada\n"
+		"                        cuadro. Verifica el 3D sin capturar la ventana.\n"
 		"  --watchpoint=D[:T]    informa cada escritura que toque la direccion D\n"
 		"                        (hexadecimal), de T bytes (1, 2 o 4; 4 por\n"
 		"                        omision), con el PC y el PR que la hicieron.\n"
@@ -158,6 +161,17 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-hacks-bios") == 0)
 		{
 			opciones.hacks_bios = 0;
+		}
+		else
+		if (strncmp(arg, "--captura-gl=", 13) == 0)
+		{
+			opciones.captura_gl = &arg[13];
+
+			if (opciones.captura_gl[0] == '\0')
+			{
+				fprintf(stderr, "--captura-gl necesita un nombre de archivo\n");
+				return 1;
+			}
 		}
 		else
 		if (strncmp(arg, "--watchpoint=", 13) == 0)

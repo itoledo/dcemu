@@ -117,6 +117,11 @@ typedef struct TriangleStripInfo
 		DWORD filtermode;
 		DWORD pvr_texture_size_usize;
 		DWORD pvr_texture_size_vsize;
+
+		/* Texturas indexadas: 4 u 8 bits por pixel, 0 si no lo son, y cual de
+		   los bancos de la RAM de paleta usan. Ver get_texture(). */
+		DWORD pvr_texture_bpp;
+		DWORD pvr_texture_paleta;
 	}texture;
 	DWORD index;
 }TSI;

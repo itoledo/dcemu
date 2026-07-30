@@ -49,6 +49,11 @@ void DibujarFramebuffer();
 
 /* Vuelca la RAM de video a un BMP, sin pasar por OpenGL. Tecla F5. */
 int volcar_framebuffer(const char * ruta);
+
+/* Lo que GL rasterizo, no lo que hay en la RAM de video: es la unica forma de
+   verificar una demo 3D sin depender de que la captura de la ventana funcione.
+   Ver el comentario en graficos.c. */
+int volcar_gl(const char * ruta);
 void DibujarGL(SDL_Surface * sfc);
 void limpiar_pantalla();
 

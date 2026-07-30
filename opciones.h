@@ -54,6 +54,11 @@ struct opciones_t
 	int				bandeja;		/* BANDEJA_* */
 	const char *	imagen;			/* .iso/.cue/.bin, o NULL */
 
+	/* Archivo BMP donde volcar lo que GL rasterizo, en cada cuadro. NULL para
+	   no hacerlo. Es la verificacion visual que no depende de que la captura de
+	   la ventana funcione; ver volcar_gl() en graficos.c. */
+	const char *	captura_gl;
+
 	/* Watchpoint de escritura: direccion (0 = apagado) y tamano en bytes.
 	   Ver options.h. */
 	unsigned long	watchpoint;

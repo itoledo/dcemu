@@ -114,6 +114,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--traza-mem` | reporta a stderr las direcciones sin emular y dónde se traba el PC, con el tiempo emulado, y al salir la relación con el tiempo real |
 | `--limitar` | no dejar que la emulación corra más rápido que una consola. Solo frena |
 | `--hacks-bios` / `--sin-hacks-bios` | fuerza o desactiva los hooks de syscall |
+| `--captura-gl=ARCHIVO` | vuelca a un BMP lo que OpenGL rasterizó, en cada cuadro |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--desensamblar=D:N` | al salir, desensambla `N` instrucciones desde `D`. Repetible |
 | `--volcar=D:N` | al salir, vuelca `N` bytes desde `D` en hexadecimal. Repetible |
@@ -172,22 +173,30 @@ boot ROM checks `COREID` against `0x17FD11DB` *and* demands revision `>= 17` and
 had no read case, fell through to the control-block backing store, read zero, and parked
 itself in a deliberate `BRA` to itself at `0x8C0DBDFC` forever. Same shape as `SB_G1SYSM`.
 
-Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, F9 step, F10 stop,
-F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad, `q`/`e` triggers,
-`y h g j` analog stick, keypad `+`/`-` scroll the memory dump.
+Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, **F6 dump the GL buffer**,
+F9 step, F10 stop, F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad,
+`q`/`e` triggers, `y h g j` analog stick, keypad `+`/`-` scroll the memory dump.
 
 **F5 writes `captura.bmp` from video RAM, not from the GL buffer** (`volcar_framebuffer()`
 in `graficos.c`), so it shows what the guest drew rather than what GL rasterized. With
 `--traza-mem` it also dumps the PC ring and disassembles it.
+
+**F6 writes `captura-gl.bmp` from the GL buffer** (`volcar_gl()`), which is the other half:
+3D output never goes through video RAM in dcemu, so for a PVR demo F5 is always black.
+`--captura-gl=ARCHIVO` does the same automatically before every swap, so the file holds the
+last frame when the emulator exits — pair it with `--salir-tras` and a sweep needs no window
+at all.
 
 **SDL 1.2 redirects `stdout` and `stderr` to files on Windows** — `stdout.txt` and
 `stderr.txt` in the working directory. Redirecting the process's output from the shell (or
 with PowerShell's `-RedirectStandardError`) captures zero bytes and looks like the emulator
 said nothing. `--traza-mem` and the MMU's warnings come out there.
 
-**On screen-grabbing the window.** The framebuffer path does render — `video/bfont`,
-`video/multibuffer` and `video/screenshot` are all legible in a GDI capture of the client
-area. Two things make a grab come out black anyway, and both have cost time already:
+**On screen-grabbing the window — don't, use `--captura-gl`.** Grabbing the client area
+works, until it doesn't: in one session `tunnel` went from 3036 distinct colours to 4 with no
+change to the emulator, while `--captura-gl` kept reporting 1837. It depends on the host's
+compositor and it fails silently, so a whole sweep can come out black and read as a massive
+regression. Three more things make a *window* grab come out black, and all have cost time:
 
 - **The demo already exited.** KOS clears the screen on the way out, so anything that ends
   by itself (`video/minifont` sleeps 10 s and returns) is black by the time a 14-second
@@ -199,6 +208,31 @@ area. Two things make a grab come out black anyway, and both have cost time alre
 To separate "GL never got the image" from "the grab is black", `DibujarFramebuffer()`
 `glReadPixels` four points of the back buffer under `--traza-mem` (every 300th frame) and
 prints them next to the bytes it read out of video RAM.
+
+### Texture formats
+
+`taPolyModifier()` maps the texture control word's `pixelformat` onto a GL format triple;
+`get_texture()` untwiddles and uploads. ARGB1555, RGB565, ARGB4444 and the two palette
+formats are handled, and VQ has its own path. YUV422, BUMP and texture stride still fall
+through `CTT()`, which leaves the triple at -1.
+
+**The palette formats do not fit the rest of the pipeline, in three ways** (`decodificar_paleta()`):
+
+- **The palette lives in registers, not in texture memory.** 1024 entries at `0x005F9000`
+  with their format in `PAL_RAM_CTRL` (`0x005F8108`). Both already had backing store in
+  `control_mem` — the guest's writes were arriving all along, nobody read them.
+- **Twiddling runs over pixel indices, not 16-bit words.** The existing loop indexes a
+  `Uint16 *`; at 8 bpp that is a byte and at 4 bpp half of one.
+- **The bank selector overlaps the scan-order bit.** It is bits 26-21 for 4 bpp and 26-25 for
+  8 bpp, on top of what the other formats use as "unused", "stride" and "scan order". So bit
+  26 means nothing here and reading it as scan order comes out mirrored: indexed textures are
+  always twiddled.
+
+The decoder hands GL plain RGBA8888. The PVR's formats are all ARGB, so R and B swap on the
+way — GL_RGBA/GL_UNSIGNED_BYTE wants R in byte 0, which little-endian makes `0xAABBGGRR`.
+
+The texture cache keys on (size, address, bpp, bank): same indices with a different palette is
+a different texture, and `pvr-palette-wormhole` animates exactly that.
 
 ## Architecture
 

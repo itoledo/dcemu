@@ -650,6 +650,13 @@ void main_loop(void)
 					traza_volcar("a pedido (F5)");
 					traza_rangos();
 					break;
+
+					// F6: lo que GL rasterizo. F5 vuelca la RAM de video, que
+					// en una demo 3D esta vacia -- el render no pasa por ahi.
+                    case SDLK_F6:
+					volcar_gl("captura-gl.bmp");
+					break;
+
                     case SDLK_F2:
 					if(gui_visible == true) gui_visible=false;
 					else gui_visible=true;

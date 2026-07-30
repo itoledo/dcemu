@@ -6,6 +6,7 @@
 #include "intc.h"
 #include "gui.h"
 #include "traza.h"
+#include "opciones.h"		/* --captura-gl */
 //#include "glops.h"
 #include "render.h"
 
@@ -107,6 +108,7 @@ Uint16 pcon_argb4444_to_rgba4444(Uint16 src)
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
         ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
 #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
+#define MIN(a, b) ( (a)<(b)? (a):(b) )
 struct cached_texture
 {
 	int		usize;		// tama�o horizontal
@@ -116,6 +118,11 @@ struct cached_texture
  	GLuint	texture;
  	bool	twiddled;
  	bool	vq;
+
+	/* Una textura indexada con otra paleta es otra textura aunque los indices
+	   esten en la misma direccion, asi que el banco entra en la clave. */
+	DWORD	paleta;
+	DWORD	bpp;
 };
 
 typedef struct cached_texture cached_texture;
@@ -158,17 +165,130 @@ unsigned short read_pixel() {
 }
 
 
+/*
+	RAM de paleta del PVR: 1024 entradas de 32 bits en 0x005F9000, y el formato
+	de esas entradas en PAL_RAM_CTRL (0x005F8108), bits 0-1. Los dos viven en el
+	respaldo del bloque de control, asi que las escrituras del guest ya estaban
+	llegando: lo que faltaba era leerlas.
+
+	Se devuelve siempre RGBA8888, que es lo que get_texture() le entrega a GL
+	para las texturas indexadas.
+*/
+static DWORD paleta_entrada(int indice)
+{
+	DWORD crudo = 0, formato = 0;
+
+	memread_fisico(0xA05F9000 + indice * 4, &crudo, 4);
+	memread_fisico(0xA05F8108, &formato, 4);
+
+	/* GL recibe GL_RGBA / GL_UNSIGNED_BYTE, o sea R en el byte 0 y A en el 3,
+	   que en little endian es un DWORD 0xAABBGGRR. Los formatos del PVR vienen
+	   todos en orden ARGB, asi que R y B cambian de lado. */
+	switch (formato & 3)
+	{
+		case 0:		/* ARGB1555 */
+			return  ((crudo & 0x7C00) >> 7) | ((crudo & 0x03E0) << 6) |
+					((crudo & 0x001F) << 19) | ((crudo & 0x8000) ? 0xFF000000 : 0);
+
+		case 1:		/* RGB565: sin alfa, siempre opaco */
+			return  ((crudo & 0xF800) >> 8) | ((crudo & 0x07E0) << 5) |
+					((crudo & 0x001F) << 19) | 0xFF000000;
+
+		case 2:		/* ARGB4444 */
+			return  ((crudo & 0x0F00) >> 4) | ((crudo & 0x00F0) << 8) |
+					((crudo & 0x000F) << 20) | ((crudo & 0xF000) << 16);
+
+		default:	/* ARGB8888 */
+			return  ((crudo & 0x00FF0000) >> 16) | (crudo & 0xFF00FF00) |
+					((crudo & 0x000000FF) << 16);
+	}
+}
+
+/*
+	Textura indexada -> RGBA8888. El twiddle es el mismo de siempre, pero opera
+	sobre indices de pixel y no sobre palabras de 16 bits: en 8 bpp eso es un
+	byte y en 4 bpp medio, que es justo lo que el camino de arriba no sabia
+	hacer.
+
+	El banco de paleta viene del propio texture control word y mide 16 entradas
+	en 4 bpp y 256 en 8 bpp, siempre dentro de las mismas 1024.
+*/
+static DWORD * decodificar_paleta(const BYTE * origen, int usize, int vsize,
+	int bpp, DWORD banco, int twiddled)
+{
+	DWORD *	destino = (DWORD *) malloc(sizeof(DWORD) * usize * vsize);
+	DWORD	base = (bpp == 4) ? (banco * 16) : (banco * 256);
+	DWORD	tabla[256];
+	int		entradas = (bpp == 4) ? 16 : 256;
+	int		i, j, min, mask;
+
+	if (destino == NULL)
+		return NULL;
+
+	for (i = 0; i < entradas; i++)
+		tabla[i] = paleta_entrada((int) ((base + i) & 0x3FF));
+
+	if (traza_activa)
+	{
+		/* Una vez por cada (bpp, banco): la paleta se anima, asi que sin
+		   deduplicar es una linea por cuadro. */
+		static unsigned char vistos[2][64];
+		int fila = (bpp == 4) ? 0 : 1;
+
+		if (!vistos[fila][banco & 0x3F])
+		{
+			DWORD formato = 0;
+
+			vistos[fila][banco & 0x3F] = 1;
+			memread_fisico(0xA05F8108, &formato, 4);
+
+			fprintf(stderr, "traza: textura %d bpp %dx%d, banco %lu (entradas"
+				" %lu..%lu), PAL_RAM_CTRL=%lu\n",
+				bpp, usize, vsize, (unsigned long) banco,
+				(unsigned long) base, (unsigned long) (base + entradas - 1),
+				(unsigned long) (formato & 3));
+		}
+	}
+
+	min  = MIN(usize, vsize);
+	mask = min - 1;
+
+	for (i = 0; i < vsize; i++)
+	{
+		for (j = 0; j < usize; j++)
+		{
+			int	pos = twiddled
+				? (TWIDOUT(j & mask, i & mask) + (j / min + i / min) * min * min)
+				: (i * usize + j);
+			int	indice;
+
+			if (bpp == 4)
+				indice = (pos & 1) ? (origen[pos >> 1] >> 4) : (origen[pos >> 1] & 0x0F);
+			else
+				indice = origen[pos];
+
+			destino[i * usize + j] = tabla[indice];
+		}
+	}
+
+	return destino;
+}
+
 void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int strip)
 {
 	Uint16 * q, * v;
 	int i, j;
+	DWORD bpp    = TriangleStrip[strip].texture.pvr_texture_bpp;
+	DWORD paleta = TriangleStrip[strip].texture.pvr_texture_paleta;
 
 	if (cur_tex_count > 0)
     	for (i = 0; i < cur_tex_count; i++)
     	{
     		if (cached_textures[i].usize == usize
     		&&  cached_textures[i].vsize == vsize
-    		&&  cached_textures[i].memorypos == memorypos)
+    		&&  cached_textures[i].memorypos == memorypos
+    		&&  cached_textures[i].bpp == bpp
+    		&&  cached_textures[i].paleta == paleta)
     		{
           		logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
  			glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
@@ -183,9 +303,21 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	cached_textures[cur_tex_count].vsize = vsize;
 	cached_textures[cur_tex_count].memorypos = memorypos;
 	cached_textures[cur_tex_count].texture = pvr_textures[cur_tex_count];
+	cached_textures[cur_tex_count].bpp = bpp;
+	cached_textures[cur_tex_count].paleta = paleta;
 	v = (Uint16 *) get_memory_pointer(memorypos | 0xA5000000);
 
 	// ahora al twiddle
+	if (bpp != 0)
+	{
+		cached_textures[cur_tex_count].data =
+			decodificar_paleta((const BYTE *) v, usize, vsize, (int) bpp, paleta, twiddled);
+
+		/* twiddled aca significa "el buffer es nuestro y hay que liberarlo",
+		   que es lo unico que mira limpiar_texturas(). */
+		cached_textures[cur_tex_count].twiddled = true;
+	}
+	else
 	if (vq)
 	{
 		cached_textures[cur_tex_count].data = (void *) malloc(sizeof(Uint16) * usize * vsize);
@@ -226,8 +358,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		cached_textures[cur_tex_count].data = (void *) malloc(sizeof(Uint16) * usize * vsize);
 		q = cached_textures[cur_tex_count].data;
 
-		
-#define MIN(a, b) ( (a)<(b)? (a):(b) )
+
 		int min, mask, yout;
 		
 		min = MIN(usize, vsize);
@@ -511,10 +642,16 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		}
 
 	strip_count = 0;
-	
+
 	total_polygon_count = 0;
 
 	gui_refresh();
+
+	/* Antes del swap: es el unico momento en que el buffer tiene el cuadro
+	   entero, porque despues de presentar se limpia. Sobrescribe el archivo en
+	   cada cuadro, asi que al salir queda el ultimo. */
+	if (opciones.captura_gl != NULL)
+		volcar_gl(opciones.captura_gl);
 
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
@@ -939,7 +1076,14 @@ void taPolyModifier()
 			logxmsg(LOG_PVR, "texture: disable mipmap\n");
 	
 #define CTT() { pvr_texture_pixelformat = -1; pvr_texture_components = -1; pvr_texture_pixelpack = -1; }
-	
+
+		/* Sin paleta salvo que el formato diga lo contrario. Va antes del
+		   switch porque los parametros globales sobreviven a la tira: sin
+		   esto, una textura normal despues de una indexada se seguiria
+		   decodificando por la paleta. */
+		TriangleStrip[strip_count].texture.pvr_texture_bpp = 0;
+		TriangleStrip[strip_count].texture.pvr_texture_paleta = 0;
+
 		switch (TexInfo.registers.pixelformat)
 		{
 			case 0:
@@ -967,8 +1111,43 @@ void taPolyModifier()
 	
 			case 3: logxmsg(LOG_PVR, "texture: YUV422\n");	CTT();	break;
 			case 4: logxmsg(LOG_PVR, "texture: BUMP\n");	CTT();	break;
-			case 5: logxmsg(LOG_PVR, "texture: 4BPP_PALETTE\n");	CTT(); break;
-			case 6: logxmsg(LOG_PVR, "texture: 8BPP_PALETTE\n");	CTT(); break;
+
+			/*
+				Texturas indexadas. El selector de banco esta metido en el mismo
+				texture control word, encima de los bits que en los demas
+				formatos son "sin usar", "stride" y "scan order":
+
+				  4 bpp: bits 26-21, 64 bancos de 16 entradas
+				  8 bpp: bits 26-25,  4 bancos de 256
+
+				Que el selector pise el bit de scan order es la razon de forzar
+				twiddled: en estos dos formatos ese bit no significa nada, y
+				leerlo como orden de barrido saca la textura al reves.
+
+				GL recibe RGBA8888 ya resuelto; el trabajo lo hace
+				decodificar_paleta() en get_texture().
+			*/
+			case 5:
+			logxmsg(LOG_PVR, "texture: 4BPP_PALETTE\n");
+			TriangleStrip[strip_count].texture.pvr_texture_bpp = 4;
+			TriangleStrip[strip_count].texture.pvr_texture_paleta =
+				(ta_address_pointer[3] >> 21) & 0x3F;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelformat = GL_RGBA;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelpack = GL_UNSIGNED_BYTE;
+			TriangleStrip[strip_count].texture.pvr_texture_components = 4;
+			pvr_texture_pixelconvert = NULL;
+			break;
+
+			case 6:
+			logxmsg(LOG_PVR, "texture: 8BPP_PALETTE\n");
+			TriangleStrip[strip_count].texture.pvr_texture_bpp = 8;
+			TriangleStrip[strip_count].texture.pvr_texture_paleta =
+				(ta_address_pointer[3] >> 25) & 0x3;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelformat = GL_RGBA;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelpack = GL_UNSIGNED_BYTE;
+			TriangleStrip[strip_count].texture.pvr_texture_components = 4;
+			pvr_texture_pixelconvert = NULL;
+			break;
 		}
 		
 	
@@ -1187,8 +1366,14 @@ void taVertexHandler()
 		if (TexInfo.registers.texture_surface)
 		{
 			
-			TriangleStrip[strip_count].texture.twiddled = TexInfo.registers.twiddled ? 0 : 1;
-			
+			/* En 4 y 8 bpp el bit 26 es parte del selector de banco, no el
+			   orden de barrido: leerlo ahi saca la textura al reves. Los
+			   formatos indexados van siempre twiddled. */
+			TriangleStrip[strip_count].texture.twiddled =
+				TriangleStrip[strip_count].texture.pvr_texture_bpp
+					? 1
+					: (TexInfo.registers.twiddled ? 0 : 1);
+
 			TriangleStrip[strip_count].texture.vq = TexInfo.registers.vq;
 		
 			TriangleStrip[strip_count].texture.surface = TexInfo.registers.texture_surface << 3;
@@ -1269,6 +1454,93 @@ SDL_Surface * draw_backscreen()
 	Solo tiene sentido con el PVR en modo 2D (framebuffer plano), que es como
 	arrancan la BIOS y los demos que escriben directo a la RAM de video.
 */
+/*
+	Vuelca lo que **GL rasterizo**, no lo que hay en la RAM de video.
+
+	volcar_framebuffer() (F5) sirve para el camino 2D, donde el guest escribe
+	pixeles; el 3D no pasa por ahi -- dcemu lo manda a OpenGL directamente --,
+	asi que para una demo de PVR ese volcado siempre sale negro y la unica
+	verificacion posible era capturar la ventana. Y capturar la ventana depende
+	del compositor del anfitrion: en la misma sesion, la misma demo que daba
+	3036 colores paso a dar 4 sin que cambiara una linea del emulador.
+
+	Esto lo saca del medio: glReadPixels sobre el buffer que se acaba de
+	presentar, a un BMP, sin pasar por la ventana.
+*/
+int volcar_gl(const char * ruta)
+{
+	FILE *			fp;
+	int				ancho = screenancho;
+	int				alto = screenheight;
+	int				x, y, relleno;
+	unsigned char	cabecera[54];
+	unsigned char *	pixeles;
+	long			tam_datos;
+
+	if (ancho <= 0 || alto <= 0)
+		return 1;
+
+	pixeles = (unsigned char *) malloc((size_t) ancho * alto * 3);
+
+	if (pixeles == NULL)
+		return 1;
+
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, ancho, alto, GL_RGB, GL_UNSIGNED_BYTE, pixeles);
+
+	fp = fopen(ruta, "wb");
+
+	if (!fp)
+	{
+		fprintf(stderr, "no se pudo crear %s\n", ruta);
+		free(pixeles);
+		return 1;
+	}
+
+	relleno = (4 - ((ancho * 3) % 4)) % 4;
+	tam_datos = (long) (ancho * 3 + relleno) * alto;
+
+	memset(cabecera, 0, sizeof(cabecera));
+	cabecera[0] = 'B';	cabecera[1] = 'M';
+	*(DWORD *) &cabecera[2]  = (DWORD) (54 + tam_datos);
+	*(DWORD *) &cabecera[10] = 54;
+	*(DWORD *) &cabecera[14] = 40;
+	*(long  *) &cabecera[18] = ancho;
+	*(long  *) &cabecera[22] = alto;		/* GL ya entrega de abajo hacia arriba */
+	*(WORD  *) &cabecera[26] = 1;
+	*(WORD  *) &cabecera[28] = 24;
+	*(DWORD *) &cabecera[34] = (DWORD) tam_datos;
+
+	fwrite(cabecera, 1, sizeof(cabecera), fp);
+
+	for (y = 0; y < alto; y++)
+	{
+		unsigned char * fila = pixeles + (long) y * ancho * 3;
+
+		for (x = 0; x < ancho; x++)
+		{
+			/* GL entrega R,G,B y el BMP guarda B,G,R. */
+			unsigned char rgb[3];
+
+			rgb[0] = fila[x * 3 + 2];
+			rgb[1] = fila[x * 3 + 1];
+			rgb[2] = fila[x * 3 + 0];
+
+			fwrite(rgb, 1, 3, fp);
+		}
+
+		for (x = 0; x < relleno; x++)
+			fputc(0, fp);
+	}
+
+	fclose(fp);
+	free(pixeles);
+
+	fprintf(stderr, "buffer de GL volcado a %s (%dx%d)\n", ruta, ancho, alto);
+
+	return 0;
+}
+
 int volcar_framebuffer(const char * ruta)
 {
 	FILE *			fp;

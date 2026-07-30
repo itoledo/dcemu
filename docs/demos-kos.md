@@ -6,21 +6,37 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **85** binarios (83 demos: `bfont` y `tunnel` están duplicados) |
-| Fallan por algo que falta emular | **22** |
+| Funcionan | **88** binarios (86 demos: `bfont` y `tunnel` están duplicados) |
+| Fallan por algo que falta emular | **19** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
-`parallax-serpent_dma` pasó de la segunda fila a la primera el 31 de julio de 2026, al emular
-el CH2 DMA; el resto del inventario es el del 30.
+El 31 de julio de 2026 pasaron cuatro de la segunda fila a la primera: `parallax-serpent_dma`
+con el CH2 DMA, y las tres de paleta al decodificar los formatos indexados. El resto del
+inventario es el del 30.
 
 ## Cómo se mide
 
-Cada demo se corre 11 segundos, se captura el área de cliente de la ventana y se cuentan los
-colores distintos muestreando uno de cada seis píxeles; aparte se guarda `logs/serial.txt` y se
-extrae la última línea con marca de resultado. Secuencial a propósito: dos instancias se pelean
-por `logs/serial.txt` y los resultados salen cruzados.
+**Desde el 31 de julio de 2026, con `--captura-gl`**, no capturando la ventana:
 
-**Cuatro trampas del método, las cuatro ya costaron tiempo:**
+```sh
+dcemu demo.bin --salir-tras=8 --captura-gl=cap.bmp
+```
+
+El emulador vuelca a un BMP lo que OpenGL rasterizó, justo antes de presentar cada cuadro, y sale
+solo a los 8 segundos de tiempo emulado. Después se cuentan los colores distintos del BMP. El
+inventario de abajo se midió con el método viejo, así que sus cifras no son comparables una a una
+con las de este —el BMP es de 640×480 y la captura de ventana salía escalada—, pero el veredicto
+sí lo es.
+
+**Por qué cambió**: capturar la ventana depende del compositor del anfitrión, y eso se rompe sin
+aviso. En una misma sesión, `tunnel` pasó de 3036 colores a 4 sin que cambiara una línea del
+emulador, y con `--captura-gl` seguía dando 1837. Un barrido entero puede salir en negro y parecer
+una regresión masiva.
+
+Aparte se guarda `logs/serial.txt` y se extrae la última línea con marca de resultado. Secuencial
+a propósito: dos instancias se pelean por `logs/serial.txt` y los resultados salen cruzados.
+
+**Cuatro trampas del método viejo, las cuatro ya costaron tiempo:**
 
 - **La cuenta de colores es un indicio, no un veredicto.** Una demo de consola sale con 4
   colores — ventana negra — y está perfecta: su salida va por el serial. Al revés, una cuenta
@@ -44,19 +60,27 @@ captura tiene contenido real pero no se revisó imagen por imagen.
 
 ## Lo que falta
 
-### Formatos de textura del PVR (7)
+### Formatos de textura del PVR (4)
 
 `taPolyModifier()` en `graficos.c` despacha el `pixelformat` de la palabra de control de textura,
-y para estos cuatro casos llama a la macro `CTT()`, que deja formato, componentes y empaquetado
+y para estos casos llama a la macro `CTT()`, que deja formato, componentes y empaquetado
 sin definir. Hay que decodificarlos a algo que GL entienda, igual que se hace con ARGB1555,
 RGB565 y ARGB4444.
 
 | demo | qué falta |
 | --- | --- |
-| `pvr-palette-4bpp`, `pvr-palette-8bpp`, `pvr-palette-wormhole` | paleta de 4 y 8 bpp, más los registros de paleta. Salen en blanco: la geometría se dibuja, la textura no se decodifica |
 | `pvr-yuv_converter-YUV420`, `pvr-yuv_converter-YUV422` | YUV422, y el convertidor YUV del TA |
 | `pvr-bumpmap` | formato BUMP |
 | `pvr-strided_texture` | el stride de textura solo se registra en el log, no se aplica |
+
+**Las tres de paleta ya funcionan** (31 de julio de 2026): `pvr-palette-4bpp` dibuja su degradado
+radial con las bandas de 16 niveles que corresponden a 4 bpp, `pvr-palette-8bpp` el mismo suave, y
+`pvr-palette-wormhole` su remolino nítido. Lo que faltaba era leer la RAM de paleta
+(`0x005F9000`, 1024 entradas) y `PAL_RAM_CTRL` (`0x005F8108`) — los dos ya tenían respaldo, sólo
+que nadie los leía — y aplicar el twiddle sobre índices de píxel en vez de sobre palabras de 16
+bits. El selector de banco va en el propio texture control word, encima de los bits que en los
+demás formatos son «sin usar», «stride» y «scan order»; por eso estas texturas van siempre
+twiddled.
 
 ### Otras rutas del PVR (5)
 
