@@ -75,6 +75,12 @@ exercised, so a new instruction gets flagged until it has a test.
 End-to-end check after touching the CPU core: `demos/roto/` is a 256-byte rotozoomer that
 exercises FSCA, FDIV, FTRC, FLOAT and MUL.L. See its README for how to run it.
 
+**Above the CPU core, the regression baseline is the KOS example tree.** `docs/demos-kos.md`
+records the state of all 135 binaries as measured on 2026-07-30 — which ones pass, which fail
+and why, and which ones fail because they ask for hardware that is not emulated. It also
+documents how the sweep is run and the two ways it produces false negatives. Read it before
+concluding that a demo is broken.
+
 ## Run
 
 ```sh
