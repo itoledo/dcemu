@@ -294,7 +294,13 @@ void regmem_setup(void)
 	DMATCR3	= (DWORD *)	&regmem[0xA00038];
 	CHCR3	= (DWORD *)	&regmem[0xA0003C];		*CHCR3 = 0;
 
-	DMAOR	= (DWORD *)	&regmem[0xA00040];		*DMAOR = 0;
+	/* El boot ROM de una Dreamcast deja el DMAC operativo: DDT (bit 15) para
+	   el canal 2 de la lectora, prioridad CH2>CH0>CH1>CH3 (bits 9-8 = 10) y
+	   DME. KOS cuenta con eso -- su dma_init() solo escribe DMAOR en NAOMI,
+	   "these are set by the bios on Dreamcast" -- asi que con los hooks de
+	   syscall nadie mas lo pone: basic-dma-speedtest armaba el canal 1 y la
+	   transferencia no salia nunca porque DME seguia en cero. */
+	DMAOR	= (DWORD *)	&regmem[0xA00040];		*DMAOR = 0x8201;
 	/*** FIN DMA ***/
 	
 	ICR		= (WORD *)	&regmem[0xD00000];		*ICR = 0;

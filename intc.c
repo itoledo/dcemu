@@ -45,6 +45,25 @@ void intc_revisar_sh4(void)
 	if ((wdt_control() & WTCSR_IOVF) && !(wdt_control() & WTCSR_WTIT)
 		&& intc(EXC_WDT_ITI))
 		return;
+
+	/* El DMAC: fin de transferencia. dma_canal() deja TE puesto y, con IE, la
+	   peticion queda asertada hasta que el guest limpia TE en el CHCR. Es lo
+	   que espera el driver de KOS: arma el canal, duerme, y el callback llega
+	   por DMTE (basic-dma-speedtest se colgaba justamente aqui). */
+	if (*DMAOR & DME)
+	{
+		if ((*CHCR0 & CHCR_TE) && (*CHCR0 & CHCR_IE) && intc(EXC_DMTE0))
+			return;
+
+		if ((*CHCR1 & CHCR_TE) && (*CHCR1 & CHCR_IE) && intc(EXC_DMTE1))
+			return;
+
+		if ((*CHCR2 & CHCR_TE) && (*CHCR2 & CHCR_IE) && intc(EXC_DMTE2))
+			return;
+
+		if ((*CHCR3 & CHCR_TE) && (*CHCR3 & CHCR_IE) && intc(EXC_DMTE3))
+			return;
+	}
 }
 
 bool intc(DWORD irq)
@@ -79,6 +98,11 @@ bool intc(DWORD irq)
 		case EXC_TMU0_TUNI0:	v = ((*IPRA) >> 12) & 0xf;	break;
 		case EXC_TMU1_TUNI1:	v = ((*IPRA) >>  8) & 0xf;	break;
 		case EXC_TMU2_TUNI2:	v = ((*IPRA) >>  4) & 0xf;	break;
+		/* Los cuatro canales del DMAC comparten prioridad: IPRC, bits 11-8. */
+		case EXC_DMTE0:
+		case EXC_DMTE1:
+		case EXC_DMTE2:
+		case EXC_DMTE3:			v = ((*IPRC) >>  8) & 0xf;	break;
 		default:			logxmsg(LOG_INTC, "intc: irq %d, v=1\n", irq);	v = 0x1;	break;
 	}
 	

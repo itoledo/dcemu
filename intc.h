@@ -46,6 +46,10 @@ extern DWORD	intc_queuemask_ext;
 #define EXC_TMU0_TUNI0          0x0400  /* TMU0 underflow */
 #define EXC_TMU1_TUNI1          0x0420  /* TMU1 underflow */
 #define EXC_TMU2_TUNI2          0x0440  /* TMU2 underflow */
+#define EXC_DMTE0               0x0640  /* DMAC, fin de transferencia canal 0 */
+#define EXC_DMTE1               0x0660  /* DMAC, fin de transferencia canal 1 */
+#define EXC_DMTE2               0x0680  /* DMAC, fin de transferencia canal 2 */
+#define EXC_DMTE3               0x06a0  /* DMAC, fin de transferencia canal 3 */
 
 #define ASIC_EVT_PVR_RENDERDONE         (1 << 0x0002)
 #define ASIC_EVT_PVR_SCANINT1           (1 << 0x0003)

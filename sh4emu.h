@@ -117,6 +117,12 @@ extern	DWORD *	DMAOR;		// DMA operation register
 
 #define DME		1
 #define DE		1
+
+/* Bits de CHCR. Los usan dma_canal() (main.c) e intc_revisar_sh4() (intc.c):
+   el fin de transferencia deja TE puesto y, con IE, el INTC deriva de ahi la
+   peticion de DMTE -- el periferico no entrega su propia interrupcion. */
+#define CHCR_TE			(1 << 1)	/* transferencia terminada */
+#define CHCR_IE			(1 << 2)	/* interrumpir al terminar */
 /*** FIN DMA ***/
 
 /*** TMU ***/

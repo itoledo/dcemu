@@ -186,8 +186,7 @@ Uint32 VBlankCallback(Uint32 interval, void * param)
 	  bits 13-12 SM  como avanza la direccion de origen
 	  bits 15-14 DM  como avanza la de destino
 */
-#define CHCR_TE			(1 << 1)
-#define CHCR_IE			(1 << 2)
+/* CHCR_TE y CHCR_IE viven en sh4emu.h: los comparte intc_revisar_sh4(). */
 #define CHCR_TS(chcr)	(((chcr) >> 4) & 0x7)
 #define CHCR_RS(chcr)	(((chcr) >> 8) & 0xF)
 #define CHCR_SM(chcr)	(((chcr) >> 12) & 0x3)
@@ -262,11 +261,17 @@ static void dma_canal(int n, DWORD * sar, DWORD * dar, DWORD * dmatcr, DWORD * c
 	*sar    = origen;
 	*dar    = destino;
 	*dmatcr = 0;
-	*chcr  |= CHCR_TE;
-	*chcr  &= ~((DWORD) DE);
 
-	if (*chcr & CHCR_IE)
-		logxmsg(LOG_MEM, "DMA: canal %d pide interrupcion (no implementada)\n", n);
+	/* El fin de transferencia deja TE puesto y no toca DE: asi lo describe el
+	   manual, y TE en 1 ya impide reejecutar el canal. Con IE, la peticion de
+	   DMTE la deriva intc_revisar_sh4() de estas mismas banderas -- aca no se
+	   entrega nada, igual que el TMU y el WDT. */
+	*chcr  |= CHCR_TE;
+
+	if (traza_activa)
+		fprintf(stderr, "traza: DMAC canal %d: transferencia hecha, "
+			"CHCR=%08lx (IE=%d)\n", n, (unsigned long) *chcr,
+			(*chcr & CHCR_IE) ? 1 : 0);
 }
 
 void dma_check()
