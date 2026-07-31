@@ -1059,6 +1059,9 @@ void traza_ta_resumen(void)
 static void dibujar_escena(void);
 static void terminar_escena(void);
 static int  render_a_textura(void);
+static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
+							 DWORD filas_bytes, int formato,
+							 DWORD src_w, DWORD src_h);
 
 void cb_tastart(DWORD addr, void * p, size_t size)
 {
@@ -1365,12 +1368,82 @@ static void dibujar_escena(void)
 
 	Devuelve 1 si esta escena era para una textura y ya se resolvio.
 */
+
+/*
+	Lee lo que GL rasterizo y lo escribe en la RAM de video en el formato del
+	PVR. Lo usan las dos rutas que necesitan que la escena exista en memoria: el
+	render a textura y el volcado del framebuffer.
+
+	`src_*` es el rectangulo de GL que se lee y `dst_*` el tamano con que se
+	guarda; cuando no coinciden se remuestrea por vecino mas cercano, que es lo
+	que hace falta porque la ventana no mide lo mismo que la pantalla emulada.
+*/
+static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
+							 DWORD filas_bytes, int formato,
+							 DWORD src_w, DWORD src_h)
+{
+	unsigned char *	pixeles;
+	DWORD			x, y;
+
+	if (dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0)
+		return;
+
+	pixeles = (unsigned char *) malloc((size_t) src_w * src_h * 4);
+
+	if (pixeles == NULL)
+		return;
+
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, src_w, src_h, GL_RGBA, GL_UNSIGNED_BYTE, pixeles);
+
+	if (filas_bytes == 0)
+		filas_bytes = dst_w * 2;
+
+	for (y = 0; y < dst_h; y++)
+	{
+		/* glReadPixels entrega de abajo hacia arriba y tanto una textura como
+		   el framebuffer se guardan de arriba hacia abajo. */
+		DWORD					sy = (src_h - 1) - (y * src_h) / dst_h;
+		const unsigned char *	fila = pixeles + (size_t) sy * src_w * 4;
+		DWORD					base = destino + y * filas_bytes;
+
+		for (x = 0; x < dst_w; x++)
+		{
+			DWORD sx = (x * src_w) / dst_w;
+			DWORD r = fila[sx * 4 + 0];
+			DWORD g = fila[sx * 4 + 1];
+			DWORD b = fila[sx * 4 + 2];
+			DWORD a = fila[sx * 4 + 3];
+			WORD  texel;
+
+			switch (formato)
+			{
+				case 0:		/* ARGB1555 */
+					texel = (WORD) (((a >> 7) << 15) | ((r >> 3) << 10) |
+									((g >> 3) << 5) | (b >> 3));
+					break;
+
+				case 2:		/* ARGB4444 */
+					texel = (WORD) (((a >> 4) << 12) | ((r >> 4) << 8) |
+									((g >> 4) << 4) | (b >> 4));
+					break;
+
+				default:	/* 1: RGB565, y el resto se aproxima con el */
+					texel = (WORD) (((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+					break;
+			}
+
+			memwrite_fisico(0xA5000000 + base + x * 2, &texel, 2);
+		}
+	}
+
+	free(pixeles);
+}
+
 static int render_a_textura(void)
 {
 	DWORD			sof1 = 0, pclip_x = 0, pclip_y = 0, ctrl = 0, paso = 0;
 	DWORD			destino, ancho, alto, filas_bytes;
-	unsigned char *	pixeles;
-	DWORD			x, y;
 	int				formato;
 
 	memread_fisico(0xA05F8060, &sof1, 4);
@@ -1411,54 +1484,7 @@ static int render_a_textura(void)
 
 	dibujar_escena();
 
-	pixeles = (unsigned char *) malloc((size_t) ancho * alto * 4);
-
-	if (pixeles != NULL)
-	{
-		glPixelStorei(GL_PACK_ALIGNMENT, 1);
-		glReadPixels(0, 0, ancho, alto, GL_RGBA, GL_UNSIGNED_BYTE, pixeles);
-
-		if (filas_bytes == 0)
-			filas_bytes = ancho * 2;
-
-		for (y = 0; y < alto; y++)
-		{
-			/* glReadPixels entrega de abajo hacia arriba y la textura se guarda
-			   de arriba hacia abajo. */
-			const unsigned char * fila = pixeles + (size_t) (alto - 1 - y) * ancho * 4;
-			DWORD base = destino + y * filas_bytes;
-
-			for (x = 0; x < ancho; x++)
-			{
-				DWORD r = fila[x * 4 + 0];
-				DWORD g = fila[x * 4 + 1];
-				DWORD b = fila[x * 4 + 2];
-				DWORD a = fila[x * 4 + 3];
-				WORD  texel;
-
-				switch (formato)
-				{
-					case 0:		/* ARGB1555 */
-						texel = (WORD) (((a >> 7) << 15) | ((r >> 3) << 10) |
-										((g >> 3) << 5) | (b >> 3));
-						break;
-
-					case 2:		/* ARGB4444 */
-						texel = (WORD) (((a >> 4) << 12) | ((r >> 4) << 8) |
-										((g >> 4) << 4) | (b >> 4));
-						break;
-
-					default:	/* 1: RGB565, y el resto se aproxima con el */
-						texel = (WORD) (((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-						break;
-				}
-
-				memwrite_fisico(0xA5000000 + base + x * 2, &texel, 2);
-			}
-		}
-
-		free(pixeles);
-	}
+	volcar_a_memoria(destino, ancho, alto, filas_bytes, formato, ancho, alto);
 
 	/* Y se deja todo como estaba: la escena siguiente va a la pantalla. */
 	glViewport(0, 0, outputscreen ? outputscreen->w : 800,

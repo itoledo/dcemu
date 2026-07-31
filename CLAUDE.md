@@ -558,6 +558,17 @@ and the marker's quad is non-degenerate, correctly wound and inside the texture.
 **Do not request `SDL_GL_DEPTH_SIZE`.** Asking for 24 alongside the stencil and `BUFFER_SIZE 32`
 makes SDL pick a different pixel format; the context grants 24 bits anyway without asking.
 
+**Video RAM has two windows and dcemu models only one.** The PVR sees the same 8 MB through a
+32-bit area (`0xA5000000`), where the framebuffer is written, and a 64-bit area (`0xA4000000`),
+where it reads textures — the two interleave the two banks differently, so the same byte has two
+different addresses. dcemu points both zones flat at one block, which is fine as long as nothing
+crosses between them. `pvr-fb_tex` does exactly that: it samples the front buffer as a texture, and
+the numbers do not line up — its texture sits at `0x0014E900` while `FB_W_SOF1` reads `0x004A7480`.
+So that demo does not need "write the framebuffer to VRAM"; it needs the twin windows, which is a
+subsystem touching every texture and framebuffer path. The writeback was written and then removed
+once measurement showed it could never land where the texture looks; what stayed is
+`volcar_a_memoria()`, the reusable half, which render-to-texture uses.
+
 ### Depth
 
 **The TA's z is 1/w — larger means nearer — and it is stored as-is.** The PVR's compare modes are

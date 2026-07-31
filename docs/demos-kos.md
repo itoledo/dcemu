@@ -155,7 +155,25 @@ twiddled.
 
 | demo | qué falta |
 | --- | --- |
-| `pvr-fb_tex` | usar el **framebuffer ya rendido** como textura. No es render a textura: la demo apunta una textura a la dirección del front buffer. dcemu manda el 3D a OpenGL y nunca escribe la RAM de vídeo en el camino normal, así que ahí no hay nada que muestrear |
+| `pvr-fb_tex` | **las dos vistas de la RAM de vídeo del PVR** |
+
+`pvr-fb_tex` usa el framebuffer ya rendido como textura: `pvr_get_front_buffer()` y una textura
+apuntada ahí. Lo primero que falta es evidente —dcemu manda el 3D a OpenGL y nunca escribe la RAM
+de vídeo en el camino normal, así que no hay nada que muestrear—, pero **lo que de verdad lo
+bloquea es otra cosa**, y se ve midiendo: la textura de la demo está en `0x0014E900` y
+`FB_W_SOF1` vale `0x004A7480`. No se solapan ni de lejos.
+
+La razón es que **la RAM de vídeo del PVR tiene dos ventanas que entrelazan sus dos bancos de forma
+distinta**: la de 32 bits (`0xA5000000`), donde se escribe el framebuffer, y la de 64
+(`0xA4000000`), desde donde el chip lee las texturas. Son la misma memoria con dos numeraciones. En
+dcemu las dos zonas apuntan planas al mismo bloque, así que una dirección de una no corresponde a la
+otra y ningún volcado del framebuffer caería donde la textura lo busca.
+
+O sea que esta demo no pide «escribir el framebuffer»: pide emular las dos ventanas, que es un
+subsistema y toca todos los caminos de textura y de framebuffer a la vez. Se llegó a escribir el
+volcado —con su disparador, para no cobrarle un `glReadPixels` por cuadro a las demás demos— y se
+retiró al comprobar que sin las dos ventanas no puede acertar. Lo que quedó es
+`volcar_a_memoria()`, que es la mitad reutilizable y la que usa el render a textura.
 
 ### Render a textura (0)
 
