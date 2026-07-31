@@ -736,10 +736,46 @@ Y un tope de 4096 informes a las direcciones sin emular: la deduplicación es po
 y un guest que se va por un puntero suelto recorre millones de direcciones **distintas**. Sin
 tope el log se fue a los gigabytes y la ventana dejó de responder.
 
+### Qué disco es cada uno, y por qué importa
+
+Lo que la lectora dice del disco decide la rama entera. Dos cosas lo decidían mal:
+
+- **`iso_es_gdrom()` daba GD-ROM por la posición de la pista de datos.** Un `.cdi` describe
+  un CD normal; que su pista de datos empiece arriba del LBA 45000 sólo quiere decir que
+  delante hay 92 MB de relleno. Ahora sólo es GD-ROM bajo `DCEMU_COMO_GD`, que quedó como
+  experimento.
+- **Las sesiones se buscaban sólo por «audio y después datos».** Lo que de verdad separa dos
+  sesiones es **el hueco**: dentro de una sesión las pistas van pegadas salvo el pregap de
+  150 sectores, y cerrar una y abrir otra cuesta unos 11400 —que es justo lo que tienen las
+  tres imágenes de prueba—.
+- **Y la TOC se partía en dos áreas de densidad en cualquier disco.** Esas áreas sólo existen
+  en un GD-ROM; en un CD hay una TOC y punto. Con el corte en el FAD 45150, una imagen que
+  deja el relleno en la pista 1 y el juego justo en el 45150 —Virtua Tennis— contestaba un
+  área 0 con la pista de relleno sola: el juego desaparecía de la TOC.
+
+Las tres, tal como las lee `cdi.c`:
+
+| imagen | pista 1 | pista 2 | arranca por BIOS |
+| --- | --- | --- | --- |
+| Crazy Taxi | LBA 0, 302 sectores, **audio** | LBA 11702, 346490, datos | **sí** |
+| Virtua Tennis | LBA 0, 33600, datos | LBA 45000, 314662, datos | no |
+| Capcom vs SNK | LBA 0, 217425, datos | LBA 228825, 130014, datos | no |
+
 ### Lo que queda
 
-**El juego arranca pero no dibuja.** Tras el salto, el ejecutable corre —el PC recorre
-`0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
-(`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, así que no
-es del arranque por BIOS: es el primer problema de emulación *del juego*, y es una
-investigación nueva.
+- **Los selfboot de datos/datos no pasan el manejador de MIL-CD.** Pide la TOC con `GETTOC2`
+  y rechaza el disco si la primera entrada es una pista de datos: `MOV.L @R11,R0; AND R12,R0;
+  CMP/EQ #40,R0; BT <fallo>` en `0x8CE003B6`, o sea el bit 2 del campo de control. Crazy Taxi
+  tiene la pista 1 de audio —el formato **Audio/Data**, el que este ROM reconoce— y pasa; las
+  otras dos la tienen de datos.
+
+  Tampoco son **Data/Data** del canónico, donde la pista de la primera sesión son 300 sectores
+  con el IP.BIN en su bootsector: aquí son 33600 y 217425 sectores **de ceros** —comprobado
+  leyendo el archivo en el offset que reporta `cdi.c`— y el IP.BIN aparece sólo al principio
+  de la segunda sesión. Queda por averiguar si una consola de verdad las arranca por otro
+  camino, y cuál.
+- **El juego arranca pero no dibuja.** Tras el salto el ejecutable corre —el PC recorre
+  `0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
+  (`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, que carga
+  el `1ST_READ.BIN` a mano y descifra 2084052 bytes sin quejarse, así que no es del arranque
+  por BIOS: es el primer problema de emulación *del juego*, y es una investigación nueva.
