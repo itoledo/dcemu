@@ -1,14 +1,22 @@
 # Estado de las demos de KallistiOS
 
-Estado medido el **30 de julio de 2026**, sobre los 135 binarios compilados desde
-`kos/examples/dreamcast` más `demos/roto`, con el build de ese día. Este documento es la línea
-base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
+Estado medido el **30 de julio de 2026** y **vuelto a medir entero el 1 de agosto**, sobre los 135
+binarios compilados desde `kos/examples/dreamcast` más `demos/roto`. Este documento es la línea base
+de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
+
+La segunda medición no fue por gusto: el 1 de agosto se corrigió el sentido de la profundidad, que
+afecta a **toda** demo con geometría superpuesta, así que la línea base heredada dejaba de valer.
+Confirmó el inventario salvo en un punto, `tsunami-genmenu`, que está anotado más abajo.
 
 | | |
 | --- | --- |
 | Funcionan | **97** binarios |
 | Fallan por algo que falta emular | **10** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
+
+**De las diez que fallan, solo una es del PVR** —`pvr-fb_tex`, y por las dos ventanas de la RAM de
+vídeo, no por el rasterizado—. Las otras nueve son siete de sonido, que piden el AICA, y dos del
+SH-4: `basic-breaking` (UBC) y `basic-dma-speedtest`.
 
 El 1 de agosto de 2026 pasaron seis: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
 `pvr-cheap_shadow` —con los tipos de vértice que faltaban, el rearmado de los parámetros de 64
@@ -408,7 +416,7 @@ texto, por la razón que explica la sección de MMU: no es del emulador.
 corresponde es el patrón XOR y esperar Start. Su `flashrom_get_region: unknown code '00111'`
 viene del contenido de `bios/flash.bin`, no de un fallo del emulador.
 
-### Dibujan; la captura tiene contenido pero no se revisó una por una (34)
+### Dibujan; la captura tiene contenido pero no se revisó una por una (33)
 
 `2ndmix`, `cdrom-stream`, `cpp-clock`, `cpp-dcplib`, `filesystem-sd-mke2fs`,
 `libdream-320x240`, `libdream-640x480`, `libdream-keyboard`, `libdream-rgb888`, `lua-basic`,
@@ -416,5 +424,12 @@ viene del contenido de `bios/flash.bin`, no de un fallo del emulador.
 `parallax-rotocube`, `parallax-serpent_dma`, `parallax-sinus`, `plasma`, `pthread-general`,
 `pvr-modifier_volume_zclip`, `pvr-plasma`, `pvr-pvrmark`, `pvr-pvrmark_strips`,
 `pvr-pvrmark_strips_direct`, `roto`, `rumble`, `sound-ghettoplay-vorbis`, `sound-hello-mp3`,
-`sound-hello-ogg`, `tsunami-banner`, `tsunami-genmenu`, `vmu-vmu_beep`, `vmu-vmu_game`,
-`vmu-vmu_pkg`.
+`sound-hello-ogg`, `tsunami-banner`, `vmu-vmu_beep`, `vmu-vmu_game`, `vmu-vmu_pkg`.
+
+**`tsunami-genmenu` salió de esta lista el 1 de agosto de 2026**, y no por una regresión: la
+geometría llega perfectamente —160 tiras, 640 vértices, todos de tipo 3, con textura y color— pero
+sus coordenadas caen en **y 631..1458 sobre una pantalla de 480**, o sea completamente por debajo.
+Es un menú que entra deslizándose y nunca sube: a los 40 segundos de tiempo emulado sigue igual.
+Como dcemu no toca las coordenadas —el tipo 3 lee los mismos desplazamientos que antes— eso lo
+manda el guest, y lo más probable es que el menú espere una pulsación que el barrido no da. Queda
+aquí para que la próxima medición no lo lea como algo roto del PVR.

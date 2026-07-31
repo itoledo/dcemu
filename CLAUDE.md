@@ -419,6 +419,14 @@ register writes become rendering work.
 
 ### Graphics pipeline
 
+**Where the PVR stands (1 August 2026): of the ten KOS demos still failing, exactly one is the
+PVR's** — `pvr-fb_tex`, and for the twin video-RAM windows rather than anything about rasterising.
+Every texture format, every vertex type, sprites, modifier volumes and render-to-texture are in.
+Two residues are documented rather than hidden: the two markers `pvr_rtt_sized` draws at z=3 and
+z=4 (see "Render to texture"), and `tsunami-genmenu`, whose geometry arrives correctly but lands at
+y 631..1458 on a 480-line screen and never scrolls in — guest-side, since dcemu does not touch
+vertex coordinates.
+
 `pref142()` dispatches to the TA decoder only when the resolved store-queue target lands in
 the polygon FIFO, tested as `(addr & 0xFF800000) == 0x10000000`. It used to test
 `addr & 0x10000000`, a bitwise AND that also matched `0x11xxxxxx` — so every 32-byte block
