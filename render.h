@@ -89,12 +89,41 @@ struct blit
 	GLenum blit_type;
 };
 
+/*
+	Un vertice lleva DOS juegos de color y de coordenadas de textura: el 0 es el
+	que se usa fuera del volumen modificador y el 1 dentro.
+
+	Los tipos de vertice "de dos volumenes" (9 a 14) los traen los dos; el resto
+	trae uno solo y entonces el juego 1 es una copia -- salvo en modo de sombra
+	barata, donde es el juego 0 escalado por FPU_SHAD_SCALE.
+
+	El orden importa: glColorPointer y glTexCoordPointer apuntan dentro de esta
+	estructura con sizeof(vertex) de paso, asi que las cuatro componentes de
+	cada color y las dos de cada UV tienen que ir consecutivas.
+*/
 typedef struct vertex
 {
 	float x,y,z;
 	float r,g,b,a;
 	float t1,t2;
+	float r1,g1,b1,a1;
+	float u1,v1;
 }vertex;
+
+/*
+	Un triangulo de volumen modificador. No es geometria que se dibuje: define
+	la region donde los poligonos cambian de juego de parametros.
+
+	`lista` es 1 para el volumen opaco y 3 para el translucido, que afectan
+	respectivamente a la lista 0 y a la 2. `instruccion` sale de los bits 30-29
+	de la palabra ISP/TSP: 0 acumula, 1 cierra incluyendo y 2 cierra excluyendo.
+*/
+typedef struct
+{
+	float	x[3], y[3], z[3];
+	DWORD	lista;
+	DWORD	instruccion;
+} VolTri;
 
 typedef struct TriangleStripInfo
 {
@@ -131,11 +160,21 @@ typedef struct TriangleStripInfo
 		DWORD pvr_texture_yuv;
 	}texture;
 	DWORD index;
+
+	/*
+		1 si esta tira la afecta un volumen modificador, o sea si su encabezado
+		traia el bit Volume (dos juegos de parametros) o el bit Shadow (sombra
+		barata). Las demas se dibujan de una sola pasada.
+	*/
+	DWORD volumen;
 }TSI;
 
 
 vertex VertexBuffer[65000];
 TSI TriangleStrip[10000];
+
+/* Los triangulos de volumen modificador de la escena en curso. */
+VolTri VolumeBuffer[4096];
 
 float coords[5];
 float colors[4];

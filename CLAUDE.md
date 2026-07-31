@@ -489,8 +489,37 @@ directly: `[0]=1 [9]=41` with every strip at `n=0`. The three axes are how the c
 parameter sets. Intensity types multiply the header's **face color**, which survives past its own
 header on purpose: intensity mode 2 reuses the one left by the last polygon in mode 1.
 
-Two-volume vertices carry everything twice — set 0 outside the modifier volume, set 1 inside.
-With no volume clipping, dcemu uses set 0, which is what covers most of the screen.
+Two-volume vertices carry everything twice — set 0 outside the modifier volume, set 1 inside —
+and `struct vertex` holds both. Types with a single set get set 1 filled as a copy, so the second
+pass can draw any strip without asking what type it was.
+
+### Modifier volumes
+
+The PVR decides per pixel whether it is inside the volume and picks between the polygon's two
+parameter sets. In fixed-function GL that is the **stencil buffer**, which has to be asked for
+(`SDL_GL_STENCIL_SIZE`) — the context comes with none by default.
+
+Two mechanisms, and the header says which: the PCW's **Volume** bit means the vertex carries two
+parameter sets and set 1 applies inside; the **Shadow** bit means cheap shadow — one set whose
+intensity is scaled by `FPU_SHAD_SCALE` (`0x005F8074`, factor in bits 7-0, enable in bit 8).
+`cheap_shadow` asks for 0.5 and the blue inside comes out `0x7F`, which is how you know it works.
+
+**Each affected strip is drawn twice with the stencil test inverted** — outside with set 0, inside
+with set 1 — rather than drawing set 0 whole and overlaying set 1. That way every pixel is written
+once, which is what matters with alpha blending: overlaying would blend twice.
+
+Two stencil bits, not one: the volume in list 1 affects the opaque list and the one in list 3 the
+translucent list, independently (`PLANTILLA_OPACO` / `PLANTILLA_TRANS`).
+
+**It is a union of triangles, not a real volume.** The chip resolves closed 3D volumes by counting
+front and back faces; `marcar_volumenes()` just turns each triangle's bit on (instruction 2, "close
+excluding", turns it off). That covers what the KOS demos do — a flat screen-space square — and a
+shadow projected onto a plane, which is the ordinary use; a closed convex volume seen from inside
+would come out wrong.
+
+**When measuring those demos, note they place their geometry with `rand()`**, so the volume
+overlaps a polygon in one run and not the next. A two-colour BMP proves nothing; run them a few
+times.
 
 Those build up `VertexBuffer[]` and `TriangleStrip[]` (declared — and *defined* — in
 `render.h`, which only `graficos.c` may include for that reason). A write to `TA_LIST_INIT`

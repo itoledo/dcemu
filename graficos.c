@@ -116,6 +116,37 @@ static float traza_ta_min[3], traza_ta_max[3];
 */
 static float color_cara[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 
+/*
+	Volumenes modificadores de la escena en curso.
+
+	`vol_lista` y `vol_instruccion` los deja el encabezado y valen para los
+	triangulos que vengan detras. `vol_count` se pone en cero al empezar cada
+	escena, igual que strip_count.
+*/
+DWORD	vol_count = 0;
+static DWORD	vol_lista = 1;
+static DWORD	vol_instruccion = 0;
+
+/* El bit Shadow del ultimo encabezado de poligono. */
+static int		poly_sombra = 0;
+
+/*
+	Modo de sombra barata: el volumen no cambia el juego de parametros, escala
+	la intensidad. FPU_SHAD_SCALE (0x005F8074) trae el factor en los bits 7-0 y
+	el permiso en el 8. Se lee al armar el vertice, que es cuando se necesita.
+*/
+static float sombra_escala(void)
+{
+	DWORD reg = 0;
+
+	memread_fisico(0xA05F8074, &reg, 4);
+
+	if (!(reg & 0x100))
+		return 1.0f;
+
+	return (float) (reg & 0xFF) / 256.0f;
+}
+
 static int blend_modes [ ] = {GL_ZERO,GL_ONE,GL_DST_COLOR,GL_ONE_MINUS_DST_COLOR,GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,GL_DST_ALPHA,GL_ONE_MINUS_DST_ALPHA};
 
 static int depth_modes [ ] = {GL_NEVER,GL_LESS,GL_EQUAL,GL_LEQUAL,GL_GREATER,GL_NOTEQUAL,GL_GEQUAL,GL_ALWAYS };
@@ -792,6 +823,128 @@ int compare(const void *  f,const void * s)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Volumenes modificadores                                                   */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El PVR calcula, pixel por pixel, si esta dentro del volumen, y con eso elige
+	entre los dos juegos de parametros del poligono. En OpenGL de funcion fija
+	eso es el buffer de plantilla.
+
+	Se usan dos bits, porque hay dos volumenes independientes: el de la lista 1
+	afecta a la lista opaca (0) y el de la lista 3 a la translucida (2).
+*/
+#define PLANTILLA_OPACO		0x1
+#define PLANTILLA_TRANS		0x2
+
+/* Que bit le toca a una tira segun la lista en que vino. */
+static GLuint plantilla_bit(DWORD tipo_lista)
+{
+	return (tipo_lista == 2 || tipo_lista == 3) ? PLANTILLA_TRANS : PLANTILLA_OPACO;
+}
+
+/*
+	Marca en la plantilla la region que cubren los triangulos de volumen.
+
+	**Es una union de triangulos, no un volumen de verdad.** El chip resuelve
+	volumenes cerrados en 3D contando caras delanteras y traseras; aca cada
+	triangulo prende su bit y se acabo. Alcanza para lo que hacen las demos de
+	KOS -- un cuadrado plano en coordenadas de pantalla, dos triangulos -- y
+	para cualquier sombra proyectada sobre el plano, que es el uso corriente.
+	Un volumen convexo cerrado visto desde dentro saldria mal.
+
+	La instruccion 2 ("cerrar excluyendo") apaga el bit en vez de prenderlo, que
+	es lo mas parecido a lo que hace el chip sin llevar la cuenta.
+*/
+static void marcar_volumenes(void)
+{
+	DWORD v;
+
+	if (vol_count == 0)
+		return;
+
+	glEnable(GL_STENCIL_TEST);
+	glClearStencil(0);
+	glClear(GL_STENCIL_BUFFER_BIT);
+
+	/* Solo la plantilla: ni color ni profundidad. El volumen no se ve. */
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	glDepthMask(GL_FALSE);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_TEXTURE_2D);
+	glDisable(GL_BLEND);
+
+	glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
+
+	glBegin(GL_TRIANGLES);
+
+	for (v = 0; v < vol_count; v++)
+	{
+		const VolTri * t = &VolumeBuffer[v];
+		GLuint bit = plantilla_bit(t->lista);
+		int k;
+
+		/* glStencilMask limita la escritura al bit de esta lista, asi que los
+		   dos volumenes no se pisan. Va fuera de glBegin/glEnd. */
+		glEnd();
+		glStencilMask(bit);
+		glStencilOp(GL_KEEP, GL_KEEP,
+			(t->instruccion == 2) ? GL_ZERO : GL_REPLACE);
+		glBegin(GL_TRIANGLES);
+
+		for (k = 0; k < 3; k++)
+			glVertex3f(t->x[k], t->y[k], 1.0f / t->z[k]);
+	}
+
+	glEnd();
+
+	glStencilMask(0xFF);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glEnable(GL_DEPTH_TEST);
+}
+
+/*
+	Deja la prueba de plantilla como la necesita la tira `i`: `dentro` en 0
+	dibuja fuera del volumen y en 1 dentro. Una tira que ningun volumen afecta
+	se dibuja entera.
+*/
+static void plantilla_para(int i, int dentro)
+{
+	GLuint bit;
+
+	if (!TriangleStrip[i].volumen || vol_count == 0)
+	{
+		glDisable(GL_STENCIL_TEST);
+		return;
+	}
+
+	bit = plantilla_bit(TriangleStrip[i].type);
+
+	glEnable(GL_STENCIL_TEST);
+	glStencilFunc(dentro ? GL_EQUAL : GL_NOTEQUAL, bit, bit);
+}
+
+/*
+	Apunta los arreglos de color y de coordenadas de textura al juego 0 o al 1.
+	Las posiciones no cambian: es la misma geometria.
+*/
+static void juego_de_parametros(int juego)
+{
+	if (juego)
+	{
+		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r1);
+		glTexCoordPointer(2, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].u1);
+	}
+	else
+	{
+		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r);
+		glTexCoordPointer(2, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].t1);
+	}
+}
+
 /* Las tiras que trajo cada una de las ultimas escenas, y cuantas hubo. */
 #define TRAZA_ULTIMAS	12
 
@@ -840,9 +993,9 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 			int t;
 
 			fprintf(stderr, "traza: render %d: %d tiras, %d vertices en buffer, "
-				"%d vertices vistos, %d con fin-de-tira\n",
+				"%d vertices vistos, %d con fin-de-tira, %d triangulos de volumen\n",
 				rendidas, (int) strip_count, (int) total_polygon_count,
-				traza_ta_vertices, traza_ta_fin_tira);
+				traza_ta_vertices, traza_ta_fin_tira, (int) vol_count);
 
 			fprintf(stderr, "traza:   tipos de vertice:");
 			for (t = 0; t < TA_TIPOS; t++)
@@ -922,6 +1075,10 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 	debug = TriangleStrip[1].type;
 
+	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
+	   decide, tira por tira, con que juego de parametros sale cada pixel. */
+	marcar_volumenes();
+
 	//printf("Number of lists %d\n",strip_count);
 	for(i=0; i < strip_count; i++)
 		{
@@ -931,7 +1088,15 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 				printf("Oops Debug - %d Type %d\n",debug,TriangleStrip[i].type);
 			}
 			else debug = TriangleStrip[i].type;
-		
+
+			/*
+				Fuera del volumen. Si a esta tira la afecta uno, se dibuja solo
+				donde el bit correspondiente esta apagado y la segunda pasada
+				cubre el resto; asi cada pixel sale una sola vez, que es lo que
+				importa cuando hay mezcla alfa de por medio.
+			*/
+			plantilla_para(i, 0);
+
 			//printf(" Index %d count %d\n",TriangleStrip[i].index,TriangleStrip[i].count);
 
 			glDepthFunc(TriangleStrip[i].depthmode);		
@@ -1014,7 +1179,25 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 			}
 
 			glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
+
+			/*
+				Dentro del volumen: la misma geometria con el juego 1. Se
+				repite el dibujo en vez de hacer otra vuelta entera al final
+				porque asi hereda el estado que se acaba de programar --
+				blend, culling, profundidad y la textura ya ligada.
+			*/
+			if (TriangleStrip[i].volumen && vol_count > 0)
+			{
+				plantilla_para(i, 1);
+				juego_de_parametros(1);
+
+				glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
+
+				juego_de_parametros(0);
+			}
 		}
+
+	glDisable(GL_STENCIL_TEST);
 
 	/* Antes de tocar strip_count y antes del swap: es el unico momento en que
 	   el buffer tiene el cuadro entero, porque despues de presentar se limpia.
@@ -1028,6 +1211,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	strip_count = 0;
 
 	total_polygon_count = 0;
+
+	vol_count = 0;
 
 	gui_refresh();
 
@@ -1285,8 +1470,31 @@ void taPolyModifier()
 	if (global_parameter == TA_GLOBAL_VOLUMEN)
 	{
 		logxmsg(LOG_PVR, "pcw: encabezado de volumen modificador\n");
+
+		/* A que lista afecta este volumen y que hace con lo acumulado. La
+		   instruccion va en los bits 30-29 de la palabra ISP/TSP. */
+		vol_lista = TA.registers.pcw_list_type;
+		vol_instruccion = (ta_address_pointer[1] >> 29) & 0x3;
+
 		return;
 	}
+
+	/*
+		Si esta tira la afecta un volumen modificador. Son dos mecanismos
+		distintos y el encabezado dice cual:
+
+		  - Volume: el vertice trae dos juegos de parametros y dentro del
+			volumen se usa el 1;
+		  - Shadow: sombra barata, un solo juego cuya intensidad se escala.
+
+		Las tiras sin ninguno de los dos se dibujan de una sola pasada.
+	*/
+	TriangleStrip[strip_count].volumen =
+		(TA.registers.pcw_volume || TA.registers.pcw_shadow) ? 1 : 0;
+
+	/* Se guarda aparte porque taVertexHandler() pisa TA.control con la palabra
+	   de control del vertice, y ahi el bit 7 ya no es el del encabezado. */
+	poly_sombra = TA.registers.pcw_shadow;
 
 	if (TA.registers.pcw_list_type == 0 || TA.registers.pcw_list_type == 2 || TA.registers.pcw_list_type == 4)
 	{
@@ -1547,6 +1755,67 @@ static void vertice_uv(vertex * v, int w)
 	memcpy(&v->t2, &ta_address_pointer[w + 1], sizeof(float));
 }
 
+/* --- El juego 1: lo que se usa dentro del volumen modificador ------------ */
+
+static void juego1_color(vertex * v, DWORD argb)
+{
+	v->a1 = ((argb >> 24) & 0xFF) / 255.0;
+	v->r1 = ((argb >> 16) & 0xFF) / 255.0;
+	v->g1 = ((argb >> 8)  & 0xFF) / 255.0;
+	v->b1 = ((argb >> 0)  & 0xFF) / 255.0;
+}
+
+static void juego1_intensidad(vertex * v, DWORD palabra)
+{
+	float i;
+
+	memcpy(&i, &palabra, sizeof(float));
+
+	v->a1 = color_cara[0];
+	v->r1 = color_cara[1] * i;
+	v->g1 = color_cara[2] * i;
+	v->b1 = color_cara[3] * i;
+}
+
+static void juego1_uv(vertex * v, int w)
+{
+	memcpy(&v->u1, &ta_address_pointer[w],     sizeof(float));
+	memcpy(&v->v1, &ta_address_pointer[w + 1], sizeof(float));
+}
+
+static void juego1_uv16(vertex * v, DWORD palabra)
+{
+	DWORD u = palabra & 0xFFFF0000;
+	DWORD s = palabra << 16;
+
+	memcpy(&v->u1, &u, sizeof(float));
+	memcpy(&v->v1, &s, sizeof(float));
+}
+
+/*
+	Para los tipos que traen un solo juego: el 1 es una copia del 0, escalada
+	por FPU_SHAD_SCALE si el encabezado pidio sombra barata.
+
+	El alpha no se escala -- la sombra oscurece, no transparenta.
+*/
+static void juego1_copiar(vertex * v, int sombra)
+{
+	float k = sombra ? sombra_escala() : 1.0f;
+
+	v->a1 = v->a;
+	v->r1 = v->r * k;
+	v->g1 = v->g * k;
+	v->b1 = v->b * k;
+	v->u1 = v->t1;
+	v->v1 = v->t2;
+}
+
+/* Los seis tipos que traen dos juegos de parametros. */
+static int tipo_de_dos_volumenes(int t)
+{
+	return (t >= 9 && t <= 14);
+}
+
 /*
 	UV de 16 bits: las dos coordenadas van en una sola palabra, y cada una es la
 	**mitad alta** de un float de 32 bits. O sea que se recuperan desplazando,
@@ -1563,10 +1832,12 @@ static void vertice_uv16(vertex * v, DWORD palabra)
 
 void taVertexHandler()
 {
+	DWORD antes;
+
 #ifdef DEBUG_VERTEX_NEW
 	logxmsg(LOG_PVR, "pcw: vertex parameter: polygon type %d, pcw: %08x\n", vertex_parameter, TA.control);
 #endif
-	
+
 	TA.control = *ta_address_pointer;
 
 	if (traza_activa)
@@ -1598,15 +1869,15 @@ void taVertexHandler()
 		  - UV de 32 bits: dos palabras; de 16, las dos en una.
 
 		Y los seis de "dos volumenes" traen todo dos veces: el juego 0 es el que
-		se usa fuera del volumen modificador y el 1 dentro. Mientras no haya
-		recorte por volumen se usa el 0, que es lo que se ve en la mayor parte
-		de la pantalla.
+		se usa fuera del volumen modificador y el 1 dentro.
 
 		Estaban implementados solo el 0, 1, 3 y 5. Los que faltaban se
 		descartaban en silencio: el vertice no entraba al buffer, la tira
 		terminaba con count 0 y no se dibujaba nada. Las demos de volumen
 		modificador perdian asi 41 de sus 42 vertices.
 	*/
+	antes = total_polygon_count;
+
 	switch (vertex_parameter)
 	{
 		case 0:		/* sin textura, color empaquetado */
@@ -1682,13 +1953,29 @@ void taVertexHandler()
 		}
 		break;
 
+		/*
+			Los seis de dos volumenes. El juego 0 va donde los demas y el 1
+			detras: para los sin textura es la palabra siguiente, y para los
+			texturados el bloque entero de UV, color y offset se repite en la
+			segunda mitad del vertice de 64 bytes.
+		*/
 		case 9:		/* sin textura, color empaquetado, dos volumenes */
-			vertice_color(vertice_nuevo(), ta_address_pointer[4]);
-			break;
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_color(v, ta_address_pointer[4]);
+			juego1_color(v, ta_address_pointer[5]);
+		}
+		break;
 
 		case 10:	/* sin textura, intensidad, dos volumenes */
-			vertice_intensidad(vertice_nuevo(), ta_address_pointer[4]);
-			break;
+		{
+			vertex * v = vertice_nuevo();
+
+			vertice_intensidad(v, ta_address_pointer[4]);
+			juego1_intensidad(v, ta_address_pointer[5]);
+		}
+		break;
 
 		case 11:	/* texturado, color empaquetado, dos volumenes, UV de 32 */
 		{
@@ -1696,6 +1983,8 @@ void taVertexHandler()
 
 			vertice_uv(v, 4);
 			vertice_color(v, ta_address_pointer[6]);
+			juego1_uv(v, 8);
+			juego1_color(v, ta_address_pointer[10]);
 		}
 		break;
 
@@ -1705,6 +1994,8 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_color(v, ta_address_pointer[6]);
+			juego1_uv16(v, ta_address_pointer[8]);
+			juego1_color(v, ta_address_pointer[10]);
 		}
 		break;
 
@@ -1714,6 +2005,8 @@ void taVertexHandler()
 
 			vertice_uv(v, 4);
 			vertice_intensidad(v, ta_address_pointer[6]);
+			juego1_uv(v, 8);
+			juego1_intensidad(v, ta_address_pointer[10]);
 		}
 		break;
 
@@ -1723,18 +2016,39 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_intensidad(v, ta_address_pointer[6]);
+			juego1_uv16(v, ta_address_pointer[8]);
+			juego1_intensidad(v, ta_address_pointer[10]);
 		}
 		break;
 
 		/*
 			Un vertice de volumen modificador trae un triangulo entero -- tres
 			puntos en 64 bytes -- y no es geometria que se dibuje: define la
-			region donde los poligonos cambian de parametros. Sin recorte por
-			volumen no hay nada que hacer con el, pero hay que reconocerlo:
-			leerlo como un vertice normal metia basura en el buffer.
+			region donde los poligonos cambian de parametros. Va a su propio
+			buffer, que cb_tastart() marca en la plantilla antes de dibujar.
 		*/
 		case TA_VERTICE_VOLUMEN:
-			break;
+		{
+			if (vol_count < sizeof(VolumeBuffer) / sizeof(VolumeBuffer[0]))
+			{
+				VolTri * t = &VolumeBuffer[vol_count++];
+				float p[9];
+				int k;
+
+				memcpy(p, &ta_address_pointer[1], sizeof(float) * 9);
+
+				for (k = 0; k < 3; k++)
+				{
+					t->x[k] = p[k * 3 + 0];
+					t->y[k] = p[k * 3 + 1];
+					t->z[k] = p[k * 3 + 2];
+				}
+
+				t->lista = vol_lista;
+				t->instruccion = vol_instruccion;
+			}
+		}
+		break;
 
 		default:
 		{
@@ -1742,6 +2056,18 @@ void taVertexHandler()
 		}
 		break;
 	}
+
+	/*
+		Los tipos de un solo juego dejan el 1 sin escribir. Se copia del 0, con
+		la escala de sombra si el encabezado la pidio, para que la segunda
+		pasada pueda dibujar cualquier tira sin preguntar de que tipo era.
+
+		La condicion mira si de verdad entro un vertice: el tipo de volumen y
+		los no implementados no incrementan el contador, y sin esto pisarian el
+		juego 1 del vertice anterior.
+	*/
+	if (total_polygon_count != antes && !tipo_de_dos_volumenes(vertex_parameter))
+		juego1_copiar(&VertexBuffer[total_polygon_count], poly_sombra);
 
 	if (traza_activa && vertex_parameter >= 0)
 	{
@@ -2213,6 +2539,11 @@ int glinit(void)
 	SDL_GL_SetAttribute( SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute( SDL_GL_BUFFER_SIZE, 32 );
     SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
+
+	/* Los volumenes modificadores se marcan en el buffer de plantilla, que hay
+	   que pedir: por omision el contexto no trae ninguno. Dos bits alcanzan --
+	   uno para el volumen opaco y otro para el translucido. */
+    SDL_GL_SetAttribute( SDL_GL_STENCIL_SIZE, 8 );
 
 	outputscreen = SDL_SetVideoMode(800, 600, 32, SDL_HWSURFACE|SDL_OPENGL|SDL_HWACCEL);
 	
