@@ -385,43 +385,57 @@ geometría enviada sin lista abierta; la FPU del núcleo está validada aparte (
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
 Ver `docs/sh4-conformidad.md`.
 
-## Arrancar un juego por el boot ROM (hito C): dónde está trabado
+## Arrancar un juego por el boot ROM (hito C): este `bios.bin` no puede
 
 Medido el 31 de julio de 2026 con `Crazy Taxi - DCRES.cdi`, un *selfboot*
 (conversión a CD: sesión de audio + sesión de datos en modo 2).
 
-**Sin `--bios` el juego corre**: dcemu lee `ip.bin` y `1st_read.bin` de la
-imagen y arranca directo. Lo que no funciona es dejar que el boot ROM evalúe
-el disco y lo arranque él.
+**No es un fallo de dcemu: es que este boot ROM no sabe arrancar desde un CD.**
+`bios/bios.bin` es `SEGA SEGAKATANA KABUTO Ver.1.004 Copyright(c) SEGA
+ENTERPRISES, LTD., 1998` (la cadena está en `bios.bin+0x7cc`), una revisión
+japonesa temprana **anterior al MIL-CD**, que es el hueco por el que arrancan
+las conversiones a CD. Sega lo introdujo en 1999 y lo quitó en 2000.
 
-Lo que hace el ROM, con `--traza-mem` (que ahora imprime el PC y el PR de cada
-paquete SPI, y el formato que decidió la lectora):
+La prueba está en el propio ROM. En `bios.bin+0xfc8` hay una **tabla de
+parámetros de arranque** —no son literales PC-relativos, no hay ningún
+`MOV.L @(disp,PC)` que los alcance—:
 
 ```
-00 TEST_UNIT · 11 REQ_MODE · 70 · 71 · 14 GET_TOC(densidad simple) · 15 REQ_SES(0)
-30 CD_READ fad 45150 ×7 · fad 45157 ×9 · fad 45166 ×1     ← 17 sectores = IP.BIN
-(repite la secuencia 5 veces, y termina sondeando el subcódigo: reproductor de CD)
+00fc8: 8c008000 00000007        ← destino del IP.BIN
+00fd0: 0000b05e 00000011        ← FAD 45150, 17 sectores
+00fd8: 00000000 8c00b800        ← punto de entrada = el bootstrap 1
+00fe0: 00000009 0000b065 ...    ← y el siguiente trozo, FAD 45157
 ```
 
-**El ROM lee el área de arranque de un GD-ROM (FAD 45150) y nunca toca la pista
-de datos del CD (FAD 11852)**, aunque la lectora reporte correctamente CD-ROM XA,
-dos sesiones y dos pistas. Ahí lee basura —el sector es real, LBA 45000 cae dentro
-de este disco de 346490 sectores— y se rinde.
+**Todos los FAD son del área de alta densidad, y no hay ninguna entrada
+alternativa para un CD.** Por eso el ROM lee 17 sectores desde 45150 y nunca
+toca la pista de datos del CD, en FAD 11852, por bien que se le conteste todo
+lo demás. Nótese que `0x8c00b800` es exactamente donde arranca dcemu sin
+`--bios`: el camino directo hace lo mismo que haría el ROM.
 
-Dos cosas quedaron descartadas por medición, no por razonamiento:
+Todo lo que se le contesta es correcto, y está comprobado uno por uno:
 
-- **No es el comando de seguridad 0x71.** Hacerlo fallar con CHECK CONDITION
-  cuando el disco no es GD-ROM no cambia nada: el ROM sigue leyendo 45150.
-- **No es el TOC ni las sesiones.** Pide el TOC de densidad simple (`14 00`), que
-  se le contesta con las dos pistas reales, y `REQ_SES(0)`, que se le contesta
-  dos sesiones. Aun así toma el camino GD.
+- **el tipo de disco**: `SECTNUM` devuelve `0x22`, o sea CD-ROM XA en el nibble
+  alto y el estado de la unidad en el bajo;
+- **las sesiones**: `REQ_SES(0)` → 2 sesiones y fin en FAD 358342, `REQ_SES(1)`
+  → pista 1 en FAD 150, `REQ_SES(2)` → pista 2 en **FAD 11852**, que es
+  justamente la pista de datos. El ROM las enumera hasta que fallan y no hace
+  nada con ellas;
+- **el TOC** de densidad simple, con las dos pistas reales;
+- **el comando de seguridad 0x71**: hacerlo fallar no cambia nada.
 
-Lo que sí se localizó: la constante 45150 vive en la RAM en `0x8c0e2d40` —la copia
-del ROM es identidad, `bios.bin+0x2c44` ↔ `0x8c002c44`— dentro de la rutina que
-empieza en `0x8c0e2ce8`, y ahí es una **guarda**: `CMP/GE 45150` sobre la dirección
-pedida y error `0xf3` si es menor. O sea que es la rutina de lectura del área de
-alta densidad, no donde se elige leerla. **Quien decide sigue estando más arriba, y
-es lo que falta encontrar.**
+Lo que sí se corrigió por el camino: **la lectora servía el área de alta
+densidad en un disco que no la tiene.** `iso_read_sector()` leía el FAD 45150 y
+devolvía lo que hubiera en esa posición del archivo —en una imagen grande, un
+sector real, sólo que de otro sitio—, así que el ROM se llevaba basura en vez de
+un error. Ahora se rechaza con `ILLEGAL REQUEST` / `0x21` (dirección fuera de
+rango), que es lo que hace una lectora, y se nota: el ROM deja de insistir cinco
+veces, pide el error con `13 REQ_ERROR` y pasa a enumerar sesiones. Sigue
+terminando en el reproductor de CD, porque no tiene a dónde ir.
+
+**Para cerrar el hito C hace falta otro `bios.bin`** —una revisión con MIL-CD,
+1.01c o 1.01d— o una imagen de GD-ROM de verdad, con la pista de datos en el
+FAD 45150 en adelante, que es lo que `iso_es_gdrom()` reconoce.
 
 ## Lo que no aplica (28)
 

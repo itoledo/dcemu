@@ -185,24 +185,33 @@ What was missing for the *animation* was two more, both found by the ROM and by 
 demo: the PVR **background plane** and the true size of the TA's **Polygon Type 1** header
 — see "The background plane" and the `ta.c` note in the graphics pipeline section.
 
-**Hito C (booting a game *through* the BIOS) is not there yet, and the blocker is
-located.** With a selfboot CD image (`.cdi`: audio session + mode-2 data session) the ROM
-reads **17 sectors at FAD 45150 — the GD-ROM boot area — and never touches the CD's data
-track** at FAD 11852, even though the drive correctly reports CD-ROM XA with two sessions.
-It finds garbage there (LBA 45000 is a real sector of a 700 MB disc), retries the whole
-probe five times and falls back to the CD player. Measured, not reasoned: it is **not** the
-0x71 security command (failing it changes nothing) and **not** the TOC or the sessions
-(both are answered correctly). The 45150 constant sits at `0x8c0e2d40` — the ROM's copy is
-identity-mapped, `bios.bin+0x2c44` ↔ `0x8c002c44` — inside the routine at `0x8c0e2ce8`,
-where it is only a *guard* (`CMP/GE 45150`, error `0xf3` below it): that is the
-high-density read routine, not the code that chooses to use it. Whoever makes that choice
-is still upstream. See `docs/demos-kos.md`, "Arrancar un juego por el boot ROM".
+**Hito C (booting a game *through* the BIOS) is blocked by the ROM image itself, not by
+dcemu.** `bios/bios.bin` is `SEGA SEGAKATANA KABUTO Ver.1.004 ... 1998` (string at
+`bios.bin+0x7cc`), an early Japanese revision from **before MIL-CD** — which is the hole
+every CD conversion boots through. The proof is in the ROM: `bios.bin+0xfc8` holds a boot
+parameter table (destination `0x8c008000`, **FAD 45150**, 17 sectors, entry point
+`0x8c00b800`, then the next chunk at FAD 45157) and **there is no alternative entry for a
+CD**. So with a selfboot `.cdi` the ROM reads 17 sectors at FAD 45150 and never touches the
+CD's data track at FAD 11852, no matter how correctly everything else is answered — the
+disc type (`SECTNUM` = `0x22`, CD-ROM XA), the sessions (`REQ_SES(2)` → FAD 11852, the data
+track), the TOC, and the 0x71 security command, all verified one by one. Note `0x8c00b800`
+is exactly where dcemu starts without `--bios`: the direct path does what the ROM would.
+Closing hito C needs a different `bios.bin` (1.01c/1.01d, with MIL-CD) or a real GD-ROM
+image. See `docs/demos-kos.md`, "Arrancar un juego por el boot ROM".
+
+**The drive used to serve the high-density area on a disc that has none.** A CD has nothing
+above FAD 45150, and the drive rejects the request; `iso_read_sector()` instead returned
+whatever sat at that offset of the file — on a large image a real sector, just from
+somewhere else — so the ROM got garbage rather than an error. `cmd_cd_read()` now fails
+with `ILLEGAL REQUEST` / `0x21` when `!iso_es_gdrom()`, and it shows: the ROM stops retrying
+the whole probe five times, asks for the error with `13 REQ_ERROR`, and moves on to
+enumerating sessions.
 
 Note dcemu boots these games fine **without** `--bios` — it loads `ip.bin` and
 `1st_read.bin` from the image directly. Only the ROM-evaluated path is blocked.
 
-`--traza-mem` prints the PC and PR of every SPI packet and the disc format the drive
-settled on, which is the thread to pull for this.
+`--traza-mem` prints the PC and PR of every SPI packet, what each `REQ_SES` answered, and
+the disc format the drive settled on.
 
 **`0x005F6800-0x005F6808` is the CH2 DMA, and it is how the guest feeds the TA.** The Holly
 drives it, not the DMAC: the SH-4 only puts the source in `SAR2` and arms `CHCR2` for

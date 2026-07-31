@@ -456,6 +456,13 @@ static void cmd_req_ses(const BYTE * p)
 	ses[3] = (BYTE) ((fad >>  8) & 0xFF);
 	ses[4] = (BYTE) ( fad        & 0xFF);
 
+	/* Con esto se ve lo que el boot ROM se lleva de cada sesion, que es con lo
+	   que decide si el disco arranca o si abre el reproductor de musica. */
+	if (traza_activa)
+		fprintf(stderr, "gdrom: REQ_SES(%d) -> estado %d, %s %d, fad %lu\n",
+			p[2], ses[0], p[2] ? "primera pista" : "sesiones", ses[1],
+			(unsigned long) fad);
+
 	entregar(ses, (int) sizeof(ses), 0, p[4]);
 }
 
@@ -491,6 +498,30 @@ static void cmd_cd_read(const BYTE * p)
 	}
 
 	logmsg("gdrom: CD_READ fad %d, %d sectores\n", fad, sectores);
+
+	/*
+		El area de alta densidad solo existe en un GD-ROM: en un CD no hay nada
+		por encima del FAD 45150 y la lectora rechaza la peticion. Sin esto,
+		iso_read_sector() servia lo que hubiera en esa posicion del archivo
+		--que en una imagen grande es un sector real, solo que de otro sitio--
+		y el boot ROM se llevaba basura en vez de un error.
+
+		Importa para el arranque: el ROM prueba el area de alta densidad antes
+		que nada y usa el fallo para descartarla. Recibiendo datos daba el disco
+		por GD-ROM, encontraba que no cuadraban, reintentaba la busqueda entera
+		cinco veces y terminaba abriendo el reproductor de CD sin haber mirado
+		nunca la pista de datos del CD.
+	*/
+	if (!iso_es_gdrom() && fad >= GD_FAD_ALTA_DENSIDAD)
+	{
+		if (traza_activa)
+			fprintf(stderr, "gdrom: CD_READ fad %d rechazado: el disco no "
+				"tiene area de alta densidad\n", fad);
+
+		/* 0x21: direccion de bloque fuera de rango. */
+		fallar(GD_SENTIDO_ILEGAL, 0x21, 0x00);
+		return;
+	}
 
 	if (iso_read_sector((char *) gdrom.datos, fad, sectores) < 0)
 	{
