@@ -493,6 +493,34 @@ Two-volume vertices carry everything twice — set 0 outside the modifier volume
 and `struct vertex` holds both. Types with a single set get set 1 filled as a copy, so the second
 pass can draw any strip without asking what type it was.
 
+### Render to texture
+
+`cb_tastart()` splits in three: `render_a_textura()` decides where the scene goes, `dibujar_escena()`
+draws the strips and `terminar_escena()` presents. **The marker is bit 24 of `FB_W_SOF1`**
+(`0x005F8060`) — KOS writes `address | BIT(24)`. Size comes from the clip registers (`PCLIP_X`/`Y`,
+`0x005F8068`/`0x6C`, maximum in bits 31-16), row pitch from `FB_W_LINESTRIDE` (`0x005F804C`, in
+units of 8 bytes) and the pixel format from `FB_W_CTRL` (`0x005F8048`).
+
+dcemu sends 3D to OpenGL, so the scene never passes through video RAM: it has to be drawn and read
+back with `glReadPixels`. Two things are easy to get wrong — the guest submits vertices **in the
+target's coordinates** (0..128 by 0..64 for `pvr_rtt_sized`), so the viewport and `glOrtho` must be
+the texture's and not the screen's; and `glReadPixels` returns bottom-up while the texture is stored
+top-down.
+
+**`pvr-texture_render` was passing by accident**: it uses `pvr_scene_begin_rtt` too, and dcemu was
+ignoring the destination and sending the scene meant for the texture straight to the screen. Its
+colour count dropped from 47539 to 2048 when this landed — which is the round trip through an
+RGB565 texture, i.e. the *right* number.
+
+Still open: `pvr_rtt_sized` draws two small markers inside the texture, at z=3 and z=4, that do not
+appear, while the background (z=1), the inner rect (z=2) and the borders (z=5) do. It is the depth
+test — `GL_ALWAYS` makes them show — but **not precision**: the context already grants 24 bits
+(`--traza-mem` prints what SDL actually gave) and narrowing the RTT pass's `glOrtho` range changes
+nothing.
+
+**Do not request `SDL_GL_DEPTH_SIZE`.** Asking for 24 alongside the stencil and `BUFFER_SIZE 32`
+makes SDL pick a different pixel format; the context grants 24 bits anyway without asking.
+
 ### Modifier volumes
 
 The PVR decides per pixel whether it is inside the volume and picks between the polygon's two

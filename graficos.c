@@ -970,11 +970,12 @@ void traza_ta_resumen(void)
 	fprintf(stderr, "\n");
 }
 
+static void dibujar_escena(void);
+static void terminar_escena(void);
+static int  render_a_textura(void);
+
 void cb_tastart(DWORD addr, void * p, size_t size)
 {
-	int i;
-	DWORD debug;
-
 	if (traza_activa)
 	{
 		traza_ultimas[traza_rendidas % TRAZA_ULTIMAS] = (int) strip_count;
@@ -1073,13 +1074,38 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		}
 	}
 
-	debug = TriangleStrip[1].type;
+	/*
+		Si esta escena iba a una textura, ya se dibujo y se escribio en la RAM
+		de video: no hay nada que presentar en pantalla.
+	*/
+	if (render_a_textura())
+	{
+		strip_count = 0;
+		total_polygon_count = 0;
+		vol_count = 0;
+		ta_reiniciar();
+		pvr_listdone = 0;
+		limpiar_texturas();
+		return;
+	}
+
+	dibujar_escena();
+	terminar_escena();
+}
+
+/*
+	Dibuja las tiras acumuladas. Sale de cb_tastart() porque el render a
+	textura necesita exactamente lo mismo pero con otro destino y otro tamano.
+*/
+static void dibujar_escena(void)
+{
+	DWORD i;
+	DWORD debug = TriangleStrip[1].type;
 
 	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
 	   decide, tira por tira, con que juego de parametros sale cada pixel. */
 	marcar_volumenes();
 
-	//printf("Number of lists %d\n",strip_count);
 	for(i=0; i < strip_count; i++)
 		{
 
@@ -1099,7 +1125,7 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 			//printf(" Index %d count %d\n",TriangleStrip[i].index,TriangleStrip[i].count);
 
-			glDepthFunc(TriangleStrip[i].depthmode);		
+			glDepthFunc(TriangleStrip[i].depthmode);
 
 			/* Iban indexadas con strip_count, que en este bucle ya es la
 			   cantidad total: uno mas que el ultimo indice valido. O sea que
@@ -1198,6 +1224,140 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		}
 
 	glDisable(GL_STENCIL_TEST);
+}
+
+/*
+	Render a textura.
+
+	Normalmente el chip rinde la escena en el framebuffer; con
+	pvr_scene_begin_rtt() el destino es memoria de textura, y lo que la marca es
+	**el bit 24 de FB_W_SOF1** (0x005F8060) -- KOS escribe `direccion | BIT(24)`.
+	El tamano sale de los registros de recorte (PCLIP_X/Y, 0x005F8068 y 0x6C, con
+	el maximo en los bits 31-16), el paso entre filas de FB_W_LINESTRIDE
+	(0x005F804C, en unidades de 8 bytes) y el formato de FB_W_CTRL (0x005F8048).
+
+	dcemu manda el 3D a OpenGL, asi que la escena no pasa por la RAM de video: hay
+	que dibujarla y leerla de vuelta con glReadPixels. El guest entrega los
+	vertices en coordenadas del destino -- 0..128 por 0..64 para la demo --, asi
+	que el viewport y el glOrtho tienen que ser los de la textura y no los de la
+	pantalla, o la escena sale minuscula en una esquina.
+
+	Devuelve 1 si esta escena era para una textura y ya se resolvio.
+*/
+static int render_a_textura(void)
+{
+	DWORD			sof1 = 0, pclip_x = 0, pclip_y = 0, ctrl = 0, paso = 0;
+	DWORD			destino, ancho, alto, filas_bytes;
+	unsigned char *	pixeles;
+	DWORD			x, y;
+	int				formato;
+
+	memread_fisico(0xA05F8060, &sof1, 4);
+
+	if (!(sof1 & 0x01000000))
+		return 0;
+
+	memread_fisico(0xA05F8068, &pclip_x, 4);
+	memread_fisico(0xA05F806C, &pclip_y, 4);
+	memread_fisico(0xA05F804C, &paso, 4);
+	memread_fisico(0xA05F8048, &ctrl, 4);
+
+	destino = sof1 & 0x007FFFFF;
+	ancho = ((pclip_x >> 16) & 0x7FF) + 1;
+	alto  = ((pclip_y >> 16) & 0x3FF) + 1;
+	formato = ctrl & 0x7;
+
+	/* El paso viene en unidades de 8 bytes y cubre la fila entera, que puede ser
+	   mas ancha que la imagen: eso es el stride de la textura. */
+	filas_bytes = (paso & 0x1FF) * 8;
+
+	if (ancho == 0 || alto == 0 || ancho > 2048 || alto > 2048)
+		return 0;
+
+	/* La escena, a su propio tamano. */
+	glViewport(0, 0, ancho, alto);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glOrtho(0, ancho, alto, 0, -32768.0, 32768.0);
+
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glEnable(GL_DEPTH_TEST);
+	glDepthMask(GL_TRUE);
+
+	dibujar_escena();
+
+	pixeles = (unsigned char *) malloc((size_t) ancho * alto * 4);
+
+	if (pixeles != NULL)
+	{
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		glReadPixels(0, 0, ancho, alto, GL_RGBA, GL_UNSIGNED_BYTE, pixeles);
+
+		if (filas_bytes == 0)
+			filas_bytes = ancho * 2;
+
+		for (y = 0; y < alto; y++)
+		{
+			/* glReadPixels entrega de abajo hacia arriba y la textura se guarda
+			   de arriba hacia abajo. */
+			const unsigned char * fila = pixeles + (size_t) (alto - 1 - y) * ancho * 4;
+			DWORD base = destino + y * filas_bytes;
+
+			for (x = 0; x < ancho; x++)
+			{
+				DWORD r = fila[x * 4 + 0];
+				DWORD g = fila[x * 4 + 1];
+				DWORD b = fila[x * 4 + 2];
+				DWORD a = fila[x * 4 + 3];
+				WORD  texel;
+
+				switch (formato)
+				{
+					case 0:		/* ARGB1555 */
+						texel = (WORD) (((a >> 7) << 15) | ((r >> 3) << 10) |
+										((g >> 3) << 5) | (b >> 3));
+						break;
+
+					case 2:		/* ARGB4444 */
+						texel = (WORD) (((a >> 4) << 12) | ((r >> 4) << 8) |
+										((g >> 4) << 4) | (b >> 4));
+						break;
+
+					default:	/* 1: RGB565, y el resto se aproxima con el */
+						texel = (WORD) (((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+						break;
+				}
+
+				memwrite_fisico(0xA5000000 + base + x * 2, &texel, 2);
+			}
+		}
+
+		free(pixeles);
+	}
+
+	/* Y se deja todo como estaba: la escena siguiente va a la pantalla. */
+	glViewport(0, 0, outputscreen ? outputscreen->w : 800,
+					 outputscreen ? outputscreen->h : 600);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glOrtho(0, screenancho, screenheight, 0, -32768.0, 32768.0);
+
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	if (traza_activa)
+		fprintf(stderr, "traza: render a textura %ux%u en %06x, paso %u, formato %d\n",
+			(unsigned) ancho, (unsigned) alto, (unsigned) destino,
+			(unsigned) filas_bytes, formato);
+
+	return 1;
+}
+
+/* La segunda mitad de cb_tastart(): presentar y dejar todo listo para la
+   escena siguiente. */
+static void terminar_escena(void)
+{
+	DWORD dw;
 
 	/* Antes de tocar strip_count y antes del swap: es el unico momento en que
 	   el buffer tiene el cuadro entero, porque despues de presentar se limpia.
@@ -1699,6 +1859,23 @@ static vertex * vertice_nuevo(void)
 
 	v->x = xyz[0];
 	v->y = xyz[1];
+
+	/*
+		La z del TA es 1/w: mayor quiere decir mas cerca, y las pruebas de
+		profundidad del PVR estan escritas asi -- GREATER deja pasar lo que esta
+		mas cerca.
+
+		Guardar su reciproco parece invertir el orden, pero no: el glOrtho de
+		screeninit() va de -32768 a 32768, o sea que mapea z creciente a
+		profundidad **decreciente**, y las dos inversiones se cancelan. Lo que
+		queda es lo correcto: mas cerca, mas profundidad, gana con GREATER.
+
+		Lo que si cuesta es la precision. Ese rango de 65536 aplasta las z de una
+		demo -- que andan por unidades -- en una franja minuscula alrededor de
+		0,5, y ahi lo que decide es cuantos bits tiene el buffer de profundidad.
+		Ver el pedido de 24 bits en glinit(): con los 16 que daba el contexto por
+		omision, dos capas contiguas colisionaban y la de arriba desaparecia.
+	*/
 	v->z = 1.0 / xyz[2];
 
 	/* Sin coordenadas de textura mientras el tipo no diga otra cosa: si no,
@@ -2545,12 +2722,39 @@ int glinit(void)
 	   uno para el volumen opaco y otro para el translucido. */
     SDL_GL_SetAttribute( SDL_GL_STENCIL_SIZE, 8 );
 
+	/*
+		**No se pide SDL_GL_DEPTH_SIZE.** Pedir 24 bits parece lo obvio -- el
+		glOrtho de screeninit() abarca -32768..32768 y aplasta las z de una demo
+		en una franja minima alrededor de 0,5, asi que la precision importa --,
+		pero pedirlo junto con la plantilla y BUFFER_SIZE 32 hace que SDL caiga
+		en otro formato de pixel: pvr-texture_render pasa de 47539 colores a
+		2048. Sin el pedido, el contexto que da igual sirve.
+	*/
+
 	outputscreen = SDL_SetVideoMode(800, 600, 32, SDL_HWSURFACE|SDL_OPENGL|SDL_HWACCEL);
 	
 	if (outputscreen == NULL)
 	{
 		logxmsg(LOG_PVR, "screeninit: outputscreen = NULL!!!!\n");
 		exit(1);
+	}
+
+	/*
+		Que contexto dio SDL de verdad, que no tiene por que ser el que se pidio.
+		Importa sobre todo la profundidad: el glOrtho de screeninit() abarca
+		-32768..32768 y aplasta las z de una demo en una franja minima alrededor
+		de 0,5, asi que con 16 bits dos capas contiguas caen en el mismo valor y
+		la de arriba desaparece -- pvr_rtt_sized pierde asi sus dos marcas.
+	*/
+	if (traza_activa)
+	{
+		int prof = 0, stencil = 0;
+
+		SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &prof);
+		SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &stencil);
+
+		fprintf(stderr, "traza: contexto GL: profundidad %d bits, plantilla %d\n",
+			prof, stencil);
 	}
 
     SDL_WM_SetCaption(titulo_ventana, NULL);

@@ -6,13 +6,14 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **95** binarios |
-| Fallan por algo que falta emular | **12** |
+| Funcionan | **96** binarios |
+| Fallan por algo que falta emular | **11** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
-El 1 de agosto de 2026 pasaron cuatro: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
+El 1 de agosto de 2026 pasaron cinco: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
 `pvr-cheap_shadow` —con los tipos de vértice que faltaban, el rearmado de los parámetros de 64
-bytes y el volumen modificador por plantilla—, y `pvr-pvrline`, que **nunca estuvo roto**.
+bytes y el volumen modificador por plantilla—, `pvr-pvr_rtt_sized` con el render a textura, y
+`pvr-pvrline`, que **nunca estuvo roto**.
 
 El 31 de julio de 2026 pasaron siete de la segunda fila a la primera: `parallax-serpent_dma`
 con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las dos de
@@ -133,11 +134,41 @@ bits. El selector de banco va en el propio texture control word, encima de los b
 demás formatos son «sin usar», «stride» y «scan order»; por eso estas texturas van siempre
 twiddled.
 
-### Otras rutas del PVR (2)
+### Otras rutas del PVR (1)
 
 | demo | qué falta |
 | --- | --- |
-| `pvr-fb_tex`, `pvr-pvr_rtt_sized` | render a textura (`pvr_scene_begin_rtt`). La geometría sí llega y se dibuja; lo que falta es el contenido de la textura |
+| `pvr-fb_tex` | usar el **framebuffer ya rendido** como textura. No es render a textura: la demo apunta una textura a la dirección del front buffer. dcemu manda el 3D a OpenGL y nunca escribe la RAM de vídeo en el camino normal, así que ahí no hay nada que muestrear |
+
+### Render a textura (0)
+
+`pvr-pvr_rtt_sized` funciona desde el 1 de agosto de 2026, y con él se descubrió que
+**`pvr-texture_render` también usa `pvr_scene_begin_rtt`** y hasta ahora «funcionaba» por
+accidente: dcemu ignoraba el destino y mandaba a la pantalla la escena que debía ir a la textura.
+
+Lo que lo marca es **el bit 24 de `FB_W_SOF1`** (`0x005F8060`): KOS escribe `dirección | BIT(24)`.
+El tamaño sale de los registros de recorte (`PCLIP_X`/`PCLIP_Y`, `0x005F8068` y `0x6C`, con el
+máximo en los bits 31-16), el paso entre filas de `FB_W_LINESTRIDE` (`0x005F804C`, en unidades de
+8 bytes) y el formato de `FB_W_CTRL` (`0x005F8048`).
+
+Como dcemu manda el 3D a OpenGL, la escena no pasa por la RAM de vídeo: hay que dibujarla y leerla
+de vuelta con `glReadPixels`. Dos detalles que no son obvios y que hay que acertar:
+
+- el guest entrega los vértices **en coordenadas del destino** —0..128 por 0..64 para esta demo—,
+  así que el viewport y el `glOrtho` tienen que ser los de la textura y no los de la pantalla, o la
+  escena sale minúscula en una esquina;
+- `glReadPixels` entrega de abajo hacia arriba y la textura se guarda de arriba hacia abajo.
+
+**La comprobación es byte a byte, no «se ve parecido»**: volcando la RAM de vídeo en el destino con
+`--volcar` sale `ff ff` en la fila 0 —el borde blanco que la demo dibuja en z=5— y `0c 22` en la
+fila 64, que es `0xFF204060` convertido a RGB565. Y `pvr-texture_render` pasa de 47539 colores a
+2048 justamente porque ahora el contenido hace la ida y vuelta por una textura RGB565.
+
+**Queda un residuo**: `pvr_rtt_sized` dibuja dentro de la textura dos marcas pequeñas, en z=3 y z=4,
+que no aparecen; el fondo (z=1), el rectángulo interior (z=2) y los bordes (z=5) sí. La causa es la
+prueba de profundidad —con `GL_ALWAYS` las marcas salen— pero **no es la precisión**: el contexto ya
+da 24 bits (`--traza-mem` lo reporta) y estrechar el rango del `glOrtho` de la pasada RTT no cambia
+nada. Sin explicación todavía.
 
 ### Volúmenes modificadores (0)
 
