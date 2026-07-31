@@ -149,6 +149,15 @@ which is why **`--salir-tras=N` matters**: it leaves through the same path as cl
 window, so `traza_resumen()` runs. Killing the process from outside takes the disassembly
 and the dump with it.
 
+**`MOV.W @(disp,PC)` and `MOV.L @(disp,PC)` do not resolve their literal the same way,
+and `disasm()` used to treat both as long.** The word form scales `disp` by 2 and does *not*
+align the PC; the long form scales by 4 over `PC & ~3`. Sharing one operand type made the
+disassembler name a literal that was not the one being read — off by an arbitrary amount,
+and plausible-looking, which is the expensive kind of wrong: it is what made the `.cdi` boot
+read as a comparison against `0x1ab0` when the guest was really comparing against `0x3030`.
+They are separate operand types now (`OP_T_AT_DISP_PC_RN_W`), so the two rows in `opcodes[]`
+cannot drift. `MOVA` still prints the raw `disp` rather than resolving it.
+
 **A crash of the emulator reports the guest's state instead of vanishing**
 (`traza_caida_instalar()`, installed first thing in `main()`). A guest that jumps into the
 void executes whatever is there and sooner or later takes dcemu down with it; without this

@@ -23,7 +23,7 @@ extern opcode_f * oplist_pr1_sz1[65536];
 #endif
 extern int idx_NOIMP;
 
-// opcodes con restricción
+// opcodes con restricciï¿½n
 /* extern int idx_FADD;
 extern int idx_FSUB;
 extern int idx_FMUL;
@@ -173,7 +173,7 @@ opcode_log_f OP_T_XMTRX_FVN;
 
 #define OP_T_UNK				0	// ???
 #define OP_T_IMM_RN				1	// #imm, Rn
-#define OP_T_AT_DISP_PC_RN		2	// @(disp, PC), Rn
+#define OP_T_AT_DISP_PC_RN		2	// @(disp, PC), Rn -- forma long: disp*4 sobre el PC alineado
 #define OP_T_RM_RN				3	// Rm, Rn
 #define OP_T_RM_AT_RN			4	// Rm, @Rn
 #define OP_T_AT_RM_RN			5	// @Rm, Rn
@@ -282,5 +282,10 @@ opcode_log_f OP_T_XMTRX_FVN;
 #define OP_T_FVM_FVN			108	// FVm, FVn
 #define OP_T_XMTRX_FVN			109	// XMTRX, FVn
 #define OP_T_AT_RM_PLUS_SGR		110	// @Rm+, SGR
+/* @(disp, PC), Rn en su forma word. No es la misma que OP_T_AT_DISP_PC_RN: el
+   desplazamiento va en unidades de 2 y el PC **no** se alinea a 4. Compartir un
+   solo tipo hacia que disasm() resolviera todo con la formula del long y
+   nombrara un literal que no era, lo que cuesta caro leyendo el boot ROM. */
+#define OP_T_AT_DISP_PC_RN_W	111	// @(disp, PC), Rn -- forma word: disp*2 sobre el PC
 
 #endif // _OPCODES_H_

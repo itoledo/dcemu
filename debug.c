@@ -222,6 +222,8 @@ void disasm(DWORD address, char *buffer)
 		switch(opcodes[op].params) 
 		{
 			LOG_OPCODE2(OP_T_AT_DISP_PC_RN, "@(%lx), R%d", LSB(opcode)*4 + (address & 0xFFFFFFFC) + 4, BYTE2(opcode))
+			/* La forma word va en unidades de 2 y sobre el PC sin alinear. */
+			LOG_OPCODE2(OP_T_AT_DISP_PC_RN_W, "@(%lx), R%d", LSB(opcode)*2 + address + 4, BYTE2(opcode))
 			LOG_OPCODE1(OP_T_AT_RN, "@R%d", BYTE2(opcode))
 			LOG_OPCODE2(OP_T_IMM_RN, "#%x, R%d", LSB(opcode), BYTE2(opcode))
 			LOG_OPCODE2(OP_T_RM_RN, "R%d, R%d", BYTE3(opcode), BYTE2(opcode))

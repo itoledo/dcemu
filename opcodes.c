@@ -33,9 +33,9 @@ opcode_f  * oplist_pr1_sz1[65536];
 struct st_cmd opcodes[] =
 {
 	// Fixed Point Transfer Instructions
-	// página 140
+	// pï¿½gina 140
 	{ 0xE000, 0xF000, "MOV",	OP_T_IMM_RN,			mov0	},			// 1110nnnn iiiiiiii
-	{ 0x9000, 0xF000, "MOV.W",	OP_T_AT_DISP_PC_RN,		movw1	},			// 1001nnnn dddddddd
+	{ 0x9000, 0xF000, "MOV.W",	OP_T_AT_DISP_PC_RN_W,	movw1	},			// 1001nnnn dddddddd
 	{ 0xD000, 0xF000, "MOV.L",	OP_T_AT_DISP_PC_RN,		movl2	},		// 1101nnnn dddddddd
 	{ 0x6003, 0xF00F, "MOV",	OP_T_RM_RN,				mov3	},			// 0110nnnn mmmm0011
 	{ 0x2000, 0xF00F, "MOV.B",	OP_T_RM_AT_RN,			movb4	},		// 0010nnnn mmmm0000
@@ -96,7 +96,7 @@ struct st_cmd opcodes[] =
 	{ 0x3005, 0xF00F, "DMULU.L",OP_T_RM_RN,				dmulul56 },
 	{ 0x4010, 0xF0FF, "DT",		OP_T_RN,				dt }, // 57
 	{ 0x600E, 0xF00F, "EXTS.B",	OP_T_RM_RN,				extsb58 },
-	// página 143
+	// pï¿½gina 143
 	{ 0x600F, 0xF00F, "EXTS.W",	OP_T_RM_RN,				extsw59 },
 	{ 0x600C, 0xF00F, "EXTU.B", OP_T_RM_RN,				extub60 },
 	{ 0x600D, 0xF00F, "EXTU.W", OP_T_RM_RN,				extuw61 },
@@ -111,7 +111,7 @@ struct st_cmd opcodes[] =
 	{ 0x300A, 0xF00F, "SUBC",	OP_T_RM_RN,				subc70 },
 	{ 0x300B, 0xF00F, "SUBV",	OP_T_RM_RN,				subv71	},
 	// Logic Operation Instructions
-	// página 144
+	// pï¿½gina 144
 	{ 0x2009, 0xF00F, "AND",	OP_T_RM_RN,				and72 }, // 72
 	{ 0xC900, 0xFF00, "AND",	OP_T_IMM_R0,			and73 },
 	{ 0xCD00, 0xFF00, "AND.B",	OP_T_IMM_AT_R0_GBR,		andb74	},
@@ -127,7 +127,7 @@ struct st_cmd opcodes[] =
 	{ 0xCA00, 0xFF00, "XOR",	OP_T_IMM_R0,			xor84 },
 	{ 0xCE00, 0xFF00, "XOR.B",	OP_T_IMM_AT_R0_GBR,		xorb85	},
 	// Shift Instructions
-	// página 145
+	// pï¿½gina 145
 	{ 0x4004, 0xF0FF, "ROTL",	OP_T_RN,				rotl86 },
 	{ 0x4005, 0xF0FF, "ROTR",	OP_T_RN,				rotr87 },
 	{ 0x4024, 0xF0FF, "ROTCL",	OP_T_RN,				rotcl88	},
@@ -145,7 +145,7 @@ struct st_cmd opcodes[] =
 	{ 0x4028, 0xF0FF, "SHLL16",	OP_T_RN,				shll16 }, // 100
 	{ 0x4029, 0xF0FF, "SHLR16",	OP_T_RN,				shlr16}, // 101
 	// Branch Instructions
-	// página 146
+	// pï¿½gina 146
 	{ 0x8B00, 0xFF00, "BF",		OP_T_LABEL8,			bf },
 	{ 0x8F00, 0xFF00, "BF/S",	OP_T_LABEL8,			bfs },
 	{ 0x8900, 0xFF00, "BT",		OP_T_LABEL8,			bt104 },
@@ -158,7 +158,7 @@ struct st_cmd opcodes[] =
 	{ 0x400B, 0xF0FF, "JSR",	OP_T_AT_RN,				jsr111 },
 	{ 0x000B, 0xFFFF, "RTS",	OP_T_NA,				rts112 },
 	// System Control Instructions
-	// página 147
+	// pï¿½gina 147
 	{ 0x0028, 0xFFFF, "CLRMAC",	OP_T_NA,				clrmac113 },
 	{ 0x0048, 0xFFFF, "CLRS",	OP_T_NA,				clrs114	},
 	{ 0x0008, 0xFFFF, "CLRT",	OP_T_NA,				clrt115	},
@@ -192,7 +192,7 @@ struct st_cmd opcodes[] =
 	{ 0x00B3, 0xF0FF, "OCBWB",	OP_T_AT_RN,				ocbwb141},
 	{ 0x0083, 0xF0FF, "PREF",	OP_T_AT_RN,				pref142 },
 	{ 0x002B, 0xFFFF, "RTE",	OP_T_NA,				rte143	},
-	// página 148
+	// pï¿½gina 148
 	{ 0x0058, 0xFFFF, "SETS",	OP_T_NA,				sets144	},
 	{ 0x0018, 0xFFFF, "SETT",	OP_T_NA,				sett145 },	// 00000000 00011000
 	{ 0x001B, 0xFFFF, "SLEEP",	OP_T_NA,				sleep116	},
@@ -373,7 +373,7 @@ void checkopcodes()
 	int i, i2, cnt, first;
 	
 	// revisamos la lista de opcodes por repeticiones, para solucionarlas...
-	// queremos eliminar el chequeo de restricciones en el intérprete
+	// queremos eliminar el chequeo de restricciones en el intï¿½rprete
 
 	for (i = 0; i < 65536; i++)
 	{
