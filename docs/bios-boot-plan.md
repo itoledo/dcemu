@@ -1,13 +1,14 @@
 # Plan: arrancar dcemu desde el boot ROM
 
-Estado: **fases 0 a 5 implementadas, hito B alcanzado**. Julio de 2026, sobre `master`. El
+Estado: **fases 0 a 5 implementadas, hitos B y C alcanzados**. Julio de 2026, sobre `master`. El
 inventario de lo que faltaba, y cómo se midió, está en [bios-boot.md](bios-boot.md); este
 documento es el orden de trabajo, y al final está lo que quedó andando y lo que no.
 
-Resumen: **la BIOS arranca**. Llega a su pantalla de fecha y hora, responde al mando, y
-desde el menú principal se entra a Play, File, Music y Settings. Ver
-[Tercera corrida](#tercera-corrida-el-ch2-dma-y-el-mando), que es lo último y lo que lo
-destrabó; las secciones anteriores son la historia de cómo se llegó.
+Resumen: **la BIOS arranca y arranca el juego**. Llega a su pantalla de fecha y hora,
+responde al mando, se entra a Play, File, Music y Settings, y con un `.cdi` montado carga el
+`1ST_READ.BIN` del disco y salta a él sin ayuda de nadie. Ver
+[Cuarta corrida](#cuarta-corrida-el-hito-c-o-cómo-el-rom-arranca-el-juego), que es lo último;
+las secciones anteriores son la historia de cómo se llegó.
 
 ## Objetivo
 
@@ -595,10 +596,14 @@ Con `--bios` y sin imagen:
 O sea, **hito B alcanzado y algo más**: no es la pantalla de «sin disco», es la interfaz
 completa de la consola.
 
-**Hito C: sigue sin verificarse.** Hace falta una imagen que arranque en hardware, y sigue
-en pie lo de [El riesgo real](#el-riesgo-real) y la geometría de GD-ROM. La imagen de prueba
-del repositorio no tiene área de alta densidad: `iso.c` reporta *error al tratar de leer 7
+**Hito C: no en esta corrida.** Hacía falta una imagen que arranque en hardware, y seguía en
+pie lo de [El riesgo real](#el-riesgo-real) y la geometría de GD-ROM. La imagen de prueba del
+repositorio no tiene área de alta densidad: `iso.c` reporta *error al tratar de leer 7
 sectores desde sector 45150*.
+
+*(Alcanzado en la [cuarta corrida](#cuarta-corrida-el-hito-c-o-cómo-el-rom-arranca-el-juego),
+y por un camino que no era éste: el disco no hay que disfrazarlo de GD-ROM, hay que
+presentarlo como el CD que es.)*
 
 ### Herramientas que hicieron falta
 
@@ -626,3 +631,115 @@ Y dos trazas nuevas bajo `--traza-mem`: el CH2 DMA (origen, destino y tamaño) y
   la base de FAD, y arrastraría al hook de syscall que sigue usando la misma geometría.
 - **La fase 6.** Es revisión de `graficos.c` para la animación del logo, y sólo tiene
   sentido cuando el arranque llegue hasta ahí.
+
+## Cuarta corrida: el hito C, o cómo el ROM arranca el juego
+
+**Aquí arranca el juego.** Con `--bios` y el `.cdi` presentado como lo que es —un CD
+selfboot, **sin** `DCEMU_COMO_GD`— el boot ROM 1.01d hace el camino entero: reconoce el
+disco, lee el IP.BIN del principio de la pista de datos, el descriptor de volumen y el
+directorio raíz, encuentra `1ST_READ.BIN`, carga sus 1.468.208 bytes y salta. El PC queda
+dentro del ejecutable, en `0x0C14xxxx`.
+
+Es el mismo sitio al que llega el camino de siempre —sin `--bios`, por los hooks de
+syscall—, así que lo que el juego haga desde ahí es otro problema, y es anterior a esto.
+
+### Dónde decide el ROM
+
+Todo esto se desensambló de la RAM con `--traza-desde`, porque el código del ROM no está en
+`bios.bin` en la misma dirección.
+
+`0x8C000AE0` es la rutina de arranque de alto nivel:
+
+```
+8c000afe: MOV.L @(39, GBR), R0    ; *(0x8C0000E4), el motivo de reinicio
+8c000b00: CMP/EQ #1, R0           ; 1 = "vuelvo de menu(1)" -> al menú
+...
+8c000b3e: MOV.L @(13, GBR), R0    ; *(0x8C00004C), el tipo de disco
+8c000b40: CMP/EQ #20, R0          ; 0x20 = CD-ROM/XA -> rama MIL-CD
+8c000b42: BF     8c000b6c         ;              si no -> rama GD-ROM
+```
+
+La rama MIL-CD (`0x8C000B44`) carga su propio manejador en `0x8CE00000` —un blob que el ROM
+reubica ahí— y le pregunta por las sesiones a través de la syscall de GD-ROM (`0x8C0000BC`,
+comando 35 = `GETSES`). Si le cuadra, pone `*(u8*)0x8C000024 = 2` y sigue al arranque.
+
+`0x8C0004F4` valida la cabecera del IP.BIN —identificador de hardware, de fabricante, y la
+cadena de región contra el índice que trae la flash— y deja el puntero al nombre del
+ejecutable en `GBR+0x9C`.
+
+`0x8C000D40` lee el descriptor de volumen, después el directorio raíz, y recorre los
+registros ISO9660 comparando cada nombre con ése. Cuando encuentra el archivo calcula su FAD
+y su cantidad de sectores y entonces:
+
+```
+8c000ddc: CMP/HS R10, R14         ; R14 = FAD del archivo, R10 = 0x6DDD0
+8c000dde: BT     8c000dee         ;   por encima -> cargar
+8c000de0: MOV.B  @(24, GBR), R0   ; *(0x8C000024)
+8c000de4: CMP/EQ #2, R0
+8c000de6: BT     8c000dee         ;   == 2 -> cargar
+8c000de8: MOV.L  @(8c000e24), R2
+8c000dea: BSRF   R2               ; si no, menu(1): al menú, y no vuelve
+8c000dec: MOV    #1, R4
+```
+
+Esa puerta es la que explica por qué `DCEMU_COMO_GD` no podía funcionar: presentando el
+disco como GD-ROM el ROM toma la otra rama, nadie pone el 2, y el `1ST_READ.BIN` de estas
+conversiones cae por debajo del umbral. El ROM deja la dirección de carga en `0x8C0000F8`
+(`0x8C010000`), el FAD en `0x8C0000F0` y los sectores en `0x8C0000F4`.
+
+### Las cinco de la lectora
+
+Cada una tapaba a la siguiente, y cuatro de las cinco tienen la misma forma que todo lo
+demás en este proyecto: **algo que el guest lee y que dcemu contesta sin querer decir nada**.
+
+1. **La respuesta de `REQ_SES` iba corrida un byte.** El segundo byte está reservado y no
+   estaba, así que el conteo de sesiones caía en `[1]` y el byte alto del FAD en `[2]`. El
+   driver del ROM le devuelve al llamador justamente el byte `[2]`, así que el manejador de
+   MIL-CD leía **5** —el byte alto del lead-out— donde esperaba **2 sesiones**, daba el disco
+   por no arrancable y se iba al menú. Esto tenía cerrada la rama del CD entera.
+2. **`CD_READ` rechazaba todo lo que pasara del FAD 45150 en un disco que no fuera
+   GD-ROM.** El *área* de alta densidad no la tiene un CD, pero los *sectores* sí: un CD de
+   700 MB llega más allá del FAD 358000, y ahí es donde estas conversiones ponen el
+   `1ST_READ.BIN`. El límite ahora es el lead-out, el mismo número que contesta `REQ_SES(0)`.
+3. **El DMA del G2 daba el comando por terminado en la primera ráfaga.** De la segunda en
+   adelante encontraba «sin datos pendientes» y no movía nada, aunque el guest siguiera
+   programando destinos y viendo terminar cada DMA. El bootstrap del IP.BIN trae el
+   ejecutable **cifrado**: 45882 ráfagas de 32 bytes a direcciones dispersas, que es como lo
+   descifra sobre la marcha. Llegaban los primeros 32 bytes y 1,4 MB de basura.
+4. **`SB_GDSTARD` y `SB_GDLEND` (`0x005F74F4`/`0x005F74F8`) no existían.** El driver del ROM
+   lee `SB_GDLEND` para saber cuánto de la lectura ya llegó y lo guarda en su bloque de
+   comando; lo leía del respaldo del bloque de control, o sea memoria sin inicializar, y se
+   la pasaba tal cual al llamador.
+5. **El bit `ABRT` del registro ERROR.** `fallar()` escribía sólo la clave de sentido. El
+   bootstrap termina la carga sin llevarse el relleno del último sector —lee el tamaño del
+   archivo, no los 717 sectores— y cierra con un `NOP` de ATA; el driver lee ERROR, prueba
+   `& 4` y, sin ABRT, da el aborto por no ocurrido y deja el comando en «transfiriendo» para
+   siempre. Ése era el último eslabón:
+
+   ```
+   8c002dc8: CMP/EQ #1, R0        ; ¿CHECK puesto en STATUS?
+   8c002dd4: MOV.B  @(R0, R3), R0 ; lee ERROR
+   8c002dd8: AND    #4, R0        ; el bit ABRT
+   8c002dda: CMP/EQ #4, R0
+   8c002ddc: BT     8c002e08      ; abortado -> cerrar el comando
+   ```
+
+### Herramientas que hicieron falta esta vez
+
+| opción | para qué |
+| --- | --- |
+| `--watchpoint-lectura=D[:T]` | quién **mira** una dirección. Una línea por PC distinto. Encontró en un intento al que evalúa el directorio raíz recién entregado |
+| `--traza-desde=PC[:N[:K]]` | leer una decisión entera: N instrucciones desde PC, con los registros que cambian. `K` salta llegadas, porque el ROM pasa dos veces por el mismo código |
+| `DCEMU_TRAZA_ATA=cmd:N` | lo mismo disparado por la lectora: qué hace el driver del guest con lo que le acaban de contestar |
+
+Y un tope de 4096 informes a las direcciones sin emular: la deduplicación es por dirección,
+y un guest que se va por un puntero suelto recorre millones de direcciones **distintas**. Sin
+tope el log se fue a los gigabytes y la ventana dejó de responder.
+
+### Lo que queda
+
+**El juego arranca pero no dibuja.** Tras el salto, el ejecutable corre —el PC recorre
+`0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
+(`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, así que no
+es del arranque por BIOS: es el primer problema de emulación *del juego*, y es una
+investigación nueva.

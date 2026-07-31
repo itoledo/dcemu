@@ -120,11 +120,14 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--hacks-bios` / `--sin-hacks-bios` | fuerza o desactiva los hooks de syscall |
 | `--captura-gl=ARCHIVO` | vuelca a un BMP lo que OpenGL rasterizó, en cada cuadro |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
+| `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
+| `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
 | `--desensamblar=D:N` | al salir, desensambla `N` instrucciones desde `D`. Repetible |
 | `--volcar=D:N` | al salir, vuelca `N` bytes desde `D` en hexadecimal. Repetible |
 | `--salir-tras=N` | sale solo a los `N` segundos de tiempo **emulado** |
 
-Los cuatro últimos son de diagnóstico y **todos los números van en hexadecimal**.
+Los de diagnóstico son los seis últimos y **todos sus números van en hexadecimal** (salvo
+los segundos de `--salir-tras`).
 
 **`--traza-mem` is the tool for working on the BIOS boot.** It prints each unemulated
 address once with the PC that asked for it, and when the last 96 PCs collapse into 64 or
@@ -135,12 +138,30 @@ through it. See `docs/bios-boot-plan.md`.
 Not every loop it reports is a hang — a `memset` over 600 KB and a wait for vsync both trip
 the same heuristic. Read the disassembly, not the fact that it fired.
 
+It reports each unemulated address once, but the dedup is by address: a guest that runs off
+a stray pointer walks millions of *distinct* ones, so there is a cap of 4096 reports. Without
+it the log went to gigabytes and the window stopped responding.
+
 **`--watchpoint=DIR[:TAM]` is the other tool**: a write watchpoint that reports every
 write touching a given address, with the PC and PR that did it. The hook is in
 `memwrite_fisico()` (`mem.h`) — the one place *every* write goes through, guest and
 internal alike — and the implementation is in `traza.c`. It costs a compare against zero
 per write when off. It is what answers "who writes this variable", which is the question the
 BIOS boot keeps raising; `docs/bios-boot-plan.md` walks through the two cases it solved.
+
+**`--watchpoint-lectura=DIR[:TAM]` is its twin** and answers the other half: who *reads* it.
+It hangs off `memread_fisico()`, and reports once per distinct PC — a string compare passes
+through the same instruction a hundred times. It is what identifies, in one run, the code
+that evaluates something the drive just delivered.
+
+**`--traza-desde=PC[:N[:K]]` is how you read a decision.** It disassembles the N instructions
+after the guest reaches PC — skipping the first K arrivals, because the ROM goes through the
+same code twice, at power-on and after a reset — printing **only the registers that changed**.
+Printing all 16 per instruction is unreadable and does not fit; the changed ones show the data
+flow. The ring says where it ended up spinning; this says how it got there, which is what you
+need to follow a branch in the boot ROM. `traza_arrancar()` arms the same thing from inside
+the emulator, and `gdrom.c` uses it with `DCEMU_TRAZA_ATA=cmd:N` to watch what the guest's
+driver does with what the drive just answered.
 
 **`--desensamblar` and `--volcar` are how you read the boot ROM.** Its code lives in RAM —
 it copies itself there and is *not* at the same address inside `bios.bin` — so the only way
@@ -185,10 +206,15 @@ What was missing for the *animation* was two more, both found by the ROM and by 
 demo: the PVR **background plane** and the true size of the TA's **Polygon Type 1** header
 — see "The background plane" and the `ta.c` note in the graphics pipeline section.
 
-**Hito C (booting a game *through* the BIOS) is one step away: the ROM now accepts the disc
-as a game.** It reaches the menu with *Play*, and pressing it enters the boot screen (it
-clears to `0xBFBFBF`, its own background). What it still does not do is load the executable.
-Three things were needed, and none was the obvious one:
+**Hito C is reached: the boot ROM boots a game off a `.cdi` on its own.** With `--bios` and
+the image presented as what it is — **a selfboot CD, no `DCEMU_COMO_GD`** — the ROM walks the
+whole path: it recognises the disc, reads IP.BIN from the start of the data track, the volume
+descriptor and the root directory, finds `1ST_READ.BIN`, loads all 1,468,208 bytes of it and
+jumps. The PC lands inside the executable, around `0x0C14xxxx`. That is the same place the
+long-standing path reaches (no `--bios`, through the syscall hooks), so **what the game does
+from there is a separate problem and predates this**.
+
+Two things had to be right before the drive fixes below mattered:
 
 - **The `bios.bin` matters, but not the way it first looked.** The one in the repo is
   `KABUTO Ver.1.004 ... 1998` (string at `bios.bin+0x7cc`), from before MIL-CD; with it the
@@ -198,41 +224,62 @@ Three things were needed, and none was the obvious one:
   flash: virgin dumps make the ROM ask for the date on every boot, and **patching the region
   code by hand breaks that partition's checksum**, with the same effect. Let the ROM
   configure the date once instead — dcemu saves the flash and `bios/rtc.txt` on exit.
-- **Present the selfboot as the GD-ROM it came from.** The ROM looks for IP.BIN at **FAD
-  45150**, the high-density area, which a CD does not have. The conversion that works is one
-  of presentation, not of content: the disc type becomes GD-ROM and the data track is
-  *announced* at FAD 45150 (`iso_pista_fad()`, which makes the high-density TOC and the
-  sessions fall out on their own), and only the 17 boot-area reads are translated back to
-  the track's real start (`iso_read_sector()`). **The ISO9660 is left alone** — its LBAs are
-  the original disc's and the ROM uses them as-is to reach the directory and the files.
-  Shifting the whole track looks natural and breaks exactly that; it was tried.
-- With that, the ROM reads in order and correctly: IP.BIN at FAD 45150 (`SEGA SEGAKATANA`),
-  the volume descriptor (`CD001`), the root directory — `GDTEX.PVR`, `1ST_READ.BIN`,
-  `IP.BIN`, `AICADRV.BIN`, `BINC*.AFS` — and all of `GDTEX.PVR`, 133120 of 133120 bytes, the
-  game's logo texture.
+- **Present the disc honestly.** `DCEMU_COMO_GD` announces the data track at FAD 45150 so the
+  disc looks like the GD-ROM it was ripped from; `iso_read_sector()` then translates only the
+  17 boot-area reads back to the track's real start and leaves the ISO9660's own LBAs alone.
+  That got further than nothing while REQ_SES was broken, but it is the **wrong branch**: the
+  ROM takes its GD path, and the file it finds sits below a threshold that path refuses, so
+  it calls `menu(1)` and returns to the menu. **Left alone, the ROM takes the MIL-CD branch**
+  — disc type CD-ROM/XA — which loads its own handler at `0x8CE00000`, enumerates the
+  sessions and boots the last one. That is the branch a real console uses for these discs.
 
-**It never gets to `1ST_READ.BIN`.** After `GDTEX.PVR` it restarts the cycle, and on that
-screen the guest submits **zero strips** — the PVR is not failing to draw the logo, the ROM
-aborts before submitting it. Ruled out by measurement: the TOC copy the IP.BIN carries at
-offset `0x100` (signature `"TOC1"`: data track at FAD 45150 — which matches what is
-answered — `first`/`last` = track **3** and lead-out at FAD **549300**; matching all three
-changed nothing), the flash region (JP/US/EU all tried), the `0x71` authentication command,
-both areas' TOC, the sessions and `SET_MODE`. Not one unemulated address in the whole run.
-The thread left to pull is the routine that issues those `CD_READ`s, which the packets
-report as `PR=8c002c66`. It all lives behind environment variables — `DCEMU_COMO_GD`,
-`DCEMU_PULSAR_A`, `DCEMU_SOLO_A`, `DCEMU_LEADOUT`, `DCEMU_VER_SECTOR` — because it changes
-what the drive says about the disc. See `docs/demos-kos.md`.
+**Where the ROM decides, and what it looks at.** All of it disassembled out of RAM with
+`--traza-desde`, because the ROM's code is not at the same address inside `bios.bin`:
 
-**The drive used to serve the high-density area on a disc that has none.** A CD has nothing
-above FAD 45150, and the drive rejects the request; `iso_read_sector()` instead returned
-whatever sat at that offset of the file — on a large image a real sector, just from
-somewhere else — so the ROM got garbage rather than an error. `cmd_cd_read()` now fails
-with `ILLEGAL REQUEST` / `0x21` when `!iso_es_gdrom()`, and it shows: the ROM stops retrying
-the whole probe five times, asks for the error with `13 REQ_ERROR`, and moves on to
-enumerating sessions.
+- `0x8C000AE0` is the top-level boot routine. `*(u32*)0x8C0000E4` is the reboot reason (1 =
+  "came back from `menu(1)`", which is what sends it to the menu). `*(u32*)0x8C00004C` is the
+  disc type: `0x20` picks the MIL-CD branch at `0x8C000B44`, anything else the GD branch at
+  `0x8C000B6C`.
+- `0x8C0004F4` validates the IP.BIN header — hardware ID, maker ID, the region string against
+  the flash's region index — and leaves the boot filename pointer at `GBR+0x9C`.
+  `*(u8*)0x8C000024` is bit 0 of the hex digit at IP.BIN offset `0x3E`.
+- `0x8C000D40` reads the volume descriptor, then the root directory, and walks the ISO9660
+  records comparing each name against that filename. On a match it computes the FAD and the
+  sector count and, **unless `fad >= 0x6DDD0` or `*(u8*)0x8C000024 == 2`, calls `menu(1)`** —
+  and `== 2` is exactly what the MIL-CD branch sets. That is the gate the GD presentation
+  cannot pass.
+- The ROM leaves the load address at `0x8C0000F8` (`0x8C010000`), the FAD at `0x8C0000F0` and
+  the sector count at `0x8C0000F4`.
 
-Note dcemu boots these games fine **without** `--bios` — it loads `ip.bin` and
-`1st_read.bin` from the image directly. Only the ROM-evaluated path is blocked.
+**Five things in the drive were wrong, and each hid the next.** They are worth listing
+because four of the five are the same shape as everything else in this project — something
+the guest reads that dcemu answers without meaning it:
+
+- **`REQ_SES`'s answer was shifted one byte.** Its second byte is reserved and was missing, so
+  the session count landed in `[1]` and the FAD's high byte in `[2]`. The ROM's driver hands
+  the caller precisely byte `[2]`, so the MIL-CD handler read **5** — the lead-out's high
+  byte — where it wanted **2 sessions**, and gave up. This is what kept the whole CD branch
+  shut.
+- **`CD_READ` rejected everything above FAD 45150 on a non-GD-ROM.** A CD has no high-density
+  *area*, but it does have those *sectors*: a 700 MB CD reaches past FAD 358000, and that is
+  where these conversions put `1ST_READ.BIN`. The limit is the lead-out now, the same number
+  `REQ_SES(0)` reports.
+- **The G2 DMA ended the command on its first burst.** From the second on it found "nothing
+  pending" and moved nothing, while the guest kept programming destinations and watching the
+  DMA finish. The IP.BIN bootstrap brings the executable in **scrambled**, as 45882 bursts of
+  32 bytes to scattered addresses — that is how it descrambles it on the fly — so only the
+  first 32 bytes arrived and the other 1.4 MB was garbage.
+- **`SB_GDSTARD` and `SB_GDLEND` (`0x005F74F4`/`0x005F74F8`) did not exist.** The ROM's driver
+  reads `SB_GDLEND` to know how much of the read has landed and stores it in its command
+  block; it was reading the control block's backing store, i.e. uninitialised memory.
+- **The `ABRT` bit of the ERROR register.** `fallar()` wrote only the sense key. The bootstrap
+  ends the load without taking the last sector's padding — it reads the file's length, not the
+  717 sectors — and closes with an ATA `NOP`; the driver reads ERROR, tests `& 4` and, with no
+  ABRT, treats the abort as not having happened and leaves the command "transferring" forever.
+
+Note dcemu also boots these games **without** `--bios` — it loads `ip.bin` and
+`1st_read.bin` from the image directly, and with a `.cdi` that path issues no SPI packet at
+all: everything goes through the syscall hooks. Both paths now reach the same place.
 
 `--traza-mem` prints the PC and PR of every SPI packet, what each `REQ_SES` answered, and
 the disc format the drive settled on.
@@ -898,6 +945,24 @@ The register map and command codes are checked against two independent sources �
 kernel's GD-ROM driver and reicast's core. Data goes out either as chained DRQ blocks
 through the data register or through the G2 DMA (`SB_GDSTAR`/`SB_GDST`), depending on bit 0
 of FEATURES at the time of the `PACKET` command.
+
+Three details of that block cost a boot each, and all three are the sort of thing that reads
+as working:
+
+- **`REQ_SES`'s response has a reserved second byte.** `[0]` status, `[1]` zero, `[2]` the
+  session count (session 0) or the session's first track, `[3..5]` the FAD. Leaving out `[1]`
+  shifts everything and the count is read as the FAD's high byte.
+- **A DMA read can take many bursts.** `disparar_dma()` moves `SB_GDLEN` bytes and raises the
+  DMA-end event on each, but the *command* only ends when the data runs out. The IP.BIN
+  bootstrap pulls a 1.4 MB executable in 32-byte pieces, so ending the command on the first
+  burst loses all but 32 bytes — silently, because the guest still sees each DMA finish.
+- **The ERROR register is not just the sense key.** Bit 2 is `ABRT`, and that is the bit the
+  ROM's driver tests to decide whether a command was aborted. `GD_ERR_*` in `gdrom.h`.
+
+`SB_GDSTARD` and `SB_GDLEND` (`0x005F74F4`/`0x005F74F8`) are the DMA's counters: where it is
+and how much of *the command* it has moved. The ROM's driver keeps `SB_GDLEND` in its command
+block as "how much has landed", so leaving them to the control block's backing store feeds it
+uninitialised memory.
 
 ### Input
 
