@@ -31,6 +31,7 @@
 #include "iso.h"
 #include "opciones.h"
 #include "traza.h"
+#include "tmu.h"			/* reloj_ms(), para fechar los comandos */
 
 struct gdrom_t gdrom;
 
@@ -302,7 +303,17 @@ static void fallar(BYTE clave, BYTE asc, BYTE ascq)
 	sentido_asc   = asc;
 	sentido_ascq  = ascq;
 
-	gdrom.error       = (BYTE) (clave << 4);
+	/*
+		El registro ERROR no es solo la clave de sentido: el bit 2 es **ABRT**,
+		"comando abortado", y hay quien mira ese bit y no la clave. El driver de
+		GD-ROM del boot ROM es uno: cuando el bootstrap del IP.BIN termina de
+		cargar el ejecutable deja sin leer el relleno del ultimo sector y cierra
+		la lectura con un NOP de ATA; el driver lee ERROR, prueba `& 4` y, sin
+		ABRT, da el aborto por no ocurrido y deja el comando en "transfiriendo"
+		para siempre. Ahi se quedaba el arranque de un juego por el boot ROM.
+	*/
+	gdrom.error       = (BYTE) ((clave << 4) |
+		((clave == GD_SENTIDO_ABORTADO) ? GD_ERR_ABRT : 0));
 	gdrom.estado      = GD_ST_DRDY | GD_ST_DSC | GD_ST_CHECK;
 	gdrom.razon       = GD_IR_COD | GD_IR_IO;
 	gdrom.paquete_pos = -1;
@@ -455,6 +466,24 @@ static void cmd_req_error(const BYTE * p)
 	entregar(sentido, (int) sizeof(sentido), 0, p[4]);
 }
 
+/*
+	REQ_SES: informacion de una sesion. La respuesta son seis bytes y el
+	**segundo esta reservado**:
+
+	  [0] estado de la unidad (bits 3-0)
+	  [1] 0
+	  [2] sesion 0: cuantas sesiones tiene el disco
+	      sesion N: numero de su primera pista
+	  [3] FAD, byte alto
+	  [4] FAD
+	  [5] FAD, byte bajo
+
+	Aqui faltaba el byte reservado, asi que todo iba corrido uno: el conteo
+	caia en [1] y el byte alto del FAD en [2]. El driver de la ROM devuelve al
+	llamador justamente el byte [2], asi que el manejador de MIL-CD leia 5
+	--el byte alto del lead-out-- donde esperaba 2 sesiones, concluia que el
+	disco no arrancaba y se iba al menu. Ver docs/bios-boot-plan.md.
+*/
 static void cmd_req_ses(const BYTE * p)
 {
 	BYTE	ses[6];
@@ -477,7 +506,7 @@ static void cmd_req_ses(const BYTE * p)
 		/* Sesion 0: cuantas sesiones hay y donde termina la ultima. */
 		int ultima = iso_num_pistas() - 1;
 
-		ses[1] = (BYTE) iso_num_sesiones();
+		ses[2] = (BYTE) iso_num_sesiones();
 		fad = (DWORD) (iso_pista_fad(ultima) + iso_pista_sectores(ultima));
 	}
 	else
@@ -497,19 +526,19 @@ static void cmd_req_ses(const BYTE * p)
 			return;
 		}
 
-		ses[1] = (BYTE) iso_sesion_primera_pista((int) p[2]);
+		ses[2] = (BYTE) iso_sesion_primera_pista((int) p[2]);
 		fad = (DWORD) iso_sesion_fad((int) p[2]);
 	}
 
-	ses[2] = (BYTE) ((fad >> 16) & 0xFF);
-	ses[3] = (BYTE) ((fad >>  8) & 0xFF);
-	ses[4] = (BYTE) ( fad        & 0xFF);
+	ses[3] = (BYTE) ((fad >> 16) & 0xFF);
+	ses[4] = (BYTE) ((fad >>  8) & 0xFF);
+	ses[5] = (BYTE) ( fad        & 0xFF);
 
 	/* Con esto se ve lo que el boot ROM se lleva de cada sesion, que es con lo
 	   que decide si el disco arranca o si abre el reproductor de musica. */
 	if (traza_activa)
 		fprintf(stderr, "gdrom: REQ_SES(%d) -> estado %d, %s %d, fad %lu\n",
-			p[2], ses[0], p[2] ? "primera pista" : "sesiones", ses[1],
+			p[2], ses[0], p[2] ? "primera pista" : "sesiones", ses[2],
 			(unsigned long) fad);
 
 	entregar(ses, (int) sizeof(ses), 0, p[4]);
@@ -549,27 +578,36 @@ static void cmd_cd_read(const BYTE * p)
 	logmsg("gdrom: CD_READ fad %d, %d sectores\n", fad, sectores);
 
 	/*
-		El area de alta densidad solo existe en un GD-ROM: en un CD no hay nada
-		por encima del FAD 45150 y la lectora rechaza la peticion. Sin esto,
+		Fuera del disco la lectora falla, y hay que decirlo: sin esto
 		iso_read_sector() servia lo que hubiera en esa posicion del archivo
 		--que en una imagen grande es un sector real, solo que de otro sitio--
 		y el boot ROM se llevaba basura en vez de un error.
 
-		Importa para el arranque: el ROM prueba el area de alta densidad antes
-		que nada y usa el fallo para descartarla. Recibiendo datos daba el disco
-		por GD-ROM, encontraba que no cuadraban, reintentaba la busqueda entera
-		cinco veces y terminaba abriendo el reproductor de CD sin haber mirado
-		nunca la pista de datos del CD.
+		El limite es el lead-out, o sea donde termina la ultima pista, que es lo
+		mismo que contesta REQ_SES(0). Antes esto rechazaba **todo** lo que
+		pasara del FAD 45150 en un disco que no fuera GD-ROM, con el argumento
+		de que un CD no tiene area de alta densidad. El area no la tiene, pero
+		los sectores si: un CD de 700 MB llega al FAD 358000 largo, y ahi es
+		donde estas conversiones ponen el 1ST_READ.BIN. Con aquel corte el boot
+		ROM encontraba el ejecutable, pedia sus 717 sectores y se llevaba un
+		error.
 	*/
-	if (!iso_es_gdrom() && fad >= GD_FAD_ALTA_DENSIDAD)
 	{
-		if (traza_activa)
-			fprintf(stderr, "gdrom: CD_READ fad %d rechazado: el disco no "
-				"tiene area de alta densidad\n", fad);
+		int ultima = iso_num_pistas() - 1;
+		int fin    = (ultima >= 0)
+			? iso_pista_fad(ultima) + iso_pista_sectores(ultima)
+			: 0;
 
-		/* 0x21: direccion de bloque fuera de rango. */
-		fallar(GD_SENTIDO_ILEGAL, 0x21, 0x00);
-		return;
+		if (fin > 0 && fad + sectores > fin)
+		{
+			if (traza_activa)
+				fprintf(stderr, "gdrom: CD_READ fad %d x%d rechazado: el disco "
+					"termina en el FAD %d\n", fad, sectores, fin);
+
+			/* 0x21: direccion de bloque fuera de rango. */
+			fallar(GD_SENTIDO_ILEGAL, 0x21, 0x00);
+			return;
+		}
 	}
 
 	if (iso_read_sector((char *) gdrom.datos, fad, sectores) < 0)
@@ -795,7 +833,19 @@ static void ejecutar_paquete(void)
 static void ejecutar_ata(BYTE comando)
 {
 	if (traza_activa)
-		fprintf(stderr, "gdrom: comando ATA %02x\n", comando);
+		fprintf(stderr, "gdrom: comando ATA %02x, %llu ms\n",
+			comando, (unsigned long long) reloj_ms());
+
+	/* DCEMU_TRAZA_ATA=cmd:N traza N instrucciones desde este comando: es como
+	   se mira que hace el driver del guest con lo que le contesta la lectora. */
+	if (traza_activa && getenv("DCEMU_TRAZA_ATA"))
+	{
+		const char *	v = getenv("DCEMU_TRAZA_ATA");
+		const char *	coma = strchr(v, ':');
+
+		if ((BYTE) strtol(v, NULL, 16) == comando && coma)
+			traza_arrancar(strtol(coma + 1, NULL, 0));
+	}
 
 	switch (comando)
 	{
@@ -834,6 +884,8 @@ static void ejecutar_ata(BYTE comando)
 			break;
 
 		case ATA_NOP:
+			/* Segun ATA, NOP se aborta siempre. Es como el driver de la ROM
+			   cierra una lectura de la que no se llevo el ultimo sector. */
 			fallar(GD_SENTIDO_ABORTADO, 0, 0);
 			break;
 
@@ -901,6 +953,22 @@ static void escribir_datos(DWORD valor, size_t size)
 /* DMA del G2                                                               */
 /* ------------------------------------------------------------------------ */
 
+/*
+	Una rafaga del DMA del G2: el host programa destino y largo y escribe 1 en
+	SB_GDST.
+
+	**Una lectura puede necesitar muchas rafagas.** Esto daba el comando por
+	terminado en la primera, asi que de la segunda en adelante encontraba
+	`esperando_dma` en cero y no movia nada -- aunque el guest siguiera
+	programando destinos y viendo el DMA "terminar". El que lo delata es el
+	arranque de un juego desde el boot ROM: el bootstrap del IP.BIN trae el
+	1ST_READ.BIN **desordenado**, en 45888 rafagas de 32 bytes a direcciones
+	dispersas (asi lo descifra sobre la marcha), y solo la primera llegaba: en
+	memoria quedaban 32 bytes buenos y 1,4 MB de basura.
+
+	El comando termina cuando se agotan los datos, no cuando termina una
+	rafaga.
+*/
 static void disparar_dma(void)
 {
 	/* SB_GDSTAR lleva una direccion fisica alineada a 32 bytes. Se usa tal
@@ -932,12 +1000,23 @@ static void disparar_dma(void)
 		gdrom.datos_pos += largo;
 	}
 
+	/* Los contadores: SB_GDSTARD es por donde va y SB_GDLEND cuanto lleva
+	   movido **de este comando**, no de esta rafaga. Es lo que mira el driver
+	   de la ROM para saber si la lectura ya llego entera. */
+	gdrom.dma_stard = destino + (DWORD) largo;
+	gdrom.dma_lend  = (DWORD) gdrom.datos_pos;
+
+	/* La rafaga termino. */
 	gdrom.dma_st = 0;
-	gdrom.esperando_dma = 0;
 
 	intc_add(ASIC_EVT_GDROM_DMA, 0);
 
-	fin_comando();
+	/* Y el comando, solo si ya no queda nada por entregar. */
+	if (gdrom.datos_pos >= gdrom.datos_tam)
+	{
+		gdrom.esperando_dma = 0;
+		fin_comando();
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -956,6 +1035,8 @@ static const char * nombre_registro(unsigned long fisica)
 			case GDROM_DMA_DIR:		return "SB_GDDIR";
 			case GDROM_DMA_EN:		return "SB_GDEN";
 			case GDROM_DMA_ST:		return "SB_GDST";
+			case GDROM_DMA_STARD:	return "SB_GDSTARD";
+			case GDROM_DMA_LEND:	return "SB_GDLEND";
 			default:				return "dma?";
 		}
 	}
@@ -1003,6 +1084,8 @@ static DWORD registro_leer(unsigned long fisica, size_t size)
 			case GDROM_DMA_DIR:		return gdrom.dma_dir;
 			case GDROM_DMA_EN:		return gdrom.dma_en;
 			case GDROM_DMA_ST:		return gdrom.dma_st;
+			case GDROM_DMA_STARD:	return gdrom.dma_stard;
+			case GDROM_DMA_LEND:	return gdrom.dma_lend;
 
 			default:
 				/* El resto del bloque son los registros de temporizacion del
@@ -1147,7 +1230,8 @@ void gdrom_read(unsigned long direccion, void * p, size_t size)
 	DWORD			valor = registro_leer(fisica, size);
 
 	if (traza_activa && vale_la_pena_trazar(fisica, 0))
-		fprintf(stderr, "gdrom: lee %-18s = %08x\n", nombre_registro(fisica), valor);
+		fprintf(stderr, "gdrom: lee %-18s (%06lx) = %08x\n",
+			nombre_registro(fisica), fisica, valor);
 
 	switch (size)
 	{
@@ -1172,7 +1256,8 @@ void gdrom_write(unsigned long direccion, void * p, size_t size)
 	}
 
 	if (traza_activa && vale_la_pena_trazar(fisica, 1))
-		fprintf(stderr, "gdrom: graba %-18s = %08x\n", nombre_registro(fisica), valor);
+		fprintf(stderr, "gdrom: graba %-18s (%06lx) = %08x\n",
+			nombre_registro(fisica), fisica, valor);
 
 	registro_escribir(fisica, valor, size);
 }

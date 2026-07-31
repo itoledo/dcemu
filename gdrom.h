@@ -67,6 +67,13 @@
 #define GDROM_DMA_EN		0x14	/* SB_GDEN */
 #define GDROM_DMA_ST		0x18	/* SB_GDST, disparo y estado */
 
+/* Los dos contadores del DMA: por donde va y cuanto lleva movido. El driver de
+   GD-ROM del boot ROM lee SB_GDLEND para saber cuanto de la lectura ya llego, y
+   sin el se queda esperando para siempre -- lo leia del respaldo del bloque de
+   control, o sea basura sin inicializar. */
+#define GDROM_DMA_STARD		0xF4	/* SB_GDSTARD, direccion actual */
+#define GDROM_DMA_LEND		0xF8	/* SB_GDLEND, bytes transferidos */
+
 /* ------------------------------------------------------------------------ */
 /* Bits del registro de estado (ATA)                                        */
 /* ------------------------------------------------------------------------ */
@@ -78,6 +85,13 @@
 #define GD_ST_DF			0x20
 #define GD_ST_DRDY			0x40	/* acepta comandos */
 #define GD_ST_BSY			0x80
+
+/* Registro ERROR: la clave de sentido en los bits 7-4 y estas banderas abajo.
+   ABRT es la que mira el driver de la ROM para saber si un comando se aborto. */
+#define GD_ERR_ILI			0x01	/* largo incorrecto */
+#define GD_ERR_EOMF			0x02	/* fin del medio */
+#define GD_ERR_ABRT			0x04	/* comando abortado */
+#define GD_ERR_MCR			0x08	/* cambio de medio pedido */
 
 /* Razon de interrupcion. */
 #define GD_IR_COD			0x01	/* 1: comando/estado, 0: datos */
@@ -176,6 +190,8 @@ struct gdrom_t
 	DWORD	dma_dir;
 	DWORD	dma_en;
 	DWORD	dma_st;
+	DWORD	dma_stard;		/* SB_GDSTARD: por donde va */
+	DWORD	dma_lend;		/* SB_GDLEND: cuanto lleva de este comando */
 };
 
 extern struct gdrom_t gdrom;
