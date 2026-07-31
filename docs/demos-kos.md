@@ -6,14 +6,14 @@ base de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **96** binarios |
-| Fallan por algo que falta emular | **11** |
+| Funcionan | **97** binarios |
+| Fallan por algo que falta emular | **10** |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
-El 1 de agosto de 2026 pasaron cinco: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
+El 1 de agosto de 2026 pasaron seis: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
 `pvr-cheap_shadow` —con los tipos de vértice que faltaban, el rearmado de los parámetros de 64
-bytes y el volumen modificador por plantilla—, `pvr-pvr_rtt_sized` con el render a textura, y
-`pvr-pvrline`, que **nunca estuvo roto**.
+bytes y el volumen modificador por plantilla—, `pvr-pvr_rtt_sized` con el render a textura,
+`pvr-bumpmap` con los sprites y el modo de textura, y `pvr-pvrline`, que **nunca estuvo roto**.
 
 El 31 de julio de 2026 pasaron siete de la segunda fila a la primera: `parallax-serpent_dma`
 con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las dos de
@@ -101,16 +101,33 @@ dos mitades antes de despachar.
 Nota: **esto no arregló el `attempt to submit to unopened list` de `tunnel`**, que era la sospecha.
 Sigue apareciendo miles de veces por corrida aunque la demo dibuje bien.
 
-### Formatos de textura del PVR (1)
+### Formatos de textura del PVR (0)
 
-`taPolyModifier()` en `graficos.c` despacha el `pixelformat` de la palabra de control de textura,
-y para este caso llama a la macro `CTT()`, que deja formato, componentes y empaquetado
-sin definir. Hay que decodificarlo a algo que GL entienda, igual que se hace con ARGB1555,
-RGB565, ARGB4444, YUV422 y los dos indexados.
+**`pvr-bumpmap` funciona desde el 1 de agosto de 2026**, y para llegar ahí hicieron falta cuatro
+cosas, de las que el formato BUMP era la menos importante:
 
-| demo | qué falta |
-| --- | --- |
-| `pvr-bumpmap` | formato BUMP |
+1. **Sprites.** La demo dibuja con `pvr_sprite_txr_t`, y dcemu no dibujaba sprites: `taSprite()` era
+   un stub que solo logueaba. Un sprite es un rectángulo entero en un parámetro de 64 bytes —
+   cuatro esquinas de las que la última se deduce completando el paralelogramo, D = A − B + C— y su
+   color va **en el encabezado**, no en los vértices. Cuidado con la palabra 12: entre `Dy` y las UV
+   hay una sin usar, así que las tres de textura son la 13, la 14 y la 15. Leerlas una antes deja la
+   `u` en cero para las cuatro esquinas y la textura se muestrea sobre una línea.
+2. **El modo de textura.** No se emulaba, o sea que todo salía con el `GL_MODULATE` de fábrica.
+   La demo usa `PVR_TXRENV_DECAL`, que **vale 2 y no 0** —0 es replace—, y con el color de vértice
+   en negro que trae el sprite, multiplicar da negro. Es lo que dejaba la pantalla vacía.
+3. **El modo de profundidad de la lista punch-through**, que estaba fijo en `GL_LEQUAL`. El buffer
+   se limpia a 0,0 y las z de una escena caen alrededor de 0,5, así que «menor o igual» falla contra
+   cualquier píxel sin tocar: la pared de ladrillos no ponía un solo píxel. Usa el modo de su propia
+   palabra ISP, como la lista opaca; lo que distingue al punch-through es que descarta por alfa.
+4. **El formato BUMP.** Un texel no es un color: son dos ángulos de 8 bits, la elevación S arriba y
+   la rotación R abajo, y el chip los combina por píxel con cuatro parámetros que vienen en el color
+   de offset —K1, K2, K3 y Q— según `I = K1 + K2·sin(S) + K3·cos(S)·cos(R − Q)`.
+
+**Lo que el punto 4 no hace**: en el chip esa intensidad *modula* al polígono texturado que viene
+detrás, y eso es matemática por fragmento que OpenGL de función fija no tiene. `decodificar_bump()`
+la resuelve al subir la textura y la deja como un gris. Es exacto mientras los parámetros salgan del
+encabezado —que es el caso de un sprite— y lo que se pierde es la combinación con la otra capa; en
+esta demo la aproxima el propio blend multiplicativo (`GL_DST_COLOR`/`GL_ZERO`) que ella programa.
 
 Las otras seis se resolvieron el 31 de julio de 2026. Las tres de paleta por lo que se cuenta
 más abajo; `pvr-yuv_converter-YUV420` y `-YUV422` porque faltaba el convertidor YUV del TA
@@ -301,7 +318,16 @@ unitarias.
 | --- | --- |
 | `basic-breaking` | `Breakpoint Test: FAILURE`. Necesita el UBC, el controlador de breakpoints por hardware |
 | `basic-dma-speedtest` | el serial se corta después del escaneo del maple: se traba antes de medir |
-| — | `tunnel` y otras siguen logueando `pvr_prim: attempt to submit to unopened list` en cantidad, aunque dibujen bien. Ver `CLAUDE.md` |
+
+**El `pvr_prim: attempt to submit to unopened list` no es de dcemu**, y esta tabla lo daba por tal.
+Es estado del guest de punta a punta: `pvr_list_begin()` pone `pvr_state.list_reg_open`,
+`pvr_list_finish()` lo limpia y `pvr_prim()` avisa cuando está en `PVR_LIST_NONE`; el emulador no
+tiene forma de tocarlo. Dos medidas lo zanjan: de 31 demos con serial guardado **solo `tunnel`** lo
+emite —278674 veces en 8 segundos— y nunca aparece el aviso hermano
+`pvr_list_begin: attempt to open already closed list`, o sea que se está enviando sin ninguna lista
+abierta. `tunnel` es la demo de KGL que se restauró y portó aquí, y su propio fuente documenta el
+cambio de API que lo provoca: la KGL actual abre la lista de forma perezosa según el estado de GL y
+no tiene `glKosFinishList`.
 
 `basic-fpu-exc` estaba en esta lista con `TEST FAILED!` y ya no: solo pedía los campos
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.

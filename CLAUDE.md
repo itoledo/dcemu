@@ -223,12 +223,39 @@ To separate "GL never got the image" from "the grab is black", `DibujarFramebuff
 `glReadPixels` four points of the back buffer under `--traza-mem` (every 300th frame) and
 prints them next to the bytes it read out of video RAM.
 
+### Sprites and the texture environment
+
+**A sprite is a whole rectangle in one 64-byte parameter** — four corners of which the last is
+derived by completing the parallelogram, D = A − B + C — and its colour lives **in the header**
+(word 4), not in the vertices. `taSprite()` reuses `taPolyModifier()` because words 1-3 mean the
+same thing, then picks up the base and offset colours. `vertice_sprite()` emits A, B, D, C, which
+as a triangle strip gives (A,B,D) and (B,D,C), i.e. the rectangle. Watch word 12: there is an
+unused word between `Dy` and the UVs, so the three texture words are 13, 14 and 15 — reading them
+one early leaves `u` at zero for all four corners and the texture is sampled along a line.
+
+**The texture environment was never emulated**, so everything got GL's default `GL_MODULATE`. The
+chip has four modes in TSP bits 7-6: 0 replace, 1 modulate, **2 decal**, 3 modulate-alpha. Decal is
+2, not 0 — mixing them up sends a surface whose vertex colour is black through modulate and it comes
+out black, which is what kept `pvr-bumpmap` blank.
+
+**Punch-through had `GL_LEQUAL` hardcoded.** The depth buffer is cleared to 0.0 and a scene's z
+values land around 0.5, so "less or equal" fails against any untouched pixel — the list could
+essentially never draw. It uses the compare mode from its own ISP word, like the opaque list; what
+distinguishes punch-through on the chip is that it discards on alpha.
+
 ### Texture formats
 
 `taPolyModifier()` maps the texture control word's `pixelformat` onto a GL format triple;
 `get_texture()` untwiddles and uploads. ARGB1555, RGB565, ARGB4444, YUV422 and the two
-palette formats are handled, and VQ and stride have their own paths. Only BUMP still falls
-through `CTT()`, which leaves the triple at -1.
+palette formats are handled, and VQ and stride have their own paths.
+
+**BUMP texels are not a colour**: they are two 8-bit angles, elevation S in the high byte and
+rotation R in the low one, which the chip combines per pixel with four parameters carried in the
+polygon's offset colour — K1, K2, K3 and Q — as `I = K1 + K2·sin(S) + K3·cos(S)·cos(R − Q)`. On the
+chip that intensity then *modulates* the textured polygon behind it, which is per-fragment maths
+fixed-function GL does not have. `decodificar_bump()` resolves it at upload time and hands GL a
+grey. That is exact as long as the parameters come from the header — true for a sprite, where the
+offset colour lives there — and what is lost is the combination with the other layer.
 
 **`glTexParameteri` applies to whatever texture is bound, and the filters used to be set
 before `glBindTexture`.** So they landed on the *previous* frame's texture and the new one
@@ -449,10 +476,18 @@ field is useless and `pvr_registering` is the only source. `--traza-mem` now pri
 state machine (`TA_ALLOC_CTRL`, `TA_LIST_INIT`, each end of list, `STARTRENDER`) and the GL state
 each strip goes out with, which is how both bugs above were found.
 
-Still open: KOS logs `pvr_prim: attempt to submit to unopened list` thousands of times per run in
-some demos. The obvious suspect was the 64-byte parameter whose second half decoded as an
-end-of-list — see `ta.c` below — but fixing that did **not** silence it, so the cause is
-elsewhere. Also note `pvr_registered` is `DWORD` in `graficos.c` but `extern int` in `intc.c`.
+**`pvr_prim: attempt to submit to unopened list` is not a dcemu bug** — it was listed as one here
+for a while. It is guest state end to end: `pvr_list_begin()` sets `pvr_state.list_reg_open`,
+`pvr_list_finish()` clears it, and `pvr_prim()` warns when it is `PVR_LIST_NONE`. Nothing the
+emulator does can set it. Two measurements settle it: of 31 demos with serial logs only `tunnel`
+emits it (278674 times in 8 s), and it never emits the companion `pvr_list_begin: attempt to open
+already closed list` — so the guest is submitting with no list open at all. `tunnel` is the KGL
+demo that was restored and ported here, and its own source documents the API change that causes it
+(current KGL opens the list lazily from the GL state and has no `glKosFinishList`). The suspect
+before that was the 64-byte parameter whose second half decoded as an end-of-list — see `ta.c` —
+but fixing that changed nothing, which is what prompted actually measuring it.
+
+Note `pvr_registered` is `DWORD` in `graficos.c` but `extern int` in `intc.c`.
 
 **`--traza-mem` reports TA activity** for the first three renders: strips, vertices,
 end-of-strip count, vertex types, and the min/max of the vertex coordinates. The TA receives

@@ -158,6 +158,16 @@ typedef struct TriangleStripInfo
 
 		/* 1 si los texels son YUV422 y hay que convertirlos a RGB al subirlos. */
 		DWORD pvr_texture_yuv;
+
+		/* 1 si son BUMP -- dos angulos por texel en vez de un color -- y el
+		   color de offset que trae K1, K2, K3 y Q para resolverlos. */
+		DWORD pvr_texture_bump;
+		DWORD pvr_texture_bump_param;
+
+		/* Instruccion de sombreado de la palabra TSP, bits 7-6: como se combina
+		   el texel con el color del vertice. 0 decal, 1 modulate, 2 decal alpha,
+		   3 modulate alpha. */
+		DWORD pvr_texture_env;
 	}texture;
 	DWORD index;
 

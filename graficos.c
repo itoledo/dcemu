@@ -130,6 +130,10 @@ static DWORD	vol_instruccion = 0;
 /* El bit Shadow del ultimo encabezado de poligono. */
 static int		poly_sombra = 0;
 
+/* El color base del ultimo encabezado de sprite: en un sprite el color viene
+   en el encabezado y no en los vertices. */
+static DWORD	sprite_color = 0xFFFFFFFF;
+
 /*
 	Modo de sombra barata: el volumen no cambia el juego de parametros, escala
 	la intensidad. FPU_SHAD_SCALE (0x005F8074) trae el factor en los bits 7-0 y
@@ -508,6 +512,70 @@ static BYTE recortar(int v)
 }
 
 /*
+	Textura BUMP -> RGBA8888 en escala de grises.
+
+	Un texel de bump no es un color: son **dos angulos** de 8 bits, la elevacion
+	S en la mitad alta y la rotacion R en la baja. La intensidad la calcula el
+	chip por pixel combinandolos con cuatro parametros que vienen en el color de
+	offset del poligono -- K1, K2, K3 y Q, un byte cada uno:
+
+	    I = K1 + K2 * sin(S) + K3 * cos(S) * cos(R - Q)
+
+	S recorre 0..pi/2, R y Q recorren 0..2*pi, y K1..K3 son 0..1.
+
+	**Lo que esto NO hace**: en el chip esa intensidad *modula* al poligono
+	texturado que viene detras, y eso es matematica por fragmento que OpenGL de
+	funcion fija no tiene. Aca la intensidad se resuelve al subir la textura y
+	sale como un gris. Es exacto mientras los parametros sean del encabezado --
+	que es el caso de un sprite, donde el color de offset esta ahi -- y lo que
+	se pierde es la combinacion con la otra capa.
+*/
+static DWORD * decodificar_bump(const Uint16 * origen, int usize, int vsize,
+								int twiddled, DWORD parametros)
+{
+	/* M_PI no es estandar y MSVC no la define sin _USE_MATH_DEFINES. */
+	static const double PI = 3.14159265358979323846;
+
+	DWORD *	destino = (DWORD *) malloc((size_t) usize * vsize * sizeof(DWORD));
+	double	k1 = ((parametros >> 24) & 0xFF) / 255.0;
+	double	k2 = ((parametros >> 16) & 0xFF) / 255.0;
+	double	k3 = ((parametros >> 8)  & 0xFF) / 255.0;
+	double	q  = ((parametros >> 0)  & 0xFF) / 255.0 * 2.0 * PI;
+	int		i, j, min, mask;
+
+	if (destino == NULL)
+		return NULL;
+
+	min = MIN(usize, vsize);
+	mask = min - 1;
+
+	for (i = 0; i < vsize; i++)
+	{
+		for (j = 0; j < usize; j++)
+		{
+			int		pos = twiddled
+						? (TWIDOUT(j & mask, i & mask) + (j / min + i / min) * min * min)
+						: (i * usize + j);
+			Uint16	texel = origen[pos];
+			double	s = ((texel >> 8) & 0xFF) / 255.0 * (PI / 2.0);
+			double	r = ((texel >> 0) & 0xFF) / 255.0 * 2.0 * PI;
+			double	intensidad;
+			BYTE	g;
+
+			intensidad = k1 + k2 * sin(s) + k3 * cos(s) * cos(r - q);
+
+			g = recortar((int) (intensidad * 255.0));
+
+			/* GL_RGBA con bytes: R en el byte 0. Gris opaco. */
+			destino[i * usize + j] =
+				((DWORD) 0xFF << 24) | ((DWORD) g << 16) | ((DWORD) g << 8) | g;
+		}
+	}
+
+	return destino;
+}
+
+/*
 	Textura YUV422 -> RGBA8888. Cada 32 bits son dos pixeles que comparten
 	croma: U, Y0, V, Y1. La matriz es BT.601 en rango completo, que es la que
 	usa el PVR -- Y no se escala, asi que un Y de 0 sale negro y uno de 255
@@ -622,6 +690,15 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	v = (Uint16 *) get_memory_pointer(memorypos | 0xA5000000);
 
 	// ahora al twiddle
+	if (TriangleStrip[strip].texture.pvr_texture_bump)
+	{
+		cached_textures[cur_tex_count].data =
+			decodificar_bump((const Uint16 *) v, usize, vsize, twiddled,
+				TriangleStrip[strip].texture.pvr_texture_bump_param);
+
+		cached_textures[cur_tex_count].twiddled = true;
+	}
+	else
 	if (bpp != 0)
 	{
 		cached_textures[cur_tex_count].data =
@@ -1059,14 +1136,23 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 					(int) TriangleStrip[t].texture.pvr_texture_bpp,
 					(int) TriangleStrip[t].texture.pvr_texture_stride);
 
-				/* Con que coordenadas de textura se muestrea. */
+				/* Las esquinas y con que coordenadas de textura se muestrean.
+				   Los cuatro vertices y no solo el primero: un cuadrilatero mal
+				   armado -- un sprite, por ejemplo -- se ve aca y no en el v0. */
 				{
-					DWORD ix = TriangleStrip[t].index;
-					fprintf(stderr, "traza:     v0=(%.1f,%.1f,%g) uv=(%.3f,%.3f) rgba=(%.2f,%.2f,%.2f,%.2f)\n",
-						VertexBuffer[ix].x, VertexBuffer[ix].y, VertexBuffer[ix].z,
-						VertexBuffer[ix].t1, VertexBuffer[ix].t2,
-						VertexBuffer[ix].r, VertexBuffer[ix].g,
-						VertexBuffer[ix].b, VertexBuffer[ix].a);
+					DWORD k;
+
+					for (k = 0; k < TriangleStrip[t].count && k < 4; k++)
+					{
+						DWORD ix = TriangleStrip[t].index + k;
+
+						fprintf(stderr, "traza:     v%d=(%.1f,%.1f,%g) uv=(%.3f,%.3f) rgba=(%.2f,%.2f,%.2f,%.2f)\n",
+							(int) k,
+							VertexBuffer[ix].x, VertexBuffer[ix].y, VertexBuffer[ix].z,
+							VertexBuffer[ix].t1, VertexBuffer[ix].t2,
+							VertexBuffer[ix].r, VertexBuffer[ix].g,
+							VertexBuffer[ix].b, VertexBuffer[ix].a);
+					}
 				}
 			}
 
@@ -1191,6 +1277,32 @@ static void dibujar_escena(void)
 			if(TriangleStrip[i].texture.surface)
 			{
 				glEnable(GL_TEXTURE_2D);
+
+				/*
+					Los cuatro modos del chip, con su equivalente en GL:
+
+					  0 replace  px = ARGB(tex)                        -> REPLACE
+					  1 modulate px = A(tex) + RGB(col)*RGB(tex)       -> MODULATE
+					  2 decal    px = RGB(tex)*A(tex) + RGB(col)*(1-A) -> DECAL
+					  3 modulate alpha  px = ARGB(col)*ARGB(tex)       -> MODULATE
+
+					Decal es el 2, no el 0: confundirlos manda a modulate una
+					superficie cuyo color de vertice es negro y sale toda negra.
+				*/
+				switch (TriangleStrip[i].texture.pvr_texture_env)
+				{
+					case 0:
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+					break;
+
+					case 2:
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+					break;
+
+					default:
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+					break;
+				}
 
 				/* Los filtros los pone get_texture(), **despues** de ligar la
 				   textura: glTexParameteri afecta a la que este ligada en ese
@@ -1537,16 +1649,25 @@ void objectListSet()
 }
 
 /*
-	Encabezado de sprite. El PVR dibuja rectangulos con un parametro propio --
-	cuatro esquinas de las que la ultima se deduce -- en vez de dos triangulos.
-	No esta implementado; lo que si esta es reconocerlo, porque de eso depende
-	que sus vertices de 64 bytes se junten bien y no se despache la segunda
-	mitad como si fuera otro parametro.
+	Encabezado de sprite.
+
+	Un sprite es un rectangulo que el PVR dibuja con un parametro propio en vez
+	de con dos triangulos. Su encabezado tiene el mismo formato que el de un
+	poligono en las palabras 1 a 3 -- ISP/TSP, TSP y control de textura --, asi
+	que todo eso lo hace taPolyModifier(); lo que cambia es que **el color va
+	aqui y no en los vertices**, en las palabras 4 (base) y 5 (offset).
 */
 void taSprite()
 {
-	logxmsg(LOG_PVR, "pcw: Sprite\n");
-	logxmsg(LOG_PVR, "pcw: NO IMPLEMENTADO\n");
+	taPolyModifier();
+
+	sprite_color = ta_address_pointer[4];
+
+	/* El color de offset de un sprite tambien va en el encabezado, y es de donde
+	   salen los cuatro parametros del bump mapping. */
+	TriangleStrip[strip_count].texture.pvr_texture_bump_param = ta_address_pointer[5];
+
+	logxmsg(LOG_PVR, "pcw: Sprite, color %08x\n", (unsigned) sprite_color);
 }
 
 void taPolyModifier()
@@ -1665,10 +1786,18 @@ void taPolyModifier()
 		if (TA.registers.pcw_list_type == 2) // transparent polygon
 			TriangleStrip[strip_count].depthmode = GL_GEQUAL;
 		else
-		if (TA.registers.pcw_list_type == 4) // punch-through polygon
-			TriangleStrip[strip_count].depthmode = GL_LEQUAL;
-		else
 		{
+			/*
+				El punch-through tenia GL_LEQUAL fijo, y eso no lo deja dibujar
+				casi nunca: el buffer de profundidad se limpia a 0,0 y las z de
+				una escena caen alrededor de 0,5, asi que "menor o igual" falla
+				contra cualquier pixel que no se haya tocado. pvr-bumpmap manda
+				su pared de ladrillos por esa lista y no salia ni un pixel.
+
+				El punch-through usa el modo de comparacion de su propia palabra
+				ISP, igual que la lista opaca; lo que lo distingue en el chip es
+				que descarta por alfa, no que cambie la prueba de profundidad.
+			*/
 			TriangleStrip[strip_count].depthmode = depth_modes[RendCtrl.registers.depthmode];
 		}
 		
@@ -1715,6 +1844,7 @@ void taPolyModifier()
 		TriangleStrip[strip_count].texture.pvr_texture_bpp = 0;
 		TriangleStrip[strip_count].texture.pvr_texture_paleta = 0;
 		TriangleStrip[strip_count].texture.pvr_texture_yuv = 0;
+		TriangleStrip[strip_count].texture.pvr_texture_bump = 0;
 
 		switch (TexInfo.registers.pixelformat)
 		{
@@ -1756,7 +1886,18 @@ void taPolyModifier()
 			pvr_texture_pixelconvert = NULL;
 			break;
 
-			case 4: logxmsg(LOG_PVR, "texture: BUMP\n");	CTT();	break;
+			/*
+				BUMP: los texels son dos angulos, no un color. Se resuelven a
+				gris al subir la textura; ver decodificar_bump().
+			*/
+			case 4:
+			logxmsg(LOG_PVR, "texture: BUMP\n");
+			TriangleStrip[strip_count].texture.pvr_texture_bump = 1;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelformat = GL_RGBA;
+			TriangleStrip[strip_count].texture.pvr_texture_pixelpack = GL_UNSIGNED_BYTE;
+			TriangleStrip[strip_count].texture.pvr_texture_components = 4;
+			pvr_texture_pixelconvert = NULL;
+			break;
 
 			/*
 				Texturas indexadas. El selector de banco esta metido en el mismo
@@ -1825,6 +1966,15 @@ void taPolyModifier()
 			logxmsg(LOG_PVR, "texture: no stride\n");
 	
 		TriangleStrip[strip_count].texture.filtermode = (ta_address_pointer[2] >> 13) & 0x3;
+
+		/*
+			Como se combina el texel con el color del vertice. No se emulaba, o
+			sea que quedaba el GL_MODULATE de fabrica para todo -- y en decal el
+			texel *reemplaza* al color. Una superficie con color de vertice
+			negro, que en decal se ve, multiplicando salia negra: es lo que
+			dejaba invisible al sprite del mapa de relieve de pvr-bumpmap.
+		*/
+		TriangleStrip[strip_count].texture.pvr_texture_env = (ta_address_pointer[2] >> 6) & 0x3;
 
 		TriangleStrip[strip_count].texture.pvr_texture_size_usize = 0x8 <<  ((ta_address_pointer[2] >> 3) & 0x7);
 
@@ -1991,6 +2141,90 @@ static void juego1_copiar(vertex * v, int sombra)
 static int tipo_de_dos_volumenes(int t)
 {
 	return (t >= 9 && t <= 14);
+}
+
+/*
+	Un sprite: el rectangulo entero en un solo parametro de 64 bytes.
+
+	  +0x04 Ax Ay Az   +0x10 Bx By Bz   +0x1C Cx Cy Cz   +0x28 Dx Dy
+	  +0x30 sin usar   +0x34 AU/AV      +0x38 BU/BV      +0x3C CU/CV
+
+	**Ojo con la palabra 12**: entre Dy y las UV hay una sin usar, asi que las
+	tres de textura son la 13, la 14 y la 15. Leerlas una antes deja la u en
+	cero para las cuatro esquinas y la textura sale muestreada sobre una linea.
+
+	De la cuarta esquina solo vienen x e y: z y las UV salen de completar el
+	paralelogramo, D = A - B + C, que es lo que hace el chip. Las UV son de 16
+	bits, empaquetadas dos por palabra.
+
+	El color no esta en el vertice sino en el encabezado, y es el mismo para las
+	cuatro esquinas.
+*/
+static void vertice_sprite(int con_textura)
+{
+	float		p[11];		/* Ax..Cz y Dx, Dy */
+	float		u[4], v[4];
+	float		x[4], y[4], z[4];
+	int			k;
+
+	memcpy(p, &ta_address_pointer[1], sizeof(float) * 11);
+
+	for (k = 0; k < 3; k++)
+	{
+		x[k] = p[k * 3 + 0];
+		y[k] = p[k * 3 + 1];
+		z[k] = p[k * 3 + 2];
+	}
+
+	x[3] = p[9];
+	y[3] = p[10];
+	z[3] = z[0] - z[1] + z[2];
+
+	for (k = 0; k < 4; k++)
+	{
+		u[k] = 0.0f;
+		v[k] = 0.0f;
+	}
+
+	if (con_textura)
+	{
+		for (k = 0; k < 3; k++)
+		{
+			DWORD w = ta_address_pointer[13 + k];
+			DWORD hu = w & 0xFFFF0000;
+			DWORD hv = w << 16;
+
+			memcpy(&u[k], &hu, sizeof(float));
+			memcpy(&v[k], &hv, sizeof(float));
+		}
+
+		u[3] = u[0] - u[1] + u[2];
+		v[3] = v[0] - v[1] + v[2];
+	}
+
+	/* A, B, D, C: una tira con esos cuatro da (A,B,D) y (B,D,C). */
+	{
+		static const int orden[4] = { 0, 1, 3, 2 };
+
+		for (k = 0; k < 4; k++)
+		{
+			int		s = orden[k];
+			vertex * ve;
+
+			total_polygon_count++;
+
+			ve = &VertexBuffer[total_polygon_count];
+
+			ve->x = x[s];
+			ve->y = y[s];
+			ve->z = 1.0 / z[s];
+			ve->t1 = u[s];
+			ve->t2 = v[s];
+
+			vertice_color(ve, sprite_color);
+			juego1_copiar(ve, poly_sombra);
+		}
+	}
 }
 
 /*
@@ -2197,6 +2431,23 @@ void taVertexHandler()
 			juego1_intensidad(v, ta_address_pointer[10]);
 		}
 		break;
+
+		/*
+			Los dos de sprite. Un solo parametro trae el rectangulo entero:
+			cuatro esquinas A, B, C y D en orden alrededor, con las UV de las
+			tres primeras cuando lleva textura.
+
+			De D solo vienen x e y; el chip deduce z y las UV completando el
+			paralelogramo, que es lo que hace `d_de()`. El color no esta aqui
+			sino en el encabezado.
+
+			Se emiten en el orden A, B, D, C porque una tira de triangulos con
+			esos cuatro da (A,B,D) y (B,D,C), o sea el rectangulo completo.
+		*/
+		case TA_VERTICE_SPRITE0:
+		case TA_VERTICE_SPRITE1:
+			vertice_sprite(vertex_parameter == TA_VERTICE_SPRITE1);
+			break;
 
 		/*
 			Un vertice de volumen modificador trae un triangulo entero -- tres
