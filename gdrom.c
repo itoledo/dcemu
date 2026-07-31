@@ -104,11 +104,21 @@ void gdrom_iniciar(int bandeja)
 		juego trae el area de alta densidad que empieza en el FAD 45150, y ese
 		si es un GD-ROM -- decirlo importa, porque el boot ROM decide con esto
 		si el disco es arrancable o si le abre el reproductor de CD.
+
+		Y un selfboot -- la conversion a CD con que circulan los juegos: sesion
+		de audio mas sesion de datos en modo 2 -- se graba como **CD-ROM XA**,
+		que es el unico formato de CD desde el que el boot ROM acepta arrancar
+		(el hueco MIL-CD). Reportarlo como CD-ROM plano manda el disco al
+		reproductor de musica aunque las sesiones esten bien contestadas.
 	*/
 	if (!hay_disco())
 		gdrom.formato = GD_DISCO_CDDA;
 	else
-		gdrom.formato = iso_es_gdrom() ? GD_DISCO_GDROM : GD_DISCO_CDROM;
+	if (iso_es_gdrom())
+		gdrom.formato = GD_DISCO_GDROM;
+	else
+		gdrom.formato = (iso_num_sesiones() > 1) ? GD_DISCO_CDROM_XA
+												 : GD_DISCO_CDROM;
 
 	sentido_clave = GD_SENTIDO_OK;
 	sentido_asc   = 0;
@@ -400,40 +410,40 @@ static void cmd_req_ses(const BYTE * p)
 	ses[0] = (BYTE) (gdrom.unidad & 0x0F);
 
 	/*
-		Un GD-ROM tiene dos sesiones: la de densidad simple y la de alta, que
-		empieza en el FAD 45150 y es donde esta el juego. Antes esto contestaba
-		siempre "una sesion", asi que el boot ROM no encontraba nunca la del
-		juego.
+		Cuantas sesiones tiene el disco y donde empieza cada una lo decide
+		iso.c: dos en un GD-ROM (densidad simple y alta) y dos en un selfboot
+		(audio y datos, el truco MIL-CD de las conversiones a CD). Antes esto
+		contestaba "una sesion" para todo lo que no fuera GD-ROM, y el boot
+		ROM, viendo un disco de una sesion cuya primera pista es audio,
+		concluia CD de musica y abria el reproductor.
 	*/
 	if (p[2] == 0)
 	{
 		/* Sesion 0: cuantas sesiones hay y donde termina la ultima. */
 		int ultima = iso_num_pistas() - 1;
 
-		ses[1] = (BYTE) (iso_es_gdrom() ? 2 : 1);
+		ses[1] = (BYTE) iso_num_sesiones();
 		fad = (DWORD) (iso_pista_fad(ultima) + iso_pista_sectores(ultima));
 	}
 	else
-	if (p[2] == 1 || !iso_es_gdrom())
 	{
-		/* La primera sesion empieza donde la primera pista. */
-		ses[1] = 1;
-		fad = (DWORD) iso_pista_fad(0);
-	}
-	else
-	{
-		/* La segunda: la primera pista del area de alta densidad. */
-		int i, cual = iso_num_pistas() - 1;
+		/*
+			Una sesion concreta: el numero de su primera pista y su FAD de
+			inicio, que es lo que el boot ROM usa para ir a buscarla.
 
-		for (i = 0; i < iso_num_pistas(); i++)
-			if (iso_pista_fad(i) >= GD_FAD_ALTA_DENSIDAD)
-			{
-				cual = i;
-				break;
-			}
+			Pedir una que el disco no tiene es un error, y contestar datos en
+			vez de fallar rompe la evaluacion del disco: el boot ROM camina
+			las sesiones 1, 2, 3... esperando el CHECK CONDITION que le dice
+			donde terminan.
+		*/
+		if ((int) p[2] > iso_num_sesiones())
+		{
+			fallar(GD_SENTIDO_ILEGAL, 0x24, 0x00);	/* campo invalido en el CDB */
+			return;
+		}
 
-		ses[1] = 1;
-		fad = (DWORD) iso_pista_fad(cual);
+		ses[1] = (BYTE) iso_sesion_primera_pista((int) p[2]);
+		fad = (DWORD) iso_sesion_fad((int) p[2]);
 	}
 
 	ses[2] = (BYTE) ((fad >> 16) & 0xFF);

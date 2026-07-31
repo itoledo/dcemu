@@ -157,6 +157,24 @@ int iso_pista_es_datos(int i)
 	return (i == 0);
 }
 
+/* Una sola pista de datos: una sesion, que empieza donde ella. */
+int iso_num_sesiones(void)
+{
+	return 1;
+}
+
+int iso_sesion_fad(int n)
+{
+	(void) n;
+	return DOBLE_LBA;
+}
+
+int iso_sesion_primera_pista(int n)
+{
+	(void) n;
+	return 1;
+}
+
 /* Patron reproducible: el byte i del sector s vale (s * 7 + i) & 0xFF. Deja
    verificar en la prueba que se leyo el sector pedido y no otro. */
 int iso_read_sector(char * target, int secstart, int secnum)

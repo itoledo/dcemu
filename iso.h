@@ -19,6 +19,9 @@ int iso_num_pistas(void);
 int iso_pista_fad(int i);
 int iso_pista_sectores(int i);
 int iso_pista_es_datos(int i);
+int iso_num_sesiones(void);
+int iso_sesion_fad(int n);
+int iso_sesion_primera_pista(int n);
 
 /* Sectores que ocupa el disco: la TOC lo necesita para el lead-out. */
 int iso_num_sectores();

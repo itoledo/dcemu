@@ -253,6 +253,70 @@ int iso_pista_es_datos(int i)
 	return iso_cdi.pistas[i].modo != 0;
 }
 
+/*
+	Sesiones. El .cdi no guarda a que sesion pertenece cada pista, pero la
+	frontera se puede inferir: en un disco de arranque directo ("selfboot",
+	el truco MIL-CD con que circulan las conversiones a CD) la sesion 1 es
+	audio y la 2 empieza en la primera pista de datos que viene despues de
+	una de audio. En un GD-ROM la segunda es el area de alta densidad. Todo
+	lo demas -- un .iso plano, un CD con una sola pista de datos -- es una
+	sola sesion.
+
+	El boot ROM decide con esto: pide las sesiones y arranca la ultima; si
+	la respuesta dice "una sesion" y la primera pista es audio, lo que ve es
+	un CD de musica y abre el reproductor.
+*/
+
+/* La primera pista de la segunda sesion, o -1 si el disco tiene una sola. */
+static int iso_pista_segunda_sesion(void)
+{
+	int i, audio_visto = 0;
+
+	if (formato_imagen != FORMATO_CDI)
+		return -1;
+
+	for (i = 0; i < iso_cdi.n; i++)
+	{
+		if (iso_es_gdrom() && iso_pista_fad(i) >= 45150)
+			return i;
+
+		if (!iso_pista_es_datos(i))
+			audio_visto = 1;
+		else
+		if (audio_visto)
+			return i;
+	}
+
+	return -1;
+}
+
+int iso_num_sesiones(void)
+{
+	return (iso_pista_segunda_sesion() >= 0) ? 2 : 1;
+}
+
+/* Donde empieza la sesion `n` (1 o 2), en FAD. */
+int iso_sesion_fad(int n)
+{
+	int segunda = iso_pista_segunda_sesion();
+
+	if (n >= 2 && segunda >= 0)
+		return iso_pista_fad(segunda);
+
+	return iso_pista_fad(0);
+}
+
+/* El numero (desde 1) de la primera pista de la sesion `n`. */
+int iso_sesion_primera_pista(int n)
+{
+	int segunda = iso_pista_segunda_sesion();
+
+	if (n >= 2 && segunda >= 0)
+		return segunda + 1;
+
+	return 1;
+}
+
 int iso_num_sectores()
 {
 	switch(formato_imagen)
