@@ -385,6 +385,44 @@ geometría enviada sin lista abierta; la FPU del núcleo está validada aparte (
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
 Ver `docs/sh4-conformidad.md`.
 
+## Arrancar un juego por el boot ROM (hito C): dónde está trabado
+
+Medido el 31 de julio de 2026 con `Crazy Taxi - DCRES.cdi`, un *selfboot*
+(conversión a CD: sesión de audio + sesión de datos en modo 2).
+
+**Sin `--bios` el juego corre**: dcemu lee `ip.bin` y `1st_read.bin` de la
+imagen y arranca directo. Lo que no funciona es dejar que el boot ROM evalúe
+el disco y lo arranque él.
+
+Lo que hace el ROM, con `--traza-mem` (que ahora imprime el PC y el PR de cada
+paquete SPI, y el formato que decidió la lectora):
+
+```
+00 TEST_UNIT · 11 REQ_MODE · 70 · 71 · 14 GET_TOC(densidad simple) · 15 REQ_SES(0)
+30 CD_READ fad 45150 ×7 · fad 45157 ×9 · fad 45166 ×1     ← 17 sectores = IP.BIN
+(repite la secuencia 5 veces, y termina sondeando el subcódigo: reproductor de CD)
+```
+
+**El ROM lee el área de arranque de un GD-ROM (FAD 45150) y nunca toca la pista
+de datos del CD (FAD 11852)**, aunque la lectora reporte correctamente CD-ROM XA,
+dos sesiones y dos pistas. Ahí lee basura —el sector es real, LBA 45000 cae dentro
+de este disco de 346490 sectores— y se rinde.
+
+Dos cosas quedaron descartadas por medición, no por razonamiento:
+
+- **No es el comando de seguridad 0x71.** Hacerlo fallar con CHECK CONDITION
+  cuando el disco no es GD-ROM no cambia nada: el ROM sigue leyendo 45150.
+- **No es el TOC ni las sesiones.** Pide el TOC de densidad simple (`14 00`), que
+  se le contesta con las dos pistas reales, y `REQ_SES(0)`, que se le contesta
+  dos sesiones. Aun así toma el camino GD.
+
+Lo que sí se localizó: la constante 45150 vive en la RAM en `0x8c0e2d40` —la copia
+del ROM es identidad, `bios.bin+0x2c44` ↔ `0x8c002c44`— dentro de la rutina que
+empieza en `0x8c0e2ce8`, y ahí es una **guarda**: `CMP/GE 45150` sobre la dirección
+pedida y error `0xf3` si es menor. O sea que es la rutina de lectura del área de
+alta densidad, no donde se elige leerla. **Quien decide sigue estando más arriba, y
+es lo que falta encontrar.**
+
 ## Lo que no aplica (28)
 
 Fallan porque piden algo que dcemu no emula, así que fallar es el comportamiento correcto y no

@@ -125,6 +125,12 @@ void gdrom_iniciar(int bandeja)
 	sentido_ascq  = 0;
 
 	logmsg("gdrom: unidad en estado %d, formato %d\n", gdrom.unidad, gdrom.formato);
+
+	if (traza_activa)
+		fprintf(stderr, "gdrom: estado_disco: unidad=%d formato=%d "
+			"(gdrom=%d sesiones=%d pistas=%d)\n",
+			gdrom.unidad, gdrom.formato, iso_es_gdrom(),
+			iso_num_sesiones(), iso_num_pistas());
 }
 
 /* ------------------------------------------------------------------------ */
@@ -517,10 +523,13 @@ static void ejecutar_paquete(void)
 		p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11]);
 
 	/* Con --traza-mem los paquetes salen por stderr: sin esto no hay forma de
-	   saber si el boot ROM llego a hablarle a la lectora. */
+	   saber si el boot ROM llego a hablarle a la lectora. El PC y el PR dicen
+	   desde donde se mando, que es la punta del hilo para desensamblar al que
+	   toma las decisiones -- asi se investigo la evaluacion de discos. */
 	if (traza_activa)
-		fprintf(stderr, "gdrom: paquete %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-			p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11]);
+		fprintf(stderr, "gdrom: paquete %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x  (PC=%08lx PR=%08lx)\n",
+			p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11],
+			(unsigned long) PC, (unsigned long) PR);
 
 	/* Casi todo necesita disco. Los que no: pedir estado, pedir el error,
 	   pedir el modo y abrir la bandeja. */
