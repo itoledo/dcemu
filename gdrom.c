@@ -563,13 +563,41 @@ static void cmd_req_ses(const BYTE * p)
 	entregar(ses, (int) sizeof(ses), 0, p[4]);
 }
 
+/*
+	En el cable, cada entrada de la TOC va con **el byte de control primero** y
+	el FAD detras en big-endian, como el resto de las respuestas SPI:
+
+	  byte 0: control en los bits 7-4, addr en los 3-0
+	  bytes 1-3: FAD, byte alto primero
+
+	`struct TOC` la guarda al reves --control en los bits 31-28 y FAD en los
+	23-0-- porque asi la quiere el que la recibe: el driver de GD-ROM de la ROM
+	da vuelta cada palabra antes de entregarsela a su llamador, y es en ese
+	formato en el que KOS la lee (`TOC_CTRL`, `TOC_LBA`). El hook de syscall se
+	salta al driver y por eso usa la estructura tal cual; por el cable hay que
+	invertir, o el guest lee el FAD donde espera el control.
+
+	Se notaba: el manejador de MIL-CD del boot ROM mira si la primera pista es
+	de datos y lo leia del byte equivocado, asi que rechazaba discos buenos.
+*/
+static DWORD toc_al_cable(DWORD v)
+{
+	return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8)
+		 | ((v & 0x00FF0000u) >>  8) | ((v & 0xFF000000u) >> 24);
+}
+
 static void cmd_get_toc(const BYTE * p)
 {
 	struct TOC	toc;
+	DWORD *		palabras = (DWORD *) &toc;
 	int			largo = (p[3] << 8) | p[4];
+	size_t		i;
 
 	/* El bit 0 del segundo byte elige el area: 0 densidad simple, 1 alta. */
 	gdrom_construir_toc_area(&toc, p[1] & 1);
+
+	for (i = 0; i < sizeof(toc) / sizeof(DWORD); i++)
+		palabras[i] = toc_al_cable(palabras[i]);
 
 	entregar(&toc, (int) sizeof(toc), 0, largo);
 }
