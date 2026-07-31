@@ -7,11 +7,14 @@ OpenGL y sin imagen de disco. Cada caso arma una instruccion, la ejecuta como
 lo hace `main_loop()` y compara el estado resultante contra lo que dice el
 manual del SH-4.
 
-Ademas de los opcodes hay dos suites que no son del nucleo, `sistema` y
-`gdrom`: son las piezas del arranque por BIOS que resultaron ser logica pura
-sobre registros. Ver "Mas alla de los opcodes" al final.
+Ademas de los opcodes hay suites que no son del nucleo: `sistema` y `gdrom`
+(las piezas del arranque por BIOS que resultaron ser logica pura sobre
+registros), `ta`, `mmu`, `wdt`, `tmu`, `vram` (las dos ventanas de la RAM de
+video del PVR, `vram.h`) y `ubc` (los breakpoints por hardware, `ubc.h`,
+manejados como los maneja el driver de KOS). Ver "Mas alla de los opcodes" al
+final.
 
-Estado actual: **516 casos, todos en verde**, sobre **239 filas implementadas
+Estado actual: **543 casos, todos en verde**, sobre **239 filas implementadas
 de `opcodes[]`, todas ejercitadas y sin desviaciones pendientes**.
 
 ## Compilar y correr
@@ -262,6 +265,8 @@ no son filas de `opcodes[]` --, asi que van con el prefijo `dc.` en CTest.
 | `sistema` | `test_sistema.c` | el handshake de PDTRA/PCTRA, la sintesis de una flash minima y la cuenta de segundos desde 1950 del RTC |
 | `gdrom` | `test_gdrom.c` | la maquina de estados de la lectora: fases del comando PACKET, los comandos SPI del arranque, la TOC, la lectura de sectores por PIO y por DMA, y el estado con y sin disco |
 | `ta` | `test_ta.c` | el formato de los parametros del tile accelerator: la tabla que cruza textura, tipo de color, volumen y ancho de UV para dar el tipo de parametro global y el de vertice, los tamanos de cada uno, y el rearmado de los que miden 64 bytes |
+| `vram` | `test_vram.c` | las dos ventanas de la RAM de video del PVR (`vram.h`): la conversion entre numeraciones ida y vuelta, el caso medido de `pvr-fb_tex`, el reparto de a 4 bytes entre bancos y los accesos desalineados |
+| `ubc` | `test_ubc.c` | los breakpoints por hardware (`ubc.h`), manejados con las secuencias del driver de KOS: instruccion antes y despues de ejecutar, operando con mascara de direccion, dato con mascara y tamano, el modo secuencial y la espera con SR.BL |
 
 La suite `ta` cubre una clase de error que no deja rastro. Un parametro de 64
 bytes llega en **dos** bloques de 32, uno por store queue, y despachar cada uno

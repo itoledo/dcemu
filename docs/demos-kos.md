@@ -1,27 +1,33 @@
 # Estado de las demos de KallistiOS
 
-Estado medido el **30 de julio de 2026** y **vuelto a medir entero el 1 de agosto**, sobre los 135
-binarios compilados desde `kos/examples/dreamcast` más `demos/roto`. Este documento es la línea base
-de regresión: si un cambio rompe algo, aquí está lo que funcionaba.
-
-La segunda medición no fue por gusto: el 1 de agosto se corrigió el sentido de la profundidad, que
-afecta a **toda** demo con geometría superpuesta, así que la línea base heredada dejaba de valer.
-Confirmó el inventario salvo en un punto, `tsunami-genmenu`, que está anotado más abajo.
+Estado medido el **30 de julio de 2026** y **vuelto a medir entero el 31 de julio** (dos
+veces: tras corregir el sentido de la profundidad, y tras las ventanas de VRAM, el DMTE, el
+UBC, el plano de fondo y el POLY1), sobre los 135 binarios compilados desde
+`kos/examples/dreamcast` más `demos/roto`. Este documento es la línea base de regresión: si
+un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **97** binarios |
-| Fallan por algo que falta emular | **10** |
+| Funcionan | **100** binarios |
+| Fallan por algo que falta emular | **7** (todas de sonido: el AICA) |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
-**De las diez que fallan, solo una es del PVR** —`pvr-fb_tex`, y por las dos ventanas de la RAM de
-vídeo, no por el rasterizado—. Las otras nueve son siete de sonido, que piden el AICA, y dos del
-SH-4: `basic-breaking` (UBC) y `basic-dma-speedtest`.
+**Ya no falla nada del PVR ni del SH-4.** El 31 de julio pasaron las tres que quedaban
+fuera del sonido: `pvr-fb_tex` (las dos ventanas de la RAM de vídeo más el volcado del
+framebuffer y el signo de la profundidad), `basic-dma-speedtest` (la interrupción DMTE del
+DMAC y el `DMAOR` que deja el boot ROM) y `basic-breaking` (el UBC completo; su quinto
+grupo falla por el binario — ver la sección SH-4). Además el arranque por `--bios` muestra
+la animación del remolino completa, que trajo el plano de fondo del PVR y el tamaño real
+del encabezado Polygon Type 1 del TA.
 
-El 1 de agosto de 2026 pasaron seis: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
-`pvr-cheap_shadow` —con los tipos de vértice que faltaban, el rearmado de los parámetros de 64
-bytes y el volumen modificador por plantilla—, `pvr-pvr_rtt_sized` con el render a textura,
-`pvr-bumpmap` con los sprites y el modo de textura, y `pvr-pvrline`, que **nunca estuvo roto**.
+Antes de eso, el mismo 31 de julio se corrigió el sentido de la profundidad, que afecta a
+**toda** demo con geometría superpuesta, y por eso el inventario entero se volvió a medir.
+Ese arreglo resolvió también las marcas de `pvr_rtt_sized` que estaban anotadas como
+residuo. Con él pasaron además: `pvr-modifier_volume`, `pvr-modifier_volume_tex` y
+`pvr-cheap_shadow` —con los tipos de vértice que faltaban, el rearmado de los parámetros de
+64 bytes y el volumen modificador por plantilla—, `pvr-pvr_rtt_sized` con el render a
+textura, `pvr-bumpmap` con los sprites y el modo de textura, y `pvr-pvrline`, que **nunca
+estuvo roto**.
 
 El 31 de julio de 2026 pasaron siete de la segunda fila a la primera: `parallax-serpent_dma`
 con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las dos de
@@ -69,11 +75,14 @@ a propósito: dos instancias se pelean por `logs/serial.txt` y los resultados sa
 - **La cuenta de colores es un indicio, no un veredicto.** Una demo de consola sale con 4
   colores — ventana negra — y está perfecta: su salida va por el serial. Al revés, una cuenta
   alta dice que algo se dibujó, no que sea lo correcto.
-- **Una demo que termina sola deja la ventana negra.** KOS limpia la pantalla al salir, así que
-  cualquier cosa que acabe por su cuenta ya está negra cuando la captura llega. `video/minifont`
-  duerme 10 segundos y retorna, y el tiempo emulado corre ~2,5× rápido sin `--limitar`, así que
-  se termina a los ~4 segundos de reloj real. Funciona; hay que mirarlo antes, o con el volcado
-  de F5. Ver `CLAUDE.md`, sección de captura de la ventana.
+- **Una demo que termina sola muestra la BIOS.** Al volver de `main()`, la salida de KOS
+  salta al boot ROM real, y con `bios/bios.bin` presente la BIOS arranca y llega a pintar su
+  menú por el TA: la captura de una demo de consola que salió por su cuenta trae ~29 000
+  colores con el gris `180,177,180` del menú dominando, casi idéntica entre demos. Antes esas
+  capturas salían negras (la BIOS rasterizaba invisible por el signo de la profundidad); es el
+  mismo camino que en una consola real, no un cuelgue. El veredicto sale del serial, que se
+  guarda antes. `video/minifont` duerme 10 segundos y retorna, y el tiempo emulado corre
+  ~2,5× rápido sin `--limitar`, así que se termina a los ~4 segundos de reloj real.
 - **Un `panic` en el serial no siempre es un fallo.** `basic-mmu-nullptr` termina en
   `kernel panic` **porque eso es lo que la demo quiere demostrar**: atrapa el uso de un puntero
   nulo, imprime el diagnóstico y muere. Buscar «panic» y contarlo como rojo la clasificó mal
@@ -159,29 +168,25 @@ bits. El selector de banco va en el propio texture control word, encima de los b
 demás formatos son «sin usar», «stride» y «scan order»; por eso estas texturas van siempre
 twiddled.
 
-### Otras rutas del PVR (1)
+### Otras rutas del PVR (0)
 
-| demo | qué falta |
-| --- | --- |
-| `pvr-fb_tex` | **las dos vistas de la RAM de vídeo del PVR** |
+**`pvr-fb_tex` funciona desde el 31 de julio de 2026**, y necesitó tres cosas:
 
-`pvr-fb_tex` usa el framebuffer ya rendido como textura: `pvr_get_front_buffer()` y una textura
-apuntada ahí. Lo primero que falta es evidente —dcemu manda el 3D a OpenGL y nunca escribe la RAM
-de vídeo en el camino normal, así que no hay nada que muestrear—, pero **lo que de verdad lo
-bloquea es otra cosa**, y se ve midiendo: la textura de la demo está en `0x0014E900` y
-`FB_W_SOF1` vale `0x004A7480`. No se solapan ni de lejos.
+- **Las dos ventanas de la RAM de vídeo** (`vram.c/h`): la de 32 bits ve los dos bancos
+  contiguos (banco en el bit 22) y la de 64 los alterna cada 4 bytes (banco en el bit 2).
+  La medición que lo delató sigue siendo la referencia: la textura de la demo está en
+  `0x0014E900` (numeración de 64) y `FB_W_SOF1` vale `0x004A7480` (numeración de 32) —
+  exactamente el doble, con el banco en el bit que la palabra de control no guarda y que
+  la demo compensa con medio texel de U.
+- **El volcado del framebuffer**, armado bajo demanda: cuando una textura cae dentro del
+  cuadro que el PVR escribe o muestra, cada escena se vuelve a leer con `glReadPixels` y
+  se escribe en la RAM de vídeo por la ventana de 32; antes de armarse no cuesta nada.
+- **El signo de la profundidad en `glOrtho`** — el que de verdad lo tenía en negro, y de
+  regalo resolvió las marcas de `pvr_rtt_sized`. Ver CLAUDE.md, sección "Depth".
 
-La razón es que **la RAM de vídeo del PVR tiene dos ventanas que entrelazan sus dos bancos de forma
-distinta**: la de 32 bits (`0xA5000000`), donde se escribe el framebuffer, y la de 64
-(`0xA4000000`), desde donde el chip lee las texturas. Son la misma memoria con dos numeraciones. En
-dcemu las dos zonas apuntan planas al mismo bloque, así que una dirección de una no corresponde a la
-otra y ningún volcado del framebuffer caería donde la textura lo busca.
-
-O sea que esta demo no pide «escribir el framebuffer»: pide emular las dos ventanas, que es un
-subsistema y toca todos los caminos de textura y de framebuffer a la vez. Se llegó a escribir el
-volcado —con su disparador, para no cobrarle un `glReadPixels` por cuadro a las demás demos— y se
-retiró al comprobar que sin las dos ventanas no puede acertar. Lo que quedó es
-`volcar_a_memoria()`, que es la mitad reutilizable y la que usa el render a textura.
+La captura muestra el cubo rebotando con su estela recursiva leída del propio front buffer:
+93 colores, con la cuenta de píxeles no negros creciendo cuadro a cuadro (6426 → 9298 en
+los primeros tres), que es la retroalimentación funcionando.
 
 ### Render a textura (0)
 
@@ -338,12 +343,24 @@ la escritura llegó. Reporta `TEST SUCCEEDED!`. Con eso, **las cinco fases del p
 (`docs/mmu-plan.md`) están verificadas sobre un programa real**, no solo por las 24 pruebas
 unitarias.
 
-### SH-4, resto (3)
+### SH-4, resto (0)
 
-| demo | qué falta |
-| --- | --- |
-| `basic-breaking` | `Breakpoint Test: FAILURE`. Necesita el UBC, el controlador de breakpoints por hardware |
-| `basic-dma-speedtest` | el serial se corta después del escaneo del maple: se traba antes de medir |
+**`basic-dma-speedtest` funciona desde el 31 de julio de 2026**: imprime sus siete líneas
+de velocidad y termina solo. Eran dos cosas: la interrupción DMTE del DMAC no existía (el
+demo arma el canal 1 y espera el callback de fin por ella), y `DMAOR` arrancaba en cero —
+en una consola real lo deja operativo el boot ROM (`0x8201`) y el `dma_init()` de KOS solo
+lo escribe en NAOMI: *"these are set by the bios on Dreamcast"*.
+
+**`basic-breaking` tiene el UBC completo desde el 31 de julio de 2026** (`ubc.c/h`, suite
+`ubc`) y pasa cuatro de sus cinco grupos: instrucción, región de lectura, dato con tamaño
+y rango de valores. El quinto (secuencial) **falla por el binario, no por el UBC**: GCC
+15.2 a `-O2` elimina la llamada `test_function("Sega", "Sony")` de `break_on_sequence` —
+función pura con el resultado descartado; la del primer grupo sobrevive porque asigna a un
+`volatile` — así que la condición A de la secuencia es inalcanzable, también en hardware
+real. Recompilado con un `volatile` en esa línea imprime
+`***** Breakpoint Test: SUCCESS *****` completo. Misma clase que `tunnel`: guest-side, y
+el desensamblado del ELF lo prueba (no hay ningún `jsr` a `test_function` en
+`break_on_sequence`).
 
 **El `pvr_prim: attempt to submit to unopened list` no es de dcemu**, y esta tabla lo daba por tal.
 Es estado del guest de punta a punta: `pvr_list_begin()` pone `pvr_state.list_reg_open`,
@@ -354,6 +371,15 @@ emite —278674 veces en 8 segundos— y nunca aparece el aviso hermano
 abierta. `tunnel` es la demo de KGL que se restauró y portó aquí, y su propio fuente documenta el
 cambio de API que lo provoca: la KGL actual abre la lista de forma perezosa según el estado de GL y
 no tiene `glKosFinishList`.
+
+**Los triángulos planos al fondo del túnel son de la misma familia y son anteriores a todo lo del
+31 de julio.** Se midió con un worktree de la línea base (`c86bb7b`): el arco de triángulos gris
+oscuro al centro está en las dos versiones — 48 558 píxeles de gris plano en la base contra 25 388
+en la actual, o sea que el arreglo de la profundidad lo **redujo a la mitad** (la geometría cercana
+lo ocluye mejor). La banda baja que se corrompe por instantes tampoco cambió: la captura a los 8 s
+es bit a bit idéntica antes y después del plano de fondo. La sospechosa natural es la misma
+geometría enviada sin lista abierta; la FPU del núcleo está validada aparte (543 casos y
+`demos/roto`).
 
 `basic-fpu-exc` estaba en esta lista con `TEST FAILED!` y ya no: solo pedía los campos
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
@@ -379,12 +405,15 @@ hay nada que arreglar salvo que se decida emular el periférico.
 
 ## Lo que funciona
 
-### Consola, con veredicto explícito en el serial (33)
+### Consola, con veredicto explícito en el serial (35)
 
 `basic-mmu-nullptr` está en esta lista aunque su veredicto sea un `kernel panic`: es el que
-la demo busca. Ver la sección de MMU.
+la demo busca. Ver la sección de MMU. `basic-dma-speedtest` (sus siete líneas de velocidad)
+y `basic-breaking` (cuatro `SUCCESS!` de cinco; el quinto es del binario — ver la sección
+SH-4) entraron el 31 de julio.
 
-`hello`, `basic-asserthnd`, `basic-exec`, `basic-fpu-exc`, `basic-memtest32`,
+`hello`, `basic-asserthnd`, `basic-breaking`, `basic-dma-speedtest`, `basic-exec`,
+`basic-fpu-exc`, `basic-memtest32`,
 `basic-mmu-nullptr`, `basic-posix_resource`, `basic-stackprotector`, `basic-stacktrace`,
 `basic-watchdog`, las diez de
 `basic-threading-*` (`atomics`, `barrier`, `compiler_tls`, `general`, `once`,
@@ -393,14 +422,17 @@ la demo busca. Ver la sección de MMU.
 `filesystem-pty`, `library`, `objc-runtime`, `micropython`, `maple`, `conio-conio_dbgio`,
 `profiling-gprof`.
 
-### Gráficos verificados a ojo (24 binarios, 22 demos)
+### Gráficos verificados a ojo (25 binarios, 23 demos)
 
 `video-bfont` = `bfont`, `video-minifont`, `video-multibuffer`, `video-screenshot`,
 `video-palmenu`, `conio-basic`, `conio-kosh`, `conio-wump`, `conio-adventure`,
 `kgl-tunnel` = `tunnel`, `libdream-ta`, `parallax-bubbles`, `png`, `pvr-texture_render`,
 `tsunami-font`, `basic-mmu-pvrmap`, `pvr-palette-4bpp`, `pvr-palette-8bpp`,
 `pvr-palette-wormhole`, `pvr-yuv_converter-YUV420`, `pvr-yuv_converter-YUV422`,
-`pvr-strided_texture`.
+`pvr-strided_texture`, `pvr-fb_tex`.
+
+`pvr-fb_tex` se verificó el 31 de julio: el cubo rebotando con su estela recursiva leída
+del propio front buffer a través de las dos ventanas de la RAM de vídeo.
 
 Las seis últimas se verificaron el 31 de julio de 2026 con `--captura-gl`: las de paleta
 dibujan su degradado radial —con las bandas de 16 niveles que le corresponden a 4 bpp— y el

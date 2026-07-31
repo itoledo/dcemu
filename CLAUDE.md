@@ -51,10 +51,13 @@ ctest --test-dir build -C Debug --output-on-failure
 ```
 
 `tests/` holds unit tests for every implemented row of `opcodes[]` (one suite per handler
-file, plus one for the dispatch-table expansion), plus three suites that are not opcodes:
+file, plus one for the dispatch-table expansion), plus suites that are not opcodes:
 `sistema` (PDTRA handshake, flash synthesis, RTC), `gdrom` (the drive's state machine,
-driven exactly as the boot ROM drives it) and `ta` (the TA parameter format — the
-classification table and the reassembly of the 64-byte parameters). They link the real handlers and the real
+driven exactly as the boot ROM drives it), `ta` (the TA parameter format — the
+classification table and the reassembly of the 64-byte parameters), `mmu`, `wdt`, `tmu`,
+`vram` (the two windows of PVR video RAM — the numbering conversion and the 4-byte bank
+interleave) and `ubc` (the hardware breakpoint controller, driven with the same register
+sequences KOS's driver uses). They link the real handlers and the real
 `opcodes.c`; `tests/memoria_prueba.c` replaces `mem.c` and `tests/dobles.c` replaces the
 `graficos.c` / `iso.c` / `intc.c` / `traza.c` symbols the code references, which keeps SDL
 and OpenGL out of the link. SDL *headers* are still needed to compile (`opcodes.h` pulls in
@@ -146,15 +149,20 @@ which is why **`--salir-tras=N` matters**: it leaves through the same path as cl
 window, so `traza_resumen()` runs. Killing the process from outside takes the disassembly
 and the dump with it.
 
-**Where the BIOS boot stands: it boots.** With `--bios` it reaches the Set Date/Clock
-screen, responds to the pad, and from the main menu you can enter Play, File, Music and
-Settings. What was missing was three things, all of the same shape — something the guest
-asks for that dcemu accepts without doing anything and without saying anything. See
-`docs/bios-boot-plan.md`, "Tercera corrida":
+**Where the BIOS boot stands: it boots, and the intro animation displays.** With `--bios`
+it plays the swirl animation — the embossed spiral on the `0xBFBFBF` background with its
+orange trail — and reaches the menu; from there Play, File, Music and Settings all work.
+What was missing for the *boot* was three things, all of the same shape — something the
+guest asks for that dcemu accepts without doing anything and without saying anything (see
+`docs/bios-boot-plan.md`, "Tercera corrida"):
 
 - **the CH2 DMA** (`SB_C2DSTAT`/`SB_C2DLEN`/`SB_C2DST`, `0x005F6800-08`) — see below;
 - **a Maple descriptor whose first word is legitimately zero** — see the Maple section;
 - **ASIC events being dropped when no mask covered them** — see "Interrupts and timing".
+
+What was missing for the *animation* was two more, both found by the ROM and by no KOS
+demo: the PVR **background plane** and the true size of the TA's **Polygon Type 1** header
+— see "The background plane" and the `ta.c` note in the graphics pipeline section.
 
 Hito C (booting a game *through* the BIOS) is still unverified: it needs an image that
 would boot on hardware, and the GD-ROM geometry.
@@ -178,9 +186,10 @@ The window title carries the name of what is running (`titulo_poner()` in `grafi
 before `screeninit()`), which is what makes a sweep of demos opened one after another readable.
 
 Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, **F6 dump the GL buffer**,
-F9 step, F10 stop, F11 run, F12 debug view, `p` pause, arrows + `a s d w z` = pad,
-`q`/`e` triggers, `y h g j` analog stick, keypad `+`/`-` scroll the memory dump. A gamepad
-works too — see "Input".
+F9 step, F10 stop, F11 run, F12 debug view, `p` pause, **`f` toggle the FPS counter** (in
+the window title, frames presented per real second; on by default — `fps_marcar_cuadro()`
+in `graficos.c`), arrows + `a s d w z` = pad, `q`/`e` triggers, `y h g j` analog stick,
+keypad `+`/`-` scroll the memory dump. A gamepad works too — see "Input".
 
 **F5 writes `captura.bmp` from video RAM, not from the GL buffer** (`volcar_framebuffer()`
 in `graficos.c`), so it shows what the guest drew rather than what GL rasterized. With
@@ -190,7 +199,9 @@ in `graficos.c`), so it shows what the guest drew rather than what GL rasterized
 3D output never goes through video RAM in dcemu, so for a PVR demo F5 is always black.
 `--captura-gl=ARCHIVO` does the same automatically before every swap, so the file holds the
 last frame when the emulator exits — pair it with `--salir-tras` and a sweep needs no window
-at all.
+at all. With `DCEMU_CAPTURA_TODAS=1` in the environment every frame goes to its own
+numbered file (`f0000-ARCHIVO`, ...) instead of overwriting — it is how you inspect an
+animation frame by frame, and what let the boot ROM's intro be diagnosed.
 
 **It reads the window, which is 800×600, not the emulated 640×480 — and getting that wrong
 invalidated a whole sweep.** `screeninit()` stretches the guest's 640×480 over the entire window
@@ -512,16 +523,25 @@ on the para-type to `taListEnd()`, `doUserClip()`, `objectListSet()`, `taPolyMod
 `taSprite()` or `taVertexHandler()` in `graficos.c`. The CH2 DMA (`mem.c`) feeds the same
 function.
 
-**`ta.c` exists because not every TA parameter is 32 bytes.** Headers carrying a face color,
-vertices with floating-point color, all six two-volume textured vertices, both sprite vertices
-and the modifier-volume vertex are 64, and they arrive as *two* blocks — one per store queue.
-Dispatching each block separately reads the second half as a parameter control word, and since
-its first word is usually a float the para-type comes out of the garbage: when that float is
-`0.0` the type is **0**, which is end-of-list, so a list closes that the guest never closed.
+**`ta.c` exists because not every TA parameter is 32 bytes.** Headers carrying *two* face
+colors, vertices with floating-point color, all six two-volume textured vertices, both sprite
+vertices and the modifier-volume vertex are 64, and they arrive as *two* blocks — one per store
+queue. Dispatching each block separately reads the second half as a parameter control word, and
+since its first word is usually a float the para-type comes out of the garbage: when that float
+is `0.0` the type is **0**, which is end-of-list, so a list closes that the guest never closed.
 `ta_clasificar()` is the table — PCW → global parameter type and the vertex type it leaves in
 force — and `ta_procesar_bloque()` joins the halves before dispatching. Both `taPolyModifier()`
 and the block assembler use that one table, so they cannot drift. `ta.c` is free of SDL and GL
 on purpose, like `sistema.c`, so `tests/` links it for real.
+
+**Polygon Type 1 is 32 bytes — its single face color fits in words 4-7.** Only Type 2 (face
+*and* offset colors) and Type 4 (one face color per volume) are 64, with the colors in words
+8-11 and 12-15. dcemu had Type 1 as 64 with the color read from words 8-11 — the Type 2
+layout — and the `ta` suite had the same misreading baked in, so it never objected. No KOS
+demo submits a Type 1; the boot ROM does: its swirl trail and logo go out as intensity-mode-1
+headers, the assembler glued each header to the first vertex behind it, the face color came
+out of that vertex's coordinates (negative alpha: invisible) and every quad lost a vertex.
+That is what kept the intro animation's color pass blank.
 
 **`taVertexHandler()` implemented four of the fifteen vertex types** — 0, 1, 3 and 5. The other
 eleven fell through to a `logxmsg` and were dropped: the vertex never entered `VertexBuffer`, the
@@ -588,6 +608,28 @@ in OpenGL, so the front buffer does not exist in VRAM unless written back. The w
 address falls inside the frame the PVR writes or displays, and from then on every scene is read
 back with `glReadPixels` and stored through the 32-bit window — before that it costs nothing, so
 no other demo pays for it.
+
+### The background plane
+
+**The chip does not clear the screen to black: it draws a background polygon.**
+`ISP_BACKGND_T` (`0x005F808C`) points at it — tag in words over `PARAM_BASE` in bits 23-3,
+skip in 26-24 — and the polygon lives in video RAM (through the **32-bit** window, measured
+against the boot ROM): 3 header words, then three vertices of 3+skip words whose last word
+is the packed color. `color_de_fondo()` reads that color and uses it as the clear color,
+which covers the flat case — KOS's `pvr_set_bg_color()` and the boot ROM's `0xBFBFBF`.
+The clear happens **at the start of the scene** (`cb_tastart`), because the chip latches its
+configuration at STARTRENDER: sampling when presenting the previous scene fell mid-way
+through the next frame's register programming.
+
+**The register's value must be validated before it is believed.** dcemu does not write the
+TA's output into VRAM, so `TA_ITP_CURRENT` never really advances; KOS computes
+`ISP_BACKGND_T` by subtracting against that pointer and on one of the two double-buffer
+parities the subtraction goes negative — `0xFF800000`, skip 7, high bits set. On hardware
+that frame draws a garbage background hidden behind the scene; here the clear color shows,
+so an impossible value keeps the last good color instead. Without that check half the demo
+park alternated random background colors, one buffer yes and one no. `libdream` never
+programs the plane at all (its demos cover the screen with geometry), which the same
+fallback absorbs.
 
 ### Depth
 
@@ -712,6 +754,16 @@ so the event was **silently dropped**. On real hardware the request stays assert
 guest clears the flag. Dropping them made KOS lose time (`basic/watchdog` measured 8 s where
 it asked for 10) and starved the thread scheduler badly enough to hang
 `basic/threading/atomics`. Both pass now.
+
+**The DMAC's end-of-transfer follows the same pattern**: `dma_canal()` leaves `CHCR.TE` set
+(and does not touch `DE`, per the manual), and `intc_revisar_sh4()` derives DMTE0-3 (INTEVT
+`0x640`/`0x660`/`0x680`/`0x6A0`, priority in IPRC bits 11-8) from `TE && IE && DMAOR.DME`;
+the guest acknowledges by clearing the CHCR, which is what KOS's driver does. Two things
+here cost a hang each: the interrupt used to be a log line saying "not implemented", and
+**`DMAOR` starts at `0x8201`** (DDT, priority CH2>CH0>CH1>CH3, DME) because that is what
+the boot ROM leaves on a retail console — KOS's `dma_init()` only writes DMAOR on NAOMI,
+*"these are set by the bios on Dreamcast"*, so with the syscall hooks nobody else set DME
+and `basic-dma-speedtest` armed a perfectly valid channel 1 that never ran.
 
 The scanline rate comes from the same constant: `reloj_ciclos_por_linea()` in `tmu.c` computes
 `DC_CPU_HZ / (lines × fields per second)` from `SPG_LOAD.vcount` and `SPG_CONTROL` — 6345
@@ -900,6 +952,32 @@ set it would fault forever. True on real hardware too; KOS never uses FD.
 `kernel panic` is the demo's intended ending (`catchnull` returns `NULL` on purpose) —
 reading only the last serial line misclassified it for a whole sweep. `basic/mmu/pvrmap`
 died on one `memwrite` that should have been `memwrite_fisico`; see below.
+
+### UBC (hardware breakpoints)
+
+`ubc.c/h` is the SH-4's user break controller, driven the way KOS's driver drives it
+(`kernel/arch/dreamcast/hardware/ubc.c`): two channels with address masks and optional
+ASID, channel B optionally comparing the transferred data (`BDRB`/`BDMRB` under
+`BRCR.DBEB`), and `BRCR.SEQ` chaining them — A's match only arms B. `CMFA`/`CMFB` are set
+on match and **only the guest clears them**; its handler reads them to know which channel
+fired. The exception is EXPEVT `0x1E0` through the general vector; instruction breaks
+honour `PCBA`/`PCBB` (before/after execution), operand breaks are always "after": they go
+pending and deliver at the next instruction boundary, so SPC lands on the following
+instruction — KOS prints `PC - 2` for exactly that reason. With `SR.BL` set the delivery
+waits without being lost.
+
+Instruction breaks are evaluated at `main_loop()`'s boundary (one flag test when no
+channel is armed); operand breaks hook the guest-path `memread`/`memwrite` macros in
+`mem.h`, which compare the **virtual** address — internal accesses go through `*_fisico`
+and stay out by themselves. A break on a delay-slot instruction is not detected (the slot
+runs inside the branch's nested `core.execute()`); the manual restricts that case anyway.
+
+**`basic-breaking` passes four of its five groups; the fifth fails in the binary, not the
+UBC.** GCC 15.2 at -O2 deletes the `test_function("Sega", "Sony")` call in
+`break_on_sequence` — a pure static function whose result is discarded (the first test
+survives because it assigns to a `volatile`) — so sequence condition A is unreachable, on
+real hardware too. Rebuilt with a one-line `volatile`, the demo prints
+`***** Breakpoint Test: SUCCESS *****` end to end.
 
 ### Support modules
 
