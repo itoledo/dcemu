@@ -151,6 +151,9 @@ extern void WriteMemoryF(unsigned long direccion, float * valor);
    NUL -- antes de entregarle la maquina al juego. Medido contra el ROM real. */
 #define REGION_BASE		0x8C000070
 
+/* Y donde deja la direccion en la que cargo el ejecutable. Medido igual. */
+#define EJECUTABLE_BASE	0x8C0000F8
+
 #define SYSCALL_SYSINFO		0x8C0000B0
 #define SYSCALL_ROMFONT		0x8C0000B4
 #define SYSCALL_FLASHROM	0x8C0000B8

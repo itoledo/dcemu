@@ -1160,6 +1160,26 @@ int main(int argc, char *argv[])
 	memcpy(get_memory_pointer(REGION_BASE), &flash_mem[FLASH_PART0_OFF], 5);
 	((unsigned char *) get_memory_pointer(REGION_BASE))[5] = '\0';
 
+	/*
+		Y en EJECUTABLE_BASE deja la direccion donde cargo el ejecutable. El
+		bootstrap del IP.BIN la lee de ahi en vez de llevarla como constante, y
+		sin ella se lleva un cero y salta a la nada: el guest terminaba
+		ejecutando la zona de vectores --que aqui son ceros-- y de ahi seguia de
+		dos en dos hasta tumbar al emulador. Es el mismo agujero que
+		REGION_BASE, en el bloque de al lado.
+
+		El resto de ese bloque (0x8C0000E4 a 0x8C0000F4) tambien lleva campos
+		que el ROM rellena y aqui siguen en cero. Ponerlos hace que el juego
+		llegue algo mas lejos, pero no se sabe que son: quedan fuera hasta
+		saberlo. 0x8C0000E0 no se toca -- ahi va un vector de syscall que los
+		hooks ya instalaron.
+	*/
+	{
+		DWORD ejecutable = mem_base + mem_offset;
+
+		memcpy(get_memory_pointer(EJECUTABLE_BASE), &ejecutable, sizeof(DWORD));
+	}
+
 	} // fin del camino sin --bios
 
 	// La lectora ya puede saber si hay disco.
