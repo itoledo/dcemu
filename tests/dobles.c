@@ -54,6 +54,13 @@ void taSprite()			{ dobles_sprite++; }
 int traza_activa = 0;
 long traza_disparo = 0;
 
+/* gdrom.c la llama para armar la traza de instrucciones desde un comando ATA;
+   sin traza no hay nada que armar. */
+void traza_arrancar(long n)
+{
+	(void) n;
+}
+
 /* El gancho de mem.h consulta watchpoint_dir en cada escritura y solo llama si
    no es cero. traza.c no se enlaza aca, asi que el doble lo deja apagado; la
    funcion tiene que existir igual porque la macro la nombra. */
@@ -61,6 +68,16 @@ unsigned long	watchpoint_dir = 0;
 size_t			watchpoint_tam = 4;
 
 void watchpoint_escritura(unsigned long direccion, size_t tam)
+{
+	(void) direccion;
+	(void) tam;
+}
+
+/* Y el gemelo de lectura, que cuelga de memread_fisico(). */
+unsigned long	watchpoint_lectura_dir = 0;
+size_t			watchpoint_lectura_tam = 4;
+
+void watchpoint_lectura(unsigned long direccion, size_t tam)
 {
 	(void) direccion;
 	(void) tam;

@@ -202,13 +202,35 @@ static int ya_vista(unsigned long direccion, int tipo)
 	return 0;
 }
 
+/*
+	Tope de informes. La deduplicacion es por direccion, y eso alcanza mientras
+	sean unas pocas; un guest que se va por un puntero suelto recorre millones
+	de direcciones **distintas** y entonces cada acceso imprime una linea: el
+	log se va a los gigabytes, el emulador se arrastra y la ventana deja de
+	responder. Pasado el tope se dice una vez y se calla.
+*/
+#define INFORMES_MAX	4096
+
+static int informes = 0;
+
 void traza_acceso(int tipo, unsigned long direccion, size_t tam, DWORD pc)
 {
 	if (!traza_activa)
 		return;
 
+	if (informes > INFORMES_MAX)
+		return;
+
 	if (ya_vista(direccion, tipo))
 		return;
+
+	if (++informes > INFORMES_MAX)
+	{
+		fprintf(stderr, "traza: mas de %d direcciones distintas sin emular;"
+			" no se reportan mas. El guest anda por punteros sueltos.\n",
+			INFORMES_MAX);
+		return;
+	}
 
 	fprintf(stderr, "traza: %s sin emular en %08lx (%d bytes) desde PC %08lx\n",
 		(tipo == TRAZA_ESCRITURA) ? "escritura" : "lectura",
@@ -435,10 +457,126 @@ void traza_volcar(const char * motivo)
 	volcar_registros();
 }
 
+/* ------------------------------------------------------------------------ */
+/* Traza de instrucciones                                                   */
+/* ------------------------------------------------------------------------ */
+
+/*
+	--traza-desde=PC:N imprime las N instrucciones que siguen a la primera vez
+	que el guest llega a PC, con el desensamblado y **solo los registros que
+	cambiaron**. El anillo dice donde se quedo dando vueltas; esto dice como
+	llego, que es la otra mitad y la que faltaba: seguir una decision del boot
+	ROM -- que compara, que rama toma -- no se puede con 96 PC sin contexto.
+
+	Imprimir los 16 registros por instruccion es ilegible y no cabe; imprimir
+	los que cambiaron deja una linea corta donde se ve el flujo de datos.
+*/
+
+unsigned long	traza_desde_pc    = 0;		/* 0: apagado */
+long			traza_desde_n     = 0;
+long			traza_desde_salto = 0;		/* llegadas a saltar */
+
+static long		td_faltan  = 0;
+static int		td_armada  = 0;
+static DWORD	td_regs[16];
+static DWORD	td_pr = 0, td_sr = 0;
+static int		td_primera = 1;
+
+/*
+	Arma la traza de instrucciones desde el proximo paso, sin esperar a un PC.
+	La usa gdrom.c: hay preguntas -- "que hace el driver cuando la lectora le
+	contesta esto" -- cuyo disparador es un suceso del hardware y no una
+	direccion.
+*/
+void traza_arrancar(long n)
+{
+	if (td_armada || n <= 0)
+		return;
+
+	td_armada = 1;
+	td_faltan = n;
+
+	fprintf(stderr, "traza: arrancando %ld instrucciones a los %llu ms de"
+		" tiempo emulado.\n", n, (unsigned long long) reloj_ms());
+}
+
+static void traza_instruccion(DWORD pc)
+{
+	char	buffer[256];
+	int		i;
+
+	buffer[0] = '\0';
+	disasm(pc, buffer);
+
+	fprintf(stderr, "T %08lx: %-26s", (unsigned long) pc, buffer);
+
+	if (td_primera)
+	{
+		/* La primera linea lleva todo: sin punto de partida los cambios de
+		   las siguientes no dicen nada. */
+		for (i = 0; i < 16; i++)
+			fprintf(stderr, " r%d=%08lx", i, (unsigned long) R(i));
+
+		fprintf(stderr, " pr=%08lx sr=%08lx",
+			(unsigned long) PR, (unsigned long) SR);
+
+		td_primera = 0;
+	}
+	else
+	{
+		for (i = 0; i < 16; i++)
+			if (R(i) != td_regs[i])
+				fprintf(stderr, " r%d=%08lx", i, (unsigned long) R(i));
+
+		if (PR != td_pr)
+			fprintf(stderr, " pr=%08lx", (unsigned long) PR);
+
+		if ((SR & 1) != (td_sr & 1))
+			fprintf(stderr, " T=%d", (int) (SR & 1));
+	}
+
+	fprintf(stderr, "\n");
+
+	for (i = 0; i < 16; i++)
+		td_regs[i] = R(i);
+
+	td_pr = PR;
+	td_sr = SR;
+}
+
 void traza_paso(DWORD pc)
 {
 	if (traza_disparo > 0 && --traza_disparo == 0)
 		traza_volcar("disparo");
+
+	if (traza_desde_pc && !td_armada && pc == (DWORD) traza_desde_pc)
+	{
+		if (traza_desde_salto > 0)
+		{
+			traza_desde_salto--;
+		}
+		else
+		{
+			td_armada = 1;
+			td_faltan = traza_desde_n;
+
+			fprintf(stderr, "traza: desde %08lx, %ld instrucciones,"
+				" a los %llu ms de tiempo emulado.\n",
+				(unsigned long) traza_desde_pc, traza_desde_n,
+				(unsigned long long) reloj_ms());
+		}
+	}
+
+	/* Fuera del if de arriba: traza_arrancar() tambien arma esto, y ahi no hay
+	   ningun PC de por medio. */
+	if (td_faltan > 0)
+	{
+		td_faltan--;
+		traza_instruccion(pc);
+
+		if (td_faltan == 0)
+			fprintf(stderr, "traza: fin de la traza de instrucciones.\n");
+	}
 
 	DWORD	distintos[BUCLE_MAX];
 	int		cantidad;
@@ -557,5 +695,62 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 
 	if (++wp_informes >= WATCHPOINT_MAX)
 		fprintf(stderr, "watchpoint: %d informes, no se reporta mas\n",
+			WATCHPOINT_MAX);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Watchpoint de lectura                                                    */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El gemelo del de arriba, y contesta la otra pregunta: quien **mira** este
+	dato. Es la que aparece cuando el guest recibe algo de la lectora y hay que
+	averiguar quien lo evalua -- el PC de la rutina que compara sale solo.
+
+	Se reporta una vez por PC distinto: una comparacion de cadenas pasa cien
+	veces por la misma instruccion y la lista deja de servir. Por eso tampoco se
+	vuelca el valor anterior: en una lectura no hay tal cosa.
+*/
+
+unsigned long	watchpoint_lectura_dir = 0;		/* 0: apagado */
+size_t			watchpoint_lectura_tam = 4;
+
+#define WPL_PC_MAX		64
+
+static DWORD	wpl_pcs[WPL_PC_MAX];
+static int		wpl_npcs = 0;
+static int		wpl_informes = 0;
+
+void watchpoint_lectura(unsigned long direccion, size_t tam)
+{
+	DWORD	leida    = (DWORD) direccion & 0x1FFFFFFFu;
+	DWORD	vigilada = (DWORD) watchpoint_lectura_dir & 0x1FFFFFFFu;
+	int		i;
+
+	if (leida + tam <= vigilada || leida >= vigilada + watchpoint_lectura_tam)
+		return;
+
+	if (wpl_informes >= WATCHPOINT_MAX)
+		return;
+
+	for (i = 0; i < wpl_npcs; i++)
+		if (wpl_pcs[i] == PC)
+			return;
+
+	if (wpl_npcs < WPL_PC_MAX)
+		wpl_pcs[wpl_npcs++] = PC;
+
+	fprintf(stderr,
+		"watchpoint-lectura: %08lx -- lectura de %u en %08lx,"
+		" PC %08lx, PR %08lx, %llu ciclos\n",
+		(unsigned long) watchpoint_lectura_dir,
+		(unsigned) tam,
+		(unsigned long) direccion,
+		(unsigned long) PC,
+		(unsigned long) PR,
+		(unsigned long long) reloj_total);
+
+	if (++wpl_informes >= WATCHPOINT_MAX)
+		fprintf(stderr, "watchpoint-lectura: %d informes, no se reporta mas\n",
 			WATCHPOINT_MAX);
 }

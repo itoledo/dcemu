@@ -106,7 +106,26 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 
 		if (getenv("DCEMU_SOLO_A"))
 		{
-			/* Ya en el menu: solo el boton, con el cursor donde este. */
+			/* Ya en el menu: solo el boton, con el cursor donde este.
+			   Con un numero mayor que 1 se pulsa UNA sola vez, en ese
+			   sondeo: repetir el boton mientras el ROM ya esta arrancando
+			   el juego lo cancela, y entonces no se distingue "aborto" de
+			   "lo cancele yo". */
+			int una = atoi(getenv("DCEMU_SOLO_A"));
+
+			if (una > 1)
+			{
+				if (t >= una && t < una + 20)
+				{
+					if (traza_activa && t == una)
+						fprintf(stderr, "traza: pulsando A en el sondeo %d, "
+							"a los %lu ms de tiempo emulado.\n",
+							t, (unsigned long) reloj_ms());
+
+					REMOVE_BIT(*botones, CONT_A);
+				}
+			}
+			else
 			if ((t % 200) < 20)
 				REMOVE_BIT(*botones, CONT_A);
 		}
@@ -999,6 +1018,13 @@ int main(int argc, char *argv[])
 
 	watchpoint_dir = opciones.watchpoint;
 	watchpoint_tam = (size_t) opciones.watchpoint_tam;
+
+	watchpoint_lectura_dir = opciones.watchpoint_lect;
+	watchpoint_lectura_tam = (size_t) opciones.watchpoint_lect_tam;
+
+	traza_desde_pc    = opciones.traza_desde;
+	traza_desde_n     = (long) opciones.traza_desde_n;
+	traza_desde_salto = (long) opciones.traza_desde_salto;
 
 	inicializar_logs();
 

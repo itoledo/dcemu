@@ -89,4 +89,30 @@ extern size_t			watchpoint_tam;
 
 void watchpoint_escritura(unsigned long direccion, size_t tam);
 
+/*
+	El de lectura, con --watchpoint-lectura=DIR[:TAM]. Cuelga de
+	memread_fisico(), y contesta "quien mira esto" -- la pregunta que aparece
+	cuando el guest recibe algo de la lectora y no se sabe quien lo evalua.
+
+	Informa una vez por PC distinto, no una vez por lectura: comparar una cadena
+	pasa cien veces por la misma instruccion.
+*/
+extern unsigned long	watchpoint_lectura_dir;
+extern size_t			watchpoint_lectura_tam;
+
+void watchpoint_lectura(unsigned long direccion, size_t tam);
+
+/*
+	--traza-desde=PC:N: las N instrucciones que siguen a la primera llegada a
+	PC, desensambladas y con los registros que cambiaron. Lo consulta
+	traza_paso(), que ya se llama por instruccion con --traza-mem.
+*/
+extern unsigned long	traza_desde_pc;
+extern long				traza_desde_n;
+extern long				traza_desde_salto;
+
+/* Lo mismo pero disparado por el emulador, no por un PC: para preguntas cuyo
+   disparador es un suceso del hardware. No hace nada si ya hay una traza. */
+void traza_arrancar(long n);
+
 #endif /* _TRAZA_H_ */

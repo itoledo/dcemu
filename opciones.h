@@ -64,6 +64,16 @@ struct opciones_t
 	unsigned long	watchpoint;
 	unsigned long	watchpoint_tam;
 
+	/* El gemelo de lectura: quien **mira** esa direccion. */
+	unsigned long	watchpoint_lect;
+	unsigned long	watchpoint_lect_tam;
+
+	/* Traza de instrucciones: desde donde, cuantas y cuantas llegadas saltar.
+	   0 = apagada. */
+	unsigned long	traza_desde;
+	unsigned long	traza_desde_n;
+	unsigned long	traza_desde_salto;
+
 	/* Rangos que se desensamblan y se vuelcan al salir. Son la forma de leer el
 	   codigo y las tablas del boot ROM, que viven en RAM y no en el archivo. */
 	struct rango_t	desensamblar[RANGOS_MAX];

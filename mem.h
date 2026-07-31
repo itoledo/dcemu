@@ -38,7 +38,22 @@ void dump_registers();
    la MMU: la usan la carga de archivos, el DMAC, la vista de depuracion, el
    DMA del GD-ROM y los propios handlers de mem.c, que reciben direcciones ya
    despachadas. */
-#define memread_fisico(direccion, target, size)   (*mem_hash_read[(direccion) >> 24]) ((direccion), (target), (size))
+/* El gancho del watchpoint de lectura (--watchpoint-lectura=) va aca por la
+   misma razon que el de escritura mas abajo: es el unico sitio por el que pasan
+   **todas** las lecturas. Se llama despues de leer, cuando el dato ya esta.
+
+   Apagado, watchpoint_lectura_dir vale cero y esto es una comparacion. */
+#define memread_fisico(direccion, target, size)							\
+	do																	\
+	{																	\
+		unsigned long _wl_dir = (direccion);							\
+		size_t        _wl_tam = (size);									\
+																		\
+		(*mem_hash_read[_wl_dir >> 24]) (_wl_dir, (target), _wl_tam);	\
+																		\
+		if (watchpoint_lectura_dir)										\
+			watchpoint_lectura(_wl_dir, _wl_tam);						\
+	} while (0)
 
 /* El gancho del watchpoint (--watchpoint=, ver options.h) va aca porque es el
    unico sitio por el que pasan **todas** las escrituras: las del programa

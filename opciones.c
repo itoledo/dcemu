@@ -28,6 +28,11 @@ struct opciones_t opciones =
 	NULL,				/* captura_gl */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
+	0,					/* watchpoint_lect: apagado */
+	4,					/* watchpoint_lect_tam */
+	0,					/* traza_desde: apagada */
+	0,					/* traza_desde_n */
+	0,					/* traza_desde_salto */
 	{ { 0, 0 } },		/* desensamblar */
 	0,
 	{ { 0, 0 } },		/* volcar */
@@ -50,6 +55,13 @@ void opciones_ayuda(const char * programa)
 		"                        una consola. Solo frena, nunca acelera.\n"
 		"  --captura-gl=ARCHIVO  vuelca a un BMP lo que OpenGL rasterizo, en cada\n"
 		"                        cuadro. Verifica el 3D sin capturar la ventana.\n"
+		"  --traza-desde=PC[:N[:K]]\n"
+		"                        desensambla las N instrucciones que siguen a la\n"
+		"                        llegada a PC, saltandose las K primeras, con los\n"
+		"                        registros que cambian. Necesita --traza-mem.\n"
+		"  --watchpoint-lectura=D[:T]\n"
+		"                        lo mismo para las lecturas: una linea por cada\n"
+		"                        PC distinto que mire esa direccion.\n"
 		"  --watchpoint=D[:T]    informa cada escritura que toque la direccion D\n"
 		"                        (hexadecimal), de T bytes (1, 2 o 4; 4 por\n"
 		"                        omision), con el PC y el PR que la hicieron.\n"
@@ -190,6 +202,56 @@ int opciones_parsear(int argc, char ** argv)
 
 			opciones.watchpoint     = r[0].direccion;
 			opciones.watchpoint_tam = r[0].cantidad;
+		}
+		else
+		if (strncmp(arg, "--watchpoint-lectura=", 21) == 0)
+		{
+			struct rango_t	r[1];
+			int				n = 0;
+
+			if (parsear_rango(&arg[21], r, &n, 4) != 0 ||
+				(r[0].cantidad != 1 && r[0].cantidad != 2 && r[0].cantidad != 4))
+			{
+				fprintf(stderr, "watchpoint de lectura invalido: %s (DIR[:1|2|4])\n",
+					&arg[21]);
+				return 1;
+			}
+
+			opciones.watchpoint_lect     = r[0].direccion;
+			opciones.watchpoint_lect_tam = r[0].cantidad;
+		}
+		else
+		if (strncmp(arg, "--traza-desde=", 14) == 0)
+		{
+			/* "PC[:N[:K]]": K llegadas a saltar antes de trazar. El boot ROM
+			   pasa dos veces por el mismo codigo -- al encender y al reiniciar
+			   --, asi que sin el salto siempre se traza la primera. */
+			char *			fin;
+			unsigned long	pc, n = 0x1000, k = 0;
+
+			pc = strtoul(&arg[14], &fin, 16);
+
+			if (fin == &arg[14])
+			{
+				fprintf(stderr, "traza-desde invalida: %s (PC[:N[:K]])\n", &arg[14]);
+				return 1;
+			}
+
+			if (*fin == ':')
+				n = strtoul(fin + 1, &fin, 16);
+
+			if (*fin == ':')
+				k = strtoul(fin + 1, &fin, 16);
+
+			if (*fin != '\0' || n == 0)
+			{
+				fprintf(stderr, "traza-desde invalida: %s (PC[:N[:K]])\n", &arg[14]);
+				return 1;
+			}
+
+			opciones.traza_desde       = pc;
+			opciones.traza_desde_n     = n;
+			opciones.traza_desde_salto = k;
 		}
 		else
 		if (strncmp(arg, "--salir-tras=", 13) == 0)
