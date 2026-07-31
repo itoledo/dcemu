@@ -200,7 +200,15 @@ void gdrom_construir_toc_area(struct TOC * toc, int area)
 		int fad = iso_pista_fad(i);
 		int alta = (fad >= GD_FAD_ALTA_DENSIDAD);
 
-		if (alta != (area != 0))
+		/*
+			Las dos areas de densidad **solo existen en un GD-ROM**. Un CD tiene
+			una TOC y punto, y partirlo por el FAD 45150 le esconde pistas al
+			guest: en las conversiones que ponen el relleno en la pista 1 y el
+			juego justo en el 45150 --Virtua Tennis, Capcom vs SNK-- el area 0
+			salia con la pista de relleno sola, y el manejador de MIL-CD, que
+			mira si la primera pista de la TOC es de datos, rechazaba el disco.
+		*/
+		if (iso_es_gdrom() && alta != (area != 0))
 			continue;
 
 		if (primera < 0)

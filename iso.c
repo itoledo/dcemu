@@ -124,9 +124,10 @@ int iso_init(char * sDevice)
 		   el boot ROM elige entre arrancar y abrir el reproductor de musica. */
 		for (cual = 0; cual < cdi.n; cual++)
 			fprintf(stderr, "iso_init:   pista %d: LBA %u, %u sectores, modo %u"
-				" (%s)\n", cual + 1, cdi.pistas[cual].lba,
-				cdi.pistas[cual].sectores, cdi.pistas[cual].modo,
-				cdi.pistas[cual].modo ? "datos" : "audio");
+				" (%s), en el archivo desde %llu\n", cual + 1,
+				cdi.pistas[cual].lba, cdi.pistas[cual].sectores,
+				cdi.pistas[cual].modo, cdi.pistas[cual].modo ? "datos" : "audio",
+				(unsigned long long) cdi.pistas[cual].offset);
 
 		formato_imagen = FORMATO_CDI;
 		iso_lba_base = pista->lba;
