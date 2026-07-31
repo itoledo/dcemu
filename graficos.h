@@ -64,6 +64,11 @@ void traza_ta_resumen(void);
 extern	char	titulo_ventana[256];
 void titulo_poner(const char * ruta);
 
+/* El contador de FPS del titulo: se marca en cada SDL_GL_SwapBuffers y la
+   tecla `f` lo alterna. Arranca prendido. */
+extern	int		fps_visible;
+void fps_marcar_cuadro(void);
+
 /* Convertidor YUV del TA (0x10800000). Un bloque de 32 bytes; cuando se junta
    un macrobloque entero se convierte y se escribe en PVR_YUV_ADDR. */
 void pvr_yuv_bloque(void * datos);

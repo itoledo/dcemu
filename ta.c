@@ -135,10 +135,21 @@ void ta_clasificar(DWORD pcw, int * global, int * vertice)
 
 int ta_tam_global(int global)
 {
-	/* Los que llevan color de cara son los unicos de 64. */
+	/*
+		De 64: solo los que llevan DOS colores de cara -- POLY2 (cara y
+		offset) y POLY4 (uno por volumen). El POLY1 lleva uno solo y cabe en
+		32: PCW, ISP, TSP, TCW y los cuatro floats en las palabras 4-7.
+
+		POLY1 estuvo clasificado como de 64, con el color leido de las
+		palabras 8-11 -- el layout del POLY2 --. Ningun demo de KOS lo
+		ejercita, asi que lo encontro el boot ROM: su animacion manda la
+		estela de la espiral y el logo con encabezados asi, el ensamblador
+		pegaba encabezado y primer vertice, el color de cara salia de las
+		coordenadas de ese vertice (alfa negativo: invisible) y cada
+		cuadrilatero perdia un vertice.
+	*/
 	switch (global)
 	{
-		case TA_GLOBAL_POLY1:
 		case TA_GLOBAL_POLY2:
 		case TA_GLOBAL_POLY4:
 			return 64;

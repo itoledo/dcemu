@@ -25,6 +25,54 @@ SDL_Surface *outputscreen;
 char titulo_ventana[256] = APPTITLE;
 
 /*
+	El contador de FPS: cuadros presentados por segundo de reloj real, en la
+	barra de titulo junto al nombre. Se marca en cada SDL_GL_SwapBuffers --
+	los tres caminos que presentan: la escena del TA, el framebuffer 2D y la
+	vista de depuracion -- y el titulo se refresca una vez por segundo, que
+	es lo que cuesta. La tecla `f` lo alterna; arranca prendido.
+*/
+int fps_visible = 1;
+
+void fps_marcar_cuadro(void)
+{
+	static Uint32	marca = 0;
+	static int		cuadros = 0;
+	static int		mostrando = 0;
+	Uint32			ahora = SDL_GetTicks();
+
+	cuadros++;
+
+	if (marca == 0)
+	{
+		marca = ahora;
+		return;
+	}
+
+	if (ahora - marca < 1000)
+		return;
+
+	if (fps_visible)
+	{
+		char con_fps[sizeof(titulo_ventana) + 32];
+
+		snprintf(con_fps, sizeof(con_fps), "%s | %lu FPS", titulo_ventana,
+			(unsigned long) ((cuadros * 1000u + (ahora - marca) / 2)
+				/ (ahora - marca)));
+		SDL_WM_SetCaption(con_fps, NULL);
+		mostrando = 1;
+	}
+	else if (mostrando)
+	{
+		/* Recien apagado: dejar el titulo limpio una sola vez. */
+		SDL_WM_SetCaption(titulo_ventana, NULL);
+		mostrando = 0;
+	}
+
+	marca = ahora;
+	cuadros = 0;
+}
+
+/*
 	Deja el nombre de lo que se esta ejecutando en la barra de titulo. Con un
 	barrido de demos abiertas una tras otra, saber cual esta corriendo es la
 	diferencia entre mirar la pantalla y adivinar.
@@ -935,8 +983,88 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 }
 
 
+/*
+	El color del plano de fondo del PVR.
+
+	El chip no limpia la pantalla a negro: dibuja un "background plane", un
+	poligono que vive en la RAM de video y al que apunta ISP_BACKGND_T
+	(0x005F808C) -- tag en palabras sobre PARAM_BASE en los bits 23-3, skip en
+	los 26-24 --. El registro guarda 3 palabras de encabezado (ISP/TSP/TCW) y
+	tres vertices de 3+skip palabras; para el caso plano el color empaquetado
+	es la ultima palabra del vertice. dcemu lo usa como color de clear, que
+	cubre el fondo liso -- lo que ponen pvr_set_bg_color() de KOS y el boot
+	ROM, que limpia a 0xBFBFBF para su animacion y sin esto arrancaba sobre
+	negro.
+
+	La direccion va por la ventana de 32 bits: medido con el boot ROM, el
+	poligono aparece contiguo por la de 32 y revuelto por la de 64.
+*/
+static void color_de_fondo(float * r, float * g, float * b)
+{
+	static float	ultimo[3] = { 0.0f, 0.0f, 0.0f };
+
+	DWORD tag, skip, dir, color = 0;
+
+	*r = ultimo[0];
+	*g = ultimo[1];
+	*b = ultimo[2];
+
+	if (pvr_isp_backgnd_t == 0)
+		return;			/* nunca escrito: negro, como antes */
+
+	tag  = (pvr_isp_backgnd_t >> 3) & 0x1FFFFF;
+	skip = (pvr_isp_backgnd_t >> 24) & 0x7;
+
+	/*
+		Validar antes de creer. dcemu no escribe la salida del TA en la RAM de
+		video, asi que TA_ITP_CURRENT no avanza de verdad; KOS calcula este
+		registro restando contra ese puntero y en una de las dos paridades del
+		doble buffer la resta le da negativa: queda 0xFF800000, con skip 7 y
+		los bits altos encendidos. En el chip ese cuadro dibujaria un fondo de
+		basura tapado por la escena; aca el color de clear se ve, asi que un
+		valor que no puede ser un plano de fondo real se descarta y se
+		conserva el ultimo bueno -- sin esto, medio parque de demos alternaba
+		fondos de colores al azar, un buffer si y otro no.
+	*/
+	if ((pvr_isp_backgnd_t >> 27) != 0 || skip == 0 || skip > 4)
+		return;
+
+	/* Encabezado de 3 palabras + primer vertice: el color es su ultima
+	   palabra, la 3 + (3 + skip) - 1 del bloque. */
+	dir = (pvr_param_base + tag * 4 + (5 + skip) * 4) & 0x007FFFFF;
+
+	memread_fisico(0xA5000000 + dir, &color, 4);
+
+	/* Las primeras veces: de donde salio el color. Si un fondo sale de un
+	   color absurdo, esto es lo primero que hay que mirar. */
+	if (traza_activa)
+	{
+		static int vistos = 0;
+
+		if (vistos < 4)
+		{
+			vistos++;
+			fprintf(stderr, "traza: fondo: backgnd_t=%08lx param_base=%08lx"
+				" dir=%06lx color=%08lx\n",
+				(unsigned long) pvr_isp_backgnd_t,
+				(unsigned long) pvr_param_base,
+				(unsigned long) dir, (unsigned long) color);
+		}
+	}
+
+	*r = ((color >> 16) & 0xFF) / 255.0f;
+	*g = ((color >>  8) & 0xFF) / 255.0f;
+	*b = ((color >>  0) & 0xFF) / 255.0f;
+
+	ultimo[0] = *r;
+	ultimo[1] = *g;
+	ultimo[2] = *b;
+}
+
 void limpiar_pantalla()
 {
+	float r, g, b;
+
 	/*
 		**glClear del buffer de profundidad lo enmascara glDepthMask.** Si la
 		ultima tira de la escena anterior venia con "Z Write Disable" puesto -- y
@@ -945,6 +1073,11 @@ void limpiar_pantalla()
 		profundidades de la anterior y descarta lo que caiga detras de ellas.
 	*/
 	glDepthMask(GL_TRUE);
+
+	/* El alfa queda en 0: el blend por DSTALPHA de pvr-fb_tex cuenta con que
+	   las zonas sin dibujar arranquen transparentes. */
+	color_de_fondo(&r, &g, &b);
+	glClearColor(r, g, b, 0.0f);
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
@@ -1176,14 +1309,16 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		traza_rendidas++;
 	}
 
-	/* Con --traza-mem, reportar las primeras rendidas: cuantas tiras llegaron y
-	   cuantos vertices. Es la pregunta que hay que contestar antes de mirar
-	   matrices o test de profundidad -- si no llega geometria, el resto sobra. */
+	/* Con --traza-mem, reportar las primeras rendidas **con geometria**:
+	   cuantas tiras llegaron y cuantos vertices. Es la pregunta que hay que
+	   contestar antes de mirar matrices o test de profundidad -- si no llega
+	   geometria, el resto sobra. Las escenas vacias no cuentan: el boot ROM
+	   rinde varias antes de mandar el primer poligono y se comian la cuota. */
 	if (traza_activa)
 	{
 		static int rendidas = 0;
 
-		if (rendidas < 3)
+		if (rendidas < 3 && strip_count > 0)
 		{
 			int t;
 
@@ -1204,13 +1339,13 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 				traza_ta_min[1], traza_ta_max[1],
 				traza_ta_min[2], traza_ta_max[2],
 				screenancho, screenheight);
+
+			rendidas++;
 		}
 
 		traza_ta_vertices = 0;
 		traza_ta_fin_tira = 0;
 		memset(traza_ta_tipos, 0, sizeof(traza_ta_tipos));
-
-		rendidas++;
 	}
 
 	glEnable(GL_DEPTH_TEST);
@@ -1291,6 +1426,16 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		limpiar_texturas();
 		return;
 	}
+
+	/*
+		El clear va aca, al empezar la escena, y no al presentar la anterior:
+		el chip fija su configuracion en STARTRENDER, y el plano de fondo se
+		reprograma dos veces por cuadro -- muestrearlo al final del cuadro
+		anterior caia en medio de esa reprogramacion y el color salia de un
+		valor a mitad de camino, distinto en cada buffer: fondos que
+		alternaban colores de basura en casi todos los demos de KOS.
+	*/
+	limpiar_pantalla();
 
 	dibujar_escena();
 	volcar_escena_a_framebuffer();
@@ -1675,7 +1820,14 @@ static int render_a_textura(void)
 	glEnable(GL_DEPTH_TEST);
 	glDepthMask(GL_TRUE);
 
-	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	/* El render a textura tambien arranca del plano de fondo. */
+	{
+		float r, g, b;
+
+		color_de_fondo(&r, &g, &b);
+		glClearColor(r, g, b, 0.0f);
+	}
+
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	dibujar_escena();
@@ -1711,8 +1863,22 @@ static void terminar_escena(void)
 	   **con geometria**: una demo que dibuja una vez y se queda esperando un
 	   boton sigue generando cuadros vacios, y sin esa condicion el volcado
 	   terminaba siendo uno de esos. */
+	/* Con DCEMU_CAPTURA_TODAS en el ambiente, cada cuadro sale a un archivo
+	   numerado en vez de pisar el anterior: es lo que deja mirar una
+	   animacion entera -- la del boot ROM, por ejemplo -- cuadro a cuadro. */
 	if (opciones.captura_gl != NULL && strip_count > 0)
-		volcar_gl(opciones.captura_gl);
+	{
+		if (getenv("DCEMU_CAPTURA_TODAS"))
+		{
+			static int nf = 0;
+			char nom[128];
+
+			snprintf(nom, sizeof(nom), "f%04d-%s", nf++, opciones.captura_gl);
+			volcar_gl(nom);
+		}
+		else
+			volcar_gl(opciones.captura_gl);
+	}
 
 	strip_count = 0;
 
@@ -1724,6 +1890,7 @@ static void terminar_escena(void)
 
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
+	fps_marcar_cuadro();
 	pvr_framebufferdisplay = false;
 	
 //	SET_BIT(ASIC_ACK_A, 0x80); // fin de proceso ??? VBLINT?
@@ -1744,8 +1911,6 @@ static void terminar_escena(void)
 	// ???
 	memread_fisico(0xa05f8128, &dw, sizeof(DWORD)); // leer TA_ISP_BASE
 	memwrite_fisico(0xa05f8138, &dw, sizeof(DWORD)); // grabar en TA_ITP_CURRENT
-
-	limpiar_pantalla();
 
 	glDisable(GL_DEPTH_TEST);
 }
@@ -1958,21 +2123,24 @@ void taPolyModifier()
 
 	/*
 		El color de cara, para los vertices que traen intensidad en vez de
-		color. Va en la segunda mitad del encabezado, o sea que solo existe en
-		los de 64 bytes.
+		color. En el POLY1 (intensidad sin offset, 32 bytes) va en las
+		palabras 4-7; en el POLY2 y el POLY4 (64 bytes) en las 8-11 -- ahi las
+		4-7 estan reservadas y la segunda mitad trae ademas el color de offset
+		(POLY2) o el de cara del otro volumen (POLY4), que no se usan todavia.
+
+		Leerlo de 8-11 en un POLY1 -- que ademas estaba clasificado como de 64
+		-- daba el color desde el primer vertice pegado detras: la animacion
+		del boot ROM perdia su estela y su logo por un alfa negativo.
 
 		En modo intensidad 2 (col_type 3) el encabezado NO lo trae: se usa el
 		que dejo el ultimo poligono en modo intensidad 1. Por eso se guarda en
 		un estatico y solo se pisa cuando llega uno nuevo.
 	*/
-	if (global_parameter == TA_GLOBAL_POLY1 || global_parameter == TA_GLOBAL_POLY2 ||
-		global_parameter == TA_GLOBAL_POLY4)
-	{
+	if (global_parameter == TA_GLOBAL_POLY1)
+		memcpy(&color_cara[0], &ta_address_pointer[4], sizeof(float) * 4);
+	else
+	if (global_parameter == TA_GLOBAL_POLY2 || global_parameter == TA_GLOBAL_POLY4)
 		memcpy(&color_cara[0], &ta_address_pointer[8], sizeof(float) * 4);
-
-		/* En POLY4 la segunda mitad es el color de cara del otro volumen; en
-		   POLY2 es el color de offset. Ni uno ni otro se usan todavia. */
-	}
 
 	/*
 		Un encabezado de volumen modificador solo trae la palabra ISP/TSP: no
@@ -3500,4 +3668,5 @@ void DibujarGL(SDL_Surface * sfc)
 
 	logxmsg(LOG_PVR, "DibujarGL: SDL_GL_SwapBuffers\n");
 	SDL_GL_SwapBuffers();
+	fps_marcar_cuadro();
 }

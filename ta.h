@@ -35,7 +35,7 @@
 	se numeran detras para que quepan en la misma variable.
 */
 #define TA_GLOBAL_POLY0		0	/* 32 bytes */
-#define TA_GLOBAL_POLY1		1	/* 64: lleva color de cara */
+#define TA_GLOBAL_POLY1		1	/* 32: color de cara en las palabras 4-7 */
 #define TA_GLOBAL_POLY2		2	/* 64: color de cara y de offset */
 #define TA_GLOBAL_POLY3		3	/* 32: dos volumenes, sin color de cara */
 #define TA_GLOBAL_POLY4		4	/* 64: dos volumenes, dos colores de cara */

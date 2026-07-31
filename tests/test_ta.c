@@ -162,9 +162,11 @@ static void el_sprite_se_reconoce_aunque_no_se_dibuje(void)
 
 static void los_tamanos_son_los_del_manual(void)
 {
-	/* Solo llevan 64 los que traen color de cara. */
+	/* Solo llevan 64 los que traen DOS colores: POLY2 (cara y offset) y
+	   POLY4 (uno por volumen). El POLY1 lleva uno y cabe en 32, en las
+	   palabras 4-7 -- lo ejercita el boot ROM, no los demos de KOS. */
 	ESPERAR_I32(ta_tam_global(TA_GLOBAL_POLY0), 32);
-	ESPERAR_I32(ta_tam_global(TA_GLOBAL_POLY1), 64);
+	ESPERAR_I32(ta_tam_global(TA_GLOBAL_POLY1), 32);
 	ESPERAR_I32(ta_tam_global(TA_GLOBAL_POLY2), 64);
 	ESPERAR_I32(ta_tam_global(TA_GLOBAL_POLY3), 32);
 	ESPERAR_I32(ta_tam_global(TA_GLOBAL_POLY4), 64);

@@ -145,6 +145,7 @@ void RedibujarPantalla()
 		DibujarFramebuffer();
 		gui_refresh();
 		SDL_GL_SwapBuffers();
+		fps_marcar_cuadro();
 		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 	}
 }
@@ -610,6 +611,10 @@ void main_loop(void)
 						pausa = false;
 					else
 						pausa = true;
+					break;
+
+					case SDLK_f: // contador de FPS en el titulo
+					fps_visible = !fps_visible;
 					break;
 					
 /*					case SDLK_i: // generar int?
