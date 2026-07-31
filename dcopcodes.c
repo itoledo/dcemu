@@ -5,6 +5,7 @@
 #include "iso.h"
 #include "gdrom.h"
 #include "sistema.h"
+#include "traza.h"
 
 #define PI 3.1415926535
 
@@ -210,6 +211,17 @@ void hack_gdrom()
 	DWORD valor;
 
 	logmsg("HACK_GDROM: r6=%x, r7=%x\r\n", R(6), R(7));
+
+	/* Con los hooks puestos el juego no le habla a la lectora emulada, asi que
+	   los paquetes SPI que reporta gdrom.c no dicen nada: lo que hay que ver es
+	   esto. Sin esta linea, "no lee del disco" y "lee por syscall" se parecen
+	   demasiado -- y ya costo confundirlos una vez. */
+	if (traza_activa)
+		fprintf(stderr, "hack: syscall GD-ROM r4=%lx r5=%lx r6=%lx r7=%lx "
+			"(PC=%08lx PR=%08lx)\n",
+			(unsigned long) R(4), (unsigned long) R(5),
+			(unsigned long) R(6), (unsigned long) R(7),
+			(unsigned long) PC, (unsigned long) PR);
 	if (R(6) == 0)
 	{
 		switch(R(7))
@@ -257,18 +269,43 @@ void hack_gdrom()
    				}
    				break;
 			}
-			R(0) = 0x6969;
+			/* El identificador de la peticion, que el guest usara para
+			   preguntar por ella. Aqui es fijo porque nunca hay mas de una
+			   viva: el trabajo ya se hizo mas arriba, en el momento. */
+			com = 0x6969;
+			R(0) = com;
 			break;
 
 		    case 1: // GDROM_CHECK_COMMAND
 		    logmsg("GDROM_CHECK_COMMAND: r4=%x, r5=%x\r\n", R(4), R(5));
+			/*
+				gdGdcGetCmdStat(peticion, estado). Como SEND_COMMAND hace el
+				trabajo en el momento, cuando el guest pregunta el comando ya
+				termino: COMPLETED. Devolver NO_ACTIVE la primera vez que se
+				preguntaba por una peticion --que es lo que hacia-- se lee como
+				"esa peticion no existe", y Crazy Taxi respondia reintentando la
+				inicializacion entera, para siempre.
+
+				Los codigos son los del driver de la BIOS: 0 NO_ACTIVE,
+				1 PROCESSING, 2 COMPLETED, 3 STREAMING, 4 BUSY.
+			*/
 		    if (R(4) == com)
-		  	  R(0) = 2;
-		   else
 			{
-			com = R(4);
-			R(0) = 0;
+				/* Cuatro words de estado. Sin error que informar van en cero;
+				   dejarlos sin tocar le entregaba al guest lo que hubiera. */
+				if (R(5))
+				{
+					DWORD	cero = 0;
+					int		i;
+
+					for (i = 0; i < 4; i++)
+						WriteMemoryL(R(5) + i * 4, &cero);
+				}
+
+				R(0) = 2;			// COMPLETED
 			}
+		    else
+				R(0) = 0;			// NO_ACTIVE: no hay tal peticion
 		    break;
 
 		    case 2: // GDROM_MAIN_LOOP
