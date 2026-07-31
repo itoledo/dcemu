@@ -20,6 +20,11 @@
 
 int traza_activa = 0;
 
+/* EXPERIMENTO: cuando es >0 se decrementa por instruccion y al llegar a cero
+   vuelca el anillo. Sirve para mirar que hace el guest N instrucciones despues
+   de algo -- por ejemplo despues de que la lectora le entregue un archivo. */
+long traza_disparo = 0;
+
 /* ------------------------------------------------------------------------ */
 /* Caida del emulador                                                       */
 /* ------------------------------------------------------------------------ */
@@ -432,6 +437,9 @@ void traza_volcar(const char * motivo)
 
 void traza_paso(DWORD pc)
 {
+	if (traza_disparo > 0 && --traza_disparo == 0)
+		traza_volcar("disparo");
+
 	DWORD	distintos[BUCLE_MAX];
 	int		cantidad;
 

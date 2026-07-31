@@ -33,6 +33,9 @@
 
 extern int traza_activa;
 
+/* EXPERIMENTO: ver traza.c. */
+extern long traza_disparo;
+
 #define TRAZA_LECTURA	0
 #define TRAZA_ESCRITURA	1
 

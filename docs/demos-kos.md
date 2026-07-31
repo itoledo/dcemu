@@ -451,9 +451,41 @@ Descartado por medición, no por razonamiento:
   y `SET_MODE`, todos verificados uno por uno contra lo que responde la lectora.
 - Y no queda **ni una** dirección sin emular en toda la corrida.
 
-Lo que falta es averiguar qué comprueba el ROM entre leer `GDTEX.PVR` y cargar
-el ejecutable. La punta del hilo es la rutina que manda esos `CD_READ`, que los
-paquetes reportan con `PR=8c002c66`.
+### Qué hace el ROM entre leer `GDTEX.PVR` y rendirse
+
+Desensamblado el 31 de julio de 2026 con el 1.01d. La cadena, de abajo arriba:
+
+1. Después de recibir la textura el ROM entra en un **bucle de espera** en
+   `0x8c0ba506`. Llama por puntero a un callback que resulta ser un `RTS` vacío
+   y compara dos contadores en `0x8c230268`/`0x8c23026c` contra un límite,
+   repitiendo mientras la bandera de `0x8c2303b0` siga en 1.
+2. Quien apaga esa bandera es `0x8c0dacfe`. Se llega ahí porque
+   `BSR 0x8c0da614` devuelve **1**; el camino bueno es el de al lado
+   (`0x8c0dacf4`, `MOV #1, R0`), y pide que devuelva **0**.
+3. `0x8c0da614` recorre una **tabla de cuatro estados** en `0x8c230388`,
+   atiende las entradas cuyo estado vale 1 y, al agotar el bucle sin trabajo
+   pendiente, devuelve 1 — que es exactamente lo que pasa.
+4. Atender una entrada consiste en pulsar el **SOFTRESET del TA**
+   (`0xA05F8008`, un 1 y luego un 0) y programar el TA con una tanda de
+   registros que saca de una tabla en `0x8c2304b4`.
+
+O sea que el ROM **está montando el render de la pantalla de licencia con el
+TA**, y la espera termina por "no queda nada pendiente" en vez de por "el render
+salió". Encaja con las cero tiras: la lista no llega a completarse.
+
+Y ahí aparece un hueco concreto: de los registros de ese bloque del TA, dcemu
+sólo atiende `0x005F8128` (`TA_ISP_BASE`), `0x005F8138`, `0x005F8144`
+(`TA_LIST_INIT`) y los dos del convertidor YUV. **`0x005F8124` — el
+`TA_OL_BASE`, el inicio del buffer de listas de objetos, que es el primero que
+el ROM escribe — no tiene caso en ningún sitio**, ni tampoco `0x812C`, `0x8130`,
+`0x8134`, `0x813C` ni `0x8140`. Las escrituras caen en el respaldo del bloque de
+control y no rompen nada visible, pero nadie las lee. Ese es el siguiente sitio
+donde mirar.
+
+Para llegar hasta aquí se añadió `traza_disparo`: puesto a N, se decrementa por
+instrucción y vuelca el anillo al llegar a cero. `DCEMU_DISPARO=fad,N` lo arma
+cuando la lectora entrega ese FAD, y es lo que permite ver qué hace el guest N
+instrucciones después de recibir un archivo.
 
 ### Cómo reproducirlo
 

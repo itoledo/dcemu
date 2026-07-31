@@ -608,6 +608,18 @@ static void cmd_cd_read(const BYTE * p)
 		}
 	}
 
+	/* EXPERIMENTO: armar el volcado del anillo N instrucciones despues de
+	   entregar cierto sector, para ver que hace el guest con lo que recibio. */
+	if (traza_activa && getenv("DCEMU_DISPARO"))
+	{
+		const char * d = getenv("DCEMU_DISPARO");
+		int quefad = atoi(d);
+		const char * coma = strchr(d, ',');
+
+		if (fad == quefad && coma)
+			traza_disparo = strtol(coma + 1, NULL, 0);
+	}
+
 	gdrom.datos_tam = total;
 	gdrom.datos_pos = 0;
 	gdrom.error     = 0;
