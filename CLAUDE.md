@@ -277,26 +277,33 @@ the guest reads that dcemu answers without meaning it:
   717 sectors — and closes with an ATA `NOP`; the driver reads ERROR, tests `& 4` and, with no
   ABRT, treats the abort as not having happened and leaves the command "transferring" forever.
 
-**Which images boot, and why the others do not.** What the drive says about the disc picks the
-ROM's branch, so `iso.c` has to get the disc right: a `.cdi` **is a CD** (`iso_es_gdrom()` is
-only true under `DCEMU_COMO_GD` now), two sessions are told apart by **the gap** between
-tracks (inside a session they are contiguous but for the 150-sector pregap; closing one and
-opening another costs about 11400), and the TOC is **not** split into density areas unless the
-disc really is a GD-ROM. `iso_init()` lists every track with its LBA, size, mode and file
-offset — that listing is the first thing to look at.
+**Which images boot.** What the drive says about the disc picks the ROM's branch, so `iso.c`
+has to get the disc right: a `.cdi` **is a CD** (`iso_es_gdrom()` is only true under
+`DCEMU_COMO_GD` now), two sessions are told apart by **the gap** between tracks (inside a
+session they are contiguous but for the 150-sector pregap; closing one and opening another
+costs about 11400), and the TOC is **not** split into density areas unless the disc really is
+a GD-ROM. `iso_init()` lists every track with its LBA, size, mode and file offset — that
+listing is the first thing to look at.
 
-| imagen | pista 1 | pista 2 | arranca por BIOS |
+Both selfboot layouts work, and the ROM finds `1ST_READ.BIN` on all of them:
+
+| imagen | pista 1 | pista 2 | formato |
 | --- | --- | --- | --- |
-| Crazy Taxi | LBA 0, 302 sectores, **audio** | LBA 11702, 346490, datos | **sí** |
-| Virtua Tennis | LBA 0, 33600, datos | LBA 45000, 314662, datos | no |
-| Capcom vs SNK | LBA 0, 217425, datos | LBA 228825, 130014, datos | no |
+| Crazy Taxi (DCRES) | LBA 0, 302 sectores, **audio** | LBA 11702, 346490, datos | audio/datos |
+| DCDoom | LBA 0, 302, **audio** | LBA 11702, 18487, datos | audio/datos |
+| Crazy Taxi (USA) | LBA 0, 33600, datos | LBA 45000, 306552, datos | datos/datos |
+| Virtua Tennis (USA) | LBA 0, 33600, datos | LBA 45000, 314830, datos | datos/datos |
+| Capcom vs. SNK (USA) | LBA 0, 33600, datos | LBA 45000, 314569, datos | datos/datos |
 
-The two that fail are rejected by the MIL-CD handler itself, and the check is at `0x8CE003B6`:
-it asks for the TOC with `GETTOC2` and **fails if the first entry is a data track** (`AND #40`
-on the control field). Crazy Taxi's first track is audio — the *Audio/Data* selfboot layout,
-which is the one this ROM recognises. The other two are not the canonical *Data/Data* layout
-either: there the first session's track is 300 sectors carrying the IP.BIN, while these are
-33600 and 217425 sectors of zeros with the IP.BIN only at the start of the second session.
+**The TOC's byte order on the wire is not the struct's.** Each entry goes out with the
+**control byte first** and the FAD behind it big-endian, like every other SPI response;
+`struct TOC` holds it the other way round — control in bits 31-28, FAD in 23-0 — because that
+is what the *receiver* wants: the ROM's GD-ROM driver reverses each word before handing it to
+its caller, and that reversed form is the one KOS reads (`TOC_CTRL`, `TOC_LBA`). The syscall
+hook skips the driver, so there the struct goes out as-is; `cmd_get_toc()` swaps. Sending it
+unswapped makes the guest read the FAD where it expects the control byte, and the ROM's
+MIL-CD handler — which checks at `0x8CE003B6` whether the first track is data — rejected
+perfectly good discs. That was the whole reason the data/data layout would not boot.
 
 Note dcemu also boots these games **without** `--bios` — it loads `ip.bin` and
 `1st_read.bin` from the image directly, and with a `.cdi` that path issues no SPI packet at

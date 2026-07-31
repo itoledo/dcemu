@@ -738,7 +738,7 @@ tope el log se fue a los gigabytes y la ventana dejó de responder.
 
 ### Qué disco es cada uno, y por qué importa
 
-Lo que la lectora dice del disco decide la rama entera. Dos cosas lo decidían mal:
+Lo que la lectora dice del disco decide la rama entera. Tres cosas lo decidían mal:
 
 - **`iso_es_gdrom()` daba GD-ROM por la posición de la pista de datos.** Un `.cdi` describe
   un CD normal; que su pista de datos empiece arriba del LBA 45000 sólo quiere decir que
@@ -746,34 +746,49 @@ Lo que la lectora dice del disco decide la rama entera. Dos cosas lo decidían m
   experimento.
 - **Las sesiones se buscaban sólo por «audio y después datos».** Lo que de verdad separa dos
   sesiones es **el hueco**: dentro de una sesión las pistas van pegadas salvo el pregap de
-  150 sectores, y cerrar una y abrir otra cuesta unos 11400 —que es justo lo que tienen las
-  tres imágenes de prueba—.
+  150 sectores, y cerrar una y abrir otra cuesta unos 11400 —que es justo lo que tienen todas
+  las imágenes de prueba—.
 - **Y la TOC se partía en dos áreas de densidad en cualquier disco.** Esas áreas sólo existen
   en un GD-ROM; en un CD hay una TOC y punto. Con el corte en el FAD 45150, una imagen que
-  deja el relleno en la pista 1 y el juego justo en el 45150 —Virtua Tennis— contestaba un
-  área 0 con la pista de relleno sola: el juego desaparecía de la TOC.
+  deja el relleno en la pista 1 y el juego justo en el 45150 contestaba un área 0 con la
+  pista de relleno sola: el juego desaparecía de la TOC.
 
-Las tres, tal como las lee `cdi.c`:
+### La TOC iba al revés en el cable
 
-| imagen | pista 1 | pista 2 | arranca por BIOS |
-| --- | --- | --- | --- |
-| Crazy Taxi | LBA 0, 302 sectores, **audio** | LBA 11702, 346490, datos | **sí** |
-| Virtua Tennis | LBA 0, 33600, datos | LBA 45000, 314662, datos | no |
-| Capcom vs SNK | LBA 0, 217425, datos | LBA 228825, 130014, datos | no |
+Lo último que faltaba, y lo que tenía cerrados los selfboot de **datos/datos**.
+
+En el cable cada entrada de la TOC lleva **el byte de control primero** y el FAD detrás en
+big-endian, como el resto de las respuestas SPI. `struct TOC` la guarda al revés —control en
+los bits 31-28, FAD en los 23-0— porque así la quiere el que la recibe: **el driver de
+GD-ROM de la ROM da vuelta cada palabra** antes de entregársela a su llamador, y en ese
+formato es en el que KOS la lee (`TOC_CTRL`, `TOC_LBA`). El hook de syscall se salta al
+driver, así que ahí la estructura va tal cual; por el cable hay que invertir.
+
+Se midió de la única forma que lo demuestra: dcemu mandaba `41000096` y el guest leía
+`96000041`, la palabra dada vuelta byte a byte. Sin invertir, el manejador de MIL-CD —que en
+`0x8CE003B6` mira si la primera pista es de datos con un `AND #40`— lo leía del byte
+equivocado y rechazaba discos buenos. Da la casualidad de que en un audio/datos el byte
+equivocado también daba «no es de datos», y por eso ése era el único formato que arrancaba.
+
+Con esto arrancan los dos formatos, y el ROM encuentra el `1ST_READ.BIN` en todos:
+
+| imagen | pista 1 | pista 2 | formato | 1ST_READ.BIN |
+| --- | --- | --- | --- | --- |
+| Crazy Taxi (DCRES) | LBA 0, 302, **audio** | LBA 11702, 346490, datos | audio/datos | FAD 357623, 717 sec |
+| DCDoom | LBA 0, 302, **audio** | LBA 11702, 18487, datos | audio/datos | FAD 11895, 506 |
+| Crazy Taxi (USA) | LBA 0, 33600, datos | LBA 45000, 306552, datos | datos/datos | FAD 350835, 717 |
+| Virtua Tennis (USA) | LBA 0, 33600, datos | LBA 45000, 314830, datos | datos/datos | FAD 358810, 1018 |
+| Capcom vs. SNK (USA) | LBA 0, 33600, datos | LBA 45000, 314569, datos | datos/datos | FAD 358225, 1174 |
 
 ### Lo que queda
 
-- **Los selfboot de datos/datos no pasan el manejador de MIL-CD.** Pide la TOC con `GETTOC2`
-  y rechaza el disco si la primera entrada es una pista de datos: `MOV.L @R11,R0; AND R12,R0;
-  CMP/EQ #40,R0; BT <fallo>` en `0x8CE003B6`, o sea el bit 2 del campo de control. Crazy Taxi
-  tiene la pista 1 de audio —el formato **Audio/Data**, el que este ROM reconoce— y pasa; las
-  otras dos la tienen de datos.
-
-  Tampoco son **Data/Data** del canónico, donde la pista de la primera sesión son 300 sectores
-  con el IP.BIN en su bootsector: aquí son 33600 y 217425 sectores **de ceros** —comprobado
-  leyendo el archivo en el offset que reporta `cdi.c`— y el IP.BIN aparece sólo al principio
-  de la segunda sesión. Queda por averiguar si una consola de verdad las arranca por otro
-  camino, y cuál.
+- **`Virtua Tenis 2 (USA).cdi` no se parsea.** `cdi.c` no le encuentra pistas y la lectora
+  queda sin disco (`unidad=7 formato=0`). Es del lector de DiscJuggler, no del arranque: las
+  otras cinco imágenes se parsean bien.
+- **Un `1st_read.bin` suelto no carga.** `roms/mame4all/` trae `ip.bin` y `1st_read.bin` sin
+  imagen de disco, y `dcemu 1st_read.bin` los descifra igual: en una carpeta suelta el
+  ejecutable **no está cifrado** —el cifrado lo pone el mastering del disco— y el guest sale
+  ejecutando ceros desde `0x00006b03`. `main.c` pasa `scrambled` fijo sin comprobar nada.
 - **El juego arranca pero no dibuja.** Tras el salto el ejecutable corre —el PC recorre
   `0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
   (`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, que carga
