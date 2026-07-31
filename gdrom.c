@@ -265,8 +265,19 @@ void gdrom_construir_toc_area(struct TOC * toc, int area)
 
 void gdrom_construir_toc(struct TOC * toc)
 {
-	/* Sin area: la del juego, que es la que pide el hook de syscall. */
-	gdrom_construir_toc_area(toc, iso_es_gdrom() ? 1 : 0);
+	/*
+		Sin area: la del juego, que es la que pide el hook de syscall. Cual es
+		se decide por donde estan las pistas y no por el tipo de disco: hay
+		conversiones a CD que dejan la pista de datos justo en el FAD 45150, o
+		sea en el area 1, y siguen siendo un CD.
+	*/
+	int i, n = iso_num_pistas(), area = 0;
+
+	for (i = 0; i < n; i++)
+		if (iso_pista_fad(i) >= GD_FAD_ALTA_DENSIDAD)
+			area = 1;
+
+	gdrom_construir_toc_area(toc, area);
 }
 
 /* ------------------------------------------------------------------------ */

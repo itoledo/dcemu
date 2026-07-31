@@ -119,6 +119,15 @@ int iso_init(char * sDevice)
 			sDevice, cdi.n, (cdi.n == 1) ? "" : "s",
 			pista->lba, pista->sectores, pista->sector_crudo, pista->modo);
 
+		/* El modo de cada pista es lo que decide cuantas sesiones ve la lectora
+		   --audio seguido de datos es un selfboot de dos sesiones-- y con eso
+		   el boot ROM elige entre arrancar y abrir el reproductor de musica. */
+		for (cual = 0; cual < cdi.n; cual++)
+			fprintf(stderr, "iso_init:   pista %d: LBA %u, %u sectores, modo %u"
+				" (%s)\n", cual + 1, cdi.pistas[cual].lba,
+				cdi.pistas[cual].sectores, cdi.pistas[cual].modo,
+				cdi.pistas[cual].modo ? "datos" : "audio");
+
 		formato_imagen = FORMATO_CDI;
 		iso_lba_base = pista->lba;
 		iso_modo_pista = (int) pista->modo;
@@ -229,10 +238,28 @@ int iso_gd_presentando(void)
 	return iso_gd_presentar;
 }
 
+/*
+	Si la lectora tiene que decir "GD-ROM" o "CD-ROM".
+
+	Un `.cdi` **es un CD**: DiscJuggler describe un disco de 12 cm normal, y una
+	consola de verdad lo ve como tal por mas que la pista de datos empiece
+	arriba del LBA 45000 -- eso solo quiere decir que delante hay una pista de
+	audio de 92 MB, que es como se convirtio el GD-ROM original y cabe de sobra
+	en un CD de 80 minutos.
+
+	Decir GD-ROM manda al boot ROM a su rama de GD-ROM, y ahi hay una puerta que
+	estas imagenes no pasan: para cargar el ejecutable pide que su FAD sea mayor
+	que 0x6DDD0, que en un GD-ROM prensado se cumple --el mastering deja el
+	1ST_READ.BIN al final, en el borde exterior-- y en una conversion a CD, que
+	es mas chica, no. Presentado como el CD que es, el ROM toma la rama de
+	MIL-CD y arranca. Ver docs/bios-boot-plan.md, cuarta corrida.
+
+	Queda DCEMU_COMO_GD para el experimento contrario, que fue como se descubrio
+	que la rama de GD-ROM no era el camino.
+*/
 int iso_es_gdrom()
 {
-	return formato_imagen == FORMATO_CDI
-		&& (iso_lba_base >= 45000 || iso_gd_presentar);
+	return formato_imagen == FORMATO_CDI && iso_gd_presentar;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -286,17 +313,25 @@ int iso_pista_es_datos(int i)
 
 /*
 	Sesiones. El .cdi no guarda a que sesion pertenece cada pista, pero la
-	frontera se puede inferir: en un disco de arranque directo ("selfboot",
-	el truco MIL-CD con que circulan las conversiones a CD) la sesion 1 es
-	audio y la 2 empieza en la primera pista de datos que viene despues de
-	una de audio. En un GD-ROM la segunda es el area de alta densidad. Todo
-	lo demas -- un .iso plano, un CD con una sola pista de datos -- es una
-	sola sesion.
+	frontera se puede inferir, y lo que la delata es **el hueco**: dentro de una
+	sesion las pistas van pegadas, salvo el pregap de 150 sectores, mientras que
+	cerrar una sesion y abrir otra cuesta el lead-out y el lead-in, unos 11400.
+	Una pista que no empieza donde termino la anterior arranca sesion nueva.
 
-	El boot ROM decide con esto: pide las sesiones y arranca la ultima; si
-	la respuesta dice "una sesion" y la primera pista es audio, lo que ve es
-	un CD de musica y abre el reproductor.
+	Antes esto solo miraba el otro indicio, "audio y despues datos", que es como
+	se ve la conversion clasica --una pista de audio corta y el juego detras--.
+	Pero hay selfboots de **datos y datos**: Virtua Tennis pone 33600 sectores de
+	relleno en la pista 1 y el juego en el LBA 45000, y Capcom vs SNK 217425 y el
+	juego en el 228825. Los dos salian como "una sesion", la lectora los daba por
+	CD-ROM plano y el boot ROM se iba por su rama de GD-ROM, que no los arranca.
+
+	El boot ROM decide con esto: pide las sesiones y arranca la ultima. Todo lo
+	demas -- un .iso plano, un CD con una sola pista -- es una sola sesion.
 */
+
+/* Dentro de una sesion las pistas se tocan. Este es el margen que se tolera
+   antes de llamarlo sesion nueva: el pregap normal es de 150 sectores. */
+#define ISO_HUECO_SESION	300
 
 /* La primera pista de la segunda sesion, o -1 si el disco tiene una sola. */
 static int iso_pista_segunda_sesion(void)
@@ -309,6 +344,10 @@ static int iso_pista_segunda_sesion(void)
 	for (i = 0; i < iso_cdi.n; i++)
 	{
 		if (iso_es_gdrom() && iso_pista_fad(i) >= 45150)
+			return i;
+
+		if (i > 0 && iso_pista_fad(i) >
+			iso_pista_fad(i - 1) + iso_pista_sectores(i - 1) + ISO_HUECO_SESION)
 			return i;
 
 		if (!iso_pista_es_datos(i))
