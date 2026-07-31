@@ -538,7 +538,17 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 #ifdef USE_LIBCDIO
 			case FORMATO_CDIO: if (cdio_read_data_sectors(cdio, mempos, lsn, ISO_BLOCKSIZE, secsize) == DRIVER_OP_SUCCESS) fprintf(stderr, "archivo leido exitosamente.\n"); break;
 #endif
-			case FORMATO_ISO9660: if (min_iso_seek_read(iso, mempos, lsn, secsize) > 0) fprintf(stderr, "archivo leido exitosamente.\n"); break;
+			/* FORMATO_CDI no estaba en esta lista y si en la del stat de mas
+			   arriba: el archivo se encontraba, se reportaba su tamano... y no
+			   se leia ni un byte. Lo que se ejecutaba era la RAM sin
+			   inicializar, y de ahi que un .cdi terminara siempre en el menu
+			   de la BIOS. */
+			case FORMATO_ISO9660:
+			case FORMATO_CDI:
+				if (min_iso_seek_read(iso, mempos, lsn, secsize) > 0)
+					fprintf(stderr, "archivo leido exitosamente.\n");
+				break;
+
 			default: break;
 		}
 
