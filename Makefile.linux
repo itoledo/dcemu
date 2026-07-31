@@ -1,8 +1,8 @@
 CPP  = g++
 CC   = gcc
 
-OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
-LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/vram.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/vram.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
 
 
 LIBS = `sdl-config --libs` -Llib/linux -lSDLmain -lSDL -lcdio -lGL -liso9660 -lguichan_opengl -lguichan_sdl -lguichan -lSIMDx86
@@ -25,13 +25,13 @@ clean: clean-custom
 $(BIN): $(OBJ)
 	$(CC) $(LINKOBJ) -o "dcemu" $(LIBS)
 
-./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h   graficos.h intc.h gui.h render.h
+./obj/graficos.o: graficos.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h   graficos.h intc.h gui.h render.h vram.h
 	$(CC) -c graficos.c -o ./obj/graficos.o $(CFLAGS)
 
 ./obj/main.o: main.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h BFont.h branch.h intc.h debug.h graficos.h iso.h gui.h gdrom.h opciones.h sistema.h traza.h
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
 
-./obj/mem.o: mem.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h intc.h   graficos.h gui.h gdrom.h opciones.h sistema.h traza.h mmu.h
+./obj/mem.o: mem.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h intc.h   graficos.h gui.h gdrom.h opciones.h sistema.h traza.h mmu.h vram.h
 	$(CC) -c mem.c -o ./obj/mem.o $(CFLAGS)
 
 ./obj/mmu.o: mmu.c mmu.h lnxdefs.h log.h excepciones.h sh4emu.h
@@ -123,6 +123,9 @@ $(BIN): $(OBJ)
 
 ./obj/ta.o: ta.c ta.h graficos.h main.h lnxdefs.h
 	$(CC) -c ta.c -o ./obj/ta.o $(CFLAGS)
+
+./obj/vram.o: vram.c vram.h lnxdefs.h
+	$(CC) -c vram.c -o ./obj/vram.o $(CFLAGS)
 
 ./obj/scramble.o: scramble.c 
 	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)

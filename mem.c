@@ -15,6 +15,7 @@
 #include "wdt.h"
 #include "tmu.h"
 #include "ta.h"				/* ta_procesar_bloque(), para el CH2 DMA */
+#include "vram.h"			/* las dos ventanas de la RAM de video */
 
 
 #define DWREF(p) (*(DWORD *)(p))
@@ -539,18 +540,28 @@ void sq_write(unsigned long direccion, void * p, size_t size)
     memcpy((unsigned char *) sq + off, p, size);
 }
 
+/* Las ventanas de 64 bits sobre la RAM de video: 0x04 (y su espejo P2 0xA4) y
+   la FIFO de texturas del TA en 0x11. El resto -- 0x05/0xA5, 0x13 -- es la de
+   32 bits, cuya numeracion es la del bloque. Ver vram.h. */
+#define VRAM_VENTANA_64(direccion)	\
+	((((direccion) >> 24) & 0x1F) == 0x04 || (((direccion) >> 24) & 0x1F) == 0x11)
+
 void video_read(unsigned long direccion, void * p, size_t size)
 {
-//	long addr = direccion & 0x0FFFFFFF;
-	long addr = direccion & 0x00FFFFFF;
+	/* 8 MB, no 16: la mascara de 24 bits dejaba salirse del bloque. */
+	long addr = direccion & 0x007FFFFF;
 
-//	memcpy(p, &video_mem[direccion - video_base], size);
 #ifdef DEBUG_MEM_VIDEO
 //	if (logvideomem)
 		logxmsg(LOG_MEM, "video_read: dir %x\r\n", direccion);
 #endif
-	
-//	memcpy(p, &video_mem[addr], size);
+
+	if (VRAM_VENTANA_64(direccion))
+	{
+		vram64_leer((DWORD) addr, p, size);
+		return;
+	}
+
     switch(size)
     {
         case 1:		*(BYTE *)p = *(BYTE *) &video_mem[addr];		break;
@@ -558,22 +569,6 @@ void video_read(unsigned long direccion, void * p, size_t size)
         case 4:		*(DWORD *)p = *(DWORD *) &video_mem[addr];	break;
 		default:	memcpy(p, &video_mem[addr], size);   		break;
     }
-
-/*	if (addr >= 0x04000000 && addr <= 0x07FFFFFF)
-	{
-		memcpy(p, &video_mem[addr - 0x04000000], size);
-	} */
-
-/*    if ((direccion - video_base) >= (screen->w * screen->h * (screen->format->BitsPerPixel / 8))
-    {
-    	memcpy(p, &video_mem[direccion - video_base], 
-	else
-	if ((direccion - video_base) < 0)
-    {
-//        logmsg("dibujando fuera de la pantalla: dir %x\r\n", direccion);
-    }
-    else
-		ReadPixelN(direccion - video_base, p, size); */
 }
 
 void pvr_read(unsigned long direccion, void * p, size_t size)
@@ -1972,12 +1967,9 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 }
 
 void video_write(unsigned long direccion, void * p, size_t size)
-{ 
-//	memcpy(&video_mem[direccion - video_base], p, size);
-//	PutPixelN(direccion - video_base, p, size);
-//	Uint8 * target = (Uint8 *) screen->pixels + (direccion - video_base);
-//	long addr = direccion & 0x0FFFFFFF;
-	long addr = direccion & 0x00FFFFFF;
+{
+	/* 8 MB, no 16: la mascara de 24 bits dejaba salirse del bloque. */
+	long addr = direccion & 0x007FFFFF;
 
 	// Contar las escrituras a RAM de video por ventana. Si el guest cree que
 	// dibuja y esto no sube, el problema esta en el camino de escritura y no en
@@ -1986,7 +1978,10 @@ void video_write(unsigned long direccion, void * p, size_t size)
 	{
 		traza_video_escrituras++;
 		traza_video_bytes += (DWORD) size;
-		traza_video_ventanas |= 1u << ((direccion >> 24) & 0x0F);
+		/* & 0x1F y no & 0x0F: con cuatro bits 0x11 y 0x13 caian sobre 0x04 y
+		   0x05 y el reporte no distinguia la FIFO de texturas. Los espejos P2
+		   siguen plegandose sobre la fisica, que es lo que interesa. */
+		traza_video_ventanas |= 1u << ((direccion >> 24) & 0x1F);
 
 		if (addr < traza_video_min)	traza_video_min = addr;
 		if (addr > traza_video_max)	traza_video_max = addr;
@@ -2002,27 +1997,12 @@ void video_write(unsigned long direccion, void * p, size_t size)
 	}
 #endif
 
-/*    if ((direccion - video_base) < (backscreen->w * backscreen->h * (backscreen->format->BitsPerPixel / 8))
-    &&  (direccion - video_base) > 0)
-    {
-    	SDL_LockSurface(screen);
-    	memcpy(screenbase + direccion, p, size);
-    	SDL_UnlockSurface(screen);
-	} */
-
-/*	if (addr >= 0x04000000 && addr <= 0x07FFFFFF)
+	if (VRAM_VENTANA_64(direccion))
 	{
-		memcpy(p, &video_mem[addr - 0x04000000], size);
-	} */
+		vram64_escribir((DWORD) addr, p, size);
+		return;
+	}
 
-/*	switch(size)
-	{
-		case 1:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(BYTE *) p);	break;
-		case 2:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(WORD *) p); break;
-		case 4:		logxmsg(LOG_PVR, "%x=%x\n", addr, *(DWORD *) p); break;
-	} */
-
-//	if (addr < VIDEO_SIZE)
 	switch(size)
 	{
      	case 1:		*(BYTE *) &video_mem[addr] = *(BYTE *) p;	break;
@@ -2030,15 +2010,6 @@ void video_write(unsigned long direccion, void * p, size_t size)
      	case 4:		*(DWORD *) &video_mem[addr] = *(DWORD *) p;	break;
      	default:	memcpy(&video_mem[addr], p, size);			break;
 	}
-
-//	memcpy(&video_mem[addr], p, size);
-	
-/*	if (addr < framebuffer_size)
-	{
-		SDL_LockSurface(backscreen);
-		memcpy(backscreen->pixels + addr, p, size);
-		SDL_UnlockSurface(backscreen); */
-/*	} */
 }
 
 void regmap_read(unsigned long direccion, void * p, size_t size)

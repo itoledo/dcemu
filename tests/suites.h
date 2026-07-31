@@ -30,4 +30,7 @@ extern const dc_suite suite_mmu;
 extern const dc_suite suite_wdt;
 extern const dc_suite suite_tmu;
 
+/* Las dos ventanas de la RAM de video del PVR (vram.h). */
+extern const dc_suite suite_vram;
+
 #endif /* _SUITES_H_ */

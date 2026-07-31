@@ -419,13 +419,13 @@ register writes become rendering work.
 
 ### Graphics pipeline
 
-**Where the PVR stands (1 August 2026): of the ten KOS demos still failing, exactly one is the
-PVR's** — `pvr-fb_tex`, and for the twin video-RAM windows rather than anything about rasterising.
-Every texture format, every vertex type, sprites, modifier volumes and render-to-texture are in.
-Two residues are documented rather than hidden: the two markers `pvr_rtt_sized` draws at z=3 and
-z=4 (see "Render to texture"), and `tsunami-genmenu`, whose geometry arrives correctly but lands at
-y 631..1458 on a 480-line screen and never scrolls in — guest-side, since dcemu does not touch
-vertex coordinates.
+**Where the PVR stands: no KOS demo fails on the PVR anymore.** `pvr-fb_tex`, the last one, took
+the twin video-RAM windows (see below) *plus* the framebuffer writeback *plus* the depth-sign fix
+in `glOrtho` — and that last one also resolved the `pvr_rtt_sized` markers, the residue this
+section used to list. Every texture format, every vertex type, sprites, modifier volumes and
+render-to-texture are in. The one documented residue left is `tsunami-genmenu`, whose geometry
+arrives correctly but lands at y 631..1458 on a 480-line screen and never scrolls in — guest-side,
+since dcemu does not touch vertex coordinates.
 
 `pref142()` dispatches to the TA decoder only when the resolved store-queue target lands in
 the polygon FIFO, tested as `(addr & 0xFF800000) == 0x10000000`. It used to test
@@ -555,33 +555,53 @@ ignoring the destination and sending the scene meant for the texture straight to
 colour count dropped from 47539 to 2048 when this landed — which is the round trip through an
 RGB565 texture, i.e. the *right* number.
 
-Still open: `pvr_rtt_sized` draws two small markers inside the texture, at z=3 and z=4, that do not
-appear, while the background (z=0), the inner rect (z=2) and the borders (z=5) do — one level of
-overdraw works, two does not. It is the depth test (`GL_ALWAYS` makes them show) but **not
-precision**: the context grants 24 bits (`--traza-mem` prints what SDL actually gave) and shrinking
-the RTT pass's `glOrtho` range to ±64, which spreads those z values over a quarter of the buffer,
-changes nothing. The strips themselves are provably fine — `--traza-mem` prints all four corners,
-and the marker's quad is non-degenerate, correctly wound and inside the texture.
+The `pvr_rtt_sized` markers at z=3 and z=4 that this section used to list as "still open" were the
+depth sign in `glOrtho` — see "Depth" below. With that fixed all five layers show.
 
 **Do not request `SDL_GL_DEPTH_SIZE`.** Asking for 24 alongside the stencil and `BUFFER_SIZE 32`
 makes SDL pick a different pixel format; the context grants 24 bits anyway without asking.
 
-**Video RAM has two windows and dcemu models only one.** The PVR sees the same 8 MB through a
-32-bit area (`0xA5000000`), where the framebuffer is written, and a 64-bit area (`0xA4000000`),
-where it reads textures — the two interleave the two banks differently, so the same byte has two
-different addresses. dcemu points both zones flat at one block, which is fine as long as nothing
-crosses between them. `pvr-fb_tex` does exactly that: it samples the front buffer as a texture, and
-the numbers do not line up — its texture sits at `0x0014E900` while `FB_W_SOF1` reads `0x004A7480`.
-So that demo does not need "write the framebuffer to VRAM"; it needs the twin windows, which is a
-subsystem touching every texture and framebuffer path. The writeback was written and then removed
-once measurement showed it could never land where the texture looks; what stayed is
-`volcar_a_memoria()`, the reusable half, which render-to-texture uses.
+### The two windows of video RAM
+
+**The PVR sees the same 8 MB through two windows that interleave its two 4 MB banks differently.**
+The 32-bit area (`0x05000000`/`0xA5000000`) sees them contiguous — the bank is bit 22 — and is
+where the framebuffer lives; the 64-bit area (`0x04000000`/`0xA4000000`, plus the TA texture FIFO
+at `0x11000000`) alternates them every 4 bytes — the bank is bit 2 — and is where textures are
+read. Same byte, two addresses. `vram.c/h` owns the conversion (SDL-free, so `tests/` links it;
+suite `vram`), the block stays in 32-bit numbering, and every access through a 64-bit window
+converts:
+
+- `video_read`/`video_write` (`mem.c`) dispatch by top byte: zones `0x04`/`0x11` convert, `0x05`/
+  `0x13` stay flat. Uploads by store queue or CH2 DMA come through here, so they convert alone.
+- `get_texture()` gathers the texture into a contiguous staging buffer with `vram64_leer()` before
+  decoding — the TCW's address is 64-bit numbering. One insertion point; every decoder unchanged.
+- Render-to-texture **scatters** with `vram64_escribir()`: bit 24 of `FB_W_SOF1` means "write
+  through the 64-bit path" and KOS passes the texture address as-is.
+- The TA's YUV converter writes its output the same way: `TA_YUV_TEX_BASE` is a texture address.
+
+`pvr-fb_tex` is the demo that forced all of it: it samples its own front buffer as a texture
+(texture at `0x0014E900` = FB at `0x004A7480`, exactly ×2 with the bank in bit 2), relying on the
+hardware interleave to produce "two correct pixels, two garbage" which it reconstructs with a mask
+and two DSTALPHA passes. It needs the windows **and** the framebuffer writeback: dcemu renders 3D
+in OpenGL, so the front buffer does not exist in VRAM unless written back. The writeback
+(`volcar_escena_a_framebuffer()`) is armed by `get_texture()` the moment a texture's converted
+address falls inside the frame the PVR writes or displays, and from then on every scene is read
+back with `glReadPixels` and stored through the 32-bit window — before that it costs nothing, so
+no other demo pays for it.
 
 ### Depth
 
 **The TA's z is 1/w — larger means nearer — and it is stored as-is.** The PVR's compare modes are
 written in those terms (`GREATER` passes what is nearer), and `screeninit()`'s `glOrtho` maps rising
 eye-z to rising depth, so the ordering comes out right with no transformation.
+
+**That mapping requires near/far *inverted* in `glOrtho` — `(32768, -32768)` — because GL negates
+eye z** (`z' = -2z/(far-near)`). With the natural-looking `(-32768, 32768)` a larger vertex z came
+out with a *smaller* depth value, so `GL_GREATER` kept what is *farther*: a near strip lost against
+a far one already drawn. `pvr-fb_tex` measured it — its full-screen mask at z=1 left the cube at
+z=4 invisible, 0 non-black pixels in the whole scene — and the `pvr_rtt_sized` markers at z=3/z=4
+losing against the interior at z=2 were the same bug. Both `glOrtho` calls (screen and RTT) carry
+the inversion.
 
 It used to store the **reciprocal**, which inverts it. Two layers still survive that — the top one
 wins anyway because the bottom never wrote — but three do not, and the result is that only the first

@@ -8,6 +8,7 @@
 #include "traza.h"
 #include "opciones.h"		/* --captura-gl */
 #include "ta.h"				/* clasificacion de los parametros del TA */
+#include "vram.h"			/* las dos ventanas de la RAM de video */
 //#include "glops.h"
 #include "render.h"
 
@@ -348,7 +349,11 @@ static void yuv_convertir_macrobloque(int es422)
 					(DWORD) (((mby * 16 + y) * ancho_px + (mbx * 16 + x)) * 2);
 
 				yuv_a_yuv422(pixel, y0, y1, u, v);
-				memwrite_fisico(0xA5000000 | destino, pixel, 4);
+
+				/* TA_YUV_TEX_BASE es una direccion de textura: numeracion del
+				   area de 64 bits, la misma por la que get_texture() la va a
+				   juntar. Ver vram.h. */
+				vram64_escribir(destino, pixel, 4);
 			}
 		}
 	}
@@ -654,13 +659,77 @@ static void aplicar_filtros(int strip)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, modo);
 }
 
+/*
+	El volcado del framebuffer a la RAM de video, armado bajo demanda.
+
+	dcemu manda el 3D a OpenGL y la escena nunca pasa por la RAM de video. A
+	casi ninguna demo le importa, pero pvr-fb_tex muestrea su propio front
+	buffer como textura: necesita que el cuadro exista en memoria **y** que las
+	dos numeraciones (vram.h) esten bien, porque la textura lo lee por la
+	ventana de 64 bits y el framebuffer se escribio por la de 32.
+
+	Se arma aca abajo y lo consume volcar_escena_a_framebuffer(); antes de
+	armarse no cuesta nada, para no cobrarle un glReadPixels por cuadro a
+	todas las demas demos.
+*/
+static int volcado_fb_armado = 0;
+
+/*
+	El disparador: una textura cuya direccion, convertida a la numeracion de
+	32 bits, cae dentro del cuadro que el PVR escribe o muestra, esta
+	muestreando el framebuffer.
+*/
+static void armar_volcado_si_muestrea_framebuffer(DWORD memorypos)
+{
+	DWORD	a32 = vram_64_a_32(memorypos);
+	DWORD	sof_w = 0, paso = 0, pclip_y = 0;
+	DWORD	sof_r = pvr_fb_r_sof1 & 0x007FFFFF;
+	DWORD	filas, alto, tam;
+
+	memread_fisico(0xA05F8060, &sof_w, 4);
+
+	/* Con el bit 24 FB_W apunta a una textura, no al framebuffer. */
+	if (sof_w & 0x01000000)
+		return;
+
+	memread_fisico(0xA05F804C, &paso, 4);
+	memread_fisico(0xA05F806C, &pclip_y, 4);
+
+	filas = (paso & 0x1FF) * 8;
+	alto  = ((pclip_y >> 16) & 0x3FF) + 1;
+	tam   = alto * filas;
+
+	if (tam == 0)
+		return;
+
+	sof_w &= 0x007FFFFF;
+
+	if ((a32 >= sof_w && a32 < sof_w + tam) ||
+		(a32 >= sof_r && a32 < sof_r + tam))
+	{
+		volcado_fb_armado = 1;
+
+		if (traza_activa)
+			fprintf(stderr, "traza: textura en %06x (32 bits: %06x) muestrea el"
+				" framebuffer (escribe %06x, muestra %06x): se arma el volcado"
+				" por escena\n",
+				(unsigned) memorypos, (unsigned) a32,
+				(unsigned) sof_w, (unsigned) sof_r);
+	}
+}
+
 void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int strip)
 {
 	Uint16 * q, * v;
+	unsigned char * plano;
+	size_t plano_bytes;
 	int i, j;
 	DWORD bpp    = TriangleStrip[strip].texture.pvr_texture_bpp;
 	DWORD paleta = TriangleStrip[strip].texture.pvr_texture_paleta;
 	DWORD stride = TriangleStrip[strip].texture.pvr_texture_stride;
+
+	if (!volcado_fb_armado)
+		armar_volcado_si_muestrea_framebuffer(memorypos);
 
 	if (cur_tex_count > 0)
     	for (i = 0; i < cur_tex_count; i++)
@@ -687,7 +756,36 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	cached_textures[cur_tex_count].texture = pvr_textures[cur_tex_count];
 	cached_textures[cur_tex_count].bpp = bpp;
 	cached_textures[cur_tex_count].paleta = paleta;
-	v = (Uint16 *) get_memory_pointer(memorypos | 0xA5000000);
+
+	/*
+		`memorypos` sale de la palabra de control de textura, o sea que esta en
+		la numeracion del area de 64 bits -- la que el chip usa para leer
+		texturas -- y el bloque se guarda en la de 32. Se junta aca a un buffer
+		contiguo y los decodificadores quedan como estaban. Ver vram.h.
+	*/
+	if (vq)
+	{
+		/* El codebook de 2 KB mas los indices. El indexado twiddled de un
+		   rectangulo se sale del producto, asi que se junta el cuadrado. */
+		size_t lado = (size_t) (usize > vsize ? usize : vsize);
+
+		plano_bytes = 0x800 + lado * lado / 4;
+	}
+	else if (bpp != 0)
+		plano_bytes = (size_t) usize * vsize * bpp / 8;
+	else if (!twiddled && stride != 0 && stride != (DWORD) usize)
+		plano_bytes = (size_t) vsize * stride * 2;
+	else
+		plano_bytes = (size_t) usize * vsize * 2;
+
+	plano = (unsigned char *) malloc(plano_bytes);
+
+	if (plano == NULL)
+		return;
+
+	vram64_leer(memorypos, plano, plano_bytes);
+
+	v = (Uint16 *) plano;
 
 	// ahora al twiddle
 	if (TriangleStrip[strip].texture.pvr_texture_bump)
@@ -726,7 +824,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 		// leamos el codebook
 		unsigned char * codebook = (unsigned char *) v;
-		BYTE * index = (BYTE *) get_memory_pointer((memorypos + 0x0800) | 0xA5000000);
+		BYTE * index = plano + 0x0800;
 
 		int upos, vpos;
 
@@ -815,14 +913,20 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	}
 	else
 	{
+		/* Sin transformar: el buffer juntado ya es la textura, y es propio --
+		   antes apuntaba a la RAM de video y no habia que liberarlo. */
 		cached_textures[cur_tex_count].data = v;
-		cached_textures[cur_tex_count].twiddled = false;
+		cached_textures[cur_tex_count].twiddled = true;
 	}
+
+	/* Las ramas que decodifican a un buffer propio ya no necesitan el plano. */
+	if (cached_textures[cur_tex_count].data != (void *) plano)
+		free(plano);
 
 	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
 	   aplicar_filtros(strip);
 
-    logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x\n", usize, vsize, memorypos | 0xA5000000);
+    logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x (area de 64 bits)\n", usize, vsize, memorypos);
    glTexImage2D(GL_TEXTURE_2D, 0, TriangleStrip[strip].texture.pvr_texture_components, usize, vsize, 0, TriangleStrip[strip].texture.pvr_texture_pixelformat, TriangleStrip[strip].texture.pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
 
     cur_tex_count++;
@@ -1061,7 +1165,8 @@ static void terminar_escena(void);
 static int  render_a_textura(void);
 static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
 							 DWORD filas_bytes, int formato,
-							 DWORD src_w, DWORD src_h);
+							 DWORD src_w, DWORD src_h, int ventana64);
+static void volcar_escena_a_framebuffer(void);
 
 void cb_tastart(DWORD addr, void * p, size_t size)
 {
@@ -1188,6 +1293,7 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	}
 
 	dibujar_escena();
+	volcar_escena_a_framebuffer();
 	terminar_escena();
 }
 
@@ -1371,30 +1477,76 @@ static void dibujar_escena(void)
 
 /*
 	Lee lo que GL rasterizo y lo escribe en la RAM de video en el formato del
-	PVR. Lo usan las dos rutas que necesitan que la escena exista en memoria: el
-	render a textura y el volcado del framebuffer.
+	PVR. Lo usan las dos rutas que necesitan que la escena exista en memoria:
+	el render a textura y el volcado del framebuffer.
 
 	`src_*` es el rectangulo de GL que se lee y `dst_*` el tamano con que se
 	guarda; cuando no coinciden se remuestrea por vecino mas cercano, que es lo
 	que hace falta porque la ventana no mide lo mismo que la pantalla emulada.
+
+	`ventana64` dice en que numeracion esta `destino`. El render a textura va
+	por la de 64 bits: el bit 24 de FB_W_SOF1 significa escribir por ese
+	camino, y KOS le pasa la direccion de la textura tal cual (`to_txr_addr |
+	BIT(24)`, pvr_misc.c), asi que se reparte con vram64_escribir() para que
+	get_texture() junte esos mismos bytes por la misma numeracion. El
+	framebuffer va por la de 32, plana, como en el chip. Ver vram.h.
 */
 static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
 							 DWORD filas_bytes, int formato,
-							 DWORD src_w, DWORD src_h)
+							 DWORD src_w, DWORD src_h, int ventana64)
 {
 	unsigned char *	pixeles;
+	WORD *			texeles;
 	DWORD			x, y;
 
 	if (dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0)
 		return;
 
 	pixeles = (unsigned char *) malloc((size_t) src_w * src_h * 4);
+	texeles = (WORD *) malloc((size_t) dst_w * sizeof(WORD));
 
-	if (pixeles == NULL)
+	if (pixeles == NULL || texeles == NULL)
+	{
+		free(pixeles);
+		free(texeles);
 		return;
+	}
 
 	glPixelStorei(GL_PACK_ALIGNMENT, 1);
 	glReadPixels(0, 0, src_w, src_h, GL_RGBA, GL_UNSIGNED_BYTE, pixeles);
+
+	/* Para separar "GL no dibujo nada" de "el volcado esta mal": cuantos
+	   pixeles no negros hay en lo leido, y cuantos con alfa distinto de FF --
+	   si esa segunda cuenta es siempre cero, el contexto no tiene planos de
+	   alfa y el blend por DSTALPHA no puede funcionar. Solo los primeros
+	   cuadros. */
+	if (traza_activa)
+	{
+		static int vistos = 0;
+
+		if (vistos < 3)
+		{
+			size_t total = (size_t) src_w * src_h;
+			size_t no_negros = 0, alfa_no_ff = 0, k;
+
+			vistos++;
+
+			for (k = 0; k < total; k++)
+			{
+				const unsigned char * q = pixeles + k * 4;
+
+				if (q[0] | q[1] | q[2])
+					no_negros++;
+				if (q[3] != 0xFF)
+					alfa_no_ff++;
+			}
+
+			fprintf(stderr, "traza: volcado %ux%u -> %06x: %lu pixeles no"
+				" negros, %lu con alfa != FF\n", src_w, src_h,
+				(unsigned) destino, (unsigned long) no_negros,
+				(unsigned long) alfa_no_ff);
+		}
+	}
 
 	if (filas_bytes == 0)
 		filas_bytes = dst_w * 2;
@@ -1405,7 +1557,6 @@ static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
 		   el framebuffer se guardan de arriba hacia abajo. */
 		DWORD					sy = (src_h - 1) - (y * src_h) / dst_h;
 		const unsigned char *	fila = pixeles + (size_t) sy * src_w * 4;
-		DWORD					base = destino + y * filas_bytes;
 
 		for (x = 0; x < dst_w; x++)
 		{
@@ -1414,30 +1565,74 @@ static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
 			DWORD g = fila[sx * 4 + 1];
 			DWORD b = fila[sx * 4 + 2];
 			DWORD a = fila[sx * 4 + 3];
-			WORD  texel;
 
 			switch (formato)
 			{
 				case 0:		/* ARGB1555 */
-					texel = (WORD) (((a >> 7) << 15) | ((r >> 3) << 10) |
-									((g >> 3) << 5) | (b >> 3));
+					texeles[x] = (WORD) (((a >> 7) << 15) | ((r >> 3) << 10) |
+										 ((g >> 3) << 5) | (b >> 3));
 					break;
 
 				case 2:		/* ARGB4444 */
-					texel = (WORD) (((a >> 4) << 12) | ((r >> 4) << 8) |
-									((g >> 4) << 4) | (b >> 4));
+					texeles[x] = (WORD) (((a >> 4) << 12) | ((r >> 4) << 8) |
+										 ((g >> 4) << 4) | (b >> 4));
 					break;
 
 				default:	/* 1: RGB565, y el resto se aproxima con el */
-					texel = (WORD) (((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+					texeles[x] = (WORD) (((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 					break;
 			}
-
-			memwrite_fisico(0xA5000000 + base + x * 2, &texel, 2);
 		}
+
+		if (ventana64)
+			vram64_escribir(destino + y * filas_bytes, texeles, (size_t) dst_w * 2);
+		else
+			memwrite_fisico(0xA5000000 + destino + y * filas_bytes,
+				texeles, (size_t) dst_w * 2);
 	}
 
 	free(pixeles);
+	free(texeles);
+}
+
+/*
+	El volcado de la escena que acaba de dibujarse, cuando esta armado (ver
+	volcado_fb_armado). Corre despues de dibujar_escena() y antes de presentar:
+	es el unico momento en que el back buffer tiene el cuadro entero. El
+	destino y el formato salen de los mismos registros que usa el render a
+	textura, solo que sin el bit 24: esto es el framebuffer de verdad, escrito
+	por la ventana de 32 bits.
+*/
+static void volcar_escena_a_framebuffer(void)
+{
+	DWORD	sof = 0, pclip_x = 0, pclip_y = 0, ctrl = 0, paso = 0;
+	DWORD	ancho, alto, filas_bytes;
+
+	if (!volcado_fb_armado)
+		return;
+
+	memread_fisico(0xA05F8060, &sof, 4);
+
+	/* Con el bit 24 la escena era para una textura y no llega aca. */
+	if (sof & 0x01000000)
+		return;
+
+	memread_fisico(0xA05F8068, &pclip_x, 4);
+	memread_fisico(0xA05F806C, &pclip_y, 4);
+	memread_fisico(0xA05F804C, &paso, 4);
+	memread_fisico(0xA05F8048, &ctrl, 4);
+
+	ancho = ((pclip_x >> 16) & 0x7FF) + 1;
+	alto  = ((pclip_y >> 16) & 0x3FF) + 1;
+	filas_bytes = (paso & 0x1FF) * 8;
+
+	if (ancho == 0 || alto == 0 || ancho > 2048 || alto > 2048)
+		return;
+
+	volcar_a_memoria(sof & 0x007FFFFF, ancho, alto, filas_bytes,
+		(int) (ctrl & 0x7),
+		(DWORD) (outputscreen ? outputscreen->w : 800),
+		(DWORD) (outputscreen ? outputscreen->h : 600), 0);
 }
 
 static int render_a_textura(void)
@@ -1468,11 +1663,12 @@ static int render_a_textura(void)
 	if (ancho == 0 || alto == 0 || ancho > 2048 || alto > 2048)
 		return 0;
 
-	/* La escena, a su propio tamano. */
+	/* La escena, a su propio tamano. near/far invertidos, como en
+	   screeninit(): asi z de vertice creciente da profundidad creciente. */
 	glViewport(0, 0, ancho, alto);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glOrtho(0, ancho, alto, 0, -32768.0, 32768.0);
+	glOrtho(0, ancho, alto, 0, 32768.0, -32768.0);
 
 	/* La mascara va **antes** del clear: glClear de la profundidad la respeta.
 	   Ver limpiar_pantalla(). */
@@ -1484,14 +1680,14 @@ static int render_a_textura(void)
 
 	dibujar_escena();
 
-	volcar_a_memoria(destino, ancho, alto, filas_bytes, formato, ancho, alto);
+	volcar_a_memoria(destino, ancho, alto, filas_bytes, formato, ancho, alto, 1);
 
 	/* Y se deja todo como estaba: la escena siguiente va a la pantalla. */
 	glViewport(0, 0, outputscreen ? outputscreen->w : 800,
 					 outputscreen ? outputscreen->h : 600);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glOrtho(0, screenancho, screenheight, 0, -32768.0, 32768.0);
+	glOrtho(0, screenancho, screenheight, 0, 32768.0, -32768.0);
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -3253,7 +3449,18 @@ int screeninit(void)
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 
-	glOrtho(0, screenancho, screenheight, 0, -32768.0, 32768.0);
+	/*
+		near y far van invertidos a proposito. glOrtho mapea z de ojo con signo
+		cambiado (z' = -2z/(far-near)), asi que con (-32768, 32768) una z de
+		vertice mas grande daba una profundidad MENOR: la z del TA es 1/w --
+		mayor es mas cerca -- y sus pruebas van en esos terminos (GREATER deja
+		pasar lo mas cerca), o sea que el orden quedaba al reves y una tira
+		cercana perdia contra una lejana ya dibujada. pvr-fb_tex lo midio: la
+		mascara en z=1 dejaba invisible al cubo en z=4. Invertirlos hace
+		z' = +z/32768 y el orden sale solo, que es lo que este comentario
+		siempre pretendio.
+	*/
+	glOrtho(0, screenancho, screenheight, 0, 32768.0, -32768.0);
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
