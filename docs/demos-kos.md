@@ -385,57 +385,88 @@ geometría enviada sin lista abierta; la FPU del núcleo está validada aparte (
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
 Ver `docs/sh4-conformidad.md`.
 
-## Arrancar un juego por el boot ROM (hito C): este `bios.bin` no puede
+## Arrancar un juego por el boot ROM (hito C): a un paso
 
 Medido el 31 de julio de 2026 con `Crazy Taxi - DCRES.cdi`, un *selfboot*
 (conversión a CD: sesión de audio + sesión de datos en modo 2).
 
-**No es un fallo de dcemu: es que este boot ROM no sabe arrancar desde un CD.**
-`bios/bios.bin` es `SEGA SEGAKATANA KABUTO Ver.1.004 Copyright(c) SEGA
-ENTERPRISES, LTD., 1998` (la cadena está en `bios.bin+0x7cc`), una revisión
-japonesa temprana **anterior al MIL-CD**, que es el hueco por el que arrancan
-las conversiones a CD. Sega lo introdujo en 1999 y lo quitó en 2000.
+**El boot ROM ya acepta el disco como juego**: sale el menú con *Play*, y al
+pulsarlo entra en la pantalla de arranque —limpia el fondo a `0xBFBFBF`, que es
+el suyo—. Lo que todavía no hace es cargar el ejecutable.
 
-La prueba está en el propio ROM. En `bios.bin+0xfc8` hay una **tabla de
-parámetros de arranque** —no son literales PC-relativos, no hay ningún
-`MOV.L @(disp,PC)` que los alcance—:
+Hicieron falta tres cosas, y ninguna es la que parecía al principio.
 
-```
-00fc8: 8c008000 00000007        ← destino del IP.BIN
-00fd0: 0000b05e 00000011        ← FAD 45150, 17 sectores
-00fd8: 00000000 8c00b800        ← punto de entrada = el bootstrap 1
-00fe0: 00000009 0000b065 ...    ← y el siguiente trozo, FAD 45157
-```
+### 1. El `bios.bin` importa, pero no como se creyó
 
-**Todos los FAD son del área de alta densidad, y no hay ninguna entrada
-alternativa para un CD.** Por eso el ROM lee 17 sectores desde 45150 y nunca
-toca la pista de datos del CD, en FAD 11852, por bien que se le conteste todo
-lo demás. Nótese que `0x8c00b800` es exactamente donde arranca dcemu sin
-`--bios`: el camino directo hace lo mismo que haría el ROM.
+El que había en el repo es `SEGA SEGAKATANA KABUTO Ver.1.004 ... 1998` (cadena
+en `bios.bin+0x7cc`), anterior al MIL-CD. Con él el ROM lee 17 sectores en FAD
+45150 y nada más. **Con el 1.01d (1999) el camino se abre**, así que la
+conclusión anterior —"con este ROM es imposible"— era cierta sólo para el 1.004.
+Las revisiones se distinguen de un vistazo: la 1.022, que quitó el MIL-CD, tiene
+una tabla de arranque menos que las anteriores.
 
-Todo lo que se le contesta es correcto, y está comprobado uno por uno:
+Ojo con el flash: los dumps vírgenes hacen que el ROM pida la fecha en cada
+arranque, y **parchear el código de región a mano rompe el checksum de su
+partición**, con el mismo efecto. Lo que funciona es dejar que el propio ROM
+configure la fecha una vez: dcemu guarda el flash y el `bios/rtc.txt` al salir,
+y a partir de ahí arranca directo.
 
-- **el tipo de disco**: `SECTNUM` devuelve `0x22`, o sea CD-ROM XA en el nibble
-  alto y el estado de la unidad en el bajo;
-- **las sesiones**: `REQ_SES(0)` → 2 sesiones y fin en FAD 358342, `REQ_SES(1)`
-  → pista 1 en FAD 150, `REQ_SES(2)` → pista 2 en **FAD 11852**, que es
-  justamente la pista de datos. El ROM las enumera hasta que fallan y no hace
-  nada con ellas;
-- **el TOC** de densidad simple, con las dos pistas reales;
-- **el comando de seguridad 0x71**: hacerlo fallar no cambia nada.
+### 2. Presentar el selfboot como el GD-ROM del que salió
 
-Lo que sí se corrigió por el camino: **la lectora servía el área de alta
-densidad en un disco que no la tiene.** `iso_read_sector()` leía el FAD 45150 y
-devolvía lo que hubiera en esa posición del archivo —en una imagen grande, un
-sector real, sólo que de otro sitio—, así que el ROM se llevaba basura en vez de
-un error. Ahora se rechaza con `ILLEGAL REQUEST` / `0x21` (dirección fuera de
-rango), que es lo que hace una lectora, y se nota: el ROM deja de insistir cinco
-veces, pide el error con `13 REQ_ERROR` y pasa a enumerar sesiones. Sigue
-terminando en el reproductor de CD, porque no tiene a dónde ir.
+Un `.cdi` de juego es la conversión a CD de un GD-ROM, y el ROM busca el IP.BIN
+en el **FAD 45150**, el área de alta densidad, que en un CD no existe. La
+conversión que funciona es de presentación, no de contenido:
 
-**Para cerrar el hito C hace falta otro `bios.bin`** —una revisión con MIL-CD,
-1.01c o 1.01d— o una imagen de GD-ROM de verdad, con la pista de datos en el
-FAD 45150 en adelante, que es lo que `iso_es_gdrom()` reconoce.
+- el tipo de disco pasa a GD-ROM y la pista de datos se **anuncia** en el FAD
+  45150 (`iso_pista_fad()`), con lo que la TOC del área de alta densidad y las
+  sesiones salen solas;
+- sólo las 17 lecturas del área de arranque se traducen al principio real de la
+  pista (`iso_read_sector()`);
+- **el ISO9660 se deja como está.** Sus LBA son los del disco original y el ROM
+  los usa tal cual para llegar al directorio y a los archivos. Desplazar la
+  pista entera parece lo natural y rompe justamente eso: se probó, y el ROM
+  terminaba pidiendo sectores que no le correspondían.
+
+Con eso el ROM lee, en orden y con los datos correctos: el IP.BIN en FAD 45150
+(`SEGA SEGAKATANA`), el descriptor de volumen (`CD001`), el directorio raíz
+—donde se ven `GDTEX.PVR`, `1ST_READ.BIN`, `IP.BIN`, `AICADRV.BIN`, `BINC*.AFS`…—
+y `GDTEX.PVR` entero, 133120 de 133120 bytes, que es la textura del logo del
+juego.
+
+### 3. Dónde se para, y lo que ya está descartado
+
+**Nunca llega a leer `1ST_READ.BIN`.** Después de `GDTEX.PVR` reinicia el ciclo,
+y en esa pantalla el guest manda **cero tiras** de geometría: no es que el PVR
+falle al dibujar el logo, es que el ROM aborta antes de mandarlo.
+
+Descartado por medición, no por razonamiento:
+
+- **La copia del TOC que lleva el IP.BIN.** En su offset `0x100` hay una, con la
+  firma `"TOC1"`: pista de datos en FAD 45150 —que coincide con lo que se
+  contesta—, `first`/`last` = pista **3** y lead-out en FAD **549300**, el del
+  disco prensado. Hacer que la TOC de la lectora coincidiera en las tres cosas
+  **no cambió nada**.
+- **La región del flash**: probados JP (`00000`), US (`00110`) y EU (`00211`).
+- **El comando de autenticación `0x71`**, la TOC de las dos áreas, las sesiones
+  y `SET_MODE`, todos verificados uno por uno contra lo que responde la lectora.
+- Y no queda **ni una** dirección sin emular en toda la corrida.
+
+Lo que falta es averiguar qué comprueba el ROM entre leer `GDTEX.PVR` y cargar
+el ejecutable. La punta del hilo es la rutina que manda esos `CD_READ`, que los
+paquetes reportan con `PR=8c002c66`.
+
+### Cómo reproducirlo
+
+Todo esto vive detrás de variables de entorno, porque cambia lo que la lectora
+dice del disco y no debe pasar inadvertido:
+
+| variable | qué hace |
+| --- | --- |
+| `DCEMU_COMO_GD` | presenta un selfboot en CD como GD-ROM |
+| `DCEMU_PULSAR_A` | pasa el selector de fecha del ROM sin nadie delante (cinco a la derecha y el botón) |
+| `DCEMU_SOLO_A` | ya en el menú, sólo pulsa el botón |
+| `DCEMU_LEADOUT` | lead-out del área de alta densidad |
+| `DCEMU_VER_SECTOR` | vuelca en ASCII lo que devuelve cada `CD_READ` |
 
 ## Lo que no aplica (28)
 

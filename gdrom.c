@@ -158,6 +158,19 @@ void gdrom_iniciar(int bandeja)
 #define GD_FAD_ALTA_DENSIDAD	45150
 
 /*
+	EXPERIMENTO: donde termina el area de alta densidad del GD-ROM original.
+	El boot ROM compara la TOC que le contesta la lectora con la copia que el
+	IP.BIN lleva en su offset 0x100 (firma "TOC1"), y ahi el lead-out es el del
+	disco prensado, no el del CD en que se convirtio.
+*/
+static int gdrom_leadout_gd(void)
+{
+	const char * v = getenv("DCEMU_LEADOUT");
+
+	return v ? (int) strtol(v, NULL, 0) : 549300;
+}
+
+/*
 	La TOC de un area del disco.
 
 	  area 0  densidad simple: las pistas por debajo del FAD 45150
@@ -211,6 +224,42 @@ void gdrom_construir_toc_area(struct TOC * toc, int area)
 	/* El campo que dcemu llamo "dunno" es la entrada de lead-out: donde
 	   termina el area de datos. */
 	toc->dunno = TOC_ENTRADA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, fin);
+
+	/*
+		EXPERIMENTO: presentando el selfboot como GD-ROM, el area de alta
+		densidad tiene que verse como la del disco original, porque el boot ROM
+		compara esta TOC con la copia que el IP.BIN lleva en su offset 0x100
+		(la firma "TOC1"). En un GD-ROM la pista de datos es la **3** --las 1 y
+		2 estan en el area de densidad simple-- y el lead-out queda mucho mas
+		lejos que el final del CD.
+	*/
+	if (area != 0 && iso_gd_presentando() && pistas > 0)
+	{
+		toc->entry[2] = toc->entry[primera];
+
+		if (primera != 2)
+			toc->entry[primera] = TOC_VACIA;
+
+		toc->first = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, 3);
+		toc->last  = TOC_PISTA(TOC_CTRL_DATOS, TOC_ADDR_POSICION, 3);
+		toc->dunno = TOC_ENTRADA(TOC_CTRL_DATOS, TOC_ADDR_POSICION,
+			(DWORD) gdrom_leadout_gd());
+	}
+
+	if (traza_activa)
+	{
+		int j;
+
+		fprintf(stderr, "gdrom: TOC area %d: pistas %d..%d, lead-out %lu\n",
+			area, primera + 1, ultima + 1, (unsigned long) fin);
+
+		for (j = 0; j < n && j < 99; j++)
+			if (toc->entry[j] != TOC_VACIA)
+				fprintf(stderr, "gdrom:   pista %d: %08lx (%s, fad %lu)\n",
+					j + 1, (unsigned long) toc->entry[j],
+					iso_pista_es_datos(j) ? "datos" : "audio",
+					(unsigned long) iso_pista_fad(j));
+	}
 }
 
 void gdrom_construir_toc(struct TOC * toc)
@@ -530,6 +579,35 @@ static void cmd_cd_read(const BYTE * p)
 		return;
 	}
 
+	if (traza_activa)
+	{
+		int i;
+
+		fprintf(stderr, "gdrom: CD_READ fad %d x%d ->", fad, sectores);
+
+		for (i = 0; i < 16; i++)
+			fprintf(stderr, " %02x", gdrom.datos[i]);
+
+		fprintf(stderr, "  |");
+
+		for (i = 0; i < 16; i++)
+			fprintf(stderr, "%c", (gdrom.datos[i] >= 32 && gdrom.datos[i] < 127)
+				? gdrom.datos[i] : '.');
+
+		fprintf(stderr, "|\n");
+
+		if (getenv("DCEMU_VER_SECTOR"))
+		{
+			fprintf(stderr, "        ");
+
+			for (i = 0; i < 700 && i < total; i++)
+				fprintf(stderr, "%c", (gdrom.datos[i] >= 32 && gdrom.datos[i] < 127)
+					? gdrom.datos[i] : '.');
+
+			fprintf(stderr, "\n");
+		}
+	}
+
 	gdrom.datos_tam = total;
 	gdrom.datos_pos = 0;
 	gdrom.error     = 0;
@@ -660,6 +738,12 @@ static void ejecutar_paquete(void)
 			   que dejo el host. Se contesta con ceros. */
 		{
 			int largo = gdrom.limite > 0 ? gdrom.limite : 32;
+
+			if (getenv("DCEMU_71_FALLA") && !iso_es_gdrom())
+			{
+				fallar(GD_SENTIDO_ILEGAL, 0x20, 0x00);
+				break;
+			}
 
 			if (!reservar(largo))
 			{

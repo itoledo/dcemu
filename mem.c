@@ -929,6 +929,20 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		case 0xa0710008:	// RTC, control de escritura
+		{
+			/* Tenia caso de escritura y no de lectura, asi que caia en el
+			   bloque de control y contestaba cero. El bit 0 es el permiso de
+			   escritura, que aqui nunca queda pedido. */
+			dw = 0;
+			memcpy(p, &dw, size);
+
+			if (traza_activa)
+				fprintf(stderr, "traza: el guest lee el control del RTC "
+					"(PC=%08lx)\n", (unsigned long) PC);
+		}
+		break;
+
 		default:
 		{
 			// Bloque de control del sistema. Antes se copiaba desde

@@ -94,6 +94,44 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 {
 	*botones = (WORD) (joystick & mando.botones);
 
+	/* EXPERIMENTO: pasar el selector de fecha del boot ROM sin nadie delante.
+	   Son cinco movimientos a la derecha --mes, dia, ano, hora, minuto-- para
+	   llegar a "Select", y ahi el boton A. La secuencia se repite por si la
+	   primera vuelta cae antes de que la pantalla este puesta. */
+	if (getenv("DCEMU_PULSAR_A"))
+	{
+		static int t = 0;
+
+		t++;
+
+		if (getenv("DCEMU_SOLO_A"))
+		{
+			/* Ya en el menu: solo el boton, con el cursor donde este. */
+			if ((t % 200) < 20)
+				REMOVE_BIT(*botones, CONT_A);
+		}
+		else
+		if (t < 900)
+		{
+			/* La fecha: cinco a la derecha hasta "Select" y ahi el boton. */
+			if (t >= 300 && t < 500)
+			{
+				if (((t - 300) % 40) < 15)
+					REMOVE_BIT(*botones, CONT_DPAD_RIGHT);
+			}
+			else
+			if (t >= 500 && t < 560)
+			{
+				if (((t - 500) % 30) < 15)
+					REMOVE_BIT(*botones, CONT_A);
+			}
+		}
+		else
+		/* Ya en el menu, con el cursor en "Play": solo el boton. */
+		if ((t % 200) < 20)
+			REMOVE_BIT(*botones, CONT_A);
+	}
+
 	*lt = (mando.ltrig != TRIGGER_OFF) ? mando.ltrig : ltrig;
 	*rt = (mando.rtrig != TRIGGER_OFF) ? mando.rtrig : rtrig;
 

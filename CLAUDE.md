@@ -185,19 +185,43 @@ What was missing for the *animation* was two more, both found by the ROM and by 
 demo: the PVR **background plane** and the true size of the TA's **Polygon Type 1** header
 — see "The background plane" and the `ta.c` note in the graphics pipeline section.
 
-**Hito C (booting a game *through* the BIOS) is blocked by the ROM image itself, not by
-dcemu.** `bios/bios.bin` is `SEGA SEGAKATANA KABUTO Ver.1.004 ... 1998` (string at
-`bios.bin+0x7cc`), an early Japanese revision from **before MIL-CD** — which is the hole
-every CD conversion boots through. The proof is in the ROM: `bios.bin+0xfc8` holds a boot
-parameter table (destination `0x8c008000`, **FAD 45150**, 17 sectors, entry point
-`0x8c00b800`, then the next chunk at FAD 45157) and **there is no alternative entry for a
-CD**. So with a selfboot `.cdi` the ROM reads 17 sectors at FAD 45150 and never touches the
-CD's data track at FAD 11852, no matter how correctly everything else is answered — the
-disc type (`SECTNUM` = `0x22`, CD-ROM XA), the sessions (`REQ_SES(2)` → FAD 11852, the data
-track), the TOC, and the 0x71 security command, all verified one by one. Note `0x8c00b800`
-is exactly where dcemu starts without `--bios`: the direct path does what the ROM would.
-Closing hito C needs a different `bios.bin` (1.01c/1.01d, with MIL-CD) or a real GD-ROM
-image. See `docs/demos-kos.md`, "Arrancar un juego por el boot ROM".
+**Hito C (booting a game *through* the BIOS) is one step away: the ROM now accepts the disc
+as a game.** It reaches the menu with *Play*, and pressing it enters the boot screen (it
+clears to `0xBFBFBF`, its own background). What it still does not do is load the executable.
+Three things were needed, and none was the obvious one:
+
+- **The `bios.bin` matters, but not the way it first looked.** The one in the repo is
+  `KABUTO Ver.1.004 ... 1998` (string at `bios.bin+0x7cc`), from before MIL-CD; with it the
+  ROM reads 17 sectors at FAD 45150 and nothing else. **With 1.01d (1999) the path opens** —
+  so "impossible with this ROM" held only for 1.004. Revisions are told apart at a glance:
+  1.022, which dropped MIL-CD, has one boot table fewer than the earlier ones. Watch the
+  flash: virgin dumps make the ROM ask for the date on every boot, and **patching the region
+  code by hand breaks that partition's checksum**, with the same effect. Let the ROM
+  configure the date once instead — dcemu saves the flash and `bios/rtc.txt` on exit.
+- **Present the selfboot as the GD-ROM it came from.** The ROM looks for IP.BIN at **FAD
+  45150**, the high-density area, which a CD does not have. The conversion that works is one
+  of presentation, not of content: the disc type becomes GD-ROM and the data track is
+  *announced* at FAD 45150 (`iso_pista_fad()`, which makes the high-density TOC and the
+  sessions fall out on their own), and only the 17 boot-area reads are translated back to
+  the track's real start (`iso_read_sector()`). **The ISO9660 is left alone** — its LBAs are
+  the original disc's and the ROM uses them as-is to reach the directory and the files.
+  Shifting the whole track looks natural and breaks exactly that; it was tried.
+- With that, the ROM reads in order and correctly: IP.BIN at FAD 45150 (`SEGA SEGAKATANA`),
+  the volume descriptor (`CD001`), the root directory — `GDTEX.PVR`, `1ST_READ.BIN`,
+  `IP.BIN`, `AICADRV.BIN`, `BINC*.AFS` — and all of `GDTEX.PVR`, 133120 of 133120 bytes, the
+  game's logo texture.
+
+**It never gets to `1ST_READ.BIN`.** After `GDTEX.PVR` it restarts the cycle, and on that
+screen the guest submits **zero strips** — the PVR is not failing to draw the logo, the ROM
+aborts before submitting it. Ruled out by measurement: the TOC copy the IP.BIN carries at
+offset `0x100` (signature `"TOC1"`: data track at FAD 45150 — which matches what is
+answered — `first`/`last` = track **3** and lead-out at FAD **549300**; matching all three
+changed nothing), the flash region (JP/US/EU all tried), the `0x71` authentication command,
+both areas' TOC, the sessions and `SET_MODE`. Not one unemulated address in the whole run.
+The thread left to pull is the routine that issues those `CD_READ`s, which the packets
+report as `PR=8c002c66`. It all lives behind environment variables — `DCEMU_COMO_GD`,
+`DCEMU_PULSAR_A`, `DCEMU_SOLO_A`, `DCEMU_LEADOUT`, `DCEMU_VER_SECTOR` — because it changes
+what the drive says about the disc. See `docs/demos-kos.md`.
 
 **The drive used to serve the high-density area on a disc that has none.** A CD has nothing
 above FAD 45150, and the drive rejects the request; `iso_read_sector()` instead returned

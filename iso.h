@@ -10,6 +10,9 @@ int iso_hay_disco();
    densidad. Lo mira la lectora para decir de que tipo es el disco. */
 int iso_es_gdrom();
 
+/* EXPERIMENTO: 1 si el selfboot se esta presentando como GD-ROM. */
+int iso_gd_presentando(void);
+
 /*
 	Las pistas del disco, para armar la TOC y contestar REQ_SES. Un .iso plano
 	es una sola pista de datos; un .cdi de juego son dos o tres, y la ultima es

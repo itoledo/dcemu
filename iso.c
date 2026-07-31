@@ -38,6 +38,12 @@ min_iso_t * iso;
    sino donde diga la pista, que en un GD-ROM es el area de alta densidad. */
 static unsigned int iso_lba_base = ISO_DEFAULT_LBA;
 
+/* EXPERIMENTO: presentar un selfboot en CD como el GD-ROM del que salio. */
+#define GD_FAD_ARRANQUE			45150	/* donde el boot ROM busca el IP.BIN */
+#define GD_SECTORES_ARRANQUE	17		/* lo que lee de ahi */
+
+static int iso_gd_presentar = 0;
+
 /* Modo de la pista de datos del .cdi: lo pide iso_get_mode(). */
 static int iso_modo_pista = 1;
 
@@ -94,6 +100,19 @@ int iso_init(char * sDevice)
 		}
 
 		pista = &cdi.pistas[cual];
+
+		/* EXPERIMENTO: presentar el selfboot como el GD-ROM que era. El area
+		   de alta densidad empieza en el LBA 45000, que es donde el boot ROM
+		   busca el IP.BIN; el offset dentro del archivo no cambia, asi que
+		   min_iso_open_pista() sigue encontrando los mismos bytes. */
+		if (getenv("DCEMU_COMO_GD") && pista->lba < 45000)
+		{
+			iso_gd_presentar = 1;
+
+			fprintf(stderr, "iso_init: presentando el area de arranque en el "
+				"FAD %u; la pista de datos sigue en el LBA %u\n",
+				GD_FAD_ARRANQUE, pista->lba);
+		}
 
 		fprintf(stderr, "iso_init: usando %s, %d pista%s; la de datos empieza en"
 			" el LBA %u, %u sectores de %u bytes en modo %u\n",
@@ -205,9 +224,15 @@ int iso_hay_disco()
 	Importa porque el boot ROM decide con esto si el disco es arrancable o si
 	le abre el reproductor de CD.
 */
+int iso_gd_presentando(void)
+{
+	return iso_gd_presentar;
+}
+
 int iso_es_gdrom()
 {
-	return formato_imagen == FORMATO_CDI && iso_lba_base >= 45000;
+	return formato_imagen == FORMATO_CDI
+		&& (iso_lba_base >= 45000 || iso_gd_presentar);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -227,6 +252,12 @@ int iso_pista_fad(int i)
 
 	if (i < 0 || i >= iso_cdi.n)
 		return 0;
+
+	/* Presentando el selfboot como GD-ROM, la pista de datos se anuncia donde
+	   el boot ROM la espera. Es solo lo que se dice en la TOC y en las
+	   sesiones: leer sigue yendo al sitio de verdad. */
+	if (iso_gd_presentar && iso_pista_es_datos(i))
+		return GD_FAD_ARRANQUE;
 
 	return (int) (iso_cdi.pistas[i].lba + ISO_DEFAULT_LBA);
 }
@@ -412,6 +443,17 @@ int iso_read_sector(char * target, int secstart, int secnum)
 				pista de datos de un .cdi --, asi que la conversion es la misma
 				para los dos.
 			*/
+			/* EXPERIMENTO: presentando el disco como GD-ROM, el boot ROM pide
+			   el area de arranque en la numeracion nueva --45150 en adelante--
+			   pero el ISO9660 del disco lleva sus LBA en la vieja, asi que las
+			   direcciones que salen de el (el directorio raiz, los archivos)
+			   llegan sin desplazar. Se reconocen porque caen por debajo del
+			   area de alta densidad. */
+			if (iso_gd_presentar
+				&& secstart >= GD_FAD_ARRANQUE
+				&& secstart <  GD_FAD_ARRANQUE + GD_SECTORES_ARRANQUE)
+				secstart += (int) iso_lba_base - (GD_FAD_ARRANQUE - ISO_DEFAULT_LBA);
+
 			ret = (int) min_iso_seek_read(iso, target,
 				(unsigned int) (secstart - ISO_DEFAULT_LBA), secnum);
 
