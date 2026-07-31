@@ -147,6 +147,10 @@ extern void WriteMemoryF(unsigned long direccion, float * valor);
 #define FONT_BASE		(mem_base + 1024*1024*5)
 #define FONT_N_BASE		(mem_n_base + 1024*1024*5)
 
+/* Donde el boot ROM deja el codigo de maquina de la flash -- cinco digitos y un
+   NUL -- antes de entregarle la maquina al juego. Medido contra el ROM real. */
+#define REGION_BASE		0x8C000070
+
 #define SYSCALL_SYSINFO		0x8C0000B0
 #define SYSCALL_ROMFONT		0x8C0000B4
 #define SYSCALL_FLASHROM	0x8C0000B8

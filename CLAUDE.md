@@ -926,6 +926,18 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
 The remaining stubs (`SYSINFO`, `UNKNOWN`) are still `RTS` + `NOP`: they return without doing
 anything.
 
+**The syscall stubs are not the only thing the boot ROM leaves behind: it also writes the
+flash's machine code — five digits and a NUL — at `0x8C000070` (`REGION_BASE`) before handing
+the console to the game.** Without `--bios` nobody wrote it and whatever was there stayed.
+Games do look at it: Crazy Taxi compares that *word* against `0x3030` — the first two digits —
+and, if it matches, treats the machine as known; if it does not, it goes and asks a device on
+the external G1 bus at `0x03010000` that a retail console does not have, and waits on its
+bit 7 forever. That single uninitialised word was the whole difference between the game
+hanging in an idle loop and reaching its `LOADING CRAZY TAXI` screen. It is copied from
+`flash_mem[FLASH_PART0_OFF]`, so it follows whatever flash is in use rather than being a
+constant. The rest of that block (`0x8C000060`-`0x8C00007F` holds more fields the ROM fills
+in) is still not reproduced.
+
 Note that `flashrom_get_region()` only recognizes three exact strings — `00000` (Japan),
 `00110` (US) and `00211` (Europe). A flash dump holding any other code, such as the `00111`
 in `bios/flash.bin` here, makes KOS log `unknown code`. That is KOS being strict, not a

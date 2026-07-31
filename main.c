@@ -1147,6 +1147,19 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "leidos %ld bytes\n", tam);
 	}
 
+	/*
+		El boot ROM deja el codigo de maquina de la flash en REGION_BASE antes
+		de entregarle la consola al juego, y hay juegos que lo miran. Sin
+		--bios nadie lo escribia y ahi quedaba lo que hubiera.
+
+		Crazy Taxi es el caso que lo destapo: compara ese word contra 0x3030
+		--los dos primeros digitos-- y, si coincide, da la maquina por conocida;
+		si no, se va a preguntarle a un dispositivo del bus G1 externo que en
+		una consola de serie no existe, y se queda esperandolo para siempre.
+	*/
+	memcpy(get_memory_pointer(REGION_BASE), &flash_mem[FLASH_PART0_OFF], 5);
+	((unsigned char *) get_memory_pointer(REGION_BASE))[5] = '\0';
+
 	} // fin del camino sin --bios
 
 	// La lectora ya puede saber si hay disco.
