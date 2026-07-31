@@ -16,6 +16,7 @@
 #include "tmu.h"
 #include "ta.h"				/* ta_procesar_bloque(), para el CH2 DMA */
 #include "vram.h"			/* las dos ventanas de la RAM de video */
+#include "ubc.h"			/* breakpoints por hardware */
 
 
 #define DWREF(p) (*(DWORD *)(p))
@@ -266,6 +267,20 @@ void regmem_setup(void)
 	TRA		= (DWORD *) &regmem[0x000020];
 	QACR0	= (DWORD *)	&regmem[0x000038];	*QACR0 = 0;
 	QACR1   = (DWORD *) &regmem[0x00003C];  *QACR1 = 0;
+
+	/*** UBC (ubc.c). Los ASID van en el bloque CCN, el resto en 0xFF2000xx. */
+	UBC_BASRA	= (BYTE *)	&regmem[0x000014];	*UBC_BASRA = 0;
+	UBC_BASRB	= (BYTE *)	&regmem[0x000018];	*UBC_BASRB = 0;
+	UBC_BARA	= (DWORD *)	&regmem[0x200000];	*UBC_BARA = 0;
+	UBC_BAMRA	= (BYTE *)	&regmem[0x200004];	*UBC_BAMRA = 0;
+	UBC_BBRA	= (WORD *)	&regmem[0x200008];	*UBC_BBRA = 0;
+	UBC_BARB	= (DWORD *)	&regmem[0x20000C];	*UBC_BARB = 0;
+	UBC_BAMRB	= (BYTE *)	&regmem[0x200010];	*UBC_BAMRB = 0;
+	UBC_BBRB	= (WORD *)	&regmem[0x200014];	*UBC_BBRB = 0;
+	UBC_BDRB	= (DWORD *)	&regmem[0x200018];	*UBC_BDRB = 0;
+	UBC_BDMRB	= (DWORD *)	&regmem[0x20001C];	*UBC_BDMRB = 0;
+	UBC_BRCR	= (WORD *)	&regmem[0x200020];	*UBC_BRCR = 0;
+	ubc_reiniciar();
 
 
 	PCTRA	= (DWORD *)	&regmem[0x80002C];	*PCTRA = 0;
@@ -2095,6 +2110,12 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 //	SDL_mutexP(regmap_mutex);
 	memcpy(&regmem[direccion & 0x00FFFFFF], p, size);
 //	SDL_mutexV(regmap_mutex);
+
+	/* Tocar cualquier registro del UBC recalcula sus banderas: armar un canal
+	   es escribir su BBR, y el resto tambien puede cambiar que se compara. */
+	if ((direccion & 0x00FFFFFF) >= 0x200000
+	&&  (direccion & 0x00FFFFFF) <= 0x200024)
+		ubc_registros_escritos();
 	
 /*    if ((direccion & 0x00FF0000) == 0xD80000)
     {

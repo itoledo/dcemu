@@ -67,22 +67,38 @@ void dump_registers();
    comparacion contra cero y nada mas. Si la traduccion falla, mmu_traducir()
    no vuelve: salta a main_loop(), que restaura la instantanea de registros y
    entra a la excepcion. Ver docs/mmu-plan.md, fases 3 a 5. */
+/* El gancho del UBC (ubc.c): los breakpoints de operando comparan la
+   direccion **virtual**, asi que va aca y no en los _fisico -- y de paso los
+   accesos internos del emulador quedan fuera solos. Apagado cuesta una
+   comparacion contra cero, la misma clase que el watchpoint de arriba. Se
+   llama despues del acceso, que es cuando el chip da el break de operando y
+   cuando una lectura ya tiene su valor para comparar. */
+extern int ubc_operando_activa;
+void ubc_operando(unsigned long direccion, const void * valor, size_t tam,
+				  int escritura);
+
 #ifdef MEMORY_FUNCTIONS
 void memread(unsigned long direccion, void * target, size_t size);
 void memwrite(unsigned long direccion, void * source, size_t size);
 #else
 #define memread(direccion, target, size) \
 	do { \
-		unsigned long _mmu_d = (direccion); \
+		unsigned long _ubc_d = (direccion); \
+		unsigned long _mmu_d = _ubc_d; \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_LECTURA); \
 		memread_fisico(_mmu_d, (target), (size)); \
+		if (ubc_operando_activa) \
+			ubc_operando(_ubc_d, (target), (size), 0); \
 	} while (0)
 
 #define memwrite(direccion, source, size) \
 	do { \
-		unsigned long _mmu_d = (direccion); \
+		unsigned long _ubc_d = (direccion); \
+		unsigned long _mmu_d = _ubc_d; \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_ESCRITURA); \
 		memwrite_fisico(_mmu_d, (source), (size)); \
+		if (ubc_operando_activa) \
+			ubc_operando(_ubc_d, (source), (size), 1); \
 	} while (0)
 #endif
 

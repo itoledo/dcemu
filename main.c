@@ -31,6 +31,7 @@
 #include "opciones.h"
 #include "sistema.h"
 #include "traza.h"
+#include "ubc.h"
 #include "wdt.h"
 #include "tmu.h"
 #include "mando.h"
@@ -324,6 +325,13 @@ void main_loop(void)
 
 			if (traza_activa)
 				traza_paso(PC);
+
+			/* La frontera del UBC: entrega el break pendiente de la
+			   instruccion (o el operando) anterior, o evalua un break de
+			   instruccion sobre este PC. Si entro a la excepcion, PC ya es el
+			   manejador y no hay nada que ejecutar en esta vuelta. */
+			if (ubc_activa && ubc_revisar_instruccion())
+				continue;
 
 			if (!excepcion_vigilar)
 			{

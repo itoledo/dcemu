@@ -33,4 +33,7 @@ extern const dc_suite suite_tmu;
 /* Las dos ventanas de la RAM de video del PVR (vram.h). */
 extern const dc_suite suite_vram;
 
+/* El controlador de breakpoints por hardware (ubc.h). */
+extern const dc_suite suite_ubc;
+
 #endif /* _SUITES_H_ */

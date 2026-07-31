@@ -108,6 +108,7 @@ set(DCEMU_SOURCES
 	sistema.c
 	ta.c
 	tmu.c
+	ubc.c
 	vram.c
 	wdt.c
 	syscontrol.c

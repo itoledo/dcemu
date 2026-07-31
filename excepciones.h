@@ -47,6 +47,10 @@
 #define EXC_FPU_GENERAL		0x800	/* instruccion de FPU con SR.FD puesto */
 #define EXC_FPU_RANURA		0x820	/* idem, en la ranura de retardo */
 
+/* El user break del UBC. Antes y despues de ejecutar comparten el codigo:
+   KOS instala el mismo manejador para EXC_USER_BREAK_PRE y _POST. */
+#define EXC_UBC_BREAK		0x1E0
+
 /* Todas las excepciones generales entran por el mismo vector. El fallo de TLB
    tiene el suyo, que es lo que lo hace barato en hardware real. */
 #define EXC_VEC_GENERAL		0x100

@@ -28,6 +28,7 @@
 #include "main.h"
 #include "mem.h"
 #include "sh4emu.h"
+#include "ubc.h"
 
 #include "arnes.h"
 
@@ -43,6 +44,10 @@ unsigned char * ta_mem;
 /* Respaldo de los registros del TMU. En el emulador viven en regmem, en
    0xD800xx; aqui van en su propio bloque para no reservar 14 MB de mas. */
 static unsigned char tmu_regs[0x40];
+
+/* Los del UBC, por la misma razon: en el emulador estan en 0xFF2000xx. Los
+   dos ASID (BASRA/BASRB) si caben en el regmem de prueba, como en mem.c. */
+static unsigned char ubc_regs[0x28];
 
 /* Respaldo del bloque de control del sistema. gdrom.c lo usa para los
    registros del bus G1 que no emula pero que igual tienen que poder leerse
@@ -215,6 +220,19 @@ void memoria_prueba_iniciar(void)
 	MMUCR	= (DWORD *) &regmem[0x10];
 	PTEA	= (DWORD *) &regmem[0x34];
 
+	/* Los del UBC, con los mismos anchos que regmem_setup(). */
+	UBC_BARA	= (DWORD *)	&ubc_regs[0x00];
+	UBC_BAMRA	= (BYTE *)	&ubc_regs[0x04];
+	UBC_BBRA	= (WORD *)	&ubc_regs[0x08];
+	UBC_BARB	= (DWORD *)	&ubc_regs[0x0C];
+	UBC_BAMRB	= (BYTE *)	&ubc_regs[0x10];
+	UBC_BBRB	= (WORD *)	&ubc_regs[0x14];
+	UBC_BDRB	= (DWORD *)	&ubc_regs[0x18];
+	UBC_BDMRB	= (DWORD *)	&ubc_regs[0x1C];
+	UBC_BRCR	= (WORD *)	&ubc_regs[0x20];
+	UBC_BASRA	= (BYTE *)	&regmem[0x14];
+	UBC_BASRB	= (BYTE *)	&regmem[0x18];
+
 	/* Los del TMU. Van fuera del bloque de 0x1000 que usa el resto, asi que
 	   viven en un bloque propio: solo hacen falta como respaldo para tmu.c. */
 	TOCR	= (BYTE *)  &tmu_regs[0x00];
@@ -234,9 +252,12 @@ void arnes_registros_en_cero(void)
 {
 	memset(regmem, 0, REGMEM_PRUEBA);
 	memset(tmu_regs, 0, sizeof(tmu_regs));
+	memset(ubc_regs, 0, sizeof(ubc_regs));
 	memset(SQ0, 0, sizeof(SQ0));
 	memset(SQ1, 0, sizeof(SQ1));
 	memset(ta_mem, 0, TA_SIZE);
+
+	ubc_reiniciar();
 
 	prueba_accesos_invalidos = 0;
 }
