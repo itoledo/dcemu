@@ -833,8 +833,17 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 void limpiar_pantalla()
 {
+	/*
+		**glClear del buffer de profundidad lo enmascara glDepthMask.** Si la
+		ultima tira de la escena anterior venia con "Z Write Disable" puesto -- y
+		la geometria translucida siempre lo trae --, la mascara quedo en FALSE y
+		el clear no borra nada: la escena siguiente arranca con las
+		profundidades de la anterior y descarta lo que caiga detras de ellas.
+	*/
+	glDepthMask(GL_TRUE);
+
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-}    
+}
 
 typedef struct pvr_bkg_poly {
         DWORD	flags1, flags2;
@@ -972,7 +981,7 @@ static void marcar_volumenes(void)
 		glBegin(GL_TRIANGLES);
 
 		for (k = 0; k < 3; k++)
-			glVertex3f(t->x[k], t->y[k], 1.0f / t->z[k]);
+			glVertex3f(t->x[k], t->y[k], t->z[k]);
 	}
 
 	glEnd();
@@ -1116,7 +1125,7 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		{
 			int t;
 
-			for (t = 0; t < strip_count && t < 4; t++)
+			for (t = 0; t < strip_count && t < 8; t++)
 			{
 				fprintf(stderr, "traza:   tira %d: tipo=%d idx=%d n=%d alpha=%d "
 					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d fmt=%04x "
@@ -1392,10 +1401,13 @@ static int render_a_textura(void)
 	glLoadIdentity();
 	glOrtho(0, ancho, alto, 0, -32768.0, 32768.0);
 
-	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	/* La mascara va **antes** del clear: glClear de la profundidad la respeta.
+	   Ver limpiar_pantalla(). */
 	glEnable(GL_DEPTH_TEST);
 	glDepthMask(GL_TRUE);
+
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	dibujar_escena();
 
@@ -2011,22 +2023,25 @@ static vertex * vertice_nuevo(void)
 	v->y = xyz[1];
 
 	/*
-		La z del TA es 1/w: mayor quiere decir mas cerca, y las pruebas de
+		La z del TA es 1/w: **mayor quiere decir mas cerca**, y las pruebas de
 		profundidad del PVR estan escritas asi -- GREATER deja pasar lo que esta
-		mas cerca.
+		mas cerca. El glOrtho de screeninit() mapea z de ojo creciente a
+		profundidad creciente, asi que la z del TA se guarda tal cual y el orden
+		sale solo.
 
-		Guardar su reciproco parece invertir el orden, pero no: el glOrtho de
-		screeninit() va de -32768 a 32768, o sea que mapea z creciente a
-		profundidad **decreciente**, y las dos inversiones se cancelan. Lo que
-		queda es lo correcto: mas cerca, mas profundidad, gana con GREATER.
+		Aca se guardaba **su reciproco**, que invierte el orden. Con dos capas
+		todavia se salva -- la de arriba gana igual porque la de abajo no
+		escribio nada --, pero con tres el resultado es que solo se ve la
+		primera. pvr_rtt_sized dibuja un fondo en z=1, un interior en z=2, dos
+		marcas en z=3 y z=4 y los bordes en z=5, y de todo eso salia el fondo y
+		nada mas. Otra medida del mismo cambio: libdream-ta pasa de 43333 colores
+		a 65227.
 
-		Lo que si cuesta es la precision. Ese rango de 65536 aplasta las z de una
-		demo -- que andan por unidades -- en una franja minuscula alrededor de
-		0,5, y ahi lo que decide es cuantos bits tiene el buffer de profundidad.
-		Ver el pedido de 24 bits en glinit(): con los 16 que daba el contexto por
-		omision, dos capas contiguas colisionaban y la de arriba desaparecia.
+		Y hay un caso que el reciproco rompe del todo: **z = 0 es legitimo** y
+		significa infinitamente lejos, pero 1/0 se va a infinito y GL recorta el
+		vertice. pvr_rtt_sized manda su rectangulo de fondo justamente con z = 0.
 	*/
-	v->z = 1.0 / xyz[2];
+	v->z = xyz[2];
 
 	/* Sin coordenadas de textura mientras el tipo no diga otra cosa: si no,
 	   quedan las del vertice anterior. */
@@ -2217,7 +2232,7 @@ static void vertice_sprite(int con_textura)
 
 			ve->x = x[s];
 			ve->y = y[s];
-			ve->z = 1.0 / z[s];
+			ve->z = z[s];		/* tal cual, igual que vertice_nuevo() */
 			ve->t1 = u[s];
 			ve->t2 = v[s];
 

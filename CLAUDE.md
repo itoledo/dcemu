@@ -548,13 +548,35 @@ colour count dropped from 47539 to 2048 when this landed — which is the round 
 RGB565 texture, i.e. the *right* number.
 
 Still open: `pvr_rtt_sized` draws two small markers inside the texture, at z=3 and z=4, that do not
-appear, while the background (z=1), the inner rect (z=2) and the borders (z=5) do. It is the depth
-test — `GL_ALWAYS` makes them show — but **not precision**: the context already grants 24 bits
-(`--traza-mem` prints what SDL actually gave) and narrowing the RTT pass's `glOrtho` range changes
-nothing.
+appear, while the background (z=0), the inner rect (z=2) and the borders (z=5) do — one level of
+overdraw works, two does not. It is the depth test (`GL_ALWAYS` makes them show) but **not
+precision**: the context grants 24 bits (`--traza-mem` prints what SDL actually gave) and shrinking
+the RTT pass's `glOrtho` range to ±64, which spreads those z values over a quarter of the buffer,
+changes nothing. The strips themselves are provably fine — `--traza-mem` prints all four corners,
+and the marker's quad is non-degenerate, correctly wound and inside the texture.
 
 **Do not request `SDL_GL_DEPTH_SIZE`.** Asking for 24 alongside the stencil and `BUFFER_SIZE 32`
 makes SDL pick a different pixel format; the context grants 24 bits anyway without asking.
+
+### Depth
+
+**The TA's z is 1/w — larger means nearer — and it is stored as-is.** The PVR's compare modes are
+written in those terms (`GREATER` passes what is nearer), and `screeninit()`'s `glOrtho` maps rising
+eye-z to rising depth, so the ordering comes out right with no transformation.
+
+It used to store the **reciprocal**, which inverts it. Two layers still survive that — the top one
+wins anyway because the bottom never wrote — but three do not, and the result is that only the first
+is visible. `pvr_rtt_sized` draws a background, an interior, two markers and borders on five z
+levels and showed the background alone. `libdream-ta` went from 43333 colours to 65227 on the same
+change, and `parallax-serpent_dma`'s spheres started occluding each other properly.
+
+**z = 0 is legal and means infinitely far**, which the reciprocal turned into infinity — GL then
+clips the vertex outright. `pvr_rtt_sized` submits its background rect with exactly z = 0.
+
+**`glClear` of the depth buffer is masked by `glDepthMask`.** A strip with "Z Write Disable" set —
+which translucent geometry always has — leaves the mask at `GL_FALSE`, and then the clear does
+nothing and the next scene starts with the previous one's depths. `limpiar_pantalla()` and the RTT
+pass both set the mask before clearing.
 
 ### Modifier volumes
 
