@@ -247,8 +247,22 @@ void hack_gdrom()
 					memread(R(5) + 8, &targetaddr, sizeof(DWORD));
 
 					logmsg("read sector: start=%x, num=%x, addr=%x\n", secstart, secnum, targetaddr);
+
 					targetmem = malloc(sizeof(char) * 2048 * secnum);
 					iso_read_sector(&targetmem[0], secstart, secnum);
+
+					if (traza_activa)
+					{
+						int i;
+
+						fprintf(stderr, "hack: leer %d sectores desde %d a %08lx:",
+							secnum, secstart, (unsigned long) targetaddr);
+
+						for (i = 0; i < 8; i++)
+							fprintf(stderr, " %02x", (BYTE) targetmem[i]);
+
+						fprintf(stderr, "\n");
+					}
 					memwrite(targetaddr, &targetmem[0], 2048 * secnum);
 					free(targetmem);
 				}
@@ -274,6 +288,32 @@ void hack_gdrom()
 		        	memwrite(targetaddr, &toc, sizeof(struct TOC));
    				}
    				break;
+
+				case 24: // INIT: arrancar la lectora
+				/* En la consola pone en marcha el motor y deja la unidad lista.
+				   Aqui gdrom_iniciar() ya la dejo en el estado que pidio
+				   --bandeja y los sectores salen de iso.c, no de un motor, asi
+				   que no queda nada por hacer: lo que importa es contestar que
+				   salio bien. Es el primer comando que manda Crazy Taxi. */
+				logmsg("GDROM_INIT_DRIVE\r\n");
+				break;
+
+				case 40: // GET_VERS: la version del driver del GD-ROM
+				{
+					/* Los 32 bytes que trae el boot ROM en bios.bin+0x3b60,
+					   rellenados con espacios y sin NUL, que es lo que contesta
+					   una consola. El unico parametro apunta al destino. */
+					static const char version[] = "GDC Version 1.01 1998-09-30 MP  ";
+					DWORD destino = 0;
+
+					memread(R(5), &destino, sizeof(DWORD));
+
+					if (destino)
+						memwrite(destino, (void *) version, 32);	/* sin el NUL */
+
+					logmsg("GDROM_GET_VERS: a %x\r\n", destino);
+				}
+				break;
 
 				default:
 				/* El guest se lleva un identificador valido igual, asi que da
