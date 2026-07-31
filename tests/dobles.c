@@ -52,6 +52,7 @@ void taSprite()			{ dobles_sprite++; }
    traza.c no se puede enlazar aca -- desensambla, y eso arrastra debug.c con
    SDL --, y en las pruebas la traza estorbaria de todos modos. */
 int traza_activa = 0;
+long traza_disparo = 0;
 
 /* El gancho de mem.h consulta watchpoint_dir en cada escritura y solo llama si
    no es cero. traza.c no se enlaza aca, asi que el doble lo deja apagado; la
@@ -132,6 +133,8 @@ int iso_num_sectores()
 /* El doble es un disco de una sola pista de datos, o sea un CD-ROM: es lo que
    ejercitan las pruebas del GD-ROM. La segunda sesion de un GD-ROM se prueba
    contra imagenes de verdad, no aca. */
+int iso_gd_presentando(void) { return 0; }
+
 int iso_es_gdrom()
 {
 	return 0;

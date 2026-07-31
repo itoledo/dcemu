@@ -85,6 +85,8 @@ void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);
 // Estaban tras un #if defined(POSX), asi que en Windows mem.c los llamaba sin
 // prototipo. Declararlos siempre.
 void cb_renderstart(DWORD addr, void * p, size_t size);
+void cb_ta_isp_base(DWORD addr, void * p, size_t size);
+void ta_avanzar_itp(void);
 void cb_param_base(DWORD addr, void * p, size_t size);
 void cb_region_base(DWORD addr, void * p, size_t size);
 void cb_fb_w_ctrl(DWORD addr, void * p, size_t size);

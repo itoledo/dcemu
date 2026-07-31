@@ -219,8 +219,32 @@ renderer_control RendCtrl;
 DWORD pvr_isp_backgnd_t = 0x0;
 DWORD pvr_param_base = 0x0;
 DWORD pvr_region_base = 0x0;
+/*
+	El puntero de escritura del TA dentro del area ISP/TSP y donde empieza esa
+	area. Los dos se declaraban aqui y no los tocaba nadie: el guest los
+	programaba --la escritura va al respaldo del bloque de control-- y al
+	leerlos se llevaba un cero, para siempre.
+
+	Eso importa porque el TA_ITP_CURRENT es como el guest sabe **cuanta**
+	geometria proceso el chip. El boot ROM lo usa para decidir si el render que
+	monto llego a hacerse; viendolo siempre en cero concluia que no habia nada
+	pendiente y se rendia. Y KOS calcula ISP_BACKGND_T restando contra el, que
+	es de donde salia el valor imposible que color_de_fondo() tiene que
+	descartar.
+
+	Aqui no se escribe la salida del TA en la RAM de video, asi que el avance es
+	una aproximacion: un parametro, el tamano de un parametro. Lo que el guest
+	necesita es que **avance**, no el valor exacto.
+*/
 DWORD pvr_ta_itp_current = 0x0;
 DWORD pvr_ta_isp_base = 0x0;
+
+#define TA_PARAMETRO_TAM	32
+
+void ta_avanzar_itp(void)
+{
+	pvr_ta_itp_current += TA_PARAMETRO_TAM;
+}
 WORD pvr_spg_vblank_int_in = 0x208;
 WORD pvr_spg_vblank_int_out = 0x028;
 
@@ -1928,6 +1952,17 @@ void cb_isp_backgnd_t(DWORD addr, void * p, size_t size)
 	logxmsg(LOG_PVR, "tag address = %x\n", (pvr_isp_backgnd_t >> 3) & 0x1FFFFF);
 }
 
+/*
+	TA_ISP_BASE. Programarlo deja el area ISP/TSP vacia, asi que el puntero de
+	escritura vuelve al principio.
+*/
+void cb_ta_isp_base(DWORD addr, void * p, size_t size)
+{
+	memcpy(&pvr_ta_isp_base, p, size);
+	pvr_ta_itp_current = pvr_ta_isp_base;
+	logxmsg(LOG_PVR, "cb_ta_isp_base: %x\n", pvr_ta_isp_base);
+}
+
 void cb_param_base(DWORD addr, void * p, size_t size)
 {
 	memcpy(&pvr_param_base, p, size);
@@ -2058,6 +2093,8 @@ void objectListSet()
 */
 void taSprite()
 {
+	ta_avanzar_itp();
+
 	taPolyModifier();
 
 	sprite_color = ta_address_pointer[4];
@@ -2071,6 +2108,8 @@ void taSprite()
 
 void taPolyModifier()
 {
+	ta_avanzar_itp();
+
 	TA.control = *ta_address_pointer;
 	
 	logxmsg(LOG_PVR, "pcw: Polygon or Modifier Volume\n");
@@ -2648,6 +2687,8 @@ static void vertice_uv16(vertex * v, DWORD palabra)
 
 void taVertexHandler()
 {
+	ta_avanzar_itp();
+
 	DWORD antes;
 
 #ifdef DEBUG_VERTEX_NEW

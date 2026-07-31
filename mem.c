@@ -902,6 +902,10 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		case 0xa05f8138:	// TA_ITP_CURRENT, PVR_TA_VERTBUF_POS
 		{
       		memcpy(p, &pvr_ta_itp_current, size);
+
+			if (traza_activa && getenv("DCEMU_VER_TA"))
+				fprintf(stderr, "traza: lee TA_ITP_CURRENT = %08lx (PC=%08lx)\n",
+					(unsigned long) pvr_ta_itp_current, (unsigned long) PC);
 		}
 		break;
 
@@ -1897,7 +1901,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		PVR_WRITE_1(0xa05f8000 + 0x47 * 4, "[PT_ALPHA_REF], grabando %x", *(DWORD *) p);
 
 		PVR_WRITE_1(0xa05f8000 + 0x49 * 4, "PPMATRIXBASE [TA_OL_BASE] (TA) (Root PP-block matrices base address), grabando %x", *(DWORD *) p);
-		PVR_WRITE_1(0xa05f8000 + 0x4a * 4, "PRIMALLOCSTART [TA_ISP_BASE] (TA) (Primitive allocation area start), grabando %x", *(DWORD *) p);
+		PVR_WRITE_CB_1(0xa05f8000 + 0x4a * 4, cb_ta_isp_base, "PRIMALLOCSTART [TA_ISP_BASE] (TA) (Primitive allocation area start), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x4b * 4, "PPALLOCSTART [TA_OL_LIMIT] (TA) (PP-block allocation area start), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x4c * 4, "PRIMALLOCEND [TA_ISP_LIMIT] (TA) (Primitive allocation area end), grabando %x", *(DWORD *) p);
 		PVR_WRITE_1(0xa05f8000 + 0x4d * 4, "PPALLOCPOS [TA_NEXT_OPB] (TA) (Current PP-block allocation position), grabando %x", *(DWORD *) p);
