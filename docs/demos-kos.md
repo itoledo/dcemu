@@ -482,6 +482,37 @@ el ROM escribe — no tiene caso en ningún sitio**, ni tampoco `0x812C`, `0x813
 control y no rompen nada visible, pero nadie las lee. Ese es el siguiente sitio
 donde mirar.
 
+### El watchpoint sobre la tabla de estados
+
+Seguido el 31 de julio. La tabla de `0x8c230388` acaba así y no se mueve:
+
+```
+8c230388: 00000000  ffffffff  ffffffff  ffffffff
+```
+
+`0x8c0da614` busca entradas con estado **1** y no hay ninguna: **nunca se encola
+el trabajo**. Quien la inicializa es `0x8c0da28a` (la deja en 0 y `-1`), y el
+único sitio que la toca después es `0x8c0ba48e`, que encola con estado **2**, no
+1 — o sea "en curso", no "pendiente".
+
+Justo después de ese encolado hay una bifurcación por el **bit 5 de
+`0x8c23045c`**, y ahí está lo interesante:
+
+- si está **puesto**, el ROM programa `QACR0`/`QACR1` a `0x10` y manda la
+  geometría por **store queue** a la FIFO del TA, terminando con un `PREF`;
+- si está **apagado**, toma otro camino, que llama a `0x8c0d7a46` con la FIFO
+  (`0x10000000`) como destino.
+
+**Ese bit vale 0 y nadie lo cambia nunca**, así que siempre se toma el segundo
+camino. Se comprobó si ese camino alimenta el TA escribiendo derecho en
+`0x10000000` —cosa que dcemu no despachaba, porque `ta_write()` sólo guarda y
+quien procesa es `pref142()` o el CH2 DMA—: se implementó el despacho de esas
+escrituras directas y **no llega ni un bloque**, así que no es por ahí. El
+cambio se revirtió por eso: no lo ejercita nada.
+
+Lo que queda es entender qué hace `0x8c0d7a46` con ese destino y por qué el
+resultado no llega al TA, y quién debería poner el bit 5 de `0x8c23045c`.
+
 Para llegar hasta aquí se añadió `traza_disparo`: puesto a N, se decrementa por
 instrucción y vuelca el anillo al llegar a cero. `DCEMU_DISPARO=fad,N` lo arma
 cuando la lectora entrega ese FAD, y es lo que permite ver qué hace el guest N
