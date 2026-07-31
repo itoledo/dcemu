@@ -21,6 +21,136 @@
 int traza_activa = 0;
 
 /* ------------------------------------------------------------------------ */
+/* Caida del emulador                                                       */
+/* ------------------------------------------------------------------------ */
+
+/* Ver traza.h. El informe va aca y no en main.c porque lo que hay que rescatar
+   -- el anillo, los registros, los rangos pedidos -- vive en este archivo. */
+
+static int caida_en_curso = 0;
+
+static void volcar_registros(void);
+
+static void caida_informe(const char * causa, const char * detalle)
+{
+	/* Si el propio informe vuelve a caer ya no queda nada que rescatar, y
+	   reentrar solo cambiaria una caida muda por un bucle. */
+	if (caida_en_curso)
+		return;
+
+	caida_en_curso = 1;
+
+	fprintf(stderr, "\n*** dcemu cayo: %s\n", causa);
+
+	if (detalle)
+		fprintf(stderr, "    %s\n", detalle);
+
+	fprintf(stderr, "    Cayo el emulador, no el emulado. El PC de mas abajo es\n"
+					"    donde iba el guest, que es por donde hay que empezar.\n");
+	fflush(stderr);
+
+	/* De lo mas barato a lo mas fragil, vaciando entre medio: si desensamblar
+	   memoria rota provoca una segunda caida, lo importante ya salio. */
+	volcar_registros();
+	fflush(stderr);
+
+	traza_volcar("caida del emulador");
+	fflush(stderr);
+
+	traza_rangos();
+	fflush(stderr);
+}
+
+#ifdef WIN32
+
+static const char * caida_nombre(DWORD codigo)
+{
+	switch (codigo)
+	{
+		case EXCEPTION_ACCESS_VIOLATION:		return "acceso invalido a memoria";
+		case EXCEPTION_IN_PAGE_ERROR:			return "fallo de pagina";
+		case EXCEPTION_DATATYPE_MISALIGNMENT:	return "acceso desalineado";
+		case EXCEPTION_ILLEGAL_INSTRUCTION:		return "instruccion ilegal";
+		case EXCEPTION_PRIV_INSTRUCTION:		return "instruccion privilegiada";
+		case EXCEPTION_STACK_OVERFLOW:			return "desborde de pila";
+		case EXCEPTION_INT_DIVIDE_BY_ZERO:		return "division entera por cero";
+		case EXCEPTION_FLT_DIVIDE_BY_ZERO:		return "division flotante por cero";
+		default:								return "excepcion del anfitrion";
+	}
+}
+
+static LONG WINAPI caida_filtro(EXCEPTION_POINTERS * info)
+{
+	char	causa[256];
+	char	detalle[256];
+	DWORD	codigo = info->ExceptionRecord->ExceptionCode;
+
+	sprintf(causa, "%s (codigo %08lx) en %p del anfitrion",
+		caida_nombre(codigo),
+		(unsigned long) codigo,
+		info->ExceptionRecord->ExceptionAddress);
+
+	detalle[0] = '\0';
+
+	/* Para un acceso invalido el primer parametro dice que se intentaba (0
+	   leer, 1 escribir, 8 ejecutar) y el segundo sobre que direccion. */
+	if ((codigo == EXCEPTION_ACCESS_VIOLATION || codigo == EXCEPTION_IN_PAGE_ERROR)
+		&& info->ExceptionRecord->NumberParameters >= 2)
+	{
+		ULONG_PTR tipo = info->ExceptionRecord->ExceptionInformation[0];
+
+		sprintf(detalle, "intento de %s sobre %p",
+			(tipo == 0) ? "lectura" : (tipo == 1) ? "escritura" : "ejecucion",
+			(void *) info->ExceptionRecord->ExceptionInformation[1]);
+	}
+
+	caida_informe(causa, detalle[0] ? detalle : NULL);
+
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void traza_caida_instalar(void)
+{
+	SetUnhandledExceptionFilter(caida_filtro);
+}
+
+#else
+
+#include <signal.h>
+
+static void caida_senal(int sig)
+{
+	const char * causa;
+
+	switch (sig)
+	{
+		case SIGSEGV:	causa = "acceso invalido a memoria (SIGSEGV)";		break;
+		case SIGBUS:	causa = "acceso desalineado o invalido (SIGBUS)";	break;
+		case SIGILL:	causa = "instruccion ilegal (SIGILL)";				break;
+		case SIGFPE:	causa = "excepcion aritmetica (SIGFPE)";			break;
+		default:		causa = "senal fatal";								break;
+	}
+
+	caida_informe(causa, NULL);
+
+	/* Devolver la senal a su manejador por omision y relanzarla: asi el
+	   sistema deja el core si esta configurado para dejarlo, y el codigo de
+	   salida sigue diciendo que el proceso murio por una senal. */
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+void traza_caida_instalar(void)
+{
+	signal(SIGSEGV, caida_senal);
+	signal(SIGBUS,  caida_senal);
+	signal(SIGILL,  caida_senal);
+	signal(SIGFPE,  caida_senal);
+}
+
+#endif
+
+/* ------------------------------------------------------------------------ */
 /* Direcciones sin emular                                                   */
 /* ------------------------------------------------------------------------ */
 

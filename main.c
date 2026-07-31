@@ -946,6 +946,10 @@ int main(int argc, char *argv[])
 
 	//FILE * fp;
 
+	/* Antes que nada: si algo tumba al emulador, que al menos diga por donde
+	   iba el guest en vez de desaparecer en silencio. Ver traza.h. */
+	traza_caida_instalar();
+
 	{
 		int r = opciones_parsear(argc, argv);
 

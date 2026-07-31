@@ -149,6 +149,18 @@ which is why **`--salir-tras=N` matters**: it leaves through the same path as cl
 window, so `traza_resumen()` runs. Killing the process from outside takes the disassembly
 and the dump with it.
 
+**A crash of the emulator reports the guest's state instead of vanishing**
+(`traza_caida_instalar()`, installed first thing in `main()`). A guest that jumps into the
+void executes whatever is there and sooner or later takes dcemu down with it; without this
+the process simply disappears, SDL takes `stderr` with it, and the one datum that says
+where it derailed — the guest PC — is gone. The handler prints the host exception, then the
+guest's registers, then the PC ring with its disassembly, then the `--volcar`/`--desensamblar`
+ranges: the same thing exiting normally would have printed, in that order so a second fault
+while disassembling broken memory still leaves the important part out. It does not try to
+continue, is not a host-bug catcher, and costs nothing while nothing crashes. Windows uses
+`SetUnhandledExceptionFilter` (SDL does not override it) and everything else `signal()`,
+re-raising with the default handler so a core still gets dropped.
+
 **Where the BIOS boot stands: it boots, and the intro animation displays.** With `--bios`
 it plays the swirl animation — the embossed spiral on the `0xBFBFBF` background with its
 orange trail — and reaches the menu; from there Play, File, Music and Settings all work.

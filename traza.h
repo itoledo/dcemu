@@ -54,6 +54,23 @@ void traza_resumen(void);
 void traza_rangos(void);
 
 /*
+	Informar la caida del emulador en vez de desaparecer sin decir nada.
+
+	Un guest que salta al vacio ejecuta lo que haya y tarde o temprano tumba al
+	emulador. Sin esto la caida es muda: el proceso se va, SDL se lleva stderr
+	con el y no queda ni el PC del emulado, que es el unico dato que dice donde
+	se descarrilo. Con esto sale ese PC, los registros, el anillo y los rangos
+	de --volcar/--desensamblar, o sea lo mismo que se habria impreso saliendo
+	por la puerta normal.
+
+	No es un cazador de errores del anfitrion ni intenta seguir: informa y
+	termina. No depende de --traza-mem y no cuesta nada mientras nada caiga.
+
+	Se instala una sola vez, al principio de main().
+*/
+void traza_caida_instalar(void);
+
+/*
 	Watchpoint de escritura, configurado con --watchpoint=DIR[:TAM]. Lo llama el
 	gancho de memwrite_fisico() en mem.h **despues** de escribir, asi que ve el
 	valor que quedo; el anterior lo recuerda de la vez pasada.
