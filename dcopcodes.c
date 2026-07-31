@@ -230,6 +230,12 @@ void hack_gdrom()
 			logmsg("GDROM_SEND_COMMAND: r4=%x, r5=%x\r\n", R(4), R(5));
 			switch(R(4))
 			{
+				/* 16 es la lectura por PIO y 17 la misma por DMA: mismos
+				   parametros --sector, cuantos, destino-- y aqui la
+				   transferencia se hace igual, en el momento. Sin el caso 17 el
+				   guest pedia sus datos, se llevaba un identificador valido y no
+				   recibia ni un sector. Crazy Taxi pide la 17 y solo esa. */
+				case 17: // lo mismo por DMA
 				case 16: // read sector, R(5) es el lugar donde se guardan los datos
 				{
 					int secstart, secnum;
@@ -267,6 +273,17 @@ void hack_gdrom()
 		        	logmsg("escribiendo TOC a %x\n", targetaddr);
 		        	memwrite(targetaddr, &toc, sizeof(struct TOC));
    				}
+   				break;
+
+				default:
+				/* El guest se lleva un identificador valido igual, asi que da
+				   su peticion por hecha. Nombrar el comando que falta es lo
+				   unico que impide que eso pase inadvertido. */
+				logmsg("GDROM_SEND_COMMAND: comando %d sin implementar\r\n", R(4));
+
+				if (traza_activa)
+					fprintf(stderr, "hack: comando %lu del GD-ROM sin implementar\n",
+						(unsigned long) R(4));
    				break;
 			}
 			/* El identificador de la peticion, que el guest usara para
