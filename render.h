@@ -143,6 +143,10 @@ typedef struct TriangleStripInfo
 		DWORD pvr_texture_components;
 		DWORD twiddled;
 		DWORD vq;
+
+		/* 1 si la textura trae mipmaps: los niveles van del 1x1 al grande y
+		   el grande NO esta al principio -- get_texture() salta los chicos. */
+		DWORD mipmapped;
 		DWORD filtermode;
 		DWORD pvr_texture_size_usize;
 		DWORD pvr_texture_size_vsize;
@@ -168,6 +172,11 @@ typedef struct TriangleStripInfo
 		   el texel con el color del vertice. 0 decal, 1 modulate, 2 decal alpha,
 		   3 modulate alpha. */
 		DWORD pvr_texture_env;
+
+		/* La palabra de control de textura tal como llego, para el volcado de
+		   --traza-mem: cuando un formato parece mal leido, esto es lo que
+		   permite mirar los bits sin intermediarios. */
+		DWORD tcw_crudo;
 	}texture;
 	DWORD index;
 
@@ -177,6 +186,14 @@ typedef struct TriangleStripInfo
 		barata). Las demas se dibujan de una sola pasada.
 	*/
 	DWORD volumen;
+
+	/*
+		La z mas cercana de la tira (el maximo, porque z es 1/w), ya pasada por
+		profundidad_ta(). Es la llave del autosort de la lista translucida:
+		el chip la ordena por profundidad por pixel, y dcemu aproxima por
+		tira. La calcula cb_tastart() antes de ordenar.
+	*/
+	float prof;
 }TSI;
 
 

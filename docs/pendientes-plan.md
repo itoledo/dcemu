@@ -31,6 +31,7 @@ Actualizado el 1 de agosto de 2026.
 | El núcleo contra SingleStepTests/sh4 | **116.500 casos, 0 fallos** |
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
 | mame4all | arranca desde el `.iso` y dibuja su menú |
+| **Crazy Taxi** | **corre**: título y modo attract en 3D, responde al mando (A.3) |
 
 Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
 no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
@@ -42,12 +43,15 @@ juego del disco"):
 
 | hito | qué se ve | vía | estado |
 | --- | --- | --- | --- |
-| **D** | un juego comercial dibuja su primer cuadro | A | pendiente |
+| **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026: Crazy Taxi corre** — ver A.3 |
 | **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026: suenan cuatro** |
 | **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | pendiente |
 
-El hito D es el que importa: es lo único que separa a dcemu de "corre homebrew" de "corre un
-juego", y el README todavía dice que nunca lo logró.
+El hito D era el que importaba: es lo único que separaba a dcemu de "corre homebrew" a "corre
+un juego". Crazy Taxi (los dos rips) muestra su pantalla de carga, el aviso de VMU, responde
+al Start, pasa a su pantalla de título y corre el modo attract en 3D — el motor entero, a 528
+tiras por escena. Virtua Tennis y Capcom vs. SNK siguen parados, en el **otro** bloqueo (el
+del arranque común del SDK, A.-1b); ese hilo sigue abierto.
 
 ---
 
@@ -310,6 +314,147 @@ exactamente lo que pasó con las cinco de la lectora—. Por eso el producto de 
 de cinco imágenes y no una: si cuatro se paran en el mismo sitio, es una causa común y vale la
 pena; si cada una se para en un sitio distinto, es el juego y hay que elegir el más simple.
 
+### A.3 — Resuelto para Crazy Taxi: el SDK exige un GD-ROM — **hito D alcanzado el 1 de agosto de 2026**
+
+La hipótesis de A.2 era la correcta, en su forma más literal: algo que el guest pide, que
+dcemu contesta sin querer decir nada. Solo que no era un registro: era **la respuesta de un
+syscall**.
+
+La cadena de medición, que costó tres corridas:
+
+1. Con la pantalla de carga capturada cuadro a cuadro (`DCEMU_CAPTURA_TODAS`), la primera
+   escena de Crazy Taxi resultó no ser negra: dibuja **"LOADING CRAZY TAXI (31K)"** y ahí se
+   queda. El juego no estaba colgado: estaba *cargando*, clavado en los primeros 31K.
+2. El reporte de syscalls de `--traza-mem` mostró el bucle: `GDROM_INIT` (r7=3),
+   `SEND_COMMAND` con **CMD_INIT** (24), `MAINLOOP`, `CHECK_COMMAND` → COMPLETED,
+   `CHECK_DRIVE` → `{2, 0x20}`, y vuelta a empezar. Cientos de veces: el juego reintentaba la
+   inicialización entera de la lectora, para siempre.
+3. `--traza-desde=0c15d5f4` —la dirección de retorno del `CHECK_DRIVE`— mostró la decisión:
+   el juego carga el literal **0x80**, lo compara contra el word de tipo de disco que contestó
+   el syscall (0x20, CD-ROM/XA) y ante la diferencia devuelve **−5** y reintenta. Es
+   `gdFsInit()` del SDK de Katana: **exige que el disco sea un GD-ROM**. El chequeo
+   antipiratería del SDK, y ninguno de los dos rips lo trae parcheado: el DCRES (layout
+   MIL-CD, datos en el LBA 11702) hace exactamente el mismo bucle que el USA (layout GD,
+   datos en 45000).
+
+El arreglo, en `hack_gdrom()` caso `CHECK_DRIVE`: **con disco puesto, el camino de los hooks
+contesta GD-ROM (0x80)**, no lo que diga la imagen. Ese camino reemplaza consola, BIOS y
+lectora para correr el juego montado, y el disco original de un juego comercial es un GD-ROM;
+contestar el tipo de la imagen era describir el rip, no el disco que el juego espera. El
+camino por `--bios` no pasa por ahí y sigue viendo el CD que la imagen es, que es lo que su
+rama de MIL-CD necesita.
+
+Con eso, los dos rips de Crazy Taxi corren: pantalla de carga (el contador pasa de 31K),
+aviso de VMU, **responde al Start**, pantalla de título con su "PRESS START BUTTON"
+parpadeando, y el modo attract en 3D — el taxi por la ciudad, 343 escenas en 8 segundos, 528
+tiras por escena. Verificado con captura cuadro a cuadro y mandando el Start por
+`keybd_event` (un toque de `SendKeys` dura menos que un muestreo del mando: hay que
+*mantener* la tecla).
+
+De paso salió y se cerró **C.4**: Crazy Taxi también llama `SYSINFO` función 3, seguía el
+puntero nulo del stub mudo y escribía su "identificador" alrededor de la dirección 0x10. La
+numeración quedó confirmada contra KOS (`hardware/syscalls.c`: 0 INIT, 2 ICON, 3 ID) y la 3
+contesta ahora `SYSID_BASE`. Ver C.4.
+
+Lo que queda de la vía A, medido el mismo día con los dos arreglos puestos:
+
+| imagen | estado |
+| --- | --- |
+| Crazy Taxi (USA y DCRES) | **corre** — título y attract en 3D |
+| Virtua Tennis (los dos rips) | igual que antes: 0 escenas. Su bloqueo es el de A.-1b: las lecturas por `0x902940E4`/`0x020A8618` desde `0x8C1FA438` |
+| Capcom vs. SNK | igual: se para **antes** de tocar la lectora (un solo INIT), en el arranque común del SDK — mismo hilo que Virtua Tennis |
+| mame4all | idéntico, byte a byte: 93650 colores |
+
+La lectura de `0x2d2d2d0a` quedó explicada por el lado que no acusaba: en Crazy Taxi ocurre
+**una sola vez** y el juego sigue; era consecuencia del estado a medio cargar, no la causa. En
+Virtua Tennis y Capcom sigue siendo el marcador de su bloqueo.
+
+Del primer rato de juego en vivo salieron tres cosas más, dos ya resueltas el mismo día:
+
+- **La profundidad perdía geometría entera** — calles que desaparecían dejando ver el cielo,
+  edificios que se caían según el ángulo de cámara. No era el orden: era la **precisión**. El
+  1/w crudo de Crazy Taxi va de 0.01 a 1000 (medido; `--traza-mem` ahora lo imprime al salir),
+  y el `glOrtho` lineal de ±32768 sobre un buffer de 24 bits da un paso de 0.0039: la ciudad
+  lejana entera (z 0.01..0.1) cabía en 23 pasos, dos paredes vecinas caían en el mismo valor y
+  con `GEQUAL` ganaba la que se dibujara después. `profundidad_ta()` guarda `log2(1+z)` sobre
+  un rango de ±32 — monótona, así que las pruebas del chip no cambian; el mismo par de paredes
+  queda ahora a ~75 pasos. Verificado: los cuatro demos críticos de profundidad idénticos en
+  colores (fb_tex 93, rtt_sized 5, tunnel 5151, libdream-ta 65480), los de volúmenes dentro de
+  su varianza de `rand()`, y la ciudad del attract completa. Ver "Depth" en `CLAUDE.md`.
+- El `printf` de depuración `Oops Debug` de `dibujar_escena()` — borrado.
+- **Las texturas pixeladas/con ruido eran los mipmaps**, y está resuelto: el bit del TCW se
+  parseaba y solo se logueaba, y una textura con mipmaps guarda sus niveles del 1×1 al
+  grande — decodificar desde el offset 0 lee los niveles chicos revueltos, que es
+  exactamente el ruido en bloques. El nivel grande empieza en `6 + 2·(4^n−1)/3` bytes (la
+  tabla de `pvrtex` de KOS), ÷8 para los índices VQ tras el codebook, ÷4 en paleta de 4 bpp
+  y ÷2 en 8. El tranvía, el suelo y los edificios salen bien ahora; el taxi y el HUD nunca
+  estuvieron mal porque no llevan mipmaps, y esa asimetría fue la pista. Ninguna demo de KOS
+  usa el bit (el subconjunto sensible a texturas sale byte a byte idéntico). Ver "Texture
+  formats" en `CLAUDE.md`.
+
+Y de jugarlo en vivo con todo lo anterior puesto salieron dos más, resueltos el mismo día:
+
+- **Texturas "rotando" entre el piso y otros objetos** (el piso muestreando el cielo): la
+  caché de texturas tenía **10 entradas** y `get_texture()` escribía
+  `cached_textures[cur_tex_count]` sin tope — la textura 11 de una escena escribía fuera de
+  los dos arreglos y ligaba ids de GL basura, que crean objetos que se pisan entre sí.
+  Ninguna demo pasa de un puñado; una escena de Crazy Taxi usa cientos. `MAX_TEXTURE_COUNT`
+  ahora es 1024, con tope que pisa el último slot y avisa por `--traza-mem`. Verificado en
+  vivo y con el attract; el barrido corto de demos, idéntico.
+- **Los árboles opacos, con caja negra**: la lista punch-through dibujaba sin descartar por
+  alfa — no había `glAlphaFunc` en todo `graficos.c` y `PT_ALPHA_REF` (`0x005F811C`) solo se
+  respaldaba. Las tiras de la lista 4 van ahora con `GL_ALPHA_TEST` contra ese registro, que
+  es exactamente lo que distingue al punch-through en el chip. `conio-basic`, que manda un
+  quad punch-through por glifo, queda en sus 2742 píxeles de referencia.
+- **La comparación del punch-through quedó en `GEQUAL` contra el umbral con un piso de medio
+  paso**, y el camino hasta ahí dejó dos lecciones caras. Se probó la desigualdad estricta
+  (`GREATER`) por una teoría plausible sobre el menú, y **rompió el mundo**: el juego manda su
+  geometría punch-through con α=1.0, y en las sesiones donde sube `PT_ALPHA_REF` a 255 el
+  estricto descarta todo — la ciudad entera caía a su geometría de respaldo sin textura,
+  blanca. Y las "pastillas grises" del menú que motivaron todo **no son un bug**: la consola
+  real las dibuja exactamente así (verificado contra las capturas de Dreamcast de The King of
+  Grabs) — hay que medir contra una referencia antes de perseguir una pantalla "mal". El
+  registro no es constante: 0 en varias pantallas, 0x17 en los menús. Se midió con la
+  herramienta nueva `DCEMU_TRAZA_ESCENA=N[:M]`, que vuelca el estado GL completo (y el
+  `PT_ALPHA_REF`) de las tiras de una escena elegida.
+
+Y de la segunda sesión de juego en vivo salieron tres más, los tres del pipeline translúcido,
+resueltos el mismo día — el detalle está en `CLAUDE.md` ("Graphics pipeline"):
+
+- **El autosort de la lista translúcida**: el chip la ordena por profundidad por pixel y dcemu
+  la dibujaba en orden de envío — en el menú, la llama del logo (lejana) caía encima de las
+  pastillas (cercanas) y las ensuciaba. `compare()` ordena ahora por la z de la tira, de lejos
+  a cerca, salvo pre-sort (`ISP_FEED_CFG` bit 0). Con esto el menú quedó idéntico a las
+  capturas de consola real. La herramienta que lo destrabó: `DCEMU_PULSAR_START=N[,N2]`,
+  que aprieta Start por sondeo del mando — la inyección de teclado desde afuera depende del
+  foco de la ventana y Windows la niega; esto navega los menús de forma determinista.
+- **Los sprites se encadenaban**: un sprite es una primitiva completa y dcemu confiaba en el
+  bit de fin de tira, que Crazy Taxi no manda — dos sprites lejanos quedaban en una sola tira
+  y los triángulos puente eran polígonos gigantes negros cruzando el cielo (vértices a
+  ±200000 px, medidos).
+- **El bit 20 del TSP ("Use Alpha") usado como interruptor del blending**: en el chip solo
+  fuerza a 1.0 el alfa del vértice — el de la textura sigue vivo y la mezcla también. Las
+  hojas de los árboles (ARGB1555 VQ, lista translúcida, use-alpha apagado) salían opacas con
+  su fondo alfa-0 como caja negra. La mezcla la decide ahora la lista y los factores; el bit
+  se aplica en los constructores de color de vértice. Con esto los árboles y palmeras quedan
+  como en el hardware.
+
+Quedan anotados sin investigar:
+
+- **El piso lejano en ángulos rasantes chisporrotea/se embarra**: dcemu sube solo el nivel
+  grande y no genera la cadena de mipmaps de GL, así que la minificación fuerte hace alias
+  donde el chip cambiaría de nivel. Generar los niveles en GL (o subir los del guest) lo
+  suavizaría.
+- **El "mundo blanco" intermitente**: en algunas corridas/etapas todas las texturas del mundo
+  salen lavadas a blanco y en otras no, con el mismo binario. La sospecha es el rediseño
+  pendiente de la caché de texturas: hoy vive una escena y decodifica y re-sube ~200 texturas
+  por cuadro — un caché persistente con invalidación por escritura a VRAM es el arreglo de
+  fondo, y de paso recuperaría buena parte de los FPS.
+- **Tiras degeneradas por centenares**: los encabezados de sombra de Crazy Taxi dejan cientos
+  de tiras con n=0 por escena (inofensivas, no dibujan) y algunos encabezados translúcidos
+  llegan con `depthmode=0`/`blend=0` sin normalizar. Ruido que conviene limpiar cuando se
+  toque esa zona.
+
 ---
 
 ## Vía B — El AICA (hito E)
@@ -464,20 +609,24 @@ números medidos sin saber qué significan es justo lo que este árbol no hace.
 
 Lo que sí queda cerrado es que **ya no es un agujero desconocido**: está medido y anotado.
 
-### C.4 — Los stubs `SYSINFO` y `UNKNOWN` — **resuelto**
+### C.4 — Los stubs `SYSINFO` y `UNKNOWN` — **resuelto, y SYSINFO ahora contesta**
 
 Eran `RTS` + `NOP`: volvían sin hacer nada y **sin decirlo**, que es la forma exacta que tuvo
-cada uno de los agujeros de este árbol. Ahora llevan el mismo par `RTS` + opcode ilegal que
-los otros tres stubs, despachado a `hack_mudo()`, que reporta por `--traza-mem` el nombre, los
-cuatro argumentos, el PC y el PR. Siguen sin hacer nada: lo que cambia es que se ven.
+cada uno de los agujeros de este árbol. Primero se les puso el mismo par `RTS` + opcode ilegal
+que los otros tres stubs, despachado a `hack_mudo()`, que reporta por `--traza-mem` el nombre,
+los cuatro argumentos, el PC y el PR.
 
-`R0` queda en 0 en vez de en lo que hubiera, porque un puntero de vuelta con basura es peor
-que uno nulo — el guest lo sigue.
+La pista que quedaba anotada se confirmó el 1 de agosto de 2026, contra
+`kernel/arch/dreamcast/hardware/syscalls.c` de KOS: las funciones de `SYSINFO` son **0 INIT,
+2 ICON y 3 ID**, y la 3 devuelve en R0 **un puntero** al identificador de 8 bytes —
+`syscall_sysinfo_id()` lo desreferencia—. En la consola ese puntero es `0x8C000068`, adonde
+INIT lo copió de la flash; dcemu deja lo mismo en `SYSID_BASE` desde `main()` (C.3), así que
+`hack_sysinfo()` contesta 0 a INIT (no hay nada que hacer) y `SYSID_BASE` a ID.
 
-Queda una pista para más adelante: `SYSINFO` lleva el número de función en R7 y una de sus
-funciones devuelve el identificador de 8 bytes de la consola, que es justo el que C.3 acaba de
-dejar en `0x8C000068`. Falta confirmar la numeración contra `syscall_sysinfo` de KOS antes de
-contestarla.
+No era limpieza teórica: **Crazy Taxi llama la función 3**, seguía el puntero nulo del stub
+mudo y copiaba su "identificador" escribiendo alrededor de la dirección 0x10 — visible en
+`--traza-mem` como ocho escrituras sin emular en `0x10`-`0x17`. Con la respuesta puesta,
+desaparecen. ICON (la 2) y el vector sin nombre de `0x8C0000E0` siguen mudos, y se ven.
 
 ### C.5 — La deuda de verificación de las demos
 

@@ -9,6 +9,7 @@
 #include "opciones.h"		/* --captura-gl */
 #include "ta.h"				/* clasificacion de los parametros del TA */
 #include "vram.h"			/* las dos ventanas de la RAM de video */
+#include <math.h>			/* log2f, profundidad_ta() */
 //#include "glops.h"
 #include "render.h"
 
@@ -154,6 +155,58 @@ static int   traza_ta_fin_tira = 0;
 static int   traza_ta_tipos[TA_TIPOS];
 static float traza_ta_min[3], traza_ta_max[3];
 
+/* El 1/w mas chico y mas grande que el guest mando en toda la corrida, antes
+   de la transformacion de abajo. Es el numero que hay que mirar para saber en
+   que rango vive la profundidad de un juego, y salio de Crazy Taxi: sus z
+   llegan a bajar de 0.001. */
+static float traza_ta_z_crudo[2] = { 0.0f, 0.0f };
+static int   traza_ta_z_visto = 0;
+
+/*
+	De 1/w a la coordenada z que se le da a GL.
+
+	La z del TA es 1/w y compararla tal cual respeta el orden (mayor = mas
+	cerca), pero **entregarsela lineal a glOrtho tira la precision donde mas se
+	necesita**. Un juego de verdad trabaja con w de camara: su mundo lejano
+	queda en 1/w de 0.001 a 0.1, con diferencias de 1e-4 entre superficies. Un
+	rango lineal de +-32768 sobre un buffer de 24 bits da un paso de
+	65536 / 2^24 = 0.0039: la ciudad entera de Crazy Taxi cabia en veinte
+	pasos, dos paredes vecinas caian en el mismo valor, y con GEQUAL ganaba la
+	que se dibujara despues aunque estuviera detras -- calles enteras
+	desaparecian dejando ver el cielo.
+
+	El chip no tiene este problema porque compara 1/w en punto flotante, con
+	la resolucion pegada al cero. Esto lo imita: log2(1 + z) reparte los pasos
+	del buffer en proporcion al valor, el rango queda en +-PROFUNDIDAD_RANGO
+	(log2 de un 1/w de 4e9, mas que cualquier w real), y como la funcion es
+	monotona el orden -- que es lo unico que las pruebas del PVR miran -- no
+	cambia: todo lo que este comentario y los de vertice_nuevo() argumentan
+	sobre GREATER y la inversion de near/far sigue valiendo igual.
+
+	z = 0 es legitimo (infinitamente lejos) y queda en 0, que es tambien el
+	valor del glClearDepth(). Un z negativo no es un 1/w valido; pasa lineal,
+	que preserva la monotonia y no obliga a decidir aca que hacer con el.
+
+	Lo que se pierde: GL interpola esta z linealmente en pantalla, y la
+	transformacion no es lineal, asi que un poligono largo en profundidad se
+	curva un poco frente al plano exacto. Dos superficies que se intersectan
+	pueden mover su borde un pixel; contra perder la superficie entera, es el
+	costo correcto.
+*/
+#define PROFUNDIDAD_RANGO 32.0
+
+static float profundidad_ta(float z)
+{
+	if (traza_activa)
+	{
+		if (!traza_ta_z_visto || z < traza_ta_z_crudo[0]) traza_ta_z_crudo[0] = z;
+		if (!traza_ta_z_visto || z > traza_ta_z_crudo[1]) traza_ta_z_crudo[1] = z;
+		traza_ta_z_visto = 1;
+	}
+
+	return (z > 0.0f) ? log2f(1.0f + z) : z;
+}
+
 /*
 	El color de cara vigente, en A,R,G,B. Los vertices en modo intensidad no
 	traen color propio: traen un multiplicador que se aplica a este.
@@ -164,6 +217,11 @@ static float traza_ta_min[3], traza_ta_max[3];
 	intensidad tal cual si el guest nunca lo puso.
 */
 static float color_cara[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+/* "Use Alpha" del encabezado vigente (TSP bit 20): con 0, el alfa de vertice
+   sale 1.0. Lo escribe taPolyModifier() y lo aplican los constructores de
+   color de vertice. */
+static int poly_usa_alfa = 1;
 
 /*
 	Volumenes modificadores de la escena en curso.
@@ -795,6 +853,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	Uint16 * q, * v;
 	unsigned char * plano;
 	size_t plano_bytes;
+	size_t mip_salto = 0;
 	int i, j;
 	DWORD bpp    = TriangleStrip[strip].texture.pvr_texture_bpp;
 	DWORD paleta = TriangleStrip[strip].texture.pvr_texture_paleta;
@@ -821,6 +880,38 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 	logxmsg(LOG_PVR, "get_texture: creando textura %d\n", cur_tex_count);
 
+	/*
+		El unico punto que llena la cache, asi que el tope va aca. Sin el, la
+		textura MAX+1 de una escena escribia fuera de los dos arreglos y
+		ligaba ids de GL basura -- que en el perfil de compatibilidad crean
+		objetos nuevos que se pisan entre si: el sintoma era el piso de Crazy
+		Taxi mostrando el cielo, y las texturas rotando entre objetos segun
+		cual se subiera ultima. Si aun con MAX_TEXTURE_COUNT entradas se
+		llena, se pisa el ultimo slot: feo pero acotado, y avisa.
+	*/
+	if (cur_tex_count >= MAX_TEXTURE_COUNT)
+	{
+		if (traza_activa)
+		{
+			static int avisado = 0;
+
+			if (!avisado)
+			{
+				avisado = 1;
+				fprintf(stderr, "traza: cache de texturas llena (%d);"
+					" se pisa el ultimo slot\n", MAX_TEXTURE_COUNT);
+			}
+		}
+
+		cur_tex_count = MAX_TEXTURE_COUNT - 1;
+
+		if (cached_textures[cur_tex_count].twiddled)
+		{
+			free(cached_textures[cur_tex_count].data);
+			cached_textures[cur_tex_count].twiddled = false;
+		}
+	}
+
 	// si llegamos aqu�, la textura no est�.
 	cached_textures[cur_tex_count].usize = usize;
 	cached_textures[cur_tex_count].vsize = vsize;
@@ -828,6 +919,36 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	cached_textures[cur_tex_count].texture = pvr_textures[cur_tex_count];
 	cached_textures[cur_tex_count].bpp = bpp;
 	cached_textures[cur_tex_count].paleta = paleta;
+
+	/*
+		Una textura con mipmaps guarda sus niveles **del 1x1 al grande**, con 6
+		bytes de relleno adelante: el nivel de lado 2^n empieza en
+		6 + 2*(4^n - 1)/3 bytes -- la tabla de pvrtex de KOS, verificada contra
+		sus constantes --, en unidades de 16 bpp. dcemu usa solo el nivel
+		grande, asi que hay que saltar los chicos; decodificar desde el offset
+		0 entrega esos niveles revueltos, que es el ruido en bloques que tenian
+		el tranvia, el suelo y los edificios de Crazy Taxi mientras el taxi y
+		el HUD (sin mipmaps) salian bien. La escala por formato: los indices VQ
+		son 1 byte por bloque de 2x2 texels (un octavo de 16 bpp, y el salto
+		corre despues del codebook, que queda al principio), la paleta de
+		4 bpp un cuarto y la de 8 la mitad. Una textura con mipmaps es
+		cuadrada, asi que el lado es usize.
+	*/
+	if (TriangleStrip[strip].texture.mipmapped)
+	{
+		size_t ofs16 = 6;
+		int lado;
+
+		for (lado = 1; lado < usize; lado <<= 1)
+			ofs16 += (size_t) lado * lado * 2;
+
+		if (vq)
+			mip_salto = ofs16 / 8;
+		else if (bpp != 0)
+			mip_salto = ofs16 * bpp / 16;
+		else
+			mip_salto = ofs16;
+	}
 
 	/*
 		`memorypos` sale de la palabra de control de textura, o sea que esta en
@@ -841,7 +962,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		   rectangulo se sale del producto, asi que se junta el cuadrado. */
 		size_t lado = (size_t) (usize > vsize ? usize : vsize);
 
-		plano_bytes = 0x800 + lado * lado / 4;
+		plano_bytes = 0x800 + mip_salto + lado * lado / 4;
 	}
 	else if (bpp != 0)
 		plano_bytes = (size_t) usize * vsize * bpp / 8;
@@ -855,7 +976,9 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	if (plano == NULL)
 		return;
 
-	vram64_leer(memorypos, plano, plano_bytes);
+	/* Con VQ el salto no corre aca sino sobre los indices: el codebook esta
+	   al principio y tiene que venir igual. */
+	vram64_leer(memorypos + (DWORD) (vq ? 0 : mip_salto), plano, plano_bytes);
 
 	v = (Uint16 *) plano;
 
@@ -896,7 +1019,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 		// leamos el codebook
 		unsigned char * codebook = (unsigned char *) v;
-		BYTE * index = plano + 0x0800;
+		BYTE * index = plano + 0x0800 + mip_salto;
 
 		int upos, vpos;
 
@@ -1156,6 +1279,11 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 	ese orden es el de `index`, que solo crece dentro de un cuadro. Asi que
 	desempatar por index es a la vez estabilizar el sort y respetar al chip.
 */
+/* 1 si el guest apago el autosort de la lista translucida (ISP_FEED_CFG bit
+   0, "pre-sort mode"): entonces el orden de envio ES el orden. Lo lee
+   cb_tastart() al empezar cada escena. */
+static int trans_presort = 0;
+
 int compare(const void *  f,const void * s)
 {
 	const TSI * a = (const TSI *) f;
@@ -1163,6 +1291,22 @@ int compare(const void *  f,const void * s)
 
 	if (a->type != b->type)
 		return (a->type > b->type) ? 1 : -1;
+
+	/*
+		El autosort de la lista translucida. El chip ordena esa lista por
+		profundidad **por pixel** y el orden de envio no significa nada; dcemu
+		aproxima por tira: de lejos (z chica, 1/w) a cerca, para que cada capa
+		se mezcle sobre la anterior. Salio del menu de Crazy Taxi, medido: la
+		pastilla (alfa 0.79, z 0.99) entra a la lista ANTES que la llama del
+		logo que tiene detras (alfa 0.49, z 0.014), y en orden de envio la
+		llama caia encima de la pastilla y la ensuciaba. Con ISP_FEED_CFG en
+		pre-sort se respeta el envio, que es lo que ese modo significa.
+
+		Solo la lista translucida (tipo 2): la opaca y el punch-through
+		resuelven por z-test, y ordenarlos daria lo mismo.
+	*/
+	if (a->type == 2 && !trans_presort && a->prof != b->prof)
+		return (a->prof > b->prof) ? 1 : -1;
 
 	if (a->index != b->index)
 		return (a->index > b->index) ? 1 : -1;
@@ -1328,6 +1472,12 @@ void traza_ta_resumen(void)
 				(unsigned) traza_video_por_ventana[i]);
 
 	fprintf(stderr, "\n");
+
+	/* En que rango vive la profundidad del guest. Es lo que dimensiona
+	   profundidad_ta(): un juego con camara manda 1/w de milesimas. */
+	if (traza_ta_z_visto)
+		fprintf(stderr, "traza: z del TA (1/w crudo) en toda la corrida: %g..%g\n",
+			traza_ta_z_crudo[0], traza_ta_z_crudo[1]);
 }
 
 static void dibujar_escena(void);
@@ -1370,7 +1520,9 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 					fprintf(stderr, " [%d]=%d", t, traza_ta_tipos[t]);
 			fprintf(stderr, "\n");
 
-			fprintf(stderr, "traza:   encuadre: x %.1f..%.1f  y %.1f..%.1f  z %g..%g"
+			/* prof es la z ya pasada por profundidad_ta(); el 1/w crudo de
+			   toda la corrida sale en el resumen final. */
+			fprintf(stderr, "traza:   encuadre: x %.1f..%.1f  y %.1f..%.1f  prof %g..%g"
 				"  (pantalla %dx%d)\n",
 				traza_ta_min[0], traza_ta_max[0],
 				traza_ta_min[1], traza_ta_max[1],
@@ -1391,25 +1543,86 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	DWORD dw;
 	
 	// transparent polygons should appear first
-	
+
+	/* La llave del autosort de la lista translucida: la z mas cercana de cada
+	   tira, y si el guest pidio pre-sort (ISP_FEED_CFG, bit 0). Ver compare(). */
+	{
+		DWORD feed = 0, si, k;
+
+		memread_fisico(0xA05F8098, &feed, 4);
+		trans_presort = (int) (feed & 1);
+
+		for (si = 0; si < strip_count; si++)
+		{
+			float m = VertexBuffer[TriangleStrip[si].index].z;
+
+			for (k = 1; k < TriangleStrip[si].count; k++)
+			{
+				float z = VertexBuffer[TriangleStrip[si].index + k].z;
+
+				if (z > m)
+					m = z;
+			}
+
+			TriangleStrip[si].prof = m;
+		}
+	}
+
 	qsort(TriangleStrip,strip_count,sizeof(TSI),compare);
 
 	/* El estado con que sale cada tira. Si la geometria llega bien y no se ve
 	   nada, esto es lo que queda por mirar: es lo que descubrio que a conio se
-	   le iba la pantalla entera en el culling. */
+	   le iba la pantalla entera en el culling.
+
+	   Ademas de las dos primeras escenas con geometria, DCEMU_TRAZA_ESCENA=N[:M]
+	   en el ambiente vuelca las M escenas (1 por omision) desde la numero N
+	   --la cuenta de traza_rendidas, la misma del resumen--, y esas van
+	   completas, no cortadas a 8 tiras: es como se le pregunta a UNA escena de
+	   un juego que estado llevaba cada quad. Con DCEMU_CAPTURA_TODAS al lado,
+	   el numero de cuadro capturado corre casi parejo con el de escena. */
 	if (traza_activa && strip_count > 0)
 	{
 		static int volcadas = 0;
+		static int obj_desde = -2, obj_hasta = -2;		/* -2: sin leer */
+		int escena = traza_rendidas - 1;
+		int pedida;
 
-		if (volcadas < 2)
+		if (obj_desde == -2)
+		{
+			const char * e = getenv("DCEMU_TRAZA_ESCENA");
+
+			if (e != NULL)
+			{
+				const char * p = strchr(e, ':');
+
+				obj_desde = atoi(e);
+				obj_hasta = obj_desde + ((p != NULL) ? atoi(p + 1) : 1) - 1;
+			}
+			else
+				obj_desde = obj_hasta = -1;				/* no pedida */
+		}
+
+		pedida = (escena >= obj_desde && escena <= obj_hasta);
+
+		if (volcadas < 2 || pedida)
 		{
 			int t;
+			int tope = pedida ? (int) strip_count : 8;
 
-			for (t = 0; t < strip_count && t < 8; t++)
+			if (pedida)
+			{
+				DWORD ref = 0;
+
+				memread_fisico(0xA05F811C, &ref, 4);
+				fprintf(stderr, "traza: escena %d: %d tiras, PT_ALPHA_REF=%02lx\n",
+					escena, (int) strip_count, (unsigned long) (ref & 0xFF));
+			}
+
+			for (t = 0; t < strip_count && t < tope; t++)
 			{
 				fprintf(stderr, "traza:   tira %d: tipo=%d idx=%d n=%d alpha=%d "
-					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d fmt=%04x "
-					"bpp=%d stride=%d\n",
+					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d mip=%d fmt=%04x "
+					"bpp=%d stride=%d env=%d vol=%d tcw=%08lx\n",
 					t, (int) TriangleStrip[t].type, (int) TriangleStrip[t].index,
 					(int) TriangleStrip[t].count, (int) TriangleStrip[t].alpha,
 					(unsigned) TriangleStrip[t].pvr_srcblend,
@@ -1421,9 +1634,13 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 					(int) TriangleStrip[t].texture.pvr_texture_size_vsize,
 					(int) TriangleStrip[t].texture.twiddled,
 					(int) TriangleStrip[t].texture.vq,
+					(int) TriangleStrip[t].texture.mipmapped,
 					(unsigned) TriangleStrip[t].texture.pvr_texture_pixelpack,
 					(int) TriangleStrip[t].texture.pvr_texture_bpp,
-					(int) TriangleStrip[t].texture.pvr_texture_stride);
+					(int) TriangleStrip[t].texture.pvr_texture_stride,
+					(int) TriangleStrip[t].texture.pvr_texture_env,
+					(int) TriangleStrip[t].volumen,
+					(unsigned long) TriangleStrip[t].texture.tcw_crudo);
 
 				/* Las esquinas y con que coordenadas de textura se muestrean.
 				   Los cuatro vertices y no solo el primero: un cuadrilatero mal
@@ -1445,7 +1662,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 				}
 			}
 
-			volcadas++;
+			if (!pedida)
+				volcadas++;
 		}
 	}
 
@@ -1486,7 +1704,6 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 static void dibujar_escena(void)
 {
 	DWORD i;
-	DWORD debug = TriangleStrip[1].type;
 
 	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
 	   decide, tira por tira, con que juego de parametros sale cada pixel. */
@@ -1494,13 +1711,6 @@ static void dibujar_escena(void)
 
 	for(i=0; i < strip_count; i++)
 		{
-
-			if(debug < TriangleStrip[i].type)
-			{
-				printf("Oops Debug - %d Type %d\n",debug,TriangleStrip[i].type);
-			}
-			else debug = TriangleStrip[i].type;
-
 			/*
 				Fuera del volumen. Si a esta tira la afecta uno, se dibuja solo
 				donde el bit correspondiente esta apagado y la segunda pasada
@@ -1563,7 +1773,18 @@ static void dibujar_escena(void)
 			}
 	
 
-			if(TriangleStrip[i].alpha)
+			/*
+				La mezcla es cosa de la lista translucida, y su configuracion
+				son los factores del TSP: ONE/ZERO ya es "sin mezcla" por si
+				mismo. El interruptor era `alpha`, que es el bit 20 del TSP --
+				"Use Alpha", que solo fuerza a 1.0 el alfa DEL VERTICE -- y
+				eso costo los arboles de Crazy Taxi: hojas ARGB1555 en la
+				lista translucida con use-alpha apagado y factores srcalpha,
+				que el chip mezcla (el alfa de la textura sigue vivo) y aca
+				salian opacas, con el fondo alfa-0 como caja negra. Las listas
+				opaca y punch-through no mezclan en el chip.
+			*/
+			if (TriangleStrip[i].type == 2 || TriangleStrip[i].type == 1)
 			{
 				glEnable(GL_BLEND);
 			}
@@ -1573,6 +1794,49 @@ static void dibujar_escena(void)
 			}
 
 			glBlendFunc(TriangleStrip[i].pvr_srcblend, TriangleStrip[i].pvr_dstblend);
+
+			/*
+				Lo que distingue al punch-through en el chip es que descarta el
+				fragmento por alfa -- pasa lo que supera el umbral de
+				PT_ALPHA_REF (0x005F811C, bits 7-0) y el resto no se dibuja --,
+				y eso es lo que le permite escribir Z como la lista opaca. Sin
+				el descarte, el fondo con alfa 0 de un cartel recortado -- los
+				arboles de Crazy Taxi, una reja -- sale como caja negra opaca.
+				En las otras listas no corre: la opaca ignora el alfa y la
+				translucida lo mezcla.
+
+				La regla exacta salio de dos medidas que se contradicen con una
+				sola desigualdad. El menu de Crazy Taxi apaga sus pastillas
+				mandandolas punch-through con textura RGB565 -- sin canal
+				alfa -- en modulate-alpha y el alfa del vertice en 0, con
+				PT_ALPHA_REF en 0: alfa 0 contra umbral 0 tiene que
+				DESCARTARSE (con >= pasaba y las pastillas salian grises). En
+				el juego el mundo entero es punch-through con alfa 1.0 y
+				PT_ALPHA_REF alto: 1.0 contra 1.0 tiene que PASAR (con > se
+				descartaba la pasada de textura del piso, los edificios y las
+				palmeras, y quedaba la geometria de respaldo: el mundo
+				blanco). O sea que el chip pasa "alfa >= umbral, y ademas
+				distinto de cero": en GL de funcion fija eso es GEQUAL contra
+				el umbral con un piso de medio paso, que solo actua cuando el
+				umbral es 0. El alfa comparado es el ya modulado, asi que una
+				textura sin canal alfa se recorta igual por el del vertice.
+			*/
+			if (TriangleStrip[i].type == 0)
+			{
+				DWORD	ref = 0;
+				GLfloat	umbral;
+
+				memread_fisico(0xA05F811C, &ref, 4);
+				umbral = (GLfloat) (ref & 0xFF) / 255.0f;
+
+				if (umbral < 0.5f / 255.0f)
+					umbral = 0.5f / 255.0f;
+
+				glEnable(GL_ALPHA_TEST);
+				glAlphaFunc(GL_GEQUAL, umbral);
+			}
+			else
+				glDisable(GL_ALPHA_TEST);
 
 			if(TriangleStrip[i].texture.surface)
 			{
@@ -1850,7 +2114,7 @@ static int render_a_textura(void)
 	glViewport(0, 0, ancho, alto);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glOrtho(0, ancho, alto, 0, 32768.0, -32768.0);
+	glOrtho(0, ancho, alto, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
 
 	/* La mascara va **antes** del clear: glClear de la profundidad la respeta.
 	   Ver limpiar_pantalla(). */
@@ -1876,7 +2140,7 @@ static int render_a_textura(void)
 					 outputscreen ? outputscreen->h : 600);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glOrtho(0, screenancho, screenheight, 0, 32768.0, -32768.0);
+	glOrtho(0, screenancho, screenheight, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -2279,6 +2543,13 @@ void taPolyModifier()
 	
 	 TriangleStrip[strip_count].alpha =  ((ta_address_pointer[2] >> 20) & 0x1); // alpha
 
+	 /* El bit 20 del TSP es "Use Alpha": con 0 el chip fuerza a 1.0 el alfa
+	    DEL VERTICE, y nada mas -- el de la textura sigue vivo y la mezcla
+	    tambien. Se guarda aparte para aplicarlo al construir los vertices;
+	    usarlo como interruptor del blending costo los arboles de Crazy Taxi
+	    (ver dibujar_escena()). */
+	 poly_usa_alfa = (int) ((ta_address_pointer[2] >> 20) & 0x1);
+
 	
 	if (TA.registers.pcw_texture)
 	{
@@ -2482,8 +2753,11 @@ static vertex * vertice_nuevo(void)
 		Y hay un caso que el reciproco rompe del todo: **z = 0 es legitimo** y
 		significa infinitamente lejos, pero 1/0 se va a infinito y GL recorta el
 		vertice. pvr_rtt_sized manda su rectangulo de fondo justamente con z = 0.
+
+		"Tal cual" en el orden, no en el valor: pasa por profundidad_ta(), que
+		es monotona -- ver su comentario, la precision lineal no alcanzaba.
 	*/
-	v->z = xyz[2];
+	v->z = profundidad_ta(xyz[2]);
 
 	/* Sin coordenadas de textura mientras el tipo no diga otra cosa: si no,
 	   quedan las del vertice anterior. */
@@ -2496,7 +2770,7 @@ static vertex * vertice_nuevo(void)
 /* Color empaquetado: una palabra ARGB, alpha en 31-24. */
 static void vertice_color(vertex * v, DWORD argb)
 {
-	v->a = ((argb >> 24) & 0xFF) / 255.0;
+	v->a = poly_usa_alfa ? ((argb >> 24) & 0xFF) / 255.0 : 1.0;
 	v->r = ((argb >> 16) & 0xFF) / 255.0;
 	v->g = ((argb >> 8)  & 0xFF) / 255.0;
 	v->b = ((argb >> 0)  & 0xFF) / 255.0;
@@ -2509,7 +2783,7 @@ static void vertice_color_flotante(vertex * v, int w)
 
 	memcpy(c, &ta_address_pointer[w], sizeof(float) * 4);
 
-	v->a = c[0];
+	v->a = poly_usa_alfa ? c[0] : 1.0f;
 	v->r = c[1];
 	v->g = c[2];
 	v->b = c[3];
@@ -2526,7 +2800,7 @@ static void vertice_intensidad(vertex * v, DWORD palabra)
 
 	memcpy(&i, &palabra, sizeof(float));
 
-	v->a = color_cara[0];
+	v->a = poly_usa_alfa ? color_cara[0] : 1.0f;
 	v->r = color_cara[1] * i;
 	v->g = color_cara[2] * i;
 	v->b = color_cara[3] * i;
@@ -2674,7 +2948,7 @@ static void vertice_sprite(int con_textura)
 
 			ve->x = x[s];
 			ve->y = y[s];
-			ve->z = z[s];		/* tal cual, igual que vertice_nuevo() */
+			ve->z = profundidad_ta(z[s]);	/* igual que vertice_nuevo() */
 			ve->t1 = u[s];
 			ve->t2 = v[s];
 
@@ -2928,7 +3202,9 @@ void taVertexHandler()
 				{
 					t->x[k] = p[k * 3 + 0];
 					t->y[k] = p[k * 3 + 1];
-					t->z[k] = p[k * 3 + 2];
+					/* La misma transformacion que los vertices que dibuja:
+					   el volumen se compara contra sus profundidades. */
+					t->z[k] = profundidad_ta(p[k * 3 + 2]);
 				}
 
 				t->lista = vol_lista;
@@ -2975,12 +3251,25 @@ void taVertexHandler()
 		}
 	}
 
-	if (TA.registers.pcw_end_of_strip)
+	/*
+		Un sprite es una primitiva completa: el chip nunca encadena dos
+		consecutivos, asi que la tira se cierra aunque el parametro no traiga
+		el bit de fin. Confiar en el bit costo los arboles de Crazy Taxi:
+		manda sus hojas como sprites sin fin-de-tira, dcemu los encadenaba de
+		a dos o mas en una sola tira, y los triangulos puente entre las
+		esquinas de un sprite y el siguiente eran los rectangulos negros
+		detras del follaje y los poligonos gigantes que cruzaban el cielo
+		(vertices a +-200000 pixeles: la tira 768 de la escena 1452, n=8, dos
+		sprites lejanos unidos).
+	*/
+	if (TA.registers.pcw_end_of_strip
+	||  vertex_parameter == TA_VERTICE_SPRITE0
+	||  vertex_parameter == TA_VERTICE_SPRITE1)
 	{
 #ifdef DEBUG_VERTEX_NEW
 		logxmsg(LOG_PVR, "VERTEX: end-of-strip\n");
 #endif
-	
+
 		TriangleStrip[strip_count].count = ((total_polygon_count+1) - TriangleStrip[strip_count].index);
 
 		if (TexInfo.registers.texture_surface)
@@ -2995,7 +3284,9 @@ void taVertexHandler()
 					: (TexInfo.registers.twiddled ? 0 : 1);
 
 			TriangleStrip[strip_count].texture.vq = TexInfo.registers.vq;
-		
+			TriangleStrip[strip_count].texture.mipmapped = TexInfo.registers.mipmap;
+			TriangleStrip[strip_count].texture.tcw_crudo = TexInfo.texture;
+
 			TriangleStrip[strip_count].texture.surface = TexInfo.registers.texture_surface << 3;
 		}
 		
@@ -3384,7 +3675,9 @@ void DibujarFramebuffer()
 
 	glDisable(GL_BLEND);
 	glDisable(GL_DEPTH_TEST);
-#define PROFUNDIDAD (-1000.0f)
+/* Con el test de profundidad apagado la z solo importa para el recorte: tiene
+   que caer dentro del +-PROFUNDIDAD_RANGO del glOrtho. Era -1000. */
+#define PROFUNDIDAD (-1.0f)
 	glBegin(GL_QUADS);
 	glTexCoord2f(0.0f, screenheight / screentexheight); glVertex3f(0.0f, (float) screenheight, PROFUNDIDAD);
 	glTexCoord2f(screenancho / screentexwidth, screenheight / screentexheight); glVertex3f((float) screenancho, (float) screenheight, PROFUNDIDAD);
@@ -3469,12 +3762,12 @@ int glinit(void)
     SDL_GL_SetAttribute( SDL_GL_STENCIL_SIZE, 8 );
 
 	/*
-		**No se pide SDL_GL_DEPTH_SIZE.** Pedir 24 bits parece lo obvio -- el
-		glOrtho de screeninit() abarca -32768..32768 y aplasta las z de una demo
-		en una franja minima alrededor de 0,5, asi que la precision importa --,
-		pero pedirlo junto con la plantilla y BUFFER_SIZE 32 hace que SDL caiga
-		en otro formato de pixel: pvr-texture_render pasa de 47539 colores a
-		2048. Sin el pedido, el contexto que da igual sirve.
+		**No se pide SDL_GL_DEPTH_SIZE.** Pedir 24 bits parece lo obvio -- la
+		profundidad comprime todas las z del guest en una parte chica del rango
+		y la precision importa, ver profundidad_ta() --, pero pedirlo junto con
+		la plantilla y BUFFER_SIZE 32 hace que SDL caiga en otro formato de
+		pixel: pvr-texture_render pasa de 47539 colores a 2048. Sin el pedido,
+		el contexto que da igual sirve.
 	*/
 
 	outputscreen = SDL_SetVideoMode(800, 600, 32, SDL_HWSURFACE|SDL_OPENGL|SDL_HWACCEL);
@@ -3487,10 +3780,10 @@ int glinit(void)
 
 	/*
 		Que contexto dio SDL de verdad, que no tiene por que ser el que se pidio.
-		Importa sobre todo la profundidad: el glOrtho de screeninit() abarca
-		-32768..32768 y aplasta las z de una demo en una franja minima alrededor
-		de 0,5, asi que con 16 bits dos capas contiguas caen en el mismo valor y
-		la de arriba desaparece -- pvr_rtt_sized pierde asi sus dos marcas.
+		Importa sobre todo la profundidad: aun con el log2 de profundidad_ta()
+		las z de una demo ocupan una fraccion del rango, asi que con 16 bits dos
+		capas contiguas caen en el mismo valor y la de arriba desaparece --
+		pvr_rtt_sized perdia asi sus dos marcas.
 	*/
 	if (traza_activa)
 	{
@@ -3709,16 +4002,20 @@ int screeninit(void)
 
 	/*
 		near y far van invertidos a proposito. glOrtho mapea z de ojo con signo
-		cambiado (z' = -2z/(far-near)), asi que con (-32768, 32768) una z de
-		vertice mas grande daba una profundidad MENOR: la z del TA es 1/w --
-		mayor es mas cerca -- y sus pruebas van en esos terminos (GREATER deja
-		pasar lo mas cerca), o sea que el orden quedaba al reves y una tira
-		cercana perdia contra una lejana ya dibujada. pvr-fb_tex lo midio: la
-		mascara en z=1 dejaba invisible al cubo en z=4. Invertirlos hace
-		z' = +z/32768 y el orden sale solo, que es lo que este comentario
-		siempre pretendio.
+		cambiado (z' = -2z/(far-near)), asi que con near/far en el orden
+		natural una z de vertice mas grande daba una profundidad MENOR: la z
+		del TA es 1/w -- mayor es mas cerca -- y sus pruebas van en esos
+		terminos (GREATER deja pasar lo mas cerca), o sea que el orden quedaba
+		al reves y una tira cercana perdia contra una lejana ya dibujada.
+		pvr-fb_tex lo midio: la mascara en z=1 dejaba invisible al cubo en z=4.
+		Invertirlos hace la profundidad creciente con z y el orden sale solo,
+		que es lo que este comentario siempre pretendio.
+
+		El rango es el de profundidad_ta(), que comprime 1/w con un log2: ver
+		su comentario. Con el rango lineal de antes (+-32768) la ciudad de un
+		juego entraba en veinte pasos del buffer.
 	*/
-	glOrtho(0, screenancho, screenheight, 0, 32768.0, -32768.0);
+	glOrtho(0, screenancho, screenheight, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();

@@ -249,8 +249,13 @@ the image presented as what it is — **a selfboot CD, no `DCEMU_COMO_GD`** — 
 whole path: it recognises the disc, reads IP.BIN from the start of the data track, the volume
 descriptor and the root directory, finds `1ST_READ.BIN`, loads all 1,468,208 bytes of it and
 jumps. The PC lands inside the executable, around `0x0C14xxxx`. That is the same place the
-long-standing path reaches (no `--bios`, through the syscall hooks), so **what the game does
-from there is a separate problem and predates this**.
+long-standing path reaches (no `--bios`, through the syscall hooks), so what the game does
+from there was a separate problem — **and it is solved for Crazy Taxi: hito D is reached**
+(2026-08-01). On the hooks path both rips run — loading screen, VMU warning, Start works,
+title screen, 3D attract mode. What unblocked it was the disc type answered by
+`GDROM_CHECK_DRIVE` (see "BIOS syscall emulation") plus `SYSINFO` function 3; Virtua Tennis
+and Capcom vs. SNK still stop earlier, in the SDK's common startup
+(`docs/pendientes-plan.md`, vía A).
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -435,13 +440,42 @@ out black, which is what kept `pvr-bumpmap` blank.
 **Punch-through had `GL_LEQUAL` hardcoded.** The depth buffer is cleared to 0.0 and a scene's z
 values land around 0.5, so "less or equal" fails against any untouched pixel — the list could
 essentially never draw. It uses the compare mode from its own ISP word, like the opaque list; what
-distinguishes punch-through on the chip is that it discards on alpha.
+distinguishes punch-through on the chip is that it discards on alpha — **and that discard is
+implemented now**: strips from list 4 draw with `GL_ALPHA_TEST`/`GL_GEQUAL` against
+`PT_ALPHA_REF` (`0x005F811C`, bits 7-0) **with a floor of half an 8-bit step**, which is what
+lets a cut-out billboard write Z like the opaque list. Without the test, the alpha-0
+background of Crazy Taxi's tree billboards rendered as solid black boxes. The compared alpha
+is the modulated one, so a texture with no alpha channel still cuts by the vertex's.
+
+Two mistakes were made tuning this, and both are worth keeping: (1) a **strict** `GL_GREATER`
+looks equally plausible and breaks the world — Crazy Taxi's in-game geometry is punch-through
+with alpha 1.0, and any session where the game raises `PT_ALPHA_REF` to 255 then discards
+*everything* (the whole city dropped to its untextured backing: white streets and buildings).
+`GEQUAL` with the epsilon floor passes alpha ≥ ref and still kills exact zero. (2) The grey
+pills behind Crazy Taxi's menu items looked like this bug and are **not a bug at all**: real
+hardware draws them exactly like that (checked against The King of Grabs' Dreamcast
+captures) — measure against a reference before chasing a "wrong" screen. The game leaves
+`PT_ALPHA_REF` at 0 on some screens and writes 0x17 on menus, so the register cannot be
+assumed constant. `conio-basic` (one punch-through quad per glyph) stays at its reference
+2742 pixels.
 
 ### Texture formats
 
 `taPolyModifier()` maps the texture control word's `pixelformat` onto a GL format triple;
 `get_texture()` untwiddles and uploads. ARGB1555, RGB565, ARGB4444, YUV422 and the two
 palette formats are handled, and VQ and stride have their own paths.
+
+**A mipmapped texture stores its levels from 1×1 up, so the big level is NOT at the texture
+address** — the level of side 2^n starts at `6 + 2·(4^n − 1)/3` bytes in 16-bpp units (the
+table in KOS's `pvrtex`, `MipMapOffset()`), scaled by the format: VQ indices are one byte per
+2×2 block (an eighth, counted after the codebook, which stays at the base), 4-bpp palette a
+quarter, 8-bpp half. The TCW's mipmap bit used to be parsed and only logged; decoding from
+offset 0 reads the small levels as if they were the image, which comes out as structured
+block noise. That was Crazy Taxi's cable car, ground and buildings — while the taxi, road
+and HUD (no mipmaps) decoded fine, which is what pointed at the bit. dcemu still uploads
+only the big level (no GL mipmap chain), so heavy minification shimmers where the chip
+would switch levels; no KOS demo sets the bit (measured: the texture-sensitive subset is
+byte-identical), a game does.
 
 **BUMP texels are not a colour**: they are two 8-bit angles, elevation S in the high byte and
 rotation R in the low one, which the chip combines per pixel with four parameters carried in the
@@ -507,6 +541,14 @@ way — GL_RGBA/GL_UNSIGNED_BYTE wants R in byte 0, which little-endian makes `0
 
 The texture cache keys on (size, address, bpp, bank): same indices with a different palette is
 a different texture, and `pvr-palette-wormhole` animates exactly that.
+
+**The cache lives one scene and held 10 entries with no bounds check** — `get_texture()` wrote
+`cached_textures[cur_tex_count]` unchecked, so the 11th distinct texture of a scene wrote past
+both arrays and bound garbage GL ids, which in the compatibility profile silently create new
+texture objects that alias each other. No KOS demo exceeds a handful; a game scene uses
+hundreds, and the symptom was Crazy Taxi's floor sampling the sky and textures *rotating*
+across objects as uploads landed on each other. `MAX_TEXTURE_COUNT` is 1024 now and the fill
+path clamps to the last slot (reported through `--traza-mem`) instead of overflowing.
 
 ## Architecture
 
@@ -891,17 +933,34 @@ fallback absorbs.
 
 ### Depth
 
-**The TA's z is 1/w — larger means nearer — and it is stored as-is.** The PVR's compare modes are
-written in those terms (`GREATER` passes what is nearer), and `screeninit()`'s `glOrtho` maps rising
-eye-z to rising depth, so the ordering comes out right with no transformation.
+**The TA's z is 1/w — larger means nearer — and it is stored through `profundidad_ta()`, which is
+monotonic, so the ordering is the chip's.** The PVR's compare modes are written in those terms
+(`GREATER` passes what is nearer), and `screeninit()`'s `glOrtho` maps rising eye-z to rising
+depth, so the ordering comes out right with no further transformation.
 
-**That mapping requires near/far *inverted* in `glOrtho` — `(32768, -32768)` — because GL negates
-eye z** (`z' = -2z/(far-near)`). With the natural-looking `(-32768, 32768)` a larger vertex z came
+**That mapping requires near/far *inverted* in `glOrtho` — `(RANGO, -RANGO)` — because GL negates
+eye z** (`z' = -2z/(far-near)`). With the natural-looking order a larger vertex z came
 out with a *smaller* depth value, so `GL_GREATER` kept what is *farther*: a near strip lost against
 a far one already drawn. `pvr-fb_tex` measured it — its full-screen mask at z=1 left the cube at
 z=4 invisible, 0 non-black pixels in the whole scene — and the `pvr_rtt_sized` markers at z=3/z=4
 losing against the interior at z=2 were the same bug. Both `glOrtho` calls (screen and RTT) carry
 the inversion.
+
+**Feeding 1/w to `glOrtho` linearly throws away precision exactly where a game lives.** The chip
+compares 1/w in floating point, with resolution concentrated near zero; a linear ortho range over
+a 24-bit integer depth buffer gives one step per `range/2^24`. Crazy Taxi's raw 1/w spans
+**0.01..1000** (now printed at exit by `--traza-mem`), so with the old ±32768 range the step was
+0.0039 and the whole distant city (z 0.01..0.1) fit in 23 steps: neighbouring walls landed on the
+same depth value and, submitted with `GEQUAL`, whichever drew *later* won — streets vanished
+leaving sky, buildings dropped out by camera angle. `profundidad_ta()` stores `log2(1+z)` instead
+(range ±32, `PROFUNDIDAD_RANGO`), which spreads the buffer's steps in proportion to the value —
+the same pair of walls now sits ~75 steps apart. Monotonic, so every compare mode and everything
+above still holds; z = 0 (infinitely far) stays 0, which is also the `glClearDepth`. Sprites and
+modifier-volume triangles go through the same function — the volumes are compared against the
+scene's depths. The cost: GL interpolates depth linearly in screen space and the map is not
+linear, so long-in-depth polygons bow slightly against exact planes; intersection edges can move
+a pixel. The fixed 2D quads (`DibujarFramebuffer`, `DibujarGL`) draw with the depth test off, so
+their z only matters for clipping — inside ±RANGO.
 
 It used to store the **reciprocal**, which inverts it. Two layers still survive that — the top one
 wins anyway because the bottom never wrote — but three do not, and the result is that only the first
@@ -958,6 +1017,30 @@ translucent geometry draws with Z write off and the order *is* the result, so th
 out different every time and the screen flickered. `compare()` now breaks the tie with `index`,
 which only grows within a frame, so ties resolve in submission order — which is also what the chip
 does inside a list.
+
+**Within the translucent list the chip sorts by depth per pixel — autosort — and submission
+order means nothing.** `compare()` approximates it per strip: nearest z of each strip, far to
+near, unless the guest set `ISP_FEED_CFG` bit 0 (pre-sort mode), in which case submission order
+is the contract. Measured in Crazy Taxi's menu: the pill (alpha 0.79, z 0.99) enters the list
+*before* the flame logo behind it (alpha 0.49, z 0.014), and in submission order the flame
+blended on top of the pill — every stacked translucency came out with the layers composed
+backwards. Per-strip is an approximation: interpenetrating translucent geometry can still sort
+wrong where per-pixel would not.
+
+**A sprite is a complete primitive and never chains** — the strip closes after each one even if
+the parameter does not carry the end-of-strip bit. Trusting the bit cost Crazy Taxi's trees:
+it submits leaf clusters as sprites without end-of-strip, dcemu chained them into one strip,
+and the bridge triangles between one sprite's corners and the next were black rectangles
+behind the foliage and giant polygons across the sky (vertices at ±200000 pixels).
+
+**TSP bit 20 is "Use Alpha" and it only forces the *vertex* alpha to 1.0** — texture alpha
+stays live and blending stays on. It was wired as the GL blend switch, and that cost the
+trees too, the other half: leaves are ARGB1555 VQ textures in the translucent list with
+use-alpha off and srcalpha factors — the chip blends them (texture alpha cuts the background),
+dcemu drew them opaque and the alpha-0 background came out as black boxes. Blending is now
+decided by the list — translucent lists blend with the TSP factors (ONE/ZERO is "no blend" by
+itself), opaque and punch-through never blend — and the bit is applied where it belongs, in
+the vertex color constructors (`poly_usa_alfa`).
 
 `glops.c/h` is an **older, now-bypassed** path: a recorded display list of `GLOP_*`
 commands replayed by `glop_process()`. `graficos.c` has its `#include "glops.h"` commented
@@ -1262,7 +1345,16 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
 `RTS`, which maps to `BIOS_HACK` in `dcopcodes.c`:
 
 - `hack_gdrom()` services `GDROM_SEND_COMMAND` (sector reads, TOC) directly from the mounted
-  image via `iso.c`.
+  image via `iso.c`. **`GDROM_CHECK_DRIVE` answers disc type GD-ROM (`0x80`) whenever a disc
+  is in**, not what the image is: this path replaces console, BIOS and drive to run the
+  mounted game, and a commercial game's original disc is a GD-ROM. Katana's `gdFsInit()`
+  compares that word against a literal `0x80` and anything else makes it return −5 and retry
+  the whole drive init forever — Crazy Taxi sat at `LOADING (31K)` in an infinite
+  INIT/SEND(CMD_INIT)/MAINLOOP/CHECK/CHECK_DRIVE syscall loop, on *both* rips (GD layout and
+  MIL-CD layout: no selfboot ships that check patched). Fixing it is what took the game from
+  its loading screen to the title and the 3D attract mode — hito D. The `--bios` path does
+  not come through here and keeps seeing the CD the image really is, which its MIL-CD branch
+  needs.
 - `hack_romfont()` services the ROM font syscall. **This one takes its function number in
   `R1`, not `R7`** (see KOS's `syscall_font.s`): 0 returns the font address, 1 takes the
   mutex, 2 releases it. The lock must answer **0** to mean granted.
@@ -1273,14 +1365,18 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
   `flashrom_get_region()` reported `can't find partition 0` — it asks the BIOS for the
   partition offsets rather than parsing the flash.
 
-The remaining stubs (`SYSINFO`, `UNKNOWN`) still do nothing, but they now **say so**:
-`hack_mudo()` reports the name, the four arguments, the PC and the PR through `--traza-mem`,
-and leaves `R0` at 0 rather than at whatever was there — a garbage pointer is worse than a
-null one, because the guest follows it. They used to be `RTS` + `NOP`, i.e. the exact shape
-of every other hole in this tree: something the guest asks for, answered without meaning it,
-leaving no trace. `SYSINFO` takes its function number in `R7` and one of its functions returns
-the console's 8-byte ID — which is the one now sitting at `SYSID_BASE`; the numbering is
-unconfirmed against KOS's `syscall_sysinfo`, so it is not answered.
+`SYSINFO` is answered now (`hack_sysinfo()`), with the numbering confirmed against KOS's
+`kernel/arch/dreamcast/hardware/syscalls.c`: function 0 is INIT (on the ROM it copies the
+console ID from flash to `0x8C000068`, which `main()` already leaves done — see `SYSID_BASE`),
+2 is ICON (still unimplemented, still reported), and **3 is ID, which returns in `R0` a
+pointer to the 8-byte ID, not the ID itself** — KOS dereferences it. Answering 0 there was
+not neutral: Crazy Taxi follows the pointer and copies its "ID" through it, writing around
+address `0x10`. The unnamed vector at `0x8C0000E0` (`UNKNOWN`) still does nothing, but it
+**says so**: `hack_mudo()` reports the name, the four arguments, the PC and the PR through
+`--traza-mem`, and leaves `R0` at 0 rather than at whatever was there — a garbage pointer is
+worse than a null one, because the guest follows it. These used to be `RTS` + `NOP`, i.e. the
+exact shape of every other hole in this tree: something the guest asks for, answered without
+meaning it, leaving no trace.
 
 **The syscall stubs are not the only thing the boot ROM leaves behind: it also writes the
 flash's machine code — five digits and a NUL — at `0x8C000070` (`REGION_BASE`) before handing

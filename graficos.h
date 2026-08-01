@@ -1,7 +1,12 @@
 #ifndef _GRAFICOS_H
 #define _GRAFICOS_H
 
-#define MAX_TEXTURE_COUNT 10
+/* Entradas de la cache de texturas, que vive UNA escena (limpiar_texturas()
+   al empezar cada una). Eran 10, que a las demos de KOS les sobraba; una
+   escena de un juego usa cientos distintos -- Crazy Taxi ronda las 500 tiras
+   -- y el desborde escribia fuera de los arreglos. Ver el tope en
+   get_texture(). */
+#define MAX_TEXTURE_COUNT 1024
 
 extern	int		screenbits;
 extern	int		screenformat;
