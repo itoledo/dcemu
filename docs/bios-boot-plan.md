@@ -782,9 +782,12 @@ Con esto arrancan los dos formatos, y el ROM encuentra el `1ST_READ.BIN` en todo
 
 ### Lo que queda
 
-- **`Virtua Tenis 2 (USA).cdi` no se parsea.** `cdi.c` no le encuentra pistas y la lectora
-  queda sin disco (`unidad=7 formato=0`). Es del lector de DiscJuggler, no del arranque: las
-  otras cinco imágenes se parsean bien.
+- ~~**`Virtua Tenis 2 (USA).cdi` no se parsea.**~~ **Resuelto el 31 de julio de 2026.** Era el
+  campo `desplazamiento` de los últimos 8 bytes, que en la versión 3.5 es el **tamaño** del
+  header y en la 2.0 y la 3.0 es su **posición**; `cdi_abrir()` lo usaba como tamaño siempre.
+  Las otras cinco imágenes son 3.5, donde las dos lecturas coinciden, y ésta es una 3.0: se
+  pedían los 749 MB de la imagen entera como header y la función fallaba **en silencio**. Ver
+  `docs/pendientes-plan.md`, C.1.
 - **mame4all: arreglado el arranque, queda la geometría del framebuffer.** Era al revés de lo
   que decía esta línea antes: el camino del `.bin` suelto **no** desciframos nada, y el
   `1st_read.bin` de `roms/mame4all/` **sí** viene cifrado —descifrarlo da byte a byte el

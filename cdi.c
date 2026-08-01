@@ -16,6 +16,15 @@
 #define CDI_V3			0x80000005u
 #define CDI_V35			0x80000006u
 
+/*
+	Tope de cordura para el tamano del header. Lleva un registro por pista mas
+	la tabla de sesiones; ni un disco de 99 pistas con nombres largos se acerca
+	a esto. No es un limite del formato: es lo que evita creerle a un campo mal
+	interpretado y pedir cientos de megabytes -- que es exactamente lo que
+	pasaba antes de separar la posicion del tamano.
+*/
+#define CDI_HEADER_MAX	(1u << 20)
+
 static unsigned int leer_le32(const unsigned char * p)
 {
 	return  (unsigned int) p[0]        |
@@ -127,7 +136,7 @@ int cdi_abrir(const char * ruta, struct cdi_t * dest)
 	long long		tamano, pos_header, ocupado = 0;
 	unsigned char *	h;
 	unsigned char	cola[8];
-	unsigned int	version, desplazamiento, i;
+	unsigned int	version, desplazamiento, tam_header, i;
 
 	memset(dest, 0, sizeof(*dest));
 
@@ -160,15 +169,39 @@ int cdi_abrir(const char * ruta, struct cdi_t * dest)
 		return 1;
 	}
 
-	/* En 3.5 el desplazamiento se cuenta desde el final; en 2.0 y 3.0 es la
-	   posicion directa. */
+	/*
+		En 3.5 el desplazamiento se cuenta desde el final; en 2.0 y 3.0 es la
+		posicion directa. O sea que el mismo campo significa **tamano** en una
+		version y **posicion** en las otras dos, y confundirlos sale caro: con
+		un .cdi 3.0 se pedian los 749 MB de la imagen entera como si fueran el
+		header, la lectura se quedaba corta y la imagen quedaba sin pistas.
+
+		El header llega hasta el final del archivo en las tres versiones -- los
+		8 bytes de la cola son parte de el --, asi que el tamano se deriva de la
+		posicion y no del campo.
+	*/
 	pos_header = (version == CDI_V35) ? (tamano - desplazamiento) : desplazamiento;
 
-	h = (unsigned char *) malloc(desplazamiento);
+	/* La resta va en long long y se compara antes de estrechar: truncar
+	   primero dejaria pasar un tamano imposible por lo bajo. */
+	if (pos_header <= 0 || tamano - pos_header < 8 ||
+	    tamano - pos_header > (long long) CDI_HEADER_MAX)
+	{
+		fprintf(stderr, "cdi_abrir: %s dice tener un header de %lld bytes en"
+			" %lld, que no puede ser\n", ruta, tamano - pos_header, pos_header);
+		fclose(fp);
+		return 1;
+	}
+
+	tam_header = (unsigned int) (tamano - pos_header);
+
+	h = (unsigned char *) malloc(tam_header);
 
 	if (h == NULL || posicionar(fp, pos_header) != 0 ||
-	    fread(h, 1, desplazamiento, fp) != desplazamiento)
+	    fread(h, 1, tam_header, fp) != tam_header)
 	{
+		fprintf(stderr, "cdi_abrir: no se pudo leer el header de %s"
+			" (%u bytes desde %lld)\n", ruta, tam_header, pos_header);
 		free(h);
 		fclose(fp);
 		return 1;
@@ -176,11 +209,11 @@ int cdi_abrir(const char * ruta, struct cdi_t * dest)
 
 	fclose(fp);
 
-	for (i = 0; i + 120 < desplazamiento && dest->n < CDI_PISTAS_MAX; )
+	for (i = 0; i + 120 < tam_header && dest->n < CDI_PISTAS_MAX; )
 	{
 		struct cdi_pista_t	pista;
 		unsigned int		siguiente = 0;
-		int					total = leer_pista(h, desplazamiento, i, &pista, &siguiente);
+		int					total = leer_pista(h, tam_header, i, &pista, &siguiente);
 
 		if (total <= 0)
 		{
