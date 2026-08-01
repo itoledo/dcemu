@@ -53,7 +53,57 @@ Lo que está anotado: tras el salto el ejecutable corre —el PC recorre `0x0C14
 y termina leyendo por punteros que no apuntan a nada, `0x10000011` en adelante y de a `0x2C`.
 Pasa igual por el camino de los hooks de syscall, así que no es del arranque por BIOS.
 
-### A.0 — Volver a medir dónde se para cada imagen
+### A.0 — Dónde se para cada imagen — **medido el 31 de julio de 2026**
+
+Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--traza-mem` y
+`--captura-gl`. Secuencial: dos instancias se pelean por `logs/serial.txt`.
+
+| imagen | pistas / datos | escenas | RAM vídeo (04 / 05) | dirección sin emular | bucles | captura |
+| --- | --- | --- | --- | --- | --- | --- |
+| Crazy Taxi (USA) | 2, LBA 45000 | **9**, una de 21 tiras | 128 / 8434176 | `2d2d2d0a` ← PC `0c148966` | 108, último a 7,86 s | negra |
+| Crazy Taxi DCRES | 2, LBA 11702 | **9**, una de 21 tiras | 128 / 8434320 | `2d2d2d0a` ← PC `0c148966` | 101, último a 7,93 s | negra |
+| Capcom vs. SNK (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1fb446` | 6, último a 0,47 s | franja |
+| Capcom vs. SNK DCRES | 2, LBA 228825 | 2, de 0 tiras | 16512 / 8417744 | `2d2d2d0a` ← PC `8c1fb446` | 6, último a 0,47 s | negra |
+| Virtua Tennis (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
+| Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
+| Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja |
+| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** |
+| mame4all (`.bin` suelto) | binario suelto | 275, ~370 tiras | 295040 / 40348040 | ninguna | 42 | el menú de la BIOS |
+
+Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
+
+**1. El `2d2d2d0a` es del juego, no del rip.** Aparece en seis de las ocho, y el PC que lo lee
+es **el mismo para los dos rips del mismo juego** y distinto entre juegos: `0c148966` en las dos
+Crazy Taxi, `8c1fb446` en las dos Capcom, `8c1dcc66` en las dos Virtua Tennis. O sea que es
+código del juego llegando al mismo sitio, reproducible, y no un accidente de una conversión.
+Virtua Tenis 2 no lo tiene: es el único motor distinto.
+
+**2. Hay dos formas de fallar, no una.** Capcom, las dos Virtua Tennis y Tenis 2 se paran
+**antes del segundo segundo** y no mandan una sola escena. Crazy Taxi corre los ocho segundos,
+manda nueve escenas —una con 21 tiras— y sigue dando vueltas hasta el final. Son problemas
+distintos y conviene no tratarlos como uno.
+
+**3. La franja de ruido de arriba no es del juego.** Las capturas de Capcom (USA), Virtua
+Tennis (USA) y Virtua Tennis DCRES son **byte a byte idénticas** — mismo md5 —, y tres juegos
+distintos no producen los mismos píxeles. Las tres escribieron además exactamente los mismos
+16384 bytes por la ventana de 64 bits y 8388608 —8 MB justos— por la de 32. La lectura que
+encaja: es el arranque común del SDK de Sega, y la franja son esos 16 KB de la ventana de 64
+bits vistos como framebuffer, porque el juego muere antes de programar el vídeo y dcemu
+presenta la RAM desde el offset 0. Nueve filas de 600 en la ventana ≈ siete de 480 en el
+guest, que es lo que dan 16384 bytes repartidos entre los dos bancos. **No hay que buscar ahí
+el dibujo del juego.**
+
+**4. DCDoom no carga por este camino**, y no estaba anotado: `no se encontro 1st_read.bin en el
+directorio raiz`. **No es del `.cdi`**: el lector saca sus dos pistas exactamente como las
+lista `CLAUDE.md` —LBA 0, 302 sectores de audio y LBA 11702, 18487 de datos— y lee el IP.BIN
+sin problema desde el lsn 19136. Lo que falla es el recorrido del ISO9660 del cargador
+directo, que es otro código que el del ROM: la tabla de `CLAUDE.md` dice que **el ROM sí**
+encuentra su `1ST_READ.BIN`. Así que es anterior a este trabajo y está acotado a un camino.
+
+Nota sobre mame4all: se corrió el `1st_read.bin` suelto, que **no** es la configuración que
+`bios-boot-plan.md` documenta como funcionando (la carpeta empaquetada en un `.iso`). Arranca
+—imprime `vid_set_mode: 640x480 NTSC`— y termina, y lo que queda en pantalla es el menú de la
+BIOS, que es adonde salta KOS al volver de `main()`. Esa fila no dice nada de mame4all.
 
 **Primero esto, porque la nota es anterior a media docena de arreglos.** Entre que se escribió
 y hoy entraron el signo de la profundidad, las dos ventanas de RAM de vídeo, el plano de fondo,
@@ -347,6 +397,49 @@ contestarla.
 33 binarios están en "dibujan; la captura tiene contenido pero no se revisó una por una". No
 es un fallo, es que nadie las miró. Una pasada con `--captura-gl` y el ojo cierra el hito F y
 puede destapar cosas —así salieron el filtro de textura y el recorte del volcado—.
+
+### C.7 — La BIOS perdió su texto, en dos pasos y por dos causas
+
+Abierto el 31 de julio de 2026, porque se vio en vivo que el menú del boot ROM ya no muestra
+sus etiquetas. **Es una regresión real y está acotada a dos commits**, ninguno de esta corrida.
+
+El síntoma no es solo el menú: el panel del selector de fecha sale igual, con sus flechas y
+sin una letra. La BIOS no rasteriza texto en ningún lado.
+
+Medido contando los píxeles de glifo dentro de la pastilla *Play* del menú —el recorte
+(290,258)-(400,296) de la captura de 800×600, píxeles que se apartan más de 60 del color
+dominante—, arrancando con `--bios --salir-tras=25 --captura-gl` en cada revisión:
+
+| revisión | píxeles de glifo | color de la pastilla | |
+| --- | --- | --- | --- |
+| `c86bb7b` | **582** | (101,49,9) | se lee *Play* en blanco |
+| `1175c59` las dos ventanas de VRAM | **582** | (101,49,9) | igual |
+| `dcc1292` plano de fondo y POLY1 | **145** | (189,152,113) | apenas se adivina |
+| `56963d3` | 145 | (189,152,113) | |
+| `7e3119b` | 145 | (189,152,113) | |
+| `9edc6f5` el CH2 DMA lineal | **0** | (189,152,113) | no queda nada |
+| `master` (43c2189) | 0 | (189,152,113) | |
+
+**Primera causa, `dcc1292`** —"la animación del boot ROM: el plano de fondo y el POLY1 de 32
+bytes"—. El texto cae de 582 a 145 y **la pastilla misma se lava**, de marrón oscuro a un
+pastel claro. O sea que no es un problema del texto: es toda la pasada translúcida la que
+cambió de color. Ese mismo commit arregló el fondo, que antes salía oscuro y ahora sale
+celeste —lo correcto—, así que hay que separar las dos cosas antes de tocar nada.
+
+**Segunda causa, `9edc6f5`** —"el CH2 DMA a RAM de vídeo escribe lineal, aunque el destino sea
+la de 64 bits"—. Su padre `7e3119b` tiene 145 píxeles de glifo y él tiene 0. Es el commit que
+arregló el cuadro de mame4all, que sale duplicado y aplastado si el DMA entrelaza.
+
+Y ahí está el conflicto de fondo, que `CLAUDE.md` ya anticipaba: *"lo único que falta confirmar
+en hardware es que el DMA no distinga las dos ventanas; es la única lectura que encaja con las
+medidas"*. **Esta es la medida que no encaja.** mame4all necesita que el CH2 DMA escriba
+lineal; la fuente de la BIOS parece necesitar que entrelace, porque `get_texture()` la lee con
+`vram64_leer()`. Las dos no pueden ser ciertas con una regla por camino, así que falta el
+factor que las distingue —el destino, el tamaño de la ráfaga, o el registro que arma la
+transferencia— y encontrarlo es el trabajo, no elegir cuál de los dos romper.
+
+Está descartado, por medición y no por razonamiento, que sea de esta corrida: la captura del
+menú con `master` y con la rama entera es **byte a byte idéntica**, mismo md5.
 
 ### C.6 — Residuos ya diagnosticados que se dejan como están
 
