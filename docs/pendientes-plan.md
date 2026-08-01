@@ -12,7 +12,7 @@ No se inventó nada: cada punto viene anotado en un documento o en el código.
 | --- | --- |
 | `docs/bios-boot-plan.md`, "Lo que queda" | el juego que arranca y no dibuja, y el `.cdi` que no se parsea |
 | `docs/demos-kos.md`, "Lo que falta" | las 7 demos de sonido y las 28 que piden periféricos |
-| `docs/sh4-conformidad.md`, "Pendiente" y "Lo que sigue sin cumplir el manual" | RM, DN, la causa I, las dos filas de `SGR`, los ciclos |
+| `docs/sh4-conformidad.md`, "Pendiente" y "Lo que sigue sin cumplir el manual" | la causa I, el qNaN del chip, las dos filas de `SGR`, los ciclos (RM y DN ya están) |
 | `docs/mmu-plan.md`, "Lo que sigue faltando" | fases 6 y 7, `URC`, alineación |
 | `docs/clock-plan.md`, "Lo que sigue faltando" | entrelazado, `TPSC` 110/111, granularidad del límite |
 | `docs/msvc-build-plan.md`, "Pendiente" | la ventana en negro, guichan, libcdio, x64 |
@@ -20,13 +20,17 @@ No se inventó nada: cada punto viene anotado en un documento o en el código.
 
 ## El estado del que se parte
 
+Actualizado el 1 de agosto de 2026.
+
 | | |
 | --- | --- |
-| Demos de KOS que funcionan | 100 de 135 |
-| Fallan por algo que falta emular | 7, todas del AICA |
+| Demos de KOS que funcionan | **104** de 135 (100 en lo visual y cuatro que además suenan) |
+| Fallan por algo que falta emular | **3**: CDDA y dos de sonido con causa propia |
 | No aplican: piden periféricos | 28 |
-| Filas de `opcodes[]` implementadas | 239 de 239, con 516 casos en verde |
+| Filas de `opcodes[]` implementadas | 239 de 239, con **615 casos unitarios** en verde |
+| El núcleo contra SingleStepTests/sh4 | **116.500 casos, 0 fallos** |
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
+| mame4all | arranca desde el `.iso` y dibuja su menú |
 
 Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
 no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
@@ -68,7 +72,7 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja |
 | DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** |
-| mame4all (`.bin` suelto) | binario suelto | 275, ~370 tiras | 295040 / 40348040 | ninguna | 42 | el menú de la BIOS |
+| mame4all (`.iso`) | carpeta empaquetada | 0 (no usa el TA) | 0 / 235315200 | ninguna | 105 | **su propio menú** |
 
 Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
 
@@ -107,10 +111,13 @@ sin problema desde el lsn 19136. Lo que falla es el recorrido del ISO9660 del ca
 directo, que es otro código que el del ROM: la tabla de `CLAUDE.md` dice que **el ROM sí**
 encuentra su `1ST_READ.BIN`. Así que es anterior a este trabajo y está acotado a un camino.
 
-Nota sobre mame4all: se corrió el `1st_read.bin` suelto, que **no** es la configuración que
-`bios-boot-plan.md` documenta como funcionando (la carpeta empaquetada en un `.iso`). Arranca
-—imprime `vid_set_mode: 640x480 NTSC`— y termina, y lo que queda en pantalla es el menú de la
-BIOS, que es adonde salta KOS al volver de `main()`. Esa fila no dice nada de mame4all.
+Nota sobre mame4all: la fila decía "el menú de la BIOS" porque se había corrido el
+`1st_read.bin` **suelto**, que no es la configuración que funciona. **Vuelto a medir el 1 de
+agosto de 2026 con la carpeta empaquetada en un `.iso`, mame4all arranca y dibuja su propio
+menú** —"SELECT YOUR MAME4ALL: AGED / CLASSIC / GOLD" con las tres capturas—, 93650 colores.
+No manda una sola escena por el TA: escribe el framebuffer directo por la ventana de 32 bits,
+de a 32 bytes desde el PC `8c05364e`, 235 MB en ocho segundos. Coincide con lo que
+`bios-boot-plan.md` ya daba por resuelto; lo que faltaba era la medida.
 
 **Primero esto, porque la nota es anterior a media docena de arreglos.** Entre que se escribió
 y hoy entraron el signo de la profundidad, las dos ventanas de RAM de vídeo, el plano de fondo,
@@ -660,20 +667,18 @@ Van listados para que nadie los vuelva a investigar:
 Nada de esto rompe ninguna demo hoy. Se ataca por lo barato y por lo que puede estar
 falseando un resultado sin avisar.
 
-### D.1 — Los bits RM y DN de FPSCR (barato, y puede importar)
+### D.1 — Los bits RM y DN de FPSCR — **resuelto el 1 de agosto de 2026**
 
-`docs/sh4-conformidad.md` los deja afuera junto con la causa I, pero **no cuestan lo mismo**.
-La causa I obliga a leer MXCSR después de cada instrucción emulada, que es lo más caro
-posible en un intérprete; RM y DN se configuran **una vez, cuando el guest escribe FPSCR**, no
-por instrucción:
+Los trajo la pasada de SingleStepTests, que además los pilló sola: RM se aplica desde
+`UpdateFPSCR()` con `_controlfp`/`fesetround` y DN en `fpu_dn_s()`/`fpu_dn_d()`, aplastando
+desnormalizados de entrada y de salida. Era exactamente lo que decía esta entrada —el valor de
+reset de RM es 01, truncar, así que **todo** lo que corre en la consola usaba el redondeo
+equivocado— y de paso salieron nueve cosas más del núcleo. Ver `docs/sh4-conformidad.md`, "La
+segunda pasada".
 
-- **RM**: modo de redondeo. Solo tiene dos valores en el SH-4, 00 al más cercano y 01 truncar.
-  Se aplica con `fesetround()` desde `UpdateFPSCR()`, que ya existe y ya se llama en el sitio
-  exacto. Importa porque **el valor de reset es 01 y el código del boot ROM corre con el
-  redondeo equivocado** desde siempre.
-- **DN**: vaciar desnormalizados a cero. Es FTZ/DAZ de MXCSR, misma vía y mismo sitio.
-
-Se verifica con casos nuevos en la suite `fpu-excepciones`, que ya existe.
+Lo que quedó de esa lista: la causa I por sí sola y el patrón de qNaN que genera el chip
+(`H'7FBFFFFF` en simple, `H'7FF7FFFF FFFFFFFF` en doble). Los dos siguen siendo baratos de
+describir y caros o inocuos de arreglar, en ese orden.
 
 ### D.2 — Las dos filas de `SGR`
 
@@ -735,8 +740,9 @@ la variante x64. Ninguna bloquea nada.
 2. **Vía A.0** — media sesión. La tabla de dónde se para cada imagen hoy. Sin esto se puede
    estar persiguiendo un fantasma de hace una semana.
 3. **Vía A.1 y A.2** — el hito D. Es donde está el valor.
-4. **Vía D.1 y D.2** — una sesión, en cualquier hueco. RM puede estar falseando aritmética del
-   boot ROM desde siempre y cuesta una llamada en `UpdateFPSCR()`.
+4. ~~**Vía D.1**~~ — **hecho el 1 de agosto de 2026**, y no costó una llamada: la pasada de
+   SingleStepTests trajo RM y DN y otros nueve arreglos del núcleo. Queda **D.2**, las dos
+   filas de `SGR`, que sigue siendo lo más barato de la lista.
 5. **Vía B** — el hito E. Es la más grande de todas y empieza por una decisión, no por código.
 6. **Vía C.5, D.3-D.5, E** — cuando no haya nada mejor.
 
@@ -772,15 +778,16 @@ Lo de siempre en este árbol, y por escrito porque cada punto ya costó tiempo u
 
 Muy gruesa, en sesiones de trabajo:
 
-| vía | sesiones |
-| --- | --- |
-| C.1-C.4 (residuos que alimentan A) | 1 |
-| A.0 (la tabla) | 0,5 |
-| A.1-A.2 (el hito D) | 2 a 8, sin piso claro |
-| D.1-D.2 (RM, DN, SGR) | 1 |
-| B (el AICA completo) | 8 a 15 |
-| C.5 (revisar las 33) | 1 |
-| D.3-D.5, E | 3 |
+| vía | sesiones | estado |
+| --- | --- | --- |
+| C.1-C.4 (residuos que alimentan A) | 1 | hecho el 31 de julio |
+| A.0 (la tabla) | 0,5 | hecha, y rehecha el 1 de agosto — ver A.0b |
+| A.1-A.2 (el hito D) | 2 a 8, sin piso claro | **pendiente, y es lo que importa** |
+| D.1 (RM, DN) | 1 | hecho el 1 de agosto |
+| D.2 (las dos filas de `SGR`) | 0,5 | pendiente, lo más barato de todo |
+| B (el AICA completo) | 8 a 15 | hasta la fase 4; quedan CDDA y el DSP |
+| C.5 (revisar las 33) | 1 | pendiente |
+| D.3-D.5, E | 3 | pendiente |
 
 El rango de A es honesto: puede ser un registro sin caso —como fueron el `REVISION` del PVR y
 el `SB_G1SYSM`, media hora cada uno una vez encontrados— o puede ser una función del juego que
