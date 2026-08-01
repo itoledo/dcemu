@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include "scramble.h"
 
 #define MAXCHUNK (2048*1024)
 
@@ -171,6 +174,137 @@ void write_file(char *filename, unsigned char *ptr, unsigned long sz)
     }
   save_file(fh, ptr, sz);
   fclose(fh);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Lo mismo, en memoria                                                     */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El descrambling de arriba va de archivo a archivo, que es lo que necesita
+	la carga desde una imagen -- y de paso deja scrambled.bin y descrambled.bin
+	a mano, que sirven para buscar cadenas sin correr nada. Para un ejecutable
+	que ya esta en la RAM del guest hace falta hacerlo ahi mismo.
+*/
+
+static void trozo_desde_memoria(const unsigned char ** src, unsigned char * dst,
+	unsigned long sz)
+{
+	static int	idx[MAXCHUNK / 32];
+	int			i, n = (int) (sz / 32);
+
+	for (i = 0; i < n; i++)
+		idx[i] = i;
+
+	for (i = n - 1; i >= 0; --i)
+	{
+		int x = (int) ((my_rand() * (unsigned int) i) >> 16);
+		int tmp = idx[i];
+
+		idx[i] = idx[x];
+		idx[x] = tmp;
+
+		memcpy(dst + 32 * idx[i], *src, 32);
+		*src += 32;
+	}
+}
+
+void descramble_memoria(unsigned char * datos, unsigned long tam)
+{
+	unsigned char *			copia;
+	const unsigned char *	src;
+	unsigned char *			dst = datos;
+	unsigned long			resto = tam, trozo;
+
+	if (datos == NULL || tam == 0)
+		return;
+
+	/* El cifrado dispersa, asi que no se puede hacer sobre el mismo bloque. */
+	copia = (unsigned char *) malloc(tam);
+
+	if (copia == NULL)
+	{
+		fprintf(stderr, "descramble_memoria: sin memoria para %lu bytes\n", tam);
+		return;
+	}
+
+	memcpy(copia, datos, tam);
+	src = copia;
+
+	my_srand(tam);
+
+	for (trozo = MAXCHUNK; trozo >= 32; trozo >>= 1)
+		while (resto >= trozo)
+		{
+			trozo_desde_memoria(&src, dst, trozo);
+			resto -= trozo;
+			dst   += trozo;
+		}
+
+	/* La ultima rebanada incompleta va tal cual. */
+	if (resto)
+		memcpy(dst, src, resto);
+
+	free(copia);
+}
+
+/*
+	Si un bloque parece un ejecutable cifrado.
+
+	**Por estadistica no se puede**: el cifrado solo permuta rebanadas de 32
+	bytes, asi que cualquier cuenta de bytes o de palabras da identica en las
+	dos versiones -- medido, y por eso no se intenta. Lo que cambia es *donde*
+	queda cada cosa, y hay una posicion conocida: la primera instruccion de un
+	ejecutable de Dreamcast es casi siempre un MOV.L @(disp,PC),Rn, el prologo
+	que carga la direccion a la que va a saltar, y ese literal tiene que ser una
+	direccion de RAM o de RAM de video. Si no lo es, el principio del archivo no
+	es el principio del programa: viene cifrado.
+
+	Si el primer opcode no es ese MOV.L no se opina, y se responde "no cifrado",
+	que es lo que dcemu hizo siempre.
+*/
+
+static int direccion_plausible(unsigned long v)
+{
+	unsigned long fisica = v & 0x1FFFFFFFu;
+
+	if (v & 1)
+		return 0;					/* ninguna direccion util es impar */
+
+	if (fisica >= 0x0C000000 && fisica < 0x10000000)
+		return 1;					/* RAM del sistema */
+
+	if (fisica >= 0x04000000 && fisica < 0x06000000)
+		return 1;					/* RAM de video */
+
+	return 0;
+}
+
+int parece_cifrado(const unsigned char * datos, unsigned long tam)
+{
+	unsigned int	op;
+	unsigned long	donde, valor;
+
+	if (datos == NULL || tam < 8)
+		return 0;
+
+	/* El SH-4 de la Dreamcast es little endian, tambien para las instrucciones. */
+	op = (unsigned int) datos[0] | ((unsigned int) datos[1] << 8);
+
+	if ((op >> 12) != 0xD)
+		return 0;
+
+	donde = 4 + (unsigned long) (op & 0xFF) * 4;
+
+	if (donde + 4 > tam)
+		return 1;					/* el literal no cabe: no es el prologo */
+
+	valor = (unsigned long) datos[donde]
+		| ((unsigned long) datos[donde + 1] <<  8)
+		| ((unsigned long) datos[donde + 2] << 16)
+		| ((unsigned long) datos[donde + 3] << 24);
+
+	return !direccion_plausible(valor);
 }
 
 void descramble(char *src, char *dst)

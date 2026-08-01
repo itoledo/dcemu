@@ -50,6 +50,10 @@ struct opciones_t
 	/* Segundos de tiempo *emulado* tras los cuales el emulador sale solo, por
 	   el mismo camino que cerrar la ventana. 0: no salir. */
 	int				salir_tras;
+	/* Si el ejecutable suelto viene cifrado: -1 mirar el prologo, 0 no, 1 si.
+	   Solo aplica al argumento .bin; desde una imagen siempre viene cifrado. */
+	int				cifrado;
+
 	int				cable;			/* CABLE_* */
 	int				bandeja;		/* BANDEJA_* */
 	const char *	imagen;			/* .iso/.cue/.bin, o NULL */

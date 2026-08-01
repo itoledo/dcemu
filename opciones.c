@@ -22,6 +22,7 @@ struct opciones_t opciones =
 	0,					/* traza_mem */
 	0,					/* limitar */
 	0,					/* salir_tras */
+	-1,					/* cifrado: mirar el prologo */
 	CABLE_VGA,
 	BANDEJA_AUTO,
 	NULL,
@@ -71,6 +72,8 @@ void opciones_ayuda(const char * programa)
 		"                        direccion D (hexadecimal). Repetible.\n"
 		"  --volcar=D:N          al salir, vuelca N bytes desde D en hexadecimal.\n"
 		"                        Repetible.\n"
+		"  --cifrado             el .bin suelto viene cifrado (como en un disco).\n"
+		"  --sin-cifrado         no lo esta. Por omision se mira su prologo.\n"
 		"  --hacks-bios          fuerza los hooks de syscall de la BIOS.\n"
 		"  --sin-hacks-bios      los desactiva (obligatorio para arrancar de verdad\n"
 		"                        por el boot ROM: los hooks pisan la RAM baja).\n"
@@ -173,6 +176,16 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-hacks-bios") == 0)
 		{
 			opciones.hacks_bios = 0;
+		}
+		else
+		if (strcmp(arg, "--cifrado") == 0)
+		{
+			opciones.cifrado = 1;
+		}
+		else
+		if (strcmp(arg, "--sin-cifrado") == 0)
+		{
+			opciones.cifrado = 0;
 		}
 		else
 		if (strncmp(arg, "--captura-gl=", 13) == 0)

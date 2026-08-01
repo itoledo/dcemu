@@ -35,6 +35,7 @@
 #include "wdt.h"
 #include "tmu.h"
 #include "mando.h"
+#include "scramble.h"
 #include "SIMDx86/version.h"
 
 DWORD snd_dbg;			// ...
@@ -1179,6 +1180,33 @@ int main(int argc, char *argv[])
 		{
 			fprintf(stderr, "No se pudo abrir %s.\n", ejecutable);
 			return 1;
+		}
+
+		/*
+			El 1ST_READ.BIN de un disco va **cifrado** -- el cifrado lo pone el
+			mastering -- y el mismo binario suelto en una carpeta normalmente
+			no. Las dos cosas se pasan aca como un .bin y no hay nada en el
+			nombre que las distinga, asi que se mira el prologo de entrada; ver
+			parece_cifrado() en scramble.c. --cifrado / --sin-cifrado lo fuerzan.
+
+			Y se dice lo que se decidio: adivinar en silencio es lo que hace que
+			un arranque roto parezca un bug del emulador. La carpeta de mame4all
+			--ip.bin y un 1st_read.bin cifrado, sin imagen-- salia ejecutando
+			ceros en 0x00006b03 porque el ejecutable llegaba revuelto.
+		*/
+		{
+			unsigned char * bin = get_memory_pointer(mem_base + mem_offset);
+			int				cifrado = (opciones.cifrado >= 0)
+				? opciones.cifrado
+				: parece_cifrado(bin, (unsigned long) tam);
+
+			if (cifrado)
+			{
+				fprintf(stderr, "%s viene cifrado: descifrando %ld bytes.\n",
+					ejecutable, tam);
+
+				descramble_memoria(bin, (unsigned long) tam);
+			}
 		}
 	}
 	else
