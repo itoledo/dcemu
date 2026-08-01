@@ -308,6 +308,13 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   - **La demora del render** (~2M ciclos): el juego arma su espera ~800K ciclos después de
     escribir STARTRENDER; el evento instantáneo se le adelantaba.
 
+  **La regresión de la demora del render, medida con precisión**: los demos estáticos del
+  subconjunto quedan byte a byte (conio, rtt_sized, strided, bumpmap); los animados driftean
+  en decenas de píxeles/colores porque la fase de cuadro corre ~10 ms — KOS espera el
+  render-done por semáforo y ahora llega cuando el render "terminó", no al cerrar la lista.
+  Es el costo esperable de la semántica correcta, no una rotura; si un barrido completo lo
+  confirma, la línea base de capturas se re-toma.
+
   Y una herramienta nueva: **`DCEMU_RTC_FIJO=N`** — el RTC arranca en N y avanza con el
   tiempo emulado. El RTC del anfitrión era la última fuente de no-determinismo (semilla y
   fase del segundo: el juego espera el tic en su arranque, congelarlo del todo lo cuelga);
