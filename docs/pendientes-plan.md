@@ -447,13 +447,58 @@ hardware es que el DMA no distinga las dos ventanas; es la única lectura que en
 medidas"*. **Esta es la medida que no encaja**: mame4all necesita lineal y la BIOS entrelazado,
 por el mismo camino. Falta el factor que los distingue, y elegir cuál romper no es el trabajo.
 
-El candidato razonable es **la ventana concreta**: `VRAM_VENTANA_64()` mete en la misma bolsa
-`0x04`/`0xA4` y `0x11`, y KOS las nombra distinto (`0x11000000` es "VRAM 64-bit, TA=>VRAM").
-Los documentos dicen que mame4all vuelca a `0x11000000`; si la BIOS usa `0x04`, la regla
-"`0x11` lineal, `0x04` entrelazado" cierra los dos casos. **No está medido**: la única corrida
-de mame4all de esta sesión fue con el `1st_read.bin` suelto, que termina en la BIOS, así que
-las escrituras que se ven por la ventana 04 son del ROM y no del juego. Hace falta correr
-mame4all como `.iso` para separarlas.
+**La ventana no es el factor, y está descartado por medición.** Se armó el `.iso` de mame4all
+—ver abajo— y se instrumentó `ch2_dma_ejecutar()` para informar el destino real, antes de la
+reescritura. Los dos usan **la misma ventana, la `0x11`**:
+
+| | destino | tamaño |
+| --- | --- | --- |
+| mame4all | `0x11000000` siempre, offset **0** | 614400 bytes = 640×480×2, un cuadro entero, repetido |
+| boot ROM | `0x11413000`, `0x1141b000`, `0x1151b000`, `0x1151d000`, `0x11521000`… | 8 KB a 1 MB, variados: son texturas |
+
+Se probó igual la regla "`0x11` lineal, `0x04` entrelazado": mame4all sale **byte a byte
+idéntico** a la referencia y el texto de la BIOS **sigue en cero**. Confirma lo anterior desde
+el otro lado.
+
+**Y tampoco es de la lectura del framebuffer**, que era la otra hipótesis y la más física —que
+mame4all programara un paso o un módulo que reconstruyera el entrelazado al mostrarlo—.
+Volcando sus registros con el DMA entrelazado (`--volcar=a05f8044:20`): `FB_R_CTRL` `0x00800005`
+(RGB565), `FB_R_SIZE` `0x00177D3F` —640 de ancho, 480 de alto, módulo 1—, `FB_W_LINESTRIDE`
+`0xA0` = 1280 bytes por línea. Todo normal, sin ningún truco que deshaga el entrelazado. Y la
+captura entrelazada sale duplicada a lo ancho y aplastada a la mitad, que es exactamente lo
+que describen los documentos.
+
+Quedan dos candidatos, los dos por medir:
+
+- **Dónde cae el destino.** mame4all escribe en el offset 0, que es el cuadro que el PVR
+  muestra; el ROM escribe arriba de `0x413000`, que son texturas. dcemu ya sabe calcular esa
+  región: `armar_volcado_si_muestrea_framebuffer()` en `graficos.c` la deriva de `FB_W_SOF1`,
+  `FB_R_SOF1`, `FB_W_LINESTRIDE` y `PCLIP_Y`. La regla sería "si el destino cae dentro del
+  cuadro, lineal; si no, entrelazado".
+- **El tamaño de la transferencia**: 614400 es exactamente un cuadro.
+
+Ninguna de las dos es una explicación *física* —el chip no puede saber "esto es un cuadro"—,
+así que las dos son modelos que encajan, no la verdad del hardware. Antes de elegir una
+conviene documentación real del Holly sobre cómo el CH2 DMA direcciona la ventana `0x11`.
+
+**Cómo se arma el `.iso` de mame4all**, que hacía falta para todo esto y no estaba: las dos
+subcarpetas (`roms/`, `samples/`) están **vacías**, así que la imagen es sólo los 17 archivos
+de la raíz, en ISO9660 nivel 1 (nombres 8.3 en mayúsculas con `;1`, que es justo lo que
+`min_iso_name_translate()` deshace). Con `pycdlib`:
+
+```python
+import pycdlib, os, glob
+iso = pycdlib.PyCdlib()
+iso.new(interchange_level=1, vol_ident='MAME4ALL')
+for p in sorted(glob.glob('roms/mame4all/*')):
+    if os.path.isfile(p):
+        iso.add_file(p, iso_path='/' + os.path.basename(p).upper() + ';1')
+iso.write('roms/mame4all.iso'); iso.close()
+```
+
+Queda en `roms/mame4all.iso`, que está fuera de git. Arranca y dibuja su menú de selección
+—*AGED*, *CLASSIC*, *GOLD*— con 93797 colores, y ése es el patrón de referencia contra el que
+comparar cualquier cambio del CH2 DMA.
 
 Está descartado, por medición y no por razonamiento, que sea de esta corrida: la captura del
 menú con `master` y con la rama entera es **byte a byte idéntica**, mismo md5.
