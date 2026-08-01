@@ -35,6 +35,34 @@ con el CH2 DMA, las tres de paleta al decodificar los formatos indexados, las do
 tres últimas también con el arreglo del filtro de textura, que era lo que de verdad las
 dejaba en blanco. El resto del inventario es el del 30.
 
+## Vuelto a medir el 1 de agosto de 2026, tras la pasada de SingleStepTests
+
+Las 131 demos, otra vez, después de los once arreglos del núcleo SH-4 —entre ellos `SLEEP`,
+`FPSCR.RM`, `FPSCR.DN`, `FMAC` y `MOV Rm,@-Rn`, que tocan **toda** la aritmética de punto
+flotante y el bucle ocioso del planificador de KOS—. **No se rompió nada:**
+
+- **130 de 131 tienen el mismo veredicto en el serial**, carácter por carácter en la marca de
+  resultado. La que cambia es `sound-multi-stream`, y mejoró: la línea base terminaba en
+  `arch: aborting the system` con la aserción del AICA (`Queue is not yet valid`) y ahora
+  corre — es el AICA de la víspera, no el SH-4.
+- **Ninguna demo perdió gráficos.** Las 69 que dibujaban siguen dibujando lo mismo o más.
+- Dos bajaron mucho de colores y las dos son mejoras. `conio-basic` pasó de 17343 a 2: la
+  captura vieja era **el menú de la BIOS** —la demo había terminado y el boot ROM tomó la
+  pantalla— y la nueva es la demo de verdad, con su texto y su `>` esperando una tecla.
+  `sound-multi-stream` pasó de 17104 a 1 por lo mismo: antes abortaba y aparecía la BIOS.
+- `pvr-modifier_volume` y `pvr-cheap_shadow` dan 3 y 2 colores según la corrida. Es el `rand()`
+  con el que colocan la geometría, ya anotado más abajo; las dos capturas muestran los mismos
+  cuadrados azules y el verde aparece o no según dónde caiga el volumen.
+- El arranque por `--bios` sigue llegando al menú (17246 colores).
+
+Una trampa del método que costó una hora: **contar los colores del BMP en PowerShell da mal**
+—`-shl` sobre un `[byte]` no promueve como uno espera y la cuenta sale por 165 donde son
+17189—. El conteo se hace en Python sobre los BMP guardados, y las dos corridas se recuentan
+con el mismo código; comparar contra los números de un `resumen.txt` viejo no sirve.
+
+Los resultados quedan en `build/Release/barrido-2026-08-01/` (capturas y serial), al lado de
+los del 31 de julio.
+
 ## Cómo se mide
 
 **Desde el 31 de julio de 2026, con `--captura-gl`**, no capturando la ventana:
