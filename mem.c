@@ -85,22 +85,12 @@ DWORD traza_video_escrituras = 0;
 DWORD traza_video_bytes = 0;
 DWORD traza_video_ventanas = 0;
 DWORD traza_video_por_ventana[0x20] = { 0 };
-
-/* Ver VRAM_VENTANA_64() mas abajo: lo pone inicializar_memoria() desde
-   DCEMU_11_PLANO y no se vuelve a mirar el ambiente. */
-static int vram_11_plano = 0;
 long  traza_video_min = 0x7FFFFFFF;
 long  traza_video_max = -1;
 
 int inicializar_memoria()
 {
 	logmsg("creando memoria\n");
-
-	vram_11_plano = (getenv("DCEMU_11_PLANO") != NULL);
-
-	if (vram_11_plano)
-		fprintf(stderr, "DCEMU_11_PLANO: las escrituras a RAM de video por la "
-			"ventana 0x11 no se entrelazan.\n");
 
 	memoria = (unsigned char *) malloc(sizeof(char) * MEM_SIZE); // 16 megabytes
 
@@ -577,26 +567,17 @@ void sq_write(unsigned long direccion, void * p, size_t size)
    la FIFO de texturas del TA en 0x11. El resto -- 0x05/0xA5, 0x13 -- es la de
    32 bits, cuya numeracion es la del bloque. Ver vram.h. */
 /*
-	EXPERIMENTO: DCEMU_11_PLANO deja las escrituras por 0x11 sin entrelazar.
+	Las ventanas de 64 bits sobre la RAM de video: 0x04 (y su espejo P2 0xA4) y
+	0x11, que KOS llama "VRAM 64-bit, TA=>VRAM". El resto -- 0x05/0xA5, 0x13 --
+	es la de 32 bits, cuya numeracion es la del bloque. Ver vram.h.
 
-	mame4all escribe su framebuffer entero ahi --132 MB por corrida, de a 4
-	bytes, contra 1,8 MB por la ventana de 32 bits-- y espera verlo lineal: con
-	el entrelazado el cuadro se reparte entre los dos bancos y en pantalla sale
-	duplicado a lo ancho y aplastado a la mitad de alto. Recombinando los dos
-	bancos de a 4 bytes se reconstruye la imagen exacta, asi que lo que el guest
-	escribe es lineal.
-
-	Pero no se puede quitar sin mas: pvr-strided_texture sube su textura por la
-	misma ventana y cuenta con el entrelazado --pasa de 2 colores a 1, o sea a
-	negro--. Los otros seis demos de textura medidos no cambian. Falta saber que
-	distingue los dos casos en el hardware; mientras tanto, el interruptor.
-
-	Se lee una sola vez --en inicializar_memoria()--: esto se consulta en cada
-	escritura a RAM de video, que son decenas de millones por corrida.
+	Ojo: esto vale para lo que escribe el guest. El CH2 DMA a RAM de video
+	escribe lineal aunque el destino nombre la de 64 bits; ver
+	ch2_dma_ejecutar().
 */
 #define VRAM_VENTANA_64(direccion)	\
 	((((direccion) >> 24) & 0x1F) == 0x04 || \
-	 ((((direccion) >> 24) & 0x1F) == 0x11 && !vram_11_plano))
+	 (((direccion) >> 24) & 0x1F) == 0x11)
 
 void video_read(unsigned long direccion, void * p, size_t size)
 {
@@ -1122,12 +1103,40 @@ static void ch2_dma_ejecutar(void)
 	}
 	else
 	{
+		/*
+			A RAM de video el DMA escribe **lineal**, aunque el destino nombre
+			la ventana de 64 bits.
+
+			Es la unica lectura que cuadra con lo medido. SDL para Dreamcast
+			vuelca asi el cuadro entero de mame4all --275 transferencias de
+			614400 bytes a 0x11000000 en seis segundos, sin tocar el TA ni una
+			vez-- y lo muestra como framebuffer, que se lee en la numeracion de
+			32 bits; recombinando los dos bancos en el orden en que el guest
+			escribe sale la imagen exacta, o sea que lo que manda es lineal.
+			Entrelazandolo, el cuadro se parte entre bancos y sale duplicado a
+			lo ancho y aplastado a la mitad de alto.
+
+			Lo que **si** entrelaza es la store queue: pvr-strided_texture sube
+			su textura por esta misma ventana en rafagas de 32 bytes y depende
+			de ello --sin el entrelazado se va a negro, de 240000 pixeles no
+			negros a cero--, porque get_texture() la lee con vram64_leer(). Esa
+			pareja no se toca.
+
+			Los nombres son de KOS (dc/pvr/pvr_regs.h): 0x11000000 "VRAM 64-bit,
+			TA=>VRAM" y 0x13000000 "VRAM 32-bit". Queda por confirmar en
+			hardware que el DMA no distinga las dos.
+		*/
+		DWORD dst = destino;
+
+		if (VRAM_VENTANA_64(dst))
+			dst = (dst & 0x007FFFFF) | 0x05000000;
+
 		for (i = 0; i + 4 <= largo; i += 4)
 		{
 			DWORD palabra;
 
 			memread_fisico(origen + i, &palabra, 4);
-			memwrite_fisico(destino + i, &palabra, 4);
+			memwrite_fisico(dst + i, &palabra, 4);
 		}
 	}
 
@@ -2054,7 +2063,7 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		/* La primera escritura de cada ventana, con el PC: dice quien la hace,
 		   que es lo que separa "el guest eligio esta ventana" de "dcemu
 		   resolvio mal el destino de una store queue". */
-		if (traza_video_por_ventana[(direccion >> 24) & 0x1F] == 0)
+		if (traza_video_por_ventana[(direccion >> 24) & 0x1F] < 20)
 			fprintf(stderr, "traza: primera escritura a RAM de video por la "
 				"ventana %02lx: %08lx (%u bytes) desde PC %08lx\n",
 				(direccion >> 24) & 0x1F, direccion, (unsigned) size,

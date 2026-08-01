@@ -1315,6 +1315,19 @@ void traza_ta_resumen(void)
 		fprintf(stderr, " %d", traza_ultimas[(desde + i) % TRAZA_ULTIMAS]);
 
 	fprintf(stderr, "\n");
+
+	/* Y por que ventana entro cada byte a la RAM de video. En el resumen y no
+	   solo en la traza de framebuffer, que una demo del PVR no dibuja por ahi
+	   y entonces no se veia nunca. La de 32 bits (0x05, 0x13) deja el bloque
+	   plano; la de 64 (0x04, 0x11) lo reparte entre los dos bancos. */
+	fprintf(stderr, "traza: bytes a RAM de video por ventana:");
+
+	for (i = 0; i < 0x20; i++)
+		if (traza_video_por_ventana[i])
+			fprintf(stderr, " %02x=%u", i,
+				(unsigned) traza_video_por_ventana[i]);
+
+	fprintf(stderr, "\n");
 }
 
 static void dibujar_escena(void);
