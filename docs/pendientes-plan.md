@@ -284,8 +284,13 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   (`0x808C0002`, traza nueva `encabezado abre lista N`): la lista es opaca de verdad, **con
   el bit de volumen/sombra encendido** — la hipótesis que queda es que los polígonos con ese
   bit alimentan además la maquinaria de la lista modificadora (el juego habilita opmod en
-  `TA_ALLOC_CTRL`) y el hardware emite también el 8 al cerrarla. Falta confirmarlo en el
-  documento (§3.7.3) o en consola antes de implementarlo.
+  `TA_ALLOC_CTRL`) y el hardware emite también el 8 al cerrarla. **Implementado como regla
+  estrecha** (`lista_con_volumen` en `taPolyModifier()`/`taListEnd()`): al cerrar una lista
+  cuyos encabezados trajeron el bit de volumen o sombra, sale también el evento de su lista
+  modificadora asociada, si `TA_ALLOC_CTRL` la habilita y no se cerró sola. Con eso Virtua
+  Tennis pasa su espera 3 **sin el experimento**: STARTRENDER dispara y quedó en la espera
+  4. Los demos de volúmenes, dentro de su varianza de `rand()` (medida en el mismo binario);
+  el resto del subconjunto, byte a byte.
 - **Espera 4** (donde está hoy con el experimento): el juego marca "pendiente" (bit 0 de
   `[0x8C45F940]`, PC `8c1fa13e`) y sondea a que su ISR lo limpie. El bit se marca ~61M ciclos
   después del único fin de lista, así que no es la carrera del punto siguiente; falta

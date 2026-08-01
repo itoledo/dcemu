@@ -113,6 +113,11 @@ int pvr_texture_size_vsize;
 // int pvr_texture_vq;
 // int pvr_listtype;
 int pvr_registering = -1;
+
+/* 1 si la lista en curso trajo algun encabezado con el bit de volumen o de
+   sombra: su cierre emite tambien el evento de la lista modificadora
+   asociada. Lo prende taPolyModifier() y lo apaga taListEnd(). */
+static int lista_con_volumen = 0;
 int pvr_listdone = 0;
 int pvr_srcblend;
 int pvr_dstblend;
@@ -2597,13 +2602,47 @@ void taListEnd()
 
 	if (pvr_registering != -1)
 	{
+		/*
+			Una lista cuyos encabezados trajeron el bit de volumen o de sombra
+			alimenta ademas la maquinaria de su lista modificadora asociada
+			(opaca -> modificadora opaca, translucida -> modificadora
+			translucida): al cerrarla, si TA_ALLOC_CTRL habilita esa lista y
+			no se cerro por su cuenta, su evento de fin sale tambien. Es lo
+			que Virtua Tennis necesita, medido: manda UNA lista opaca con el
+			bit de volumen (PCW 0x808C0002), la cierra, y espera el evento 8
+			-- su handler arma la cadena por cuadro; sin el, el contador de
+			vblank de [0x8C45F904] nunca arranca y el juego no pasa del
+			arranque. El documento de Sega (3.7.4.1) dice que cada EOL emite
+			el evento "del tipo en curso"; los poligonos de dos volumenes son
+			de los dos tipos a la vez.
+		*/
+		int mod = -1;
+
+		if (lista_con_volumen)
+		{
+			if (pvr_registering == 0)
+				mod = 1;
+			else if (pvr_registering == 2)
+				mod = 3;
+		}
+
 		pvr_listdone |= (1 << pvr_registering);
 		intc_add(pvr_lists[pvr_registering], 100);
+
+		if (mod >= 0 && (pvr_registered & (1 << mod))
+		&&  !(pvr_listdone & (1 << mod)))
+		{
+			pvr_listdone |= (1 << mod);
+			intc_add(pvr_lists[mod], 100);
+		}
+
 		pvr_registering = -1;
+		lista_con_volumen = 0;
 	}
 
-	/* EXPERIMENTO (Virtua Tennis): levantar tambien los eventos de las listas
-	   habilitadas que quedaron vacias, como si el fin de lista las cerrara. */
+	/* EXPERIMENTO (diagnostico): levantar los eventos de TODAS las listas
+	   habilitadas que quedaron vacias. No es lo que hace el hardware
+	   (3.7.4.1); queda para aislar esperas de eventos en otros juegos. */
 	if (getenv("DCEMU_FIN_TODAS"))
 	{
 		int l;
@@ -2780,6 +2819,12 @@ void taPolyModifier()
 	*/
 	TriangleStrip[strip_count].volumen =
 		(TA.registers.pcw_volume || TA.registers.pcw_shadow) ? 1 : 0;
+
+	/* La lista en curso trajo encabezados con volumen/sombra: su cierre
+	   emite tambien el evento de la lista modificadora asociada. Ver
+	   taListEnd(). */
+	if (TriangleStrip[strip_count].volumen)
+		lista_con_volumen = 1;
 
 	/* Se guarda aparte porque taVertexHandler() pisa TA.control con la palabra
 	   de control del vertice, y ahi el bit 7 ya no es el del encabezado. */
