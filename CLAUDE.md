@@ -754,6 +754,21 @@ address falls inside the frame the PVR writes or displays, and from then on ever
 back with `glReadPixels` and stored through the 32-bit window — before that it costs nothing, so
 no other demo pays for it.
 
+**A guest can write its framebuffer through the 64-bit window, and then the two views
+disagree.** mame4all does exactly that: 132 MB per run through `0x11` against 1.8 MB through
+the 32-bit window, in plain 4-byte stores. dcemu interleaves those writes, the frame ends up
+split across the two banks — 106015 non-zero bytes in one and 106085 in the other — and the
+display, which reads flat, shows it duplicated across the width and squashed to half the
+height. Recombining the banks four bytes at a time reconstructs the image exactly, so what the
+guest writes is linear. `DCEMU_11_PLANO` leaves those writes flat and mame4all comes out
+perfect, but it is not the default: `pvr-strided_texture` uploads its texture through the same
+window and depends on the interleave, dropping from 2 colours to 1. Six other texture demos are
+unaffected. What tells the two cases apart on real hardware is still open.
+
+`--traza-mem` reports the bytes written to video RAM **per window**, and the first write to each
+with the PC that made it — which is what separates "the guest chose this window" from "dcemu
+resolved a store queue's target wrongly".
+
 ### The background plane
 
 **The chip does not clear the screen to black: it draws a background polygon.**
