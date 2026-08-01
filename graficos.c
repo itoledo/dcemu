@@ -975,10 +975,14 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	else
 		plano_bytes = (size_t) usize * vsize * 2;
 
+	/* Con mipmaps el bloque juntado cubre la cadena entera: los niveles
+	   chicos primero y el grande al final del salto. */
+	if (!vq)
+		plano_bytes += mip_salto;
+
 	/* La generacion de la huella (vram.h) y la de la paleta si es indexada:
 	   si ninguna cambio desde que se decodifico, la textura de GL sirve. */
-	gen_ahora = vram_gen_rango64(memorypos + (DWORD) (vq ? 0 : mip_salto),
-								 plano_bytes);
+	gen_ahora = vram_gen_rango64(memorypos, plano_bytes);
 	pal_ahora = (bpp != 0) ? pvr_paleta_gen : 0;
 
 	if (!tex_hash_listo)
@@ -1084,11 +1088,11 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		return;
 	}
 
-	/* Con VQ el salto no corre aca sino sobre los indices: el codebook esta
-	   al principio y tiene que venir igual. */
-	vram64_leer(memorypos + (DWORD) (vq ? 0 : mip_salto), plano, plano_bytes);
+	vram64_leer(memorypos, plano, plano_bytes);
 
-	v = (Uint16 *) plano;
+	/* El nivel grande: tras el salto de los chicos en los formatos planos; en
+	   VQ el salto corre sobre los indices y el codebook queda al principio. */
+	v = (Uint16 *) (plano + (vq ? 0 : mip_salto));
 
 	// ahora al twiddle
 	if (TriangleStrip[strip].texture.pvr_texture_bump)
@@ -1217,8 +1221,21 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	else
 	{
 		/* Sin transformar: el buffer juntado ya es la textura, y es propio --
-		   antes apuntaba a la RAM de video y no habia que liberarlo. */
-		cached_textures[cur_tex_count].data = v;
+		   antes apuntaba a la RAM de video y no habia que liberarlo. Si el
+		   nivel grande esta ADENTRO de plano (mipmaps), copia propia: liberar
+		   un puntero interior corrompe el heap. */
+		if ((unsigned char *) v != plano)
+		{
+			size_t n = plano_bytes - mip_salto;
+
+			cached_textures[cur_tex_count].data = malloc(n);
+
+			if (cached_textures[cur_tex_count].data != NULL)
+				memcpy(cached_textures[cur_tex_count].data, v, n);
+		}
+		else
+			cached_textures[cur_tex_count].data = v;
+
 		cached_textures[cur_tex_count].twiddled = true;
 	}
 
@@ -1230,22 +1247,131 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	   aplicar_filtros(strip);
 
 	/*
-		Si la textura trae mipmaps, que GL genere la cadena al subirla: dcemu
-		decodifica solo el nivel grande, y sin los chicos la minificacion
-		fuerte hace alias -- el chisporroteo del piso lejano en angulos
-		rasantes. Es estado del objeto de textura y los objetos se reusan,
-		asi que se pone en los dos sentidos. GL_GENERATE_MIPMAP es de GL 1.4;
-		con la cache persistente el costo se paga una vez por textura, no por
-		cuadro.
+		La cadena de mipmaps. Sin los niveles chicos la minificacion fuerte
+		hace alias -- el chisporroteo del piso lejano en angulos rasantes.
+		Los niveles se suben DEL GUEST: estan ahi mismo en el bloque juntado,
+		son los del artista (los juegos meten trucos de LOD en ellos) y salen
+		mas baratos que generarlos en cada re-subida de una textura que rota.
+		GL los genera solo (GL_GENERATE_MIPMAP, GL 1.4) unicamente en los
+		formatos que dcemu resuelve a RGBA y cuyo nivel chico no vale la pena
+		decodificar aparte: BUMP y YUV.
+
+		VQ no baja de 2x2 -- el indice de 1x1 comparte byte con el de 2x2 --
+		asi que la cadena se recorta con GL_TEXTURE_MAX_LEVEL (GL 1.2): sin
+		el recorte la textura queda incompleta y GL la muestrea blanca.
 	*/
 #ifndef GL_GENERATE_MIPMAP
 #define GL_GENERATE_MIPMAP 0x8191
 #endif
-	glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP,
-		TriangleStrip[strip].texture.mipmapped ? GL_TRUE : GL_FALSE);
+#ifndef GL_TEXTURE_MAX_LEVEL
+#define GL_TEXTURE_MAX_LEVEL 0x813D
+#endif
+	{
+		int con_mip = TriangleStrip[strip].texture.mipmapped;
+		int gen_gl  = con_mip
+			&& (TriangleStrip[strip].texture.pvr_texture_bump
+			 || TriangleStrip[strip].texture.pvr_texture_yuv);
 
-    logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x (area de 64 bits)\n", usize, vsize, memorypos);
-   glTexImage2D(GL_TEXTURE_2D, 0, TriangleStrip[strip].texture.pvr_texture_components, usize, vsize, 0, TriangleStrip[strip].texture.pvr_texture_pixelformat, TriangleStrip[strip].texture.pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
+		glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP,
+			gen_gl ? GL_TRUE : GL_FALSE);
+
+		logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x (area de 64 bits)\n", usize, vsize, memorypos);
+		glTexImage2D(GL_TEXTURE_2D, 0, TriangleStrip[strip].texture.pvr_texture_components, usize, vsize, 0, TriangleStrip[strip].texture.pvr_texture_pixelformat, TriangleStrip[strip].texture.pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
+
+		/* Los objetos de textura se reusan: el tope vuelve a su valor por
+		   omision y el recorte de VQ lo baja si corresponde. */
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1000);
+
+		if (con_mip && !gen_gl)
+		{
+			int nivel = 1, s, ultimo = 0;
+
+			for (s = usize >> 1; s >= 1; s >>= 1, nivel++)
+			{
+				/* El offset del nivel de lado s, en unidades de 16 bpp:
+				   6 + 2*(4^k - 1)/3, la tabla de pvrtex de KOS. */
+				size_t of16 = 6;
+				int lado;
+				void * buf = NULL;
+
+				for (lado = 1; lado < s; lado <<= 1)
+					of16 += (size_t) lado * lado * 2;
+
+				if (vq)
+				{
+					const unsigned char * cb = plano;
+					const BYTE * idx = plano + 0x800 + of16 / 8;
+					Uint16 * salida;
+					int upos, vpos;
+
+					if (s < 2)
+						break;		/* la cadena VQ termina en 2x2 */
+
+					buf = malloc((size_t) s * s * sizeof(Uint16));
+
+					if (buf == NULL)
+						break;
+
+					salida = (Uint16 *) buf;
+
+					for (vpos = 0; vpos < s / 2; vpos++)
+					{
+						for (upos = 0; upos < s / 2; upos++)
+						{
+							const unsigned char * cbsrc =
+								cb + (idx[(twiddletab[upos] << 1) | twiddletab[vpos]] << 3);
+
+							salida[0] = (Uint16) (cbsrc[0] | (cbsrc[1] << 8));
+							salida[1] = (Uint16) (cbsrc[4] | (cbsrc[5] << 8));
+							salida[s] = (Uint16) (cbsrc[2] | (cbsrc[3] << 8));
+							salida[s + 1] = (Uint16) (cbsrc[6] | (cbsrc[7] << 8));
+							salida += 2;
+						}
+
+						salida += s;
+					}
+				}
+				else if (bpp != 0)
+				{
+					buf = decodificar_paleta(plano + of16 * bpp / 16, s, s,
+						(int) bpp, paleta, 1);
+
+					if (buf == NULL)
+						break;
+				}
+				else
+				{
+					/* 16 bpp twiddled: un mipmap siempre lo es. */
+					const Uint16 * org = (const Uint16 *) (plano + of16);
+					Uint16 * salida;
+					int fi, co, mask = s - 1;
+
+					buf = malloc((size_t) s * s * sizeof(Uint16));
+
+					if (buf == NULL)
+						break;
+
+					salida = (Uint16 *) buf;
+
+					for (fi = 0; fi < s; fi++)
+						for (co = 0; co < s; co++)
+							*(salida++) = org[TWIDOUT(co & mask, fi & mask)];
+				}
+
+				glTexImage2D(GL_TEXTURE_2D, nivel,
+					TriangleStrip[strip].texture.pvr_texture_components, s, s, 0,
+					TriangleStrip[strip].texture.pvr_texture_pixelformat,
+					TriangleStrip[strip].texture.pvr_texture_pixelpack, buf);
+
+				free(buf);
+				ultimo = nivel;
+			}
+
+			if (vq)
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
+					ultimo > 0 ? ultimo : 0);
+		}
+	}
 
 	/* GL ya tiene su copia: la de CPU no se guarda -- mil texturas
 	   persistentes de a cientos de KB serian memoria muerta. */
@@ -1846,6 +1972,12 @@ static void dibujar_escena(void)
 
 	for(i=0; i < strip_count; i++)
 		{
+			/* Los encabezados de sombra de un juego dejan cientos de tiras
+			   vacias por escena (fin de tira sin vertices): no dibujan nada
+			   y pagaban igual todo el estado de GL de aca abajo. */
+			if (TriangleStrip[i].count == 0)
+				continue;
+
 			/*
 				Fuera del volumen. Si a esta tira la afecta uno, se dibuja solo
 				donde el bit correspondiente esta apagado y la segunda pasada

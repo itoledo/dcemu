@@ -455,14 +455,15 @@ De ahí salieron dos rediseños, hechos el mismo día — el detalle en `CLAUDE.
   queda a la par de la base en su peor caso (el attract, que rota texturas) y gana en todo
   lo que no rota.
 
-Quedan anotados sin investigar:
+Los dos residuos que quedaban, hechos también:
 
-- **Subir los niveles de mip del guest** en vez de generarlos en GL: más fiel (son los del
-  artista) y más barato en las texturas que rotan. La tabla de offsets ya está.
-- **Tiras degeneradas por centenares**: los encabezados de sombra de Crazy Taxi dejan cientos
-  de tiras con n=0 por escena (inofensivas, no dibujan) y algunos encabezados translúcidos
-  llegan con `depthmode=0`/`blend=0` sin normalizar. Ruido que conviene limpiar cuando se
-  toque esa zona.
+- **Los niveles de mip se suben del guest** (VQ, 16bpp twiddled y paleta; BUMP/YUV siguen con
+  `GL_GENERATE_MIPMAP`): son los del artista y salen más baratos que regenerar — el attract
+  de Crazy Taxi pasa de 36.8 s (base sin nada) a 34.9 s con toda la cadena. La cola de VQ
+  termina en 2×2 y se recorta con `GL_TEXTURE_MAX_LEVEL`; sin el recorte la textura queda
+  incompleta y GL la muestrea blanca.
+- **Las tiras con cero vértices se saltan al dibujar**: los encabezados de sombra dejan
+  cientos por escena que no pintaban nada y pagaban todo el estado de GL igual.
 
 ---
 

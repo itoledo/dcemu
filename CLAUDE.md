@@ -563,13 +563,18 @@ after `glTexImage2D`: GL owns the pixels. `pvr-fb_tex` (samples its own framebuf
 per-frame invalidation) and `pvr-palette-wormhole` (animates the palette) are the two demos
 that prove the invalidation, and both stay byte-identical.
 
-**Mipmapped textures get a GL mipmap chain** (`GL_GENERATE_MIPMAP` at upload, mip-aware MIN
-filter in `aplicar_filtros()`): dcemu decodes only the top level, and without the chain heavy
-minification aliased — the shimmering distant road. Generation costs on upload, which the
-persistent cache amortizes; Crazy Taxi's attract — the worst case, it streams textures —
-times at parity with the pre-cache build, mipmaps included, and everything that does not
-stream is pure win. Uploading the guest's own mip levels instead of generating would be more
-faithful still; noted as a residue.
+**Mipmapped textures upload the guest's own levels** — they are right there in the gathered
+block (smallest first, the pvrtex offset table), they are the artist's (games bake LOD tricks
+into them), and decoding them is cheaper than `GL_GENERATE_MIPMAP` regenerating on every
+re-upload of a streaming texture: Crazy Taxi's attract, the worst case, times *faster* than
+the no-mipmap baseline. Three per-level decoders live in `get_texture()` (VQ via the
+codebook, twiddled 16bpp, palette); BUMP and YUV keep `GL_GENERATE_MIPMAP`. **A VQ chain
+stops at 2×2** — the 1×1 index shares a byte with it — so `GL_TEXTURE_MAX_LEVEL` clips the
+chain; without the clip the texture is incomplete and GL samples it white. The MIN filter
+picks mipmap modes in `aplicar_filtros()` when the strip's texture carries the bit.
+
+**Strips with zero vertices are skipped at draw** — a game's shadow headers leave hundreds of
+empty end-of-strip records per scene that drew nothing but paid the full GL state churn.
 
 ## Architecture
 
