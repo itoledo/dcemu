@@ -1254,6 +1254,31 @@ int main(int argc, char *argv[])
 	((unsigned char *) get_memory_pointer(REGION_BASE))[5] = '\0';
 
 	/*
+		Al lado va el identificador binario de la maquina: los 8 bytes que en la
+		flash siguen al bloque ASCII de la particion 0. Es lo que en KOS se
+		conoce como el "system ID" de la consola.
+
+		Medido, no deducido: se arranco con --bios y el 1.01d y se volco
+		0x8C000000-0x8C0000FF con la BIOS ya en el menu. Los 8 bytes de
+		SYSID_BASE salen identicos a flash+0x56, y el codigo de region de
+		REGION_BASE identico a flash+0x00, o sea que el ROM copia los dos del
+		mismo sitio. Por eso este va derivado de la flash y no como constante:
+		sigue a la flash que se este usando, igual que el de al lado.
+
+		Lo que ese mismo volcado dejo medido y **no** se reproduce, por no
+		saber que significa:
+
+		  0x8C000060  0x00C0C0C0, estable entre corridas, no sale de la flash
+		  0x8C000064  cambia de una corrida a otra: un contador o un reloj
+		  0x8C000078  8 bytes copiados del ultimo registro de 16 de la
+		              particion 2 de la flash (los ajustes del sistema). Se
+		              sabe de donde salen; falta el formato de esa particion.
+
+		Ver docs/pendientes-plan.md, C.3.
+	*/
+	memcpy(get_memory_pointer(SYSID_BASE), &flash_mem[FLASH_PART0_OFF + 0x56], 8);
+
+	/*
 		Y en EJECUTABLE_BASE deja la direccion donde cargo el ejecutable. El
 		bootstrap del IP.BIN la lee de ahi en vez de llevarla como constante, y
 		sin ella se lleva un cero y salta a la nada: el guest terminaba
@@ -1350,8 +1375,12 @@ int main(int argc, char *argv[])
 	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
 	wvalor = 0xFFFF; /* BIOS_HACK*/		memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
 
-	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_SYSINFO, &wvalor, 2);
-	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_SYSINFO + 2, &wvalor, 2);
+	// SYSINFO y UNKNOWN siguen sin hacer nada, pero ahora lo dicen: mismo par
+	// RTS + opcode ilegal que los otros tres, despachado a hack_mudo(). Eran
+	// RTS + NOP, o sea que volvian en silencio y un juego que dependiera de
+	// ellos se colgaba sin dejar rastro de por que.
+	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_SYSINFO, &wvalor, 2);
+	wvalor = 0xFFFF; /* BIOS_HACK */	memwrite(HACK_BASE + HACK_SYSINFO + 2, &wvalor, 2);
 
 	// Igual que el del GD-ROM: RTS y el opcode ilegal en la ranura de retardo,
 	// que dcopcodes.c despacha a hack_flashrom(). Antes era RTS + NOP, o sea
@@ -1360,8 +1389,8 @@ int main(int argc, char *argv[])
 	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_FLASHROM, &wvalor, 2);
 	wvalor = 0xFFFF; /* BIOS_HACK */	memwrite(HACK_BASE + HACK_FLASHROM + 2, &wvalor, 2);
 
-	wvalor = 0x000B;					memwrite(HACK_BASE + HACK_UNKNOWN, &wvalor, 2);
-	wvalor = 0x0009;					memwrite(HACK_BASE + HACK_UNKNOWN + 2, &wvalor, 2);
+	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_UNKNOWN, &wvalor, 2);
+	wvalor = 0xFFFF; /* BIOS_HACK */	memwrite(HACK_BASE + HACK_UNKNOWN + 2, &wvalor, 2);
 	}
 #endif // BIOS_HACKS
 

@@ -87,6 +87,38 @@ static void hack_romfont(void)
 }
 
 /*
+	Los dos syscalls que dcemu no atiende: SYSINFO (vector 0x8C0000B0) y el que
+	el ROM deja en 0x8C0000E0, sin nombre conocido.
+
+	Antes eran RTS + NOP: volvian sin hacer nada y **sin decirlo**, que es la
+	forma que tuvo cada uno de los agujeros de este arbol -- algo que el guest
+	pide, que se le contesta sin querer decir nada, y que no deja rastro. Con
+	esto siguen sin hacer nada, pero se ven: un juego que se cuelgue despues de
+	llamarlos deja la linea en --traza-mem y ya no hay que sospecharlo.
+
+	R0 queda en 0 en vez de en lo que hubiera: un puntero de vuelta con basura
+	es peor que uno nulo, porque el guest lo sigue.
+
+	Lo que se sabe y no se implementa: SYSINFO lleva el numero de funcion en R7
+	y una de sus funciones devuelve el identificador de 8 bytes de la consola,
+	que es justo el que main() deja en SYSID_BASE (ver ahi de donde sale). Falta
+	confirmar la numeracion contra syscall_sysinfo de KOS antes de contestarla.
+*/
+static void hack_mudo(const char * nombre)
+{
+	logmsg("%s: llamado, func=%d\r\n", nombre, R(7));
+
+	if (traza_activa)
+		fprintf(stderr, "syscall %s sin emular: R4 %08lx R5 %08lx R6 %08lx"
+			" R7 %08lx, PC %08lx, PR %08lx\n", nombre,
+			(unsigned long) R(4), (unsigned long) R(5),
+			(unsigned long) R(6), (unsigned long) R(7),
+			(unsigned long) PC, (unsigned long) PR);
+
+	R(0) = 0;
+}
+
+/*
 	El syscall de la flash ROM, vector 0x8C0000B8.
 
 	La convencion es syscall(r4, r5, r6, func): el numero de funcion viaja en R7
@@ -420,6 +452,8 @@ OPCODE(BIOS_HACK)
         case HACK_BASE + HACK_ROMFONT + 2:  hack_romfont(); break;
         case HACK_BASE + HACK_GDROM + 2:    hack_gdrom();   break;
         case HACK_BASE + HACK_FLASHROM + 2: hack_flashrom(); break;
+        case HACK_BASE + HACK_SYSINFO + 2:  hack_mudo("SYSINFO");   break;
+        case HACK_BASE + HACK_UNKNOWN + 2:  hack_mudo("UNKNOWN");   break;
         default:	logmsg("bios_hack: error\n"); break;
     }
     

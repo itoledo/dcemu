@@ -171,6 +171,10 @@ extern void WriteMemoryF(unsigned long direccion, float * valor);
    NUL -- antes de entregarle la maquina al juego. Medido contra el ROM real. */
 #define REGION_BASE		0x8C000070
 
+/* Y ocho bytes antes, el identificador binario de la consola, que sale de la
+   misma particion de la flash. Medido igual. */
+#define SYSID_BASE		0x8C000068
+
 /* Y donde deja la direccion en la que cargo el ejecutable. Medido igual. */
 #define EJECUTABLE_BASE	0x8C0000F8
 
