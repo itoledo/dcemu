@@ -484,7 +484,27 @@ Dispatch is a **fully expanded jump table**: `main_loop()` calls
 decode step at runtime.
 
 `opcodes.c` holds the master table `opcodes[]` of `{op, mask, mnemonic, operand-type,
-handler, restriction}`. `initopcodes()` expands it into **four** such tables
+handler, restriction}`. **`SR.RB` says which bank *should* be in `registers[0..7]`; `core.context.banco_activo`
+records which one *is*.** They are not the same thing, and conflating them cost a game.
+`UpdateSR()` has two entries — the caller wrote `SR` itself (exception entry, interrupt entry
+and `TRAPA`, which set MD/RB/BL by hand and signal with `SH4_SYSTEM_REGISTER_INTC_REWRITTEN`)
+or it passes the new value — and that sentinel path used to **swap unconditionally**. With
+`RB` already 1 — an exception taken from inside another, which is what any handler that lowers
+`BL` to allow nesting does — entry set `RB=1` again and swapped anyway: the nested handler saw
+bank 0 as its own, and the interrupted code came back from the `RTE` with the other bank's
+`R0-R7`. The `RTE` did not undo it, because that path *does* compare and `SSR.RB == SR.RB`.
+Both paths now compare against `banco_activo`, which `swap_registers()` is the only thing to
+move. The field lives **inside** `core.context` on purpose: the MMU snapshot restores the
+register array, so the bank state has to travel with it. `reset()` and `arnes_reset()` set it,
+because both assign `SR` directly without going through `UpdateSR()`.
+
+No KOS demo shows this — KOS takes its interrupts from `RB=0`, so the swap is always a real
+change. Virtua Tennis is what exposed it: it lost the index of a callback table across a nested
+interrupt, called through a null pointer, landed at address 0 — which is the boot ROM — and ran
+through the low system block until it hit the bytes that decode as `TRAPA #23`. Suite
+`syscontrol`, case `trapa_desde_el_banco_1_no_vuelve_a_cambiar`.
+
+`initopcodes()` expands it into **four** such tables
 (`oplist_pr0_sz0`, `oplist_pr0_sz1`, `oplist_pr1_sz0`, `oplist_pr1_sz1`), one per
 combination of the FPSCR `PR`/`SZ` bits, so double-precision and float-pair variants of
 the same encoding resolve without a per-instruction check. `UpdateFPSCR()` in `sh4emu.c`
@@ -960,6 +980,15 @@ libcdio reads one. It stores the track data at the front — one track after ano
 header at the *end* of the file; the last 8 bytes give the version and where that header
 starts.
 
+**The tail's `desplazamiento` field means two different things.** In 3.5 it is the header's
+**size**, counted back from the end of the file; in 2.0 and 3.0 it is the header's absolute
+**position**. `cdi_abrir()` used it as a size in all three, which happens to work for 3.5 —
+where the two readings coincide — and asks for the whole image as if it were the header on the
+other two. `Virtua Tenis 2 (USA).cdi` is a 3.0: 749 MB of `malloc` and a short read, and the
+function returned failure **with no message**, so it read as "finds no tracks". The header runs
+to the end of the file in all three versions, so the size is now derived from the position and
+never from the field, and both exit paths say what happened.
+
 **The track walk is validated rather than trusted.** The step between sessions varies across
 versions and there is no unambiguous way to follow it, so `cdi.c` scans for the per-track
 filename and checks each candidate: a real track has `total == length + pregap`, and mode and
@@ -1069,8 +1098,14 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
   `flashrom_get_region()` reported `can't find partition 0` — it asks the BIOS for the
   partition offsets rather than parsing the flash.
 
-The remaining stubs (`SYSINFO`, `UNKNOWN`) are still `RTS` + `NOP`: they return without doing
-anything.
+The remaining stubs (`SYSINFO`, `UNKNOWN`) still do nothing, but they now **say so**:
+`hack_mudo()` reports the name, the four arguments, the PC and the PR through `--traza-mem`,
+and leaves `R0` at 0 rather than at whatever was there — a garbage pointer is worse than a
+null one, because the guest follows it. They used to be `RTS` + `NOP`, i.e. the exact shape
+of every other hole in this tree: something the guest asks for, answered without meaning it,
+leaving no trace. `SYSINFO` takes its function number in `R7` and one of its functions returns
+the console's 8-byte ID — which is the one now sitting at `SYSID_BASE`; the numbering is
+unconfirmed against KOS's `syscall_sysinfo`, so it is not answered.
 
 **The syscall stubs are not the only thing the boot ROM leaves behind: it also writes the
 flash's machine code — five digits and a NUL — at `0x8C000070` (`REGION_BASE`) before handing
@@ -1081,8 +1116,17 @@ the external G1 bus at `0x03010000` that a retail console does not have, and wai
 bit 7 forever. That single uninitialised word was the whole difference between the game
 hanging in an idle loop and reaching its `LOADING CRAZY TAXI` screen. It is copied from
 `flash_mem[FLASH_PART0_OFF]`, so it follows whatever flash is in use rather than being a
-constant. The rest of that block (`0x8C000060`-`0x8C00007F` holds more fields the ROM fills
-in) is still not reproduced.
+constant.
+
+**The rest of that block is the ROM's copy of the flash, not constants**, which is what makes
+it derivable instead of magic. Measured by booting `--bios` with the 1.01d and dumping
+`0x8C000000-0x8C0000FF` at the menu (two runs, identical but for one byte):
+`0x8C000068` holds the console's 8-byte binary ID, which is flash partition 0 at `+0x56`, and
+`0x8C000078` holds 8 bytes of system settings taken from the **last** 16-byte record of flash
+partition 2. The first is reproduced (`SYSID_BASE`, next to `REGION_BASE`, from the same
+flash); the second is not, because that partition's record format is not worked out. The two
+words at `0x8C000060`/`0x64` are `0x00C0C0C0` and something that changes between runs, and
+neither comes from the flash — unexplained, so left alone rather than hardcoded.
 
 Note that `flashrom_get_region()` only recognizes three exact strings — `00000` (Japan),
 `00110` (US) and `00211` (Europe). A flash dump holding any other code, such as the `00111`
