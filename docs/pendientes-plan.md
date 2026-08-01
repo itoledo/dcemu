@@ -277,9 +277,15 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   opaca (evento 7) y dcemu solo emite el evento de la lista que clasificó. Con el experimento
   `DCEMU_FIN_TODAS` (emitir también los eventos de las listas habilitadas que quedaron
   vacías) esa espera se libera y el juego avanza a **2 escenas rendidas** (STARTRENDER
-  dispara). La semántica real del hardware — si el fin de una lista completa también a las
-  habilitadas vacías, o si en consola ese flag se pone por otro camino — es la pregunta
-  abierta antes de convertir el experimento en comportamiento.
+  dispara). **La semántica quedó zanjada contra el documento de Sega** (§3.7.4.1: *"one of
+  four types of interrupt signals (corresponding to the polygon type) is output"* — un EOL
+  emite solo el evento de la lista en curso), así que `FIN_TODAS` **no** es lo que hace el
+  hardware y no se convierte en comportamiento. El PCW del encabezado está verificado crudo
+  (`0x808C0002`, traza nueva `encabezado abre lista N`): la lista es opaca de verdad, **con
+  el bit de volumen/sombra encendido** — la hipótesis que queda es que los polígonos con ese
+  bit alimentan además la maquinaria de la lista modificadora (el juego habilita opmod en
+  `TA_ALLOC_CTRL`) y el hardware emite también el 8 al cerrarla. Falta confirmarlo en el
+  documento (§3.7.3) o en consola antes de implementarlo.
 - **Espera 4** (donde está hoy con el experimento): el juego marca "pendiente" (bit 0 de
   `[0x8C45F940]`, PC `8c1fa13e`) y sondea a que su ISR lo limpie. El bit se marca ~61M ciclos
   después del único fin de lista, así que no es la carrera del punto siguiente; falta

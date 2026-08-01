@@ -2670,8 +2670,16 @@ void taPolyModifier()
 	ta_avanzar_itp();
 
 	TA.control = *ta_address_pointer;
-	
+
 	logxmsg(LOG_PVR, "pcw: Polygon or Modifier Volume\n");
+
+	/* Que lista abre cada encabezado, con el PCW crudo: es lo que decide que
+	   evento de fin de lista se emite, y clasificarla mal manda el evento
+	   equivocado. Una linea por cambio de lista, no por encabezado. */
+	if (traza_activa && pvr_registering != (int) TA.registers.pcw_list_type)
+		fprintf(stderr, "traza: encabezado abre lista %d (pcw=%08lx, PC=%08lx)\n",
+			(int) TA.registers.pcw_list_type,
+			(unsigned long) TA.control, (unsigned long) PC);
 
 	pvr_registering = TA.registers.pcw_list_type;
 
