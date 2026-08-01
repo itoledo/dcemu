@@ -264,9 +264,12 @@ comportan—; lo que falta es el chip.
 
 ### B.-1 — El mapa de registros está documentado
 
-Desde el 1 de agosto de 2026, `docs/DreamcastDevBoxSystemArchitecture.pdf` (Sega, 99/09/03)
-está en el árbol, y trae el AICA entero. Eso baja el riesgo de esta vía de "hay que deducir
-el chip" a "hay que implementar lo que dice el papel":
+La documentación de Sega trae el AICA entero, y eso baja el riesgo de esta vía de "hay que
+deducir el chip" a "hay que implementar lo que dice el papel". El documento es
+**Dreamcast/Dev.Box System Architecture** (Sega, 99/09/03), y **no va en el repositorio** —son
+2,5 MB de binario—; se baja de
+<https://segaretro.org/images/7/78/DreamcastDevBoxSystemArchitecture.pdf> y conviene dejarlo
+en `docs/`, que ya está ignorado para ese nombre. Lo que aporta:
 
 - **§8.4.5, "AICA Register"**: el mapa completo. 64 slots de canal, cada uno de 0x80 bytes,
   desde `0x00700000` en direcciones del G2 (`0x00800000` vistas desde el ARM). Por canal:

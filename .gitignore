@@ -30,3 +30,7 @@ bios/
 ip.bin
 .vs/
 roms/
+
+# Documentacion de referencia de Sega, que se baja aparte: son 2,5 MB de binario
+# y no va versionada. Ver docs/pendientes-plan.md, via B.
+docs/*.pdf
