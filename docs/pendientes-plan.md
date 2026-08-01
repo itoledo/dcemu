@@ -291,10 +291,33 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   Tennis pasa su espera 3 **sin el experimento**: STARTRENDER dispara y quedó en la espera
   4. Los demos de volúmenes, dentro de su varianza de `rand()` (medida en el mismo binario);
   el resto del subconjunto, byte a byte.
-- **Espera 4** (donde está hoy con el experimento): el juego marca "pendiente" (bit 0 de
-  `[0x8C45F940]`, PC `8c1fa13e`) y sondea a que su ISR lo limpie. El bit se marca ~61M ciclos
-  después del único fin de lista, así que no es la carrera del punto siguiente; falta
-  identificar qué evento debería limpiarlo.
+- **Espera 4** (donde está hoy): es `while ((obj = cola_pop()) == NULL) yield;` — la rutina
+  `8c1f9960` entrega búferes de comando que el pipeline de cuadro recicla, y el reciclador es
+  la **cadena enlazada de callbacks** que recorre el handler del render-done (entrada 2,
+  `8c1e84c0`: `for (n = [8c1e8598]; n; n = n->sig) n->fn(n->arg)`). El juego encadena un nodo
+  al armar cada render y el callback, al correr, des-encadena y libera; dcemu emitió sus
+  render-done antes de que el nodo existiera y la cadena corrió una sola vez (medido con
+  watchpoint-lectura sobre `8c1e8598`). El bit que se sondea es el **25** de `[0x8C45F940]`
+  (no el 0: el volcado de registros engaña según el instante), marcado en `8c1fa0de`.
+
+  De perseguirla quedaron dos semánticas corregidas de paso, las dos del papel:
+
+  - **RENDERDONE sale de STARTRENDER** (cb_tastart, los tres bits del documento: 0 TSP,
+    1 ISP, 2 Video), no de "todas las listas cerradas" — un juego que habilita listas que no
+    manda no lo recibía nunca, y KOS lo recibía antes de tiempo.
+  - **La demora del render** (~2M ciclos): el juego arma su espera ~800K ciclos después de
+    escribir STARTRENDER; el evento instantáneo se le adelantaba.
+
+  Y una herramienta nueva: **`DCEMU_RTC_FIJO=N`** — el RTC arranca en N y avanza con el
+  tiempo emulado. El RTC del anfitrión era la última fuente de no-determinismo (semilla y
+  fase del segundo: el juego espera el tic en su arranque, congelarlo del todo lo cuelga);
+  con esto una corrida se reproduce exacta, que es lo que permitió medir todo lo anterior.
+  La "rama mala" resultó ser un timeout de ~10.5 s emulados, no un cuelgue.
+
+  Lo que falta: que el pipeline de cuadro del juego gire — su cadena de render-done tiene
+  que correr una vez POR render con el nodo ya puesto, y el juego consume además los eventos
+  por el estado de `SB_ISTNRM` (los acks). Es trabajo del modelo de eventos del ASIC, no un
+  registro suelto.
 
 Y de esa persecución salieron dos mejoras estructurales que ya quedaron:
 

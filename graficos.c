@@ -1945,6 +1945,14 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		/* La cache de texturas ya no se vacia por escena: es persistente y
 		   se invalida por generaciones (vram.h). La textura que este render
 		   acaba de escribir se detecta sola por su huella. */
+
+		/* El final del render, tambien para el render a textura: en el chip
+		   RENDERDONE es del RENDER, no de la pantalla. */
+		/* Los tres finales del render que lista el documento (SB_ISTNRM bits
+	   0, 1 y 2: TSP, ISP y Video): el chip los emite al terminar de
+	   rasterizar, ~milisegundos despues de STARTRENDER. Virtua Tennis
+	   tiene handler para el 0 y espera su efecto. */
+	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
 		return;
 	}
 
@@ -1961,6 +1969,19 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	dibujar_escena();
 	volcar_escena_a_framebuffer();
 	terminar_escena();
+
+	/*
+		El final del render. En el chip lo emite el ISP/TSP cuando termino de
+		rasterizar lo que STARTRENDER le pidio -- incondicional, cerrara el
+		guest las listas que cerrara --, un tiempo despues del arranque. La
+		demora importa: un juego arma su espera del render justo despues de
+		escribir STARTRENDER, igual que con el fin de lista.
+	*/
+	/* Los tres finales del render que lista el documento (SB_ISTNRM bits
+	   0, 1 y 2: TSP, ISP y Video): el chip los emite al terminar de
+	   rasterizar, ~milisegundos despues de STARTRENDER. Virtua Tennis
+	   tiene handler para el 0 y espera su efecto. */
+	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
 }
 
 /*
@@ -2655,13 +2676,16 @@ void taListEnd()
 			}
 	}
 
-	if (pvr_listdone == pvr_registered)
-	{
-//		logxmsg(LOG_PVR, "pcw: taListEnd: RENDER_DONE\n");
-		if (traza_activa)
-			fprintf(stderr, "traza: fin de lista: todas hechas, RENDERDONE\n");
-		intc_add(ASIC_EVT_PVR_RENDERDONE, 200);
-	}
+	/*
+		RENDERDONE ya no sale de aca. En el chip es el final del RENDER -- el
+		ISP/TSP termino de rasterizar, despues de STARTRENDER --, no "todas
+		las listas cerradas": emitirlo al cerrar la ultima lista era antes de
+		tiempo para todos (KOS lo toleraba porque espera en un semaforo), y
+		para un juego que habilita listas que no manda -- Virtua Tennis deja
+		la translucida habilitada y vacia -- no salia nunca, y su espera del
+		render no terminaba jamas. Sale de cb_tastart(), que ES el
+		STARTRENDER. Ver ahi la demora.
+	*/
 }
 
 void doUserClip()
