@@ -785,10 +785,19 @@ Con esto arrancan los dos formatos, y el ROM encuentra el `1ST_READ.BIN` en todo
 - **`Virtua Tenis 2 (USA).cdi` no se parsea.** `cdi.c` no le encuentra pistas y la lectora
   queda sin disco (`unidad=7 formato=0`). Es del lector de DiscJuggler, no del arranque: las
   otras cinco imágenes se parsean bien.
-- **Un `1st_read.bin` suelto no carga.** `roms/mame4all/` trae `ip.bin` y `1st_read.bin` sin
-  imagen de disco, y `dcemu 1st_read.bin` los descifra igual: en una carpeta suelta el
-  ejecutable **no está cifrado** —el cifrado lo pone el mastering del disco— y el guest sale
-  ejecutando ceros desde `0x00006b03`. `main.c` pasa `scrambled` fijo sin comprobar nada.
+- **mame4all: arreglado el arranque, queda la geometría del framebuffer.** Era al revés de lo
+  que decía esta línea antes: el camino del `.bin` suelto **no** desciframos nada, y el
+  `1st_read.bin` de `roms/mame4all/` **sí** viene cifrado —descifrarlo da byte a byte el
+  `mame4all.bin` que la misma carpeta trae al lado—. Ahora se detecta por el prólogo de
+  entrada (`parece_cifrado()`), y con la carpeta empaquetada en un `.iso` mame4all arranca y
+  **dibuja su menú**.
+
+  Lo que queda ahí es de vídeo y está medido: el contenido del framebuffer tiene un periodo
+  de fila de **640 bytes** —autocorrelación sobre un volcado de `0xA5010000`, 0.783 contra
+  0.766 de 1280— mientras `FB_R_SIZE` declara `x_size` 319, o sea 320 palabras de 32 bits =
+  1280 bytes. dcemu le cree al registro, lee las filas al doble de largo y el menú sale
+  duplicado a lo ancho y aplastado a la mitad de alto. `SCALER_CTL` no lo escribe nunca, así
+  que el doblado horizontal por hardware no es la explicación. Sin resolver.
 - **El juego arranca pero no dibuja.** Tras el salto el ejecutable corre —el PC recorre
   `0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
   (`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, que carga
