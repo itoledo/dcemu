@@ -118,22 +118,17 @@ static void hack_romfont(void)
 }
 
 /*
-	Los dos syscalls que dcemu no atiende: SYSINFO (vector 0x8C0000B0) y el que
-	el ROM deja en 0x8C0000E0, sin nombre conocido.
+	El syscall que dcemu no atiende: el que el ROM deja en 0x8C0000E0, sin
+	nombre conocido.
 
-	Antes eran RTS + NOP: volvian sin hacer nada y **sin decirlo**, que es la
+	Antes era RTS + NOP: volvia sin hacer nada y **sin decirlo**, que es la
 	forma que tuvo cada uno de los agujeros de este arbol -- algo que el guest
 	pide, que se le contesta sin querer decir nada, y que no deja rastro. Con
-	esto siguen sin hacer nada, pero se ven: un juego que se cuelgue despues de
-	llamarlos deja la linea en --traza-mem y ya no hay que sospecharlo.
+	esto sigue sin hacer nada, pero se ve: un juego que se cuelgue despues de
+	llamarlo deja la linea en --traza-mem y ya no hay que sospecharlo.
 
 	R0 queda en 0 en vez de en lo que hubiera: un puntero de vuelta con basura
 	es peor que uno nulo, porque el guest lo sigue.
-
-	Lo que se sabe y no se implementa: SYSINFO lleva el numero de funcion en R7
-	y una de sus funciones devuelve el identificador de 8 bytes de la consola,
-	que es justo el que main() deja en SYSID_BASE (ver ahi de donde sale). Falta
-	confirmar la numeracion contra syscall_sysinfo de KOS antes de contestarla.
 */
 static void hack_mudo(const char * nombre)
 {
@@ -147,6 +142,41 @@ static void hack_mudo(const char * nombre)
 			(unsigned long) PC, (unsigned long) PR);
 
 	R(0) = 0;
+}
+
+/*
+	El syscall SYSINFO, vector 0x8C0000B0. La numeracion esta confirmada contra
+	KOS (kernel/arch/dreamcast/hardware/syscalls.c): 0 INIT, 2 ICON, 3 ID, con
+	la convencion de siempre -- syscall(r4, r5, r6, func) y el resultado en R0.
+
+	La funcion 3 devuelve **un puntero** al identificador de 8 bytes de la
+	consola, no el identificador: syscall_sysinfo_id() lo desreferencia. En la
+	consola ese puntero es 0x8C000068, adonde INIT lo copio de la flash; dcemu
+	deja lo mismo en SYSID_BASE desde main(), asi que INIT no tiene nada que
+	hacer y la 3 contesta esa direccion. Contestar 0 no era neutro: Crazy Taxi
+	sigue el puntero y copia su "identificador" escribiendo alrededor de la
+	direccion 0x10.
+
+	La funcion 2 (el icono de la VMU, desde la flash) sigue sin implementar,
+	pero se ve por --traza-mem, igual que antes.
+*/
+static void hack_sysinfo(void)
+{
+	switch (R(7))
+	{
+		case 0:					/* INIT: en el ROM, copiar el ID de la flash a
+								   0x8C000068. main() ya lo dejo hecho. */
+		R(0) = 0;
+		break;
+
+		case 3:					/* ID: el puntero al identificador */
+		R(0) = SYSID_BASE;
+		break;
+
+		default:
+		hack_mudo("SYSINFO");
+		break;
+	}
 }
 
 /*
@@ -443,7 +473,21 @@ void hack_gdrom()
 			// este camino.
 			valor = gdrom.unidad;
 			WriteMemoryL(R(4), &valor);
-			valor = (DWORD) gdrom.formato << 4;	// 0x10 = CD-ROM, 0x80 = GD-ROM
+			/* El tipo de disco. Con disco puesto se contesta GD-ROM, no lo que
+			   diga la imagen: este camino reemplaza consola, BIOS y lectora
+			   para correr el juego montado, y el disco original de un juego
+			   comercial es un GD-ROM. El SDK de Katana lo exige literalmente
+			   --gdFsInit() compara este word contra 0x80 y ante otra cosa
+			   devuelve -5 y el juego reintenta la inicializacion para
+			   siempre, con la carga clavada en "LOADING (31K)"--, y lo hacen
+			   los dos rips de Crazy Taxi, el de layout GD y el MIL-CD: ningun
+			   selfboot trae ese chequeo parcheado. El camino por --bios no
+			   pasa por aca y sigue viendo el CD que la imagen es, que es lo
+			   que su rama de MIL-CD necesita. */
+			if (gdrom.unidad == GD_OPEN || gdrom.unidad == GD_NODISC)
+				valor = (DWORD) gdrom.formato << 4;
+			else
+				valor = GD_DISCO_GDROM << 4;	/* 0x80 */
 			WriteMemoryL(R(4) + 4, &valor);
 			R(0) = 0;
 			break;
@@ -483,7 +527,7 @@ OPCODE(BIOS_HACK)
         case HACK_BASE + HACK_ROMFONT + 2:  hack_romfont(); break;
         case HACK_BASE + HACK_GDROM + 2:    hack_gdrom();   break;
         case HACK_BASE + HACK_FLASHROM + 2: hack_flashrom(); break;
-        case HACK_BASE + HACK_SYSINFO + 2:  hack_mudo("SYSINFO");   break;
+        case HACK_BASE + HACK_SYSINFO + 2:  hack_sysinfo();  break;
         case HACK_BASE + HACK_UNKNOWN + 2:  hack_mudo("UNKNOWN");   break;
         default:	logmsg("bios_hack: error\n"); break;
     }
