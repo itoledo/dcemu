@@ -798,7 +798,20 @@ cost the boot ROM every glyph in its menu and date panel for a while; see
 
 **The store queue is a different path and always interleaves**: `pvr-strided_texture` uploads
 its texture through the same window in 32-byte bursts and depends on it — forcing that path
-flat takes it to black, 240000 non-black pixels to zero.
+flat takes it to black, 240000 non-black pixels to zero. Note the same doc sentence says
+"via the TA FIFO buffer", which store-queue writes to `0x11000000` also go through, so
+`SB_LMMODE0` may well govern them too; dcemu hardcodes the interleave there, which is what
+`SB_LMMODE0 = 0` — the default, and what KOS leaves — would give anyway. Untested either way.
+
+**`0x06` and `0x07` are image areas of `0x04` and `0x05`**, per table 2-2 of the same document
+("the addresses shown in parentheses are an image area"). They were in `mem_zone[]` as aliases
+all along but missing from `mem_hash_read`/`mem_hash_write`, so a guest using them hit
+`mem_read_error`. Both are bound now, with their P2 forms, and `0x06` is in
+`VRAM_VENTANA_64()` because it images the 64-bit window. That table is worth reading as a
+checklist: the images of the boot ROM (`0x02`), of the polygon FIFO (`0x12`) and of the YUV
+converter (`0x12800000`) are still unbound, and `0x01000000` — which is the **G2 external
+area**, i.e. an expansion device a retail console does not have — explains the
+`0xA1000400`-`0xA1001800` probes that `Virtua Tenis 2` makes.
 
 `--traza-mem` reports the bytes written to video RAM **per window**, and the first write to each
 with the PC that made it — which is what separates "the guest chose this window" from "dcemu

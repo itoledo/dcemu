@@ -425,6 +425,14 @@ void mem_hash_setup(void)
 	mem_hash_write[0x00] = pvr_write;
  	mem_hash_read[0x04] = video_read;
 	mem_hash_read[0x05] = video_read;
+	/* Sus areas imagen, que la tabla 2-2 del documento de arquitectura lista
+	   junto a las de arriba. mem_zone[] ya las tenia como alias desde siempre;
+	   lo que faltaba era el manejador, asi que un guest que las usara caia en
+	   mem_read_error en vez de leer la RAM de video. Ver VRAM_VENTANA_64(). */
+	mem_hash_read[0x06] = video_read;
+	mem_hash_read[0x07] = video_read;
+	mem_hash_read[0xA6] = video_read;
+	mem_hash_read[0xA7] = video_read;
 	mem_hash_read[0x0C] = ram_read;
  	mem_hash_read[0x1F] = regmap_read;
  	mem_hash_read[0x70] = bios_read;
@@ -439,6 +447,10 @@ void mem_hash_setup(void)
 
 	mem_hash_write[0x04] = video_write;
 	mem_hash_write[0x05] = video_write;
+	mem_hash_write[0x06] = video_write;
+	mem_hash_write[0x07] = video_write;
+	mem_hash_write[0xA6] = video_write;
+	mem_hash_write[0xA7] = video_write;
  	mem_hash_write[0x0C] = ram_write;
 	mem_hash_write[0x10] = ta_write;
 	// 0x11000000-0x11FFFFFF es la FIFO de texturas del TA: lo que se escribe
@@ -575,8 +587,20 @@ void sq_write(unsigned long direccion, void * p, size_t size)
 	escribe lineal aunque el destino nombre la de 64 bits; ver
 	ch2_dma_ejecutar().
 */
+/*
+	0x06 es el area imagen de 0x04, asi que entrelaza igual. La tabla 2-2 del
+	"Dreamcast/Dev.Box System Architecture" lo dice con todas las letras --"the
+	addresses shown in parentheses are an image area"--:
+
+	  0x04000000-0x047FFFFF  (0x06000000)  Texture Memory-64bit Acc.  R/W
+	  0x05000000-0x057FFFFF  (0x07000000)  Texture Memory-32bit Acc.  R/W
+	  0x11000000-0x117FFFFF  (0x13000000)  Texture Memory [TA FIFO]   -/W
+
+	El & 0x1F deja que la forma P2 (0xA4, 0xA6...) caiga en el mismo caso.
+*/
 #define VRAM_VENTANA_64(direccion)	\
 	((((direccion) >> 24) & 0x1F) == 0x04 || \
+	 (((direccion) >> 24) & 0x1F) == 0x06 || \
 	 (((direccion) >> 24) & 0x1F) == 0x11)
 
 void video_read(unsigned long direccion, void * p, size_t size)

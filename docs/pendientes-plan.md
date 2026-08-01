@@ -262,6 +262,26 @@ Siete demos fallan y ninguna suena. El camino de subida del firmware funciona �
 reporta `Load OK, starting ARM`, o sea que los 2 MB de RAM de sonido y la ventana física se
 comportan—; lo que falta es el chip.
 
+### B.-1 — El mapa de registros está documentado
+
+Desde el 1 de agosto de 2026, `docs/DreamcastDevBoxSystemArchitecture.pdf` (Sega, 99/09/03)
+está en el árbol, y trae el AICA entero. Eso baja el riesgo de esta vía de "hay que deducir
+el chip" a "hay que implementar lo que dice el papel":
+
+- **§8.4.5, "AICA Register"**: el mapa completo. 64 slots de canal, cada uno de 0x80 bytes,
+  desde `0x00700000` en direcciones del G2 (`0x00800000` vistas desde el ARM). Por canal:
+  `SA[22:0]` dirección de inicio, `LSA`/`LEA` el bucle, `LPCTL` su modo, `PCMS` el formato
+  —0 PCM de 16 bits, 1 PCM de 8, 2 ADPCM de Yamaha, 3 ADPCM de flujo largo—, la envolvente
+  (`AR`, `D1R`, `D2R`, `RR`, `DL`, `KRS`), el tono (`OCT`, `FNS`), el LFO (`LFOF`, `PLFOWS`,
+  `PLFOS`, `ALFOWS`, `ALFOS`), nivel y paneo (`DISDL`, `DIPAN`, `TL`), el filtro (`FLV0`-`FLV4`,
+  `FAR`, `FD1R`, `FD2R`, `FRR`) y `KYONB`/`KYONEX` para disparar.
+- **§8.1.1, "Technical Explanation Concerning Audio"**: control de bucle, ADPCM, AEG, PG, LFO,
+  mezclador, FEG y el DSP de audio, uno por uno.
+- Un detalle de acceso que hay que respetar desde el principio: *"register accesses by the SH4
+  are 4-byte accesses only, and only the lower 16 bits are valid"*.
+
+La ventana que dcemu ya reserva (`0x00700000-0x00707FFF`, `aica_mem`) cubre el bloque.
+
 ### B.0 — La decisión de base: LLE o HLE
 
 **Es la primera decisión y condiciona todo lo demás.**
@@ -530,6 +550,35 @@ comparar cualquier cambio del CH2 DMA.
 
 Está descartado, por medición y no por razonamiento, que sea de esta corrida: la captura del
 menú con `master` y con la rama entera es **byte a byte idéntica**, mismo md5.
+
+### C.8 — Las áreas imagen del mapa de memoria
+
+La tabla 2-2 del documento de arquitectura —*"the addresses shown in parentheses are an image
+area"*— es una lista de comprobación contra el mapa de dcemu, y destapó un hueco:
+
+| documentado | imagen | acceso | dcemu |
+| --- | --- | --- | --- |
+| `0x00000000` boot ROM, `0x00200000` flash | `0x02000000`, `0x02200000` | R/- | falta la imagen |
+| `0x0C000000` memoria del sistema | `0x0E000000` | R/W | ✓ |
+| `0x10000000` conversor de polígonos [TA FIFO] | `0x12000000` | **-/W** | falta la imagen |
+| `0x10800000` conversor YUV [TA FIFO] | `0x12800000` | **-/W** | falta la imagen |
+| `0x11000000` textura [TA FIFO] | `0x13000000` | **-/W** | ✓, y solo escritura, correcto |
+| `0x04000000` textura, acceso de 64 bits | `0x06000000` | R/W | **arreglado** |
+| `0x05000000` textura, acceso de 32 bits | `0x07000000` | R/W | **arreglado** |
+| `0x01000000` área externa del G2 | `0x03000000`, `0x14000000-0x17FFFFFF` | según el dispositivo | falta |
+
+`0x06` y `0x07` ya estaban en `mem_zone[]` como alias desde siempre, pero **no en
+`mem_hash_read`/`mem_hash_write`**, así que un guest que las usara caía en `mem_read_error` en
+vez de leer la RAM de vídeo. Van con sus formas P2 (`0xA6`, `0xA7`), y `0x06` entra además en
+`VRAM_VENTANA_64()` porque es la imagen de la de 64 bits y entrelaza igual. Verificado que no
+mueve nada: 544 casos en verde, el texto de la BIOS y mame4all idénticos, y
+`pvr-strided_texture` en sus 240000 píxeles.
+
+**Y explica el `0xA1000400` de Virtua Tenis 2**: `0x01000000-0x01FFFFFF` es el **área externa
+del bus G2**, o sea un dispositivo de expansión. En una consola de serie no hay ninguno, así
+que lo que sondea no existe — igual que el `0x03010000` que miraba Crazy Taxi. No se mapeó
+porque el documento dice "depends on device" y no define qué contesta un bus vacío; inventar
+un valor es justo lo que hace falta no hacer. Pero deja de ser una dirección misteriosa.
 
 ### C.6 — Residuos ya diagnosticados que se dejan como están
 
