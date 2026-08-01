@@ -94,7 +94,7 @@ Su vecina `MOV.W @(disp,GBR),R0` (`mov.c:684`) leía bien pero no extendía el s
 
 | dónde | qué pasaba |
 | --- | --- |
-| `mov.c` `movb10`/`movw11` | `MOV.B/W Rm,@-Rn` copiaban el registro antes de decrementar. Solo se nota con `n == m`, el "push del propio stack pointer". `movl12` estaba bien |
+| `mov.c` `movb10`/`movw11` | `MOV.B/W Rm,@-Rn` copiaban el registro antes de decrementar. Solo se nota con `n == m`, el "push del propio stack pointer". **Este arreglo estaba al revés** y lo corrigió la pasada de SingleStepTests: el manual escribe `R[m]` y decrementa después, así que el valor bueno era el original. Ver más abajo |
 | `syscontrol.c:897` | `LDC Rm,DBR` leía de memoria, como si fuera `LDC.L @Rm+,DBR` |
 | `syscontrol.c` `trapa169` | no guardaba R15 en SGR, que es parte de la secuencia de excepción |
 | `floatsimple.c:492` y `:799` | `FTRC` usaba `floor()` en doble precisión —redondea hacia abajo, no trunca hacia cero: -2.5 daba -3— y un cast crudo en simple, sin saturar fuera de rango |
@@ -261,14 +261,26 @@ registros de sistema. Tres cosas quedan afuera, y no por descuido:
     instrucción emulada, que es lo más caro que se puede hacer en un intérprete. En
     hardware real está encendida casi siempre, así que ningún programa saca información
     de ella.
-  - **Los bits DN y RM.** Los desnormalizados no se vacían a cero y el modo de redondeo se
-    ignora: la aritmética usa la del anfitrión, que redondea al más cercano. RM no molesta
-    en la práctica porque KOS lo deja en 00, que es justo eso, pero el valor de reset es
-    01 (truncar) y el código del boot ROM corre con el redondeo equivocado.
+  **DN y RM ya no están en esta lista**: los implementó la validación contra
+  SingleStepTests (ver más abajo). RM cambia el modo de redondeo del anfitrión desde
+  `UpdateFPSCR()` y DN aplasta desnormalizados en `fpu_dn_s()`/`fpu_dn_d()`.
 
   Un NaN de señal que entra tampoco levanta V: la causa inválida se reconoce porque el
   resultado sale NaN sin que ninguna entrada lo fuera, y esa regla no distingue un NaN
   silencioso de uno de señal.
+
+  Y queda un falso positivo nuevo, consecuencia de emular RM: el desbordamiento se
+  reconoce por `|resultado| >= FLT_MAX` (o `DBL_MAX`), porque truncando hacia cero un
+  desbordamiento produce el mayor normalizado y no infinito. Una cuenta cuyo resultado
+  exacto sea justo ese valor se reporta como desbordamiento. Distinguirlo pediría el
+  resultado sin redondear, que en doble precisión no hay con qué calcular.
+
+- **El valor del qNaN.** El manual fija los patrones que el chip genera —`H'7FBFFFFF` en
+  simple y `H'7FF7FFFF FFFFFFFF` en doble— para cualquier resultado NaN, venga de una
+  operación inválida o de propagar un qNaN de entrada. dcemu deja el que produce el
+  anfitrión (`H'FFC00000`). No lo miden las pruebas de SingleStepTests, cuyo
+  `compare_floats()` da por iguales dos NaN cualesquiera, ni ningún programa que se haya
+  corrido: un NaN se propaga igual valga lo que valga su carga útil.
 - **`LDTLB`, `OCBP`, `OCBI` y `OCBWB`** avanzan PC y nada más. `LDTLB` carga la TLB y dcemu
   no emula la MMU; las tres de caché no tienen efecto observable sin caché emulada.
   `MOVCA.L` sí escribe, que es su único efecto visible. Se implementaron como
@@ -281,13 +293,18 @@ registros de sistema. Tres cosas quedan afuera, y no por descuido:
 
 ## Verificación
 
-516 casos, todos en verde, sobre 239 filas implementadas, todas ejercitadas. Diecisiete
-pruebas de CTest —una por suite más la corrida completa—, menos de un segundo en total.
+615 casos unitarios, todos en verde, sobre 239 filas implementadas, todas ejercitadas.
+Veintiún pruebas de CTest —una por suite, la corrida completa y la de SingleStepTests—,
+menos de tres segundos en total.
 
 ```sh
-cmake --build build --config Debug --target dcemu_tests
+cmake -S . -B build -DDCEMU_SH4_JSON=/ruta/al/clon/de/SingleStepTests-sh4
+cmake --build build --config Debug --target dcemu_tests dcemu_sh4json
 ctest --test-dir build -C Debug --output-on-failure
 ```
+
+Sin `-DDCEMU_SH4_JSON` la prueba de SingleStepTests sale con 77 y CTest la marca omitida:
+son 92 MB de datos que no van en el repositorio.
 
 Además de las unitarias, `demos/roto` —el rotozoomer de 256 bytes, que usa `FSCA`, `FDIV`,
 `FTRC`, `FLOAT` y `MUL.L`— arranca y renderiza igual que antes con la BIOS real. Es la
@@ -330,10 +347,79 @@ interrupción anidada, llama por un puntero nulo, cae en la dirección 0 —que 
 el ROM salta a `0x8C000018` y de ahí corre por el bloque bajo del sistema hasta toparse con
 los bytes que decodifican como `TRAPA #23`. Ver `docs/pendientes-plan.md`, vía A.
 
+## La segunda pasada: 116.500 casos de SingleStepTests
+
+Agosto de 2026. Las unitarias de `tests/` se escribieron **leyendo el manual**, así que
+cubren lo que uno se acuerda de mirar. [SingleStepTests/sh4](https://github.com/SingleStepTests/sh4)
+es lo contrario: 233 codificaciones × 500 casos con estado inicial y final completos y
+valores al azar en todos los registros. Encontró once cosas más.
+
+Ojo con qué son: las generó el intérprete de **Reicast**, no el manual. Donde discrepan
+gana el manual, y las discrepancias están contadas y clasificadas —ver la tabla del final—.
+Cómo se corre está en `tests/README.md`.
+
+### Lo que encontró
+
+Ordenado por lo que costaría en un juego.
+
+| dónde | qué pasaba |
+| --- | --- |
+| `sh4emu.c` `UpdateSR()` | **el centinela era 0xFFFFFFFF**, o sea exactamente lo que deja un `LDC Rm,SR` con Rm en todos unos: esa escritura se tomaba por "el llamador ya escribió SR" y **SR quedaba sin tocar**. Ahora la entrada del emulador es `UpdateSR_ya_escrito()` |
+| `sh4emu.c` `UpdateSR()` | **con `MD` en cero, `RB` tiene que quedar en cero**: en modo usuario R0-R7 son siempre los del banco 0. No se miraba, y el propio comentario decía que quedaba "igual que antes" por no poder verificarlo. Las 1500 pruebas de `LDC Rm,SR`, `LDC.L @Rm+,SR` y `RTE` lo fijan |
+| `syscontrol.c` `rte143`, `ldcl122` | **la máscara 0x700083F3 estaba solo en `LDC Rm,SR`**. `RTE` copiaba SSR entero —y SSR se escribe con `LDC Rm,SSR`, que no filtra nada— y `LDC.L @Rm+,SR` tampoco filtraba |
+| `syscontrol.c` `ldcl122` | el `+4` de `@Rm+` iba **después** de escribir SR, así que con cambio de banco caía en el registro del banco nuevo en vez de en el que se leyó |
+| `mov.c` `movb10`/`movw11`/`movl12` | `MOV.B/W/L Rm,@-Rn` con `n == m` escribía el valor **decrementado**. El manual escribe `Rm` y decrementa después: `Write_Byte(R[n]-1, R[m]); R[n]-=1`. Las unitarias tenían el error consagrado en tres casos |
+| `syscontrol.c` `sleep116` | **`SLEEP` avanzaba PC**, o sea que era un `NOP`: un guest que espere una interrupción ahí seguía de largo. El manual no le pone `PC += 2` |
+| `sh4emu.c` `UpdateFPSCR()` | **`FPSCR.RM` se ignoraba.** RM = 01 —truncar hacia cero— es el valor de reset y el que deja KOS, o sea el modo en que corre *todo*; dcemu redondeaba al más cercano en cada operación de la FPU |
+| `floatsimple.c` | **`FPSCR.DN` se ignoraba**: los desnormalizados no se aplastaban a cero ni a la entrada ni a la salida |
+| `floatsimple.c` `fmac194` | **`FMAC` redondeaba dos veces.** El manual, 6.4: "Rounding is performed once in FMAC, but twice in FADD, FSUB, and FMUL" |
+| `floatgraph.c` `fipr`/`ftrv` | acumulaban en simple precisión: dos productos parciales que desbordan con signos opuestos daban NaN donde el chip entrega un infinito |
+| `dcopcodes.c` `fsca` | **tomaba FPUL entero como ángulo**, y además sin signo (es `DWORD`). Son los **16 bits bajos**: el ángulo es una fracción de vuelta en punto fijo. Las 500 pruebas fallaban todas |
+| `dcopcodes.c` `NOIMP` | **leía la instrucción de memoria otra vez** para nombrarla en un `logmsg()` —que es una función, no una macro, así que el argumento se evaluaba siempre—. Una lectura que la instrucción no hace la ve un watchpoint, y con la MMU encendida puede fallar |
+
+Las tres de la FPU que más se van a notar son RM, DN y FMAC, porque afectan a **toda**
+operación de punto flotante que no dé un resultado exacto.
+
+### Las divergencias, y por qué se dejan
+
+3221 casos de 116.500 no coinciden y no se van a arreglar: son sitios donde Reicast
+contradice al manual. El corredor los clasifica uno por uno y los cuenta aparte, así que
+no se confunden con un fallo.
+
+| casos | qué | quién tiene razón |
+| --- | --- | --- |
+| 2110 | **Cause y Flag de FPSCR no se escriben.** Reicast no los emula | dcemu: lo pide el manual y lo verifica `basic/fpu/exc` de KOS |
+| 1000 | **FPSCR guarda los bits reservados.** `LDS Rm,FPSCR` sin la máscara `FPSCR_MASK` | el manual define `#define FPSCR_MASK 0x003FFFFF` en la propia operación |
+| 500 | **`TRAPA` no entra en la excepción**: el estado final es el de cuatro instrucciones seguidas | el propio repositorio avisa que no modela excepciones |
+| 200 | **`RTE`: la ranura de retardo ve el SR viejo.** Reicast escribe SR después de la ranura | el manual: "The SR value accessed by the instruction in the RTE delay slot is the value restored from SSR by the RTE instruction" |
+| 184 | **`FTRC` fuera de rango no satura**: Reicast recorta a 0x7FFFFF80, el mayor entero representable en float | el manual: `ftrc_invalid()` entrega 0x7FFFFFFF o 0x80000000 y levanta V |
+| 43 | **`DIV1` con `n == m`.** Reicast lee Rm después de desplazar Rn y le da cero | el manual guarda `tmp2 = R[m]` **antes** del desplazamiento; QEMU también |
+| 11 | **`FIPR`/`FTRV`: tres unidades del último bit.** Reicast acumula en simple | son instrucciones aproximadas y el manual dice que "the same result as SH-4 is not guaranteed" |
+
+Y tres casos se descartan: la cuarta instrucción resulta ser un salto —el destino de la
+probada volvió a la ventana—, el generador corta a los cuatro accesos y el estado final
+queda a mitad de una instrucción, que no hay cómo reproducir.
+
+### Cómo se comparan los flotantes
+
+Del bit, salvo dos excepciones, y las dos con razón escrita:
+
+- **Un NaN vale por cualquier otro.** Es la regla que publica el propio repositorio en su
+  `compare_floats()`, y hace falta porque el SH-4, el anfitrión y Reicast escriben tres
+  patrones distintos.
+- **`FIPR`, `FTRV`, `FSRRA` y `FSCA` se comparan contra una cota de error**, la del manual
+  en 6.6.1 para las dos primeras y 2^-21 para las otras dos. Son aproximaciones por
+  diseño.
+
+En todo lo demás la comparación es exacta **a propósito**: es lo que dejó ver que se
+ignoraba RM. Aquellas diferencias eran de un ulp, y cualquier tolerancia las habría tapado.
+
 ## Pendiente
 
 - Confirmar contra el manual si `LDC Rm,SGR` y `LDC.L @Rm+,SGR` existen. Si no, sacar las
   dos filas de la tabla.
+- El qNaN que genera la FPU debería ser `H'7FBFFFFF` (simple) y `H'7FF7FFFF FFFFFFFF`
+  (doble), no el del anfitrión. Ver "Lo que sigue sin cumplir el manual".
 - Pasar más homebrew. `DIV1` afecta a cualquier binario que divida, así que el
   comportamiento de demos que "funcionaban" puede cambiar —para mejor, pero cambia—. La
   colección de KallistiOS sería el próximo banco de pruebas.

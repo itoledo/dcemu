@@ -64,6 +64,17 @@ static float f(DWORD bits)
 	return v;
 }
 
+/* El camino de vuelta. float_to_dword() vive en mem.c, que las pruebas no
+   enlazan. */
+static DWORD bits(float v)
+{
+	DWORD b;
+
+	memcpy(&b, &v, sizeof(b));
+
+	return b;
+}
+
 /* Instruccion de doble precision: 1111nnn0 mmm0.... */
 static WORD instr_dd(WORD base, int n, int m)
 {
@@ -272,7 +283,12 @@ static void fmul_que_desborda_levanta_o_e_i(void)
 
 	ESPERAR_U32(FPSCR_CAUSE, C_O | C_I);
 	ESPERAR_U32(FPSCR_FLAG, C_O | C_I);
-	ESPERAR(isinf(FR(1)));
+
+	/* El arnes arranca con RM = 01, truncar hacia cero, que es el valor de
+	   reset del SH-4. Al desbordar en ese modo el manual (6.4) entrega "the
+	   maximum normalized number, with the same sign as the unrounded value" --
+	   no infinito, que es lo que se obtiene con RM = 00. */
+	ESPERAR_U32(bits(FR(1)), F_MAX);
 }
 
 static void fadd_que_desborda_levanta_o_e_i(void)
@@ -335,7 +351,14 @@ static void fsub_con_resultado_subnormal_no_subdesborda(void)
 
 	/* FLT_MIN - FLT_MIN/2 da FLT_MIN/2: subnormal pero exacto. Sin
 	   inexactitud no hay subdesbordamiento, y por eso las sumas y las restas
-	   no lo levantan nunca. */
+	   no lo levantan nunca.
+
+	   Con DN = 1 -- el valor de reset, que es el que deja arnes_reset() -- el
+	   subnormal no llegaria a la resta: el chip lo aplasta a cero de entrada.
+	   Aca se apaga DN para poder ver el caso; el aplastado tiene su propio
+	   caso, dn_aplasta_los_desnormalizados. */
+	UpdateFPSCR(FPSCR & ~0x00040000u);
+
 	FR(1) = f(F_MIN);
 	FR(2) = f(F_SUBNORMAL);
 	ejecutar(instr_nm(0xF001, 1, 2));		/* FSUB FR2, FR1 */
@@ -391,7 +414,7 @@ static void fcnvds_que_desborda_al_bajar_a_simple_levanta_o(void)
 
 	ESPERAR_U32(FPSCR_CAUSE, C_O | C_I);
 	ESPERAR_U32(FPSCR_FLAG, C_O | C_I);
-	ESPERAR_U32(FPUL, F_INF);
+	ESPERAR_U32(FPUL, F_MAX);		/* RM = 01: el mayor normalizado */
 }
 
 static void fcnvds_que_subdesborda_al_bajar_a_simple_levanta_u(void)

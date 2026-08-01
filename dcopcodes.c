@@ -7,7 +7,7 @@
 #include "sistema.h"
 #include "traza.h"
 
-#define PI 3.1415926535
+#define PI 3.14159265358979323846
 
 DWORD com=0;
 
@@ -15,11 +15,26 @@ OPCODE(fsca) // FSCA FPUL, DRn
 {
 //	long n = (arg >> 8) & 0x0F;
 	long n = (arg >> 9) & 0x07;
-	float x = (float) (2 * PI * (float) FPUL / 65536.0);
-//	float x = (float) (PI * FPUL / 65536.0);
 
-	FR(n*2) = sin(x);
-	FR(n*2+1) = cos(x);
+	/*
+		**El angulo son los 16 bits bajos de FPUL, no FPUL entero.** Es un punto
+		fijo donde 65536 es la vuelta completa, asi que la parte alta no es parte
+		del angulo: tomarla daba un x de miles de millones de radianes y un seno
+		y un coseno que no tienen nada que ver.
+
+		Ademas FPUL es DWORD, o sea que el (float) de antes lo convertia **sin
+		signo**: un FPUL negativo salia como un numero enorme positivo. Con la
+		mascara de 16 bits eso deja de importar.
+
+		Lo miden las 500 pruebas de 1111nnn011111101, que fallaban todas.
+	*/
+	/* El angulo se calcula y se usa en **doble**: redondearlo a float mete un
+	   error de hasta 2^-24 en radianes, que sale entero en el seno y el coseno
+	   -- hasta 4e-7, mas de lo que el chip se aparta del valor exacto. */
+	double x = 2 * PI * (double) (FPUL & 0xFFFF) / 65536.0;
+
+	FR(n*2) = (float) sin(x);
+	FR(n*2+1) = (float) cos(x);
 /*	float_R(n) = sin(FPUL);
 	float_registers[n+1] = cos(FPUL); */
 
@@ -36,7 +51,23 @@ OPCODE(fsca) // FSCA FPUL, DRn
 
 OPCODE(NOIMP)
 {
-	logmsg("opcode no implementado: %s (%d)\r\n", opcodes[find_opcode(PC)].opdesc, find_opcode(PC));
+	/*
+		Sin find_opcode(PC): eso volvia a **leer la instruccion de memoria** para
+		nombrarla, y una lectura que la instruccion no hace es una lectura de
+		mas -- la ve un watchpoint de lectura, y con la MMU encendida puede
+		fallar y abortar una instruccion que no accede a nada. Ademas logmsg()
+		es una funcion, no una macro, asi que el argumento se evaluaba siempre,
+		con LOGGING apagado o no.
+
+		El nombre tampoco servia: aqui solo se llega con patrones que no son
+		instrucciones, o sea que siempre decia "NOIMP". El opcode crudo si dice
+		algo.
+
+		Lo miden las 1000 pruebas de 1111mmm010111101 y 1111nnn010101101, que
+		son FCNVDS y FCNVSD con PR=0: el manual las declara reservadas y lo
+		unico que se observa es que PC avanza dos.
+	*/
+	logmsg("opcode no implementado: %04x en PC %08x\r\n", arg, PC);
 	PC += 2;
 }
 

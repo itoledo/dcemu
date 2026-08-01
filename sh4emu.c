@@ -7,6 +7,60 @@
 #include "floatsimple.h"
 #include "intc.h"
 
+/*
+	El modo de redondeo de la FPU. RM = 01 -- truncar hacia cero -- es el valor
+	de reset del SH-4 y el que KOS deja puesto, o sea que **es el modo en que
+	corre todo lo que se ejecuta en la consola**; dcemu lo ignoraba y redondeaba
+	siempre al mas cercano, que es lo que hace el anfitrion por omision. La
+	diferencia es de un ulp por operacion, invisible de a una y acumulable.
+
+	Se cambia el entorno de punto flotante del anfitrion, y solo cuando el guest
+	escribe FPSCR: hacerlo por instruccion seria recargar MXCSR en cada
+	operacion, que es lo mas caro que puede hacer un interprete.
+
+	Ojo con el alcance: el modo es del proceso, asi que mientras el guest esta
+	en RM=01 las cuentas de punto flotante del propio emulador -- las
+	coordenadas del TA en graficos.c -- tambien truncan. La diferencia es del
+	ultimo bit y nada depende de ella.
+
+	_controlfp esta en MSVC y en MinGW (viene de msvcrt); fuera de Windows va
+	<fenv.h>, que es C99 y en Linux sobra.
+*/
+#if defined(_MSC_VER) || defined(__MINGW32__)
+#include <float.h>
+#define DC_REDONDEO_CERO()		((void) _controlfp(_RC_CHOP, _MCW_RC))
+#define DC_REDONDEO_CERCANO()	((void) _controlfp(_RC_NEAR, _MCW_RC))
+#else
+#include <fenv.h>
+#define DC_REDONDEO_CERO()		((void) fesetround(FE_TOWARDZERO))
+#define DC_REDONDEO_CERCANO()	((void) fesetround(FE_TONEAREST))
+#endif
+
+/*
+	RM tiene dos bits pero el manual solo define 00 (al mas cercano) y 01 (hacia
+	cero); 10 y 11 son reservados y se comportan como el mas cercano.
+
+	Lo que se compara es el modo **puesto en el anfitrion**, no el FPSCR
+	anterior: quien escriba FPSCR directamente -- reset(), el arnes de las
+	pruebas -- no deja los dos de acuerdo, y entonces un valor "igual al de
+	antes" dejaria el anfitrion como estaba.
+*/
+void fpu_aplicar_redondeo(void)
+{
+	static int puesto = -1;
+	int quiero = (FPSCR_RM == 1);
+
+	if (quiero == puesto)
+		return;
+
+	puesto = quiero;
+
+	if (quiero)
+		DC_REDONDEO_CERO();
+	else
+		DC_REDONDEO_CERCANO();
+}
+
 sh4_cpu core;
 
 /* Registros de la MMU. Solo PTEL estaba enlazado; el resto se agrego en la
@@ -97,6 +151,7 @@ void reset()
  FPSCR = 0x00040001; // Floating Point Status/Control Register: DN=1, RM=01
 					// (antes decia 0x0004001, un cero de menos: en vez de DN
 					// dejaba prendido un bit de Cause)
+ fpu_aplicar_redondeo();	// RM=01: el anfitrion tiene que truncar tambien
  PC =  0xA0000000;   // Program Counter
  MACH = 0; // Multiply-And-Accumulate register High
  MACL = 0; // Multiply-And-Accumulate register Low
@@ -215,6 +270,9 @@ void UpdateFPSCR(DWORD newFPSCR)
 	int f;
 	f = FPSCR_FR;
 	FPSCR = newFPSCR;
+
+	fpu_aplicar_redondeo();
+
 	if(FPSCR_PR_BIT)
 		{
 			if(FPSCR_SZ_BIT)
@@ -270,6 +328,32 @@ void swap_registers(void)
 	core.context.banco_activo ^= 1;
 }
 
+/*
+	Lo que queda de un valor cualquiera al escribirlo en SR. Dos reglas, y las
+	dos las fijan las pruebas de SingleStepTests/sh4 sobre las tres
+	instrucciones que escriben SR desde un dato -- LDC Rm,SR, LDC.L @Rm+,SR y
+	RTE -- en sus 1500 casos:
+
+	  - **Solo existen los bits de 0x700083F3.** Es la mascara que el manual del
+		SH-4 pone en la propia definicion de LDC Rm,SR; el resto son reservados
+		y se leen en cero.
+	  - **Con MD en cero, RB tambien queda en cero.** RB solo tiene sentido en
+		modo privilegiado: en modo usuario R0-R7 son siempre los del banco 0.
+		Escribir SR con MD=0 y RB=1 no deja el bit puesto ni cambia de banco.
+
+	La mascara estaba en LDC Rm,SR y en ningun otro lado, asi que RTE copiaba
+	SSR entero -- y SSR se puede escribir con LDC Rm,SSR, que no filtra nada.
+*/
+DWORD sr_normalizar(DWORD valor)
+{
+	valor &= 0x700083F3;
+
+	if (!(valor & (1u << 30)))		/* MD */
+		valor &= ~(1u << 29);		/* RB */
+
+	return valor;
+}
+
 void UpdateSR(DWORD new)
 {
 	/*
@@ -291,13 +375,17 @@ void UpdateSR(DWORD new)
 		una tabla de callbacks a traves de una interrupcion anidada, llamaba por
 		un puntero nulo y terminaba ejecutando el ROM desde la direccion 0.
 
-		Nota: no se mira MD. En el chip, con MD=0 se accede siempre al banco 0
-		aunque RB valga 1; aca no, igual que antes. Nada corre en modo usuario
-		por ahora -- KOS no -- asi que queda como estaba en vez de cambiar de
-		paso algo que no se puede verificar.
+		Con MD en cero, RB tambien: lo aplica sr_normalizar(). Antes no se
+		miraba, y la nota decia que en el chip con MD=0 se accede siempre al
+		banco 0 "aca no, igual que antes"; las pruebas de SingleStepTests lo
+		fijaron sobre 1500 casos de las tres instrucciones que escriben SR.
+
+		**El centinela ya no viaja por el mismo parametro.** Valia 0xFFFFFFFF, o
+		sea exactamente lo que deja un LDC Rm,SR con Rm en todos unos: esa
+		escritura se tomaba por "el llamador ya escribio SR" y **SR quedaba sin
+		tocar**. Ahora la entrada del emulador es UpdateSR_ya_escrito().
 	*/
-	if (new != SH4_SYSTEM_REGISTER_INTC_REWRITTEN)
-		SR = new;
+	SR = sr_normalizar(new);
 
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
@@ -305,6 +393,20 @@ void UpdateSR(DWORD new)
 	// SR.FD apaga la FPU entera: si esta puesto, main_loop() tiene que armar
 	// el salto para poder abortar la instruccion que la toque. La funcion
 	// tambien deriva fpu_deshabilitada de SR.FD.
+	excepcion_actualizar_vigilancia();
+}
+
+/*
+	La otra entrada: la entrada a una excepcion, la entrada a una interrupcion y
+	TRAPA escriben MD, RB y BL a mano sobre el SR que ya estaba y despues avisan
+	por aqui. No hay valor que normalizar -- los tres bits que ponen son
+	validos -- y lo unico que falta es acomodar el banco de registros.
+*/
+void UpdateSR_ya_escrito(void)
+{
+	if ((int) SR_RB != core.context.banco_activo)
+		swap_registers();
+
 	excepcion_actualizar_vigilancia();
 }
 

@@ -63,13 +63,17 @@ static void nop_solo_avanza(void)
 	ESPERAR_PC_SIGUIENTE();
 }
 
-static void sleep_solo_avanza(void)
+/* SLEEP **no avanza PC**: el procesador se queda en la instruccion esperando
+   una interrupcion. El manual escribe la operacion sin el "PC += 2" que llevan
+   todas las demas, y las 500 pruebas de 0000000000011011 de SingleStepTests
+   buscan la instruccion cuatro veces en la misma direccion. */
+static void sleep_no_avanza(void)
 {
 	arnes_reset();
 
 	ejecutar(0x001B);					/* SLEEP */
 
-	ESPERAR_PC_SIGUIENTE();
+	ESPERAR_U32(PC, PRUEBA_PC);
 }
 
 static void ocbi_solo_avanza(void)
@@ -197,7 +201,7 @@ static void ldc_sr_cambia_el_banco_de_registros(void)
 	R(7)  = 0x0007AAAA;
 	R(16) = 0x0000BBBB;					/* R0_BANK */
 	R(23) = 0x0007BBBB;					/* R7_BANK */
-	R(8)  = 0x20000000;					/* solo RB */
+	R(8)  = 0x60000000;					/* RB, y MD porque sin el RB no vale */
 
 	ejecutar(instr_n(0x400E, 8));		/* LDC R8, SR */
 
@@ -206,6 +210,74 @@ static void ldc_sr_cambia_el_banco_de_registros(void)
 	ESPERAR_U32(R(7),  0x0007BBBB);
 	ESPERAR_U32(R(16), 0x0000AAAA);
 	ESPERAR_U32(R(23), 0x0007AAAA);
+}
+
+/* RB solo existe en modo privilegiado: "in user mode, R0-R7 always refer to
+   bank 0". Escribir SR con MD en cero y RB en uno no deja el bit puesto ni
+   cambia de banco. Lo fijan las 1500 pruebas de LDC Rm,SR, LDC.L @Rm+,SR y RTE
+   de SingleStepTests, donde la regla se cumple en los 1500 casos. */
+static void ldc_sr_con_md_en_cero_apaga_rb(void)
+{
+	arnes_reset();
+
+	R(0)  = 0x0000AAAA;
+	R(16) = 0x0000BBBB;					/* R0_BANK */
+	R(8)  = 0x20000000;					/* RB sin MD */
+
+	ejecutar(instr_n(0x400E, 8));		/* LDC R8, SR */
+
+	ESPERAR_U32(SR, 0);
+	ESPERAR_U32(SR_RB, 0);
+	ESPERAR_U32(R(0),  0x0000AAAA);
+	ESPERAR_U32(R(16), 0x0000BBBB);
+}
+
+/* El centinela de UpdateSR() valia 0xFFFFFFFF, que es justo lo que deja este
+   LDC: la escritura se tomaba por "el llamador ya escribio SR" y SR quedaba
+   sin tocar. Por eso la entrada del emulador es UpdateSR_ya_escrito(). */
+static void ldc_sr_con_todos_los_bits_no_es_el_centinela(void)
+{
+	arnes_reset();
+
+	R(8) = 0xFFFFFFFF;
+	ejecutar(instr_n(0x400E, 8));		/* LDC R8, SR */
+
+	ESPERAR_U32(SR, 0x700083F3);
+}
+
+/* RTE tambien filtra: SSR se puede escribir con LDC Rm,SSR, que no filtra
+   nada, y de ahi puede salir cualquier cosa hacia SR. La mascara estaba solo
+   en LDC Rm,SR, asi que RTE copiaba SSR entero. */
+static void rte_filtra_los_bits_reservados_de_ssr(void)
+{
+	arnes_reset();
+
+	SSR = 0xFFFFFFFF;
+	SPC = PRUEBA_PC + 0x100;
+	poner_instr(PRUEBA_PC + 2, 0x0009);	/* NOP en la ranura de retardo */
+
+	ejecutar(0x002B);					/* RTE */
+
+	ESPERAR_U32(SR, 0x700083F3);
+	ESPERAR_U32(PC, SPC);
+}
+
+/* LDC.L @Rm+,SR incrementa Rm **antes** de escribir SR: si el valor nuevo
+   cambia RB, el "+4" tiene que caer en el registro que se leyo y no en su
+   homonimo del otro banco. Lo miden las 500 pruebas de 0100mmmm00000111. */
+static void ldcl_sr_incrementa_antes_de_cambiar_de_banco(void)
+{
+	arnes_reset();
+
+	R(3)  = PRUEBA_DATOS;				/* R3 es de los bancarios */
+	R(19) = 0x0BADBEEF;					/* R3_BANK */
+	escribir_l(PRUEBA_DATOS, 0x60000000);	/* MD y RB: cambia de banco */
+
+	ejecutar(instr_n(0x4007, 3));		/* LDC.L @R3+, SR */
+
+	ESPERAR_U32(SR_RB, 1);
+	ESPERAR_U32(R(3),  0x0BADBEEF);				/* el banco nuevo, sin tocar */
+	ESPERAR_U32(R(19), PRUEBA_DATOS + 4);		/* el viejo, con el +4 */
 }
 
 static void stc_sr_copia_el_registro_completo(void)
@@ -1012,7 +1084,7 @@ static const dc_caso casos[] =
 	CASO(clrt_apaga_t),
 	CASO(sett_prende_t),
 	CASO(nop_solo_avanza),
-	CASO(sleep_solo_avanza),
+	CASO(sleep_no_avanza),
 	CASO(ocbi_solo_avanza),
 	CASO(ocbwb_solo_avanza),
 	CASO(ocbp_solo_avanza),
@@ -1022,6 +1094,10 @@ static const dc_caso casos[] =
 	CASO(sets_prende_s),
 	CASO(ldc_sr_filtra_los_bits_reservados),
 	CASO(ldc_sr_cambia_el_banco_de_registros),
+	CASO(ldc_sr_con_md_en_cero_apaga_rb),
+	CASO(ldc_sr_con_todos_los_bits_no_es_el_centinela),
+	CASO(rte_filtra_los_bits_reservados_de_ssr),
+	CASO(ldcl_sr_incrementa_antes_de_cambiar_de_banco),
 	CASO(stc_sr_copia_el_registro_completo),
 	CASO(ldc_vbr),
 	CASO(stc_vbr),

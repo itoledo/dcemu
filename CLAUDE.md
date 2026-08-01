@@ -45,8 +45,8 @@ relative to the makefiles; the makefiles are the source of truth for the object 
 ## Tests
 
 ```sh
-cmake -S . -B build
-cmake --build build --config Debug --target dcemu_tests
+cmake -S . -B build [-DDCEMU_SH4_JSON=/path/to/SingleStepTests-sh4]
+cmake --build build --config Debug --target dcemu_tests dcemu_sh4json
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
@@ -75,7 +75,9 @@ KOS's `basic/fpu/exc` checks. Three rules there are easy to get backwards, and
 `docs/sh4-conformidad.md` explains why: `inf/0` is *not* a divide-by-zero, a NaN that
 merely passes through raises nothing (invalid is recognised by the result coming out NaN
 when no input was), and add/sub can never underflow — a sum that lands below the smallest
-normal is exact. Still missing: the I cause on its own, and the DN and RM bits.
+normal is exact. Still missing: the I cause on its own, and the qNaN value the chip
+generates (`H'7FBFFFFF`, not the host's). **DN and RM are emulated now** — see the
+SingleStepTests section below.
 
 **Enable and the three FPU exceptions are wired too** — 0x120 when a cause meets its Enable
 bit, 0x800/0x820 when `SR.FD` is set. See "Synchronous exceptions" below for the mechanism
@@ -89,6 +91,39 @@ exercised, so a new instruction gets flagged until it has a test.
 
 End-to-end check after touching the CPU core: `demos/roto/` is a 256-byte rotozoomer that
 exercises FSCA, FDIV, FTRC, FLOAT and MUL.L. See its README for how to run it.
+
+### The core against SingleStepTests/sh4
+
+`tests/singlestep.c` builds a second binary, `dcemu_sh4json`, that runs the real core
+against [SingleStepTests/sh4](https://github.com/SingleStepTests/sh4): 233 encodings × 500
+cases with **full random initial and final state**. The suites above were written by reading
+the manual, so they cover what one remembers to look at; these are the opposite, and they
+found eleven more things. **`docs/sh4-conformidad.md`, "La segunda pasada", is the list**;
+the headline ones are that `FPSCR.RM` was ignored (RM = 01, truncate, is the reset value and
+what KOS leaves, i.e. the mode *everything* runs in), that `FPSCR.DN` was ignored, that FMAC
+rounded twice where the manual rounds once, that `SLEEP` advanced PC (so it was a NOP), that
+`UpdateSR()`'s sentinel was `0xFFFFFFFF` — exactly what `LDC Rm,SR` with all ones leaves, so
+that write silently did nothing — and that FSCA took the whole of FPUL as the angle instead
+of its low 16 bits.
+
+The data is 92 MB and not in the repo: `git clone https://github.com/SingleStepTests/sh4.git`,
+then `-DDCEMU_SH4_JSON=` at configure time or the env var of the same name at run time.
+Without either, the binary exits 77 and CTest marks the test **skipped**. No need to run
+their `transcode_json.py` — the runner reads the binary format directly.
+
+**They are not the manual: they came out of Reicast's interpreter.** Where the two disagree
+the manual wins, and the 3221 disagreements are classified one by one and counted apart —
+neither green nor red — with the manual quote that settles each. The big ones: Reicast does
+not write FPSCR's Cause/Flag at all, does not mask FPSCR to `0x003FFFFF`, does not implement
+TRAPA, runs RTE's delay slot before writing SR, does not saturate an out-of-range FTRC, and
+reads `Rm` after the shift in `DIV1` with `n == m`. Three cases are discarded: the fourth
+instruction turns out to be a branch, the generator stops at four fetches and the final state
+is mid-instruction.
+
+Floats are compared **bit-exact**, on purpose — that is what exposed the rounding mode, whose
+differences were one ulp — with two documented exceptions: any NaN equals any other (the
+repository's own `compare_floats()` rule), and FIPR/FTRV/FSRRA/FSCA are compared against an
+error bound, the manual's own in 6.6.1 for the first two. `tests/README.md` has the rest.
 
 **Above the CPU core, the regression baseline is the KOS example tree.** `docs/demos-kos.md`
 records the state of all 135 binaries as measured on 2026-07-30 — which ones pass, which fail
@@ -489,9 +524,9 @@ decode step at runtime.
 `opcodes.c` holds the master table `opcodes[]` of `{op, mask, mnemonic, operand-type,
 handler, restriction}`. **`SR.RB` says which bank *should* be in `registers[0..7]`; `core.context.banco_activo`
 records which one *is*.** They are not the same thing, and conflating them cost a game.
-`UpdateSR()` has two entries — the caller wrote `SR` itself (exception entry, interrupt entry
-and `TRAPA`, which set MD/RB/BL by hand and signal with `SH4_SYSTEM_REGISTER_INTC_REWRITTEN`)
-or it passes the new value — and that sentinel path used to **swap unconditionally**. With
+There are two entries — `UpdateSR_ya_escrito()`, for the caller that wrote `SR` itself
+(exception entry, interrupt entry and `TRAPA`, which set MD/RB/BL by hand), and `UpdateSR()`,
+which takes the new value — and the first used to **swap unconditionally**. With
 `RB` already 1 — an exception taken from inside another, which is what any handler that lowers
 `BL` to allow nesting does — entry set `RB=1` again and swapped anyway: the nested handler saw
 bank 0 as its own, and the interrupted code came back from the `RTE` with the other bank's
@@ -500,6 +535,18 @@ Both paths now compare against `banco_activo`, which `swap_registers()` is the o
 move. The field lives **inside** `core.context` on purpose: the MMU snapshot restores the
 register array, so the bank state has to travel with it. `reset()` and `arnes_reset()` set it,
 because both assign `SR` directly without going through `UpdateSR()`.
+
+**Those two entries used to be one function told apart by a sentinel, and the sentinel was
+`0xFFFFFFFF`** — which is exactly what `LDC Rm,SR` with `Rm` all ones passes. That write was
+read as "the caller already wrote SR" and **SR was left untouched**. Splitting them is what
+removed the trap; SingleStepTests is what found it.
+
+**Writing SR is not a plain assignment**: `sr_normalizar()` keeps only `0x700083F3` — the mask
+the manual puts in `LDC Rm,SR` itself — and clears `RB` when `MD` is 0, because `RB` only
+exists in privileged mode ("in user mode, R0-R7 always refer to bank 0"). It lives in
+`UpdateSR()` and not at the call sites because it is the rule for *writing SR*, not the rule
+for one instruction: `RTE` and `LDC.L @Rm+,SR` were missing it, and `RTE` copies `SSR`, which
+`LDC Rm,SSR` can fill with anything.
 
 No KOS demo shows this — KOS takes its interrupts from `RB=0`, so the swap is always a real
 change. Virtua Tennis is what exposed it: it lost the index of a callback table across a nested

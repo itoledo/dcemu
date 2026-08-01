@@ -233,6 +233,50 @@ static void fsca_en_media_vuelta(void)
 
 /* -------------------------------------------------------- FRCHG / FSCHG */
 
+/* El angulo son los **16 bits bajos** de FPUL y nada mas: la parte alta no
+   entra. Tomando FPUL entero -- y ademas sin signo, que es DWORD -- el angulo
+   salia de miles de millones de radianes y las 500 pruebas de
+   1111nnn011111101 de SingleStepTests fallaban todas. */
+static void fsca_solo_mira_los_16_bits_bajos(void)
+{
+	arnes_reset();
+
+	FPUL = 0xABCD4000;					/* un cuarto de vuelta, con basura arriba */
+	ejecutar((WORD) (0xF0FD | (0 << 9)));
+
+	ESPERAR_F32_APROX(FR(0), 1.0f, 1e-5f);
+	ESPERAR_F32_APROX(FR(1), 0.0f, 1e-5f);
+}
+
+/* Y con el bit 31 puesto, que es lo que hacia que el (float) sin signo diera
+   un angulo enorme en vez de medio giro. */
+static void fsca_con_el_bit_alto_puesto(void)
+{
+	arnes_reset();
+
+	FPUL = 0x80008000;					/* media vuelta */
+	ejecutar((WORD) (0xF0FD | (0 << 9)));
+
+	ESPERAR_F32_APROX(FR(0), 0.0f, 1e-5f);
+	ESPERAR_F32_APROX(FR(1), -1.0f, 1e-5f);
+}
+
+/* FIPR acumula los cuatro productos en doble y redondea una sola vez (manual,
+   6.4). Con acumulador de simple precision, dos productos que desbordan a
+   infinito con signos opuestos dan NaN; el chip entrega un infinito. */
+static void fipr_no_desborda_en_los_productos_parciales(void)
+{
+	arnes_reset();
+
+	poner_vector(0, 1e20f, 1e20f, 0.0f, 0.0f);
+	poner_vector(1, 1e20f, -1e20f, 0.0f, 1.0f);
+
+	ejecutar((WORD) (0xF0ED | (1 << 10) | (0 << 8)));	/* FIPR FV0, FV1 */
+
+	/* 1e40 - 1e40 = 0 en doble; en simple los dos productos son +-inf. */
+	ESPERAR_F32(FR(7), 0.0f);
+}
+
 static void frchg_intercambia_los_bancos(void)
 {
 	arnes_reset();
@@ -458,6 +502,9 @@ static const dc_caso casos[] =
 	CASO(fsca_en_cero),
 	CASO(fsca_en_un_cuarto_de_vuelta),
 	CASO(fsca_en_media_vuelta),
+	CASO(fsca_solo_mira_los_16_bits_bajos),
+	CASO(fsca_con_el_bit_alto_puesto),
+	CASO(fipr_no_desborda_en_los_productos_parciales),
 	CASO(frchg_intercambia_los_bancos),
 	CASO(frchg_dos_veces_vuelve_al_principio),
 	CASO(fschg_cambia_el_tamano_de_transferencia),

@@ -90,7 +90,21 @@ OPCODE(sleep116)
 
 // 	SH4_SLEEPING = true;
 
-	PC += 2;
+	/*
+		**PC no avanza.** El manual del SH-4 escribe la operacion como
+		"PC -= 2; Sleep_standby()" sobre un PC que ya venia incrementado, o sea
+		que la instruccion se vuelve a buscar: el procesador se queda ahi hasta
+		que llega una interrupcion. Sin estado de reposo que emular, quedarse en
+		la misma direccion es exactamente eso, y ademas es lo que las 500
+		pruebas de 0000000000011011 miden -- los cuatro accesos a instruccion
+		caen todos en el SLEEP.
+
+		Antes avanzaba dos, o sea que SLEEP era un NOP: un guest que espere una
+		interrupcion aqui seguia de largo ejecutando lo que hubiera detras.
+
+		Los ciclos se siguen sumando, asi que main_loop() reparte tiempo a los
+		temporizadores y la interrupcion llega igual.
+	*/
 
 	core.context.cycles += 4;
 }
@@ -100,7 +114,10 @@ OPCODE(ldc116) // LDC Rm, SR : Rm -> SR (0100mmmm 00001110)
 	short m = (arg >> 8) & 0x0F;
 
 //	SR = R(m);
-	UpdateSR(R(m) & 0x700083f3);
+	/* La mascara -- y que MD apagado apague RB -- las aplica ahora
+	   sr_normalizar(), dentro de UpdateSR(): son la regla de escribir SR y no
+	   la de esta instruccion. RTE y LDC.L @Rm+,SR la necesitaban igual. */
+	UpdateSR(R(m));
 
 	PC += 2;
 
@@ -196,9 +213,21 @@ OPCODE(ldcl122) // LDC.L @Rm+, SR (0100mmmm 00000111)
 	DWORD newSR;
 
 	ReadMemoryL(R(m), &newSR);
-	UpdateSR(newSR);
 
+	/*
+		El incremento va **antes** de escribir SR, y el orden importa: si el
+		valor nuevo cambia RB, R0-R7 cambian de banco, y el "+4" tiene que caer
+		en el registro que se leyo, no en su homonimo del otro banco.
+
+		El manual pone la asignacion de SR primero, pero su R[] es un arreglo
+		abstracto sin bancos; el hardware decide el puerto del banco de
+		registros al decodificar, antes de que SR cambie. QEMU resuelve el
+		registro en la traduccion por la misma razon, y es lo que miden las 500
+		pruebas de 0100mmmm00000111.
+	*/
 	R(m) += 4;
+
+	UpdateSR(newSR);
 
 	PC += 2;
 
@@ -883,7 +912,7 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 	SET_SH4_BIT(SR_MD);
 	SET_SH4_BIT(SR_RB);
 	SET_SH4_BIT(SR_BL);
-	UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN);
+	UpdateSR_ya_escrito();
 
 	
 /*	NEXTPC = VBR + 0x0100;

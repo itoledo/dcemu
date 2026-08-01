@@ -153,7 +153,24 @@ core.context.FR_BANK = backup;\
 }
 
 void UpdateSR(DWORD newSR);
+
+/* Para quien ya escribio SR el mismo -- la entrada a una excepcion, la de una
+   interrupcion y TRAPA --: solo acomoda el banco de registros. Antes esto era
+   UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN), y ese centinela valia
+   0xFFFFFFFF, que es un valor que un LDC Rm,SR puede traer de verdad. */
+void UpdateSR_ya_escrito(void);
+
 void UpdateFPSCR(DWORD newFPSCR);
+
+/* Lo que queda de un valor al escribirlo en SR: 0x700083F3, y RB en cero si MD
+   lo esta. Lo aplica UpdateSR(); esta declarado para que las pruebas puedan
+   comprobarlo por separado. Ver sh4emu.c. */
+DWORD sr_normalizar(DWORD valor);
+
+/* Pone el modo de redondeo del anfitrion segun FPSCR.RM. Lo llaman
+   UpdateFPSCR() y reset(); cualquier otro que escriba FPSCR crudo tiene que
+   llamarlo tambien. Ver sh4emu.c. */
+void fpu_aplicar_redondeo(void);
 
 /* SR.FD, replicado para que el despacho no extraiga un campo de bits por
    instruccion. Lo escribe UpdateSR(). Ver run() en sh4emu.c. */
@@ -391,7 +408,11 @@ typedef struct
 #define SET_SH4_BIT(bit)(bit=1)
 #define REMOVE_SH4_BIT(bit)(bit=0)
 
-// this means SR_BL SR_MD SR_RB were set
+/* El centinela viejo de UpdateSR(): "el llamador ya escribio SR". **Ya no lo
+   usa nadie** -- vale 0xFFFFFFFF, que es un valor que LDC Rm,SR puede traer de
+   verdad, y esa colision hacia que la escritura no tuviera efecto. Su lugar lo
+   ocupa UpdateSR_ya_escrito(). Se deja definido para que un llamador viejo no
+   compile por accidente contra una macro inexistente. */
 #define SH4_SYSTEM_REGISTER_INTC_REWRITTEN -1
 
 // macros to check FPSCR attributes on a regular int

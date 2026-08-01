@@ -1,4 +1,5 @@
 #include "main.h"
+#include "floatsimple.h"	/* fpu_dn_s(): FPSCR.DN */
 #include <math.h>
 #include <SIMDx86/math.h>
 
@@ -151,21 +152,30 @@ OPCODE(fmov229) // FMOV XDm, @(R0, Rn) (1111nnnn mmm10111)
 	core.context.cycles += 1;
 }
 
+/*
+	FIPR y FTRV generan valores, asi que les toca lo mismo que a la aritmetica:
+	con FPSCR.DN los desnormalizados entran y salen aplastados a cero (manual
+	del SH-4, 6.2.3). Se copian los operandos a locales para no tocar los
+	registros de origen -- FIPR solo escribe FR[4n+3], y los otros siete tienen
+	que quedar como estaban.
+
+	La cuenta va en doble y se redondea una sola vez, aqui y en
+	simdx86_stub.c; ver ahi por que.
+*/
 OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 {
 	short n = (arg >> 10) & 0x3;
 	short m = (arg >> 8) & 0x3;
+	double suma = 0;
+	int i;
 
 	/* n y m numeran vectores de cuatro registros: FVn son FR[4n]..FR[4n+3], y
 	   el producto punto queda en el ultimo, FR[4n+3]. */
- #ifndef X86_OPT
-	FR(4*n+3) =	FR(4*m+0) * FR(4*n+0) +
-				FR(4*m+1) * FR(4*n+1) +
-				FR(4*m+2) * FR(4*n+2) +
-				FR(4*m+3) * FR(4*n+3);
-#else
- FR(4*n+3) = SIMDx86Vector_Dot4(Vector(m),Vector(n));
-#endif
+	for (i = 0; i < 4; i++)
+		suma += (double) fpu_dn_s(FR(4*m+i)) * (double) fpu_dn_s(FR(4*n+i));
+
+	FR(4*n+3) = fpu_dn_s((float) suma);
+
 	PC += 2;
 
 	core.context.cycles += 4;
@@ -174,38 +184,29 @@ OPCODE(fipr) // FIPR FVm, FVn (1111nnmm 11101101)
 OPCODE(ftrv) // FTRV XMTRX, FVn (1111nn01 11111101)
 {
 	short n = (arg >> 10) & 0x3;
-#ifndef X86_OPT
-float v1, v2, v3, v4;
+	float v[4];
+	double r[4];
+	int i, j;
+
 /* matriz:
 	XF0		XF4		XF8		XF12
 	XF1		XF5		XF9		XF13
 	XF2		XF6		XF10	XF14
 	XF3		XF7		XF11	XF15 */
 
-	v1	=	XF(0) * FR(4*n+0) +
-				XF(4) * FR(4*n+1) +
-				XF(8) * FR(4*n+2) +
-				XF(12) * FR(4*n+3);
-	v2 =	XF(1) * FR(4*n+0) +
-				XF(5) * FR(4*n+1) +
-				XF(9) * FR(4*n+2) +
-				XF(13) * FR(4*n+3);
-	v3 =	XF(2) * FR(4*n+0) +
-				XF(6) * FR(4*n+1) +
-				XF(10) * FR(4*n+2) +
-				XF(14) * FR(4*n+3);
-	v4 =	XF(3) * FR(4*n+0) +
-				XF(7) * FR(4*n+1) +
-				XF(11) * FR(4*n+2) +
-				XF(15) * FR(4*n+3);
+	for (i = 0; i < 4; i++)
+		v[i] = fpu_dn_s(FR(4*n+i));
 
-	FR(4*n+0) = v1;
-	FR(4*n+1) = v2;
-	FR(4*n+2) = v3;
-	FR(4*n+3) = v4;
-#else
-SIMDx86Matrix_Vector4Multiply(Vector(n),XFMTRX);
-#endif
+	for (i = 0; i < 4; i++)
+	{
+		r[i] = 0;
+
+		for (j = 0; j < 4; j++)
+			r[i] += (double) fpu_dn_s(XF(i + 4*j)) * (double) v[j];
+	}
+
+	for (i = 0; i < 4; i++)
+		FR(4*n+i) = fpu_dn_s((float) r[i]);
 
 	PC += 2;
 
@@ -215,10 +216,12 @@ SIMDx86Matrix_Vector4Multiply(Vector(n),XFMTRX);
 OPCODE(fsrra) // FSRRA FRn (1111nnnn 01111101)
 {
    	short n = (arg >> 8) & 0x0F;
+	float a = fpu_dn_s(FR(n));
+
 	#ifndef X86_OPT
-	FR(n) = (float) 1.0 / (float) sqrt(FR(n));
+	FR(n) = fpu_dn_s((float) (1.0 / sqrt(a)));
 	#else
-	FR(n) = SIMDx86_rsqrtf(FR(n));
+	FR(n) = fpu_dn_s(SIMDx86_rsqrtf(a));
 	#endif
 	PC += 2;
 

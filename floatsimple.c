@@ -63,6 +63,61 @@ static DC_INLINE void fpu_causa(DWORD causas)
 	FPSCR = (FPSCR & ~FPU_CAUSA_TODAS) | causas | FPU_CAUSA_A_FLAG(causas);
 }
 
+/* --------------------------------------------- desnormalizados (FPSCR.DN) --
+   "When the DN bit in the FPU's status register FPSCR is 1, a denormalized
+   number (source operand or operation result) is always flushed to 0 in a
+   floating-point operation that generates a value (an operation other than
+   copy, FNEG, or FABS)" -- manual del SH-4, 6.2.3. El cero conserva el signo:
+   6.4 lo dice para el subdesbordamiento, "zero with the same sign as the
+   unrounded value".
+
+   Se hace en software y no con el FTZ/DAZ del anfitrion a proposito: el bit de
+   MXCSR no existe en una compilacion x87, no lo tiene el manejo de dobles de
+   este archivo -- que trabaja sobre las dos mitades a mano -- y cualquier
+   driver de OpenGL puede cambiarlo por debajo. Cuesta dos comparaciones por
+   operando.
+
+   DN estaba sin emular; es una de las dos cosas que docs/sh4-conformidad.md
+   listaba como pendientes de la FPU. La otra, RM, la aplica ahora
+   UpdateFPSCR(). */
+
+float fpu_dn_s(float x)
+{
+	DWORD b;
+
+	if (!FPSCR_DN)
+		return x;
+
+	memcpy(&b, &x, sizeof(b));
+
+	if ((b & 0x7F800000u) == 0 && (b & 0x007FFFFFu) != 0)
+	{
+		b &= 0x80000000u;
+		memcpy(&x, &b, sizeof(x));
+	}
+
+	return x;
+}
+
+double fpu_dn_d(double x)
+{
+	DWORD b[2];		/* little-endian: [0] la mitad baja, [1] la alta */
+
+	if (!FPSCR_DN)
+		return x;
+
+	memcpy(b, &x, sizeof(b));
+
+	if ((b[1] & 0x7FF00000u) == 0 && ((b[1] & 0x000FFFFFu) != 0 || b[0] != 0))
+	{
+		b[1] &= 0x80000000u;
+		b[0] = 0;
+		memcpy(&x, b, sizeof(x));
+	}
+
+	return x;
+}
+
 /* isnan() e isinf() son de C99 y Makefile.win apunta al gcc de Dev-C++, que es
    de 2004: mejor no depender de ellas. La comparacion consigo mismo es la forma
    canonica de reconocer un NaN, y HUGE_VAL es el infinito de <math.h>. */
@@ -82,7 +137,21 @@ static DC_INLINE int fpu_es_inf(double x)
      cubre inf-inf, 0*inf, 0/0, inf/inf y la raiz de un negativo. Un NaN que
      entra y sale se propaga sin senalar nada, como corresponde a un NaN
      silencioso.
-   - Desbordamiento: el resultado es infinito y ninguna entrada lo era.
+   - Desbordamiento: el resultado llego al maximo del formato sin que ninguna
+     entrada fuera infinita.
+
+     **No alcanza con mirar si salio infinito**, y esto es consecuencia de
+     emular FPSCR.RM: el manual (6.4) dice que al desbordar "when rounding mode
+     = RZ, the maximum normalized number, with the same sign as the unrounded
+     value, is generated; when rounding mode = RN, infinity". Como RM = 01 --
+     truncar -- es el valor de reset y el que usa todo lo que corre, el
+     resultado de un desbordamiento es casi siempre FLT_MAX o DBL_MAX, no
+     infinito. Se compara con ">=" para cubrir los dos casos.
+
+     El precio es un falso positivo: una cuenta cuyo resultado exacto sea
+     justo el mayor normalizado se reporta como desbordamiento. Distinguirlo
+     pediria el resultado sin redondear, que en doble precision no hay como
+     calcular con los tipos del anfitrion.
    - Subdesbordamiento: el resultado quedo por debajo del menor normal del
      formato -- `minimo` es FLT_MIN o DBL_MIN -- con las dos entradas no nulas.
      `subdesborda` esta en cero para la suma y la resta: cuando su resultado cae
@@ -95,10 +164,13 @@ static DC_INLINE int fpu_es_inf(double x)
 static DWORD fpu_causas(double a, double b, double r, double minimo,
 						int subdesborda)
 {
+	/* El formato lo dice `minimo`, que es FLT_MIN o DBL_MIN segun quien llame. */
+	double maximo = (minimo == FLT_MIN) ? FLT_MAX : DBL_MAX;
+
 	if (fpu_es_nan(r))
 		return (fpu_es_nan(a) || fpu_es_nan(b)) ? 0 : FPU_CAUSA_V;
 
-	if (fpu_es_inf(r) && !fpu_es_inf(a) && !fpu_es_inf(b))
+	if (fabs(r) >= maximo && !fpu_es_inf(a) && !fpu_es_inf(b))
 		return FPU_CAUSA_O | FPU_CAUSA_I;
 
 	if (subdesborda && a != 0.0 && b != 0.0 && fabs(r) < minimo)
@@ -390,9 +462,9 @@ OPCODE(fadd189) // FADD FRm, FRn : FRn + FRm -> FRn (1111nnnn mmmm0000)
 	} */
 
 	{
-		float a = FR(n), b = FR(m);
+		float a = fpu_dn_s(FR(n)), b = fpu_dn_s(FR(m));
 
-		FR(n) = a + b;
+		FR(n) = fpu_dn_s(a + b);
 
 		fpu_causa(fpu_causas(a, b, FR(n), FLT_MIN, 0));
 	}
@@ -476,9 +548,9 @@ OPCODE(fdiv192) // FDIV FRm, FRn : FRn/FRm -> FRn (1111nnnn mmmm0011)
 	   x/0 como infinito con signo y 0/0 como NaN, que es justo lo que entrega
 	   el host. Lo que si hay que dejar anotado es la causa. */
 	{
-		float a = FR(n), b = FR(m);
+		float a = fpu_dn_s(FR(n)), b = fpu_dn_s(FR(m));
 
-		FR(n) = a / b;
+		FR(n) = fpu_dn_s(a / b);
 
 		fpu_causa(fpu_causas_division(a, b, FR(n), FLT_MIN));
 	}
@@ -528,14 +600,27 @@ OPCODE(fmac194) // FMAC FR0, FRm, FRn (1111nnnn mmmm1110)
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
 
-	/* Son dos operaciones y cada una tiene sus causas: el producto puede
-	   desbordar o subdesbordar por su cuenta antes de que la suma lo vea. */
-	{
-		float a = FR(0), b = FR(m), c = FR(n);
-		float p = a * b;
-		DWORD causas = fpu_causas(a, b, p, FLT_MIN, 1);
+	/*
+		**Una sola redondeada.** El manual del SH-4, 6.4: "Rounding is performed
+		once in FMAC, but twice in FADD, FSUB, and FMUL". O sea que FMAC es un
+		multiplicar-y-sumar fusionado: el producto no pasa por simple precision.
 
-		FR(n) = c + p;
+		Multiplicar dos simples en doble es exacto -- 24 + 24 bits de mantisa
+		entran en los 53 del doble --, asi que hacer las dos cuentas en doble y
+		redondear al final es exactamente lo que pide el manual. Antes se
+		redondeaba el producto a simple y despues la suma, y de ahi salia un ulp
+		de diferencia en 35 de las 500 pruebas de 1111nnnnmmmm1110.
+
+		Las causas siguen mirando las dos operaciones, pero el producto se
+		clasifica en doble: sin redondeo intermedio no puede desbordar por su
+		cuenta.
+	*/
+	{
+		float  a = fpu_dn_s(FR(0)), b = fpu_dn_s(FR(m)), c = fpu_dn_s(FR(n));
+		double p = (double) a * (double) b;
+		DWORD  causas = fpu_causas(a, b, p, FLT_MIN, 1);
+
+		FR(n) = fpu_dn_s((float) (p + (double) c));
 
 		fpu_causa(causas | fpu_causas(c, p, FR(n), FLT_MIN, 0));
 	}
@@ -555,9 +640,9 @@ OPCODE(fmul195) // FMUL FRn * FRm -> FRn (1111nnnn mmmm0010)
 	short m = (arg >> 4) & 0x0F;
 
 	{
-		float a = FR(n), b = FR(m);
+		float a = fpu_dn_s(FR(n)), b = fpu_dn_s(FR(m));
 
-		FR(n) = a * b;
+		FR(n) = fpu_dn_s(a * b);
 
 		fpu_causa(fpu_causas(a, b, FR(n), FLT_MIN, 1));
 	}
@@ -592,12 +677,12 @@ OPCODE(fneg196) // FNEG FRn (1111nnnn 01001101)
 OPCODE(fsqrt197) // FSQRT FRn (1111nnnn 01101101)
 {
 	short n = (arg >> 8) & 0x0F;
-	float a = FR(n);
+	float a = fpu_dn_s(FR(n));
 
 	#ifndef X86_OPT
-	FR(n) = sqrt(FR(n));
+	FR(n) = fpu_dn_s((float) sqrt(a));
 	#else
- 	FR(n) = SIMDx86_sqrtf(FR(n));
+ 	FR(n) = fpu_dn_s(SIMDx86_sqrtf(a));
  	#endif
 
 	/* La raiz de un negativo es la unica causa posible: no desborda ni
@@ -619,9 +704,9 @@ OPCODE(fsub198) // FSUB FRm, FRn (1111nnnn mmmm0001)
 	short m = (arg >> 4) & 0x0F;
 
 	{
-		float a = FR(n), b = FR(m);
+		float a = fpu_dn_s(FR(n)), b = fpu_dn_s(FR(m));
 
-		FR(n) = a - b;
+		FR(n) = fpu_dn_s(a - b);
 
 		fpu_causa(fpu_causas(a, b, FR(n), FLT_MIN, 0));
 	}
@@ -762,9 +847,9 @@ OPCODE(fmul208) // FMUL DRm, DRn : DRn * DRm -> DRn (1111nnn0 mmm00010)
 	extract_double(&regM, DR_index(n));
 
 	{
-		double a = regM, b = regN;
+		double a = fpu_dn_d(regM), b = fpu_dn_d(regN);
 
-		regM = a * b;
+		regM = fpu_dn_d(a * b);
 
 		fpu_causa(fpu_causas(a, b, regM, DBL_MIN, 1));
 	}
@@ -785,9 +870,9 @@ OPCODE(fsub211) // FSUB DRm, DRn : DRn - DRm -> DRn (1111nnn0 mmm00001)
 	extract_double(&regM, DR_index(n));
 
 	{
-		double a = regM, b = regN;
+		double a = fpu_dn_d(regM), b = fpu_dn_d(regN);
 
-		regM = a - b;
+		regM = fpu_dn_d(a - b);
 
 		fpu_causa(fpu_causas(a, b, regM, DBL_MIN, 0));
 	}
@@ -805,8 +890,9 @@ OPCODE(fcnvds205) // FCNVDS DRm, FPUL : (float) DRm -> FPUL (1111mmm0 10111101)
 	float f;
 
 	extract_double(&regN, DR_index(m));
+	regN = fpu_dn_d(regN);
 
-	f = (float) regN;
+	f = fpu_dn_s((float) regN);
 
 	/* Bajar de doble a simple es la unica conversion que puede desbordar y
 	   subdesbordar: el rango de destino es mucho mas chico que el de origen. */
@@ -826,7 +912,7 @@ OPCODE(fcnvsd206) // FCNVSD FPUL, DRn : (double) FPUL -> DRn (1111nnn0 10101101)
 
 	memcpy(&f, &FPUL, sizeof(float));
 
-	regN = (double) f;
+	regN = fpu_dn_d((double) fpu_dn_s(f));
 
 	/* Subir de simple a doble entra siempre exacto y dentro de rango. */
 	fpu_causa(0);
@@ -853,9 +939,9 @@ OPCODE(fadd201) // FADD DRm, DRn (1111nnn0 mmm00000)
 
 
 	{
-		double a = regM, b = regN;
+		double a = fpu_dn_d(regM), b = fpu_dn_d(regN);
 
-		regM = a + b;
+		regM = fpu_dn_d(a + b);
 
 		fpu_causa(fpu_causas(a, b, regM, DBL_MIN, 0));
 	}
@@ -919,9 +1005,9 @@ OPCODE(fdiv204) // FDIV DRm, DRn (1111nnn0 mmm00011)
 //	print_double(y);
  
 	{
-		double a = regM, b = regN;
+		double a = fpu_dn_d(regM), b = fpu_dn_d(regN);
 
-		regM = a / b;
+		regM = fpu_dn_d(a / b);
 
 		fpu_causa(fpu_causas_division(a, b, regM, DBL_MIN));
 	}
@@ -977,12 +1063,13 @@ OPCODE(fsqrt210) // FSQRT DRn (1111nnn0 00111101)
 	double a;
 
 	extract_double(&regN, DR_index(n));
+	regN = fpu_dn_d(regN);
 	a = regN;							// el origen, para clasificar despues
  	#ifndef X86_OPT
-	regN = sqrt(regN);
+	regN = fpu_dn_d(sqrt(regN));
 	put_double(DR_index(n), &regN);
 	#else
- 	regN = SIMDx86_sqrt(regN);
+ 	regN = fpu_dn_d(SIMDx86_sqrt(regN));
 	put_double(DR_index(n), &regN);
 	#endif
 

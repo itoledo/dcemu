@@ -107,3 +107,54 @@ endforeach()
 # la suite de cobertura mira lo que ejecutaron las demas, asi que necesita que
 # corran todas.
 add_test(NAME sh4.todo COMMAND dcemu_tests)
+
+# --------------------------------------------------------------------------
+# El nucleo contra SingleStepTests/sh4 (233 codificaciones x 500 casos).
+#
+# Va en su propio ejecutable porque reemplaza el modelo de memoria: las pruebas
+# ven un espacio plano de 32 bits, no el mapa del Dreamcast. Reusa arnes.c,
+# dctest.c, dobles.c y memoria_prueba.c -- de este ultimo solo la reserva de
+# los bloques y el enlace de los registros; las dos tablas de despacho las
+# vuelve a escribir singlestep.c entero.
+#
+# Los datos no van en el repositorio (92 MB). Ver tests/README.md.
+add_executable(dcemu_sh4json
+	${DCEMU_NUCLEO}
+	arnes.c
+	dctest.c
+	dobles.c
+	memoria_prueba.c
+	singlestep.c
+)
+
+target_include_directories(dcemu_sh4json PRIVATE
+	${CMAKE_SOURCE_DIR}
+	${CMAKE_SOURCE_DIR}/include
+	${CMAKE_CURRENT_SOURCE_DIR}
+	${SDL12_STAGED_INCLUDE}
+)
+
+target_compile_definitions(dcemu_sh4json PRIVATE
+	WIN32
+	_CRT_SECURE_NO_WARNINGS
+	X86_OPT
+)
+
+target_compile_options(dcemu_sh4json PRIVATE
+	/W3
+	/wd4996
+)
+
+# La ruta a los datos: -DDCEMU_SH4_JSON=... al configurar, o la variable de
+# entorno del mismo nombre al correr. Sin ninguna de las dos, el binario sale
+# con 77 y CTest marca la prueba como omitida en vez de fallada.
+set(DCEMU_SH4_JSON "" CACHE PATH
+	"Ruta al clon de https://github.com/SingleStepTests/sh4 (233 .json.bin)")
+
+if(DCEMU_SH4_JSON)
+	add_test(NAME sh4.singlestep COMMAND dcemu_sh4json --dir=${DCEMU_SH4_JSON})
+else()
+	add_test(NAME sh4.singlestep COMMAND dcemu_sh4json)
+endif()
+
+set_tests_properties(sh4.singlestep PROPERTIES SKIP_RETURN_CODE 77)

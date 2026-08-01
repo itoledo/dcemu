@@ -14,8 +14,12 @@ video del PVR, `vram.h`) y `ubc` (los breakpoints por hardware, `ubc.h`,
 manejados como los maneja el driver de KOS). Ver "Mas alla de los opcodes" al
 final.
 
-Estado actual: **543 casos, todos en verde**, sobre **239 filas implementadas
+Estado actual: **615 casos, todos en verde**, sobre **239 filas implementadas
 de `opcodes[]`, todas ejercitadas y sin desviaciones pendientes**.
+
+Ademas hay un segundo binario, `dcemu_sh4json`, que corre el mismo nucleo contra
+las **116.500 pruebas de SingleStepTests/sh4**. Ver "El nucleo contra
+SingleStepTests" al final.
 
 ## Compilar y correr
 
@@ -51,6 +55,7 @@ Para dejar las pruebas fuera del build: `cmake -S . -B build -DDCEMU_BUILD_TESTS
 | `dobles.c` | reemplazos de `graficos.c`, `iso.c`, `intc.c` y `traza.c` |
 | `test_*.c` | una suite por archivo de handlers |
 | `principal.c` | enumera las suites |
+| `singlestep.c` | el otro binario: el nucleo contra SingleStepTests/sh4 |
 
 `mem.c` no se puede enlazar porque `pvr_write()` llama a los callbacks de
 `graficos.c`, que arrastra SDL y OpenGL. `memoria_prueba.c` reproduce la misma
@@ -113,7 +118,7 @@ las documentaban siguen ahi, ahora en verde.
 | `DIV1 Rm,Rn` | terminaba con `T = Q && M` (la linea correcta estaba comentada justo abajo) | `T = (Q == M)`. Con `M = 0` T nunca se prendia: **toda division sin signo daba cociente 0** |
 | `MAC.L` con `S = 1` | pisaba MACH entero y sumaba `MACL & 0x7FFF` donde va MACH | saturacion de 48 bits con `long long`; MACH[31:16] se conserva |
 | `MAC.L` con `n == m` | leia dos veces la misma direccion | lee `@Rn+` y despues `@Rm+`, como el manual |
-| `MOV.B/MOV.W Rm,@-Rn` con `n == m` | copiaba el registro antes de decrementar | decrementa y despues lee Rm |
+| `MOV.B/MOV.W Rm,@-Rn` con `n == m` | copiaba el registro antes de decrementar | **este arreglo estaba al reves**: el manual escribe `R[m]` y decrementa despues (`Write_Byte(R[n]-1, R[m]); R[n]-=1`), o sea que el valor bueno era el original. Lo corrigio la pasada de SingleStepTests, para los tres tamanos |
 | `MOV.B R0,@(disp,GBR)` | estaba implementado como carga: no escribia nada | escribe el byte |
 | `MOV.W @(disp,GBR),R0` | no extendia el signo | extiende signo |
 
@@ -229,11 +234,10 @@ si mismo --, por eso 0x800 y 0x820 solo tienen casos unitarios.
 Lo que se corrigio es el **resultado** de cada instruccion: registros, memoria,
 T y los registros de sistema. Quedan tres cosas afuera, y no por descuido:
 
-- **Dos rincones de la FPU.** Cause, Flag, Enable y las tres excepciones estan
-  -- suite `fpu-excepciones` --, pero la causa I no se detecta por si sola,
-  solo acompanando a O y a U, y los bits DN (desnormalizados a cero) y RM (modo
-  de redondeo) se siguen ignorando. El detalle esta en
-  `docs/sh4-conformidad.md`.
+- **Un rincon de la FPU.** Cause, Flag, Enable y las tres excepciones estan
+  -- suite `fpu-excepciones` --, pero la causa I no se detecta por si sola, solo
+  acompanando a O y a U. DN y RM ya no estan en esta lista: los implemento la
+  pasada de SingleStepTests. El detalle esta en `docs/sh4-conformidad.md`.
 - **`OCBP`, `OCBI` y `OCBWB`** avanzan PC y nada mas: sin cache emulada no
   tienen efecto observable. `MOVCA.L` si escribe, que es su unico efecto
   visible. `LDTLB` ya no esta en esta lista: carga la UTLB de verdad (suite
@@ -288,3 +292,73 @@ que la lectora pida el paquete con CoD=1, manda los 12 bytes de a palabra, y
 recorre los bloques DRQ leyendo el registro de datos hasta que el comando
 termina. Un cambio que rompa una transicion se ve como un caso rojo, no como
 una pantalla negra.
+
+## El nucleo contra SingleStepTests
+
+[SingleStepTests/sh4](https://github.com/SingleStepTests/sh4) publica 233
+codificaciones del SH-4 con 500 casos cada una: estado inicial completo -- los 24
+registros generales, los dos bancos de punto flotante y los trece de sistema, con
+valores al azar --, estado final, los cuatro accesos a instruccion y la lectura o
+escritura de datos que hubo. Son 116.500 casos.
+
+Las suites de arriba se escribieron **leyendo el manual**, asi que cubren lo que
+uno se acuerda de mirar. Estas son lo contrario, y por eso encontraron once cosas
+mas -- entre ellas que FPSCR.RM se ignoraba, que es el modo en que corre todo lo
+que se ejecuta en la consola. La lista completa esta en
+`docs/sh4-conformidad.md`, "La segunda pasada".
+
+**No son el manual**: las genero el interprete de Reicast. Donde discrepan gana el
+manual, y las 3221 discrepancias estan clasificadas una por una y contadas aparte
+-- ni verdes ni rojas -- con la cita del manual que las decide. El corredor las
+imprime al final de cada corrida.
+
+### Los datos
+
+Son 92 MB y no van en el repositorio:
+
+```sh
+git clone https://github.com/SingleStepTests/sh4.git   # 233 archivos .json.bin
+```
+
+**No hace falta correr `transcode_json.py`**: `singlestep.c` lee el formato binario
+directamente, que es lo mismo que ese script convierte a JSON y ocupa la decima
+parte.
+
+### Correrlas
+
+```sh
+cmake -S . -B build -DDCEMU_SH4_JSON=/ruta/al/clon
+cmake --build build --config Debug --target dcemu_sh4json
+ctest --test-dir build -C Debug -R singlestep --output-on-failure
+```
+
+Sin `-DDCEMU_SH4_JSON` -- o sin la variable de entorno del mismo nombre -- el
+binario sale con 77 y CTest marca la prueba **omitida**, no fallada.
+
+A mano, con filtros por subcadena sobre el nombre del archivo:
+
+```sh
+build/tests/Debug/dcemu_sh4json --dir=/ruta          # las 233
+build/tests/Debug/dcemu_sh4json --dir=/ruta 1111     # solo las de la FPU
+build/tests/Debug/dcemu_sh4json --dir=/ruta --detalle=5 0011nnnnmmmm0100
+build/tests/Debug/dcemu_sh4json --dir=/ruta --todos  # listar tambien las que pasan
+```
+
+`--detalle=N` imprime los primeros N casos rojos de cada archivo con el campo, lo
+esperado y lo obtenido. Sin el, cada archivo con fallos deja una linea con el
+histograma de que campos difieren, que con 500 casos suele ser medio diagnostico:
+"siempre FPSCR" es una cosa y "siempre R2 y una escritura de mas" es otra.
+
+### Tres cosas del formato que hubo que medir
+
+Ninguna esta en el README del repositorio y las tres cambian el resultado:
+
+- **El banco de punto flotante que llaman "FP1" es el activo** y "FP0" el de XF, no
+  al reves. Se ve en que `FMOV FRm,FRn` escribe siempre FP1 y `FMOV DRm,XDn`
+  siempre FP0, valga lo que valga FPSCR.FR. FRCHG intercambia los dos arreglos,
+  igual que RB hace con R y R'.
+- **En doble precision DRn es FR[n] arriba y FR[n+1] abajo**, la numeracion del
+  manual, que no es el orden en que un FMOV con SZ=1 los mueve a memoria.
+- **Un "ciclo" es un acceso a instruccion**, no una instruccion: un salto con
+  ranura de retardo gasta dos. Por eso el corredor envuelve `core.execute` para
+  contarlos en vez de contar instrucciones.

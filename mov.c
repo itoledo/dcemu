@@ -182,10 +182,14 @@ OPCODE(movb10) // MOV.B Rm, @-Rn  (0010nnnn mmmm0100)
 	short m = (arg >> 4) & 0x0F;
 	BYTE valor;
 
-	/* El manual define "R[n] -= 1; Write_Byte(R[n], R[m])": el registro fuente
-	   se lee despues de decrementar, lo que importa cuando n == m. */
-	R(n)--;
+	/* El manual define "Write_Byte(R[n]-1, R[m]); R[n]-=1": el valor que se
+	   escribe es el de Rm **antes** de decrementar, y con n == m eso es el Rn
+	   original. La direccion si es la decrementada.
+
+	   Estuvo al reves un tiempo, y las 500 pruebas de 0010nnnnmmmm0100 lo
+	   marcan en los 21 casos en que n == m. */
 	valor = (BYTE) (R(m) & 0xFF);
+	R(n)--;
 	WriteMemoryB(R(n), &valor);
 
 	PC += 2;
@@ -203,9 +207,9 @@ OPCODE(movw11) // MOV.W Rm, @-Rn (0010nnnn mmmm0101)
 	short m = (arg >> 4) & 0x0F;
 	WORD valor;
 
-	/* Igual que movb10: primero se decrementa y despues se lee Rm. */
-	R(n) -= 2;
+	/* Igual que movb10: se lee Rm y despues se decrementa Rn. */
 	valor = (WORD) (R(m) & 0xFFFF);
+	R(n) -= 2;
 	WriteMemoryW(R(n), &valor);
 
 	PC += 2;
@@ -221,9 +225,12 @@ OPCODE(movl12) // MOV.L Rm, @-Rn : Rn - 4 -> Rn, Rm -> (Rn) (0010nnnn mmmm0110)
 {
 	short n = (arg >> 8) & 0x0F;
 	short m = (arg >> 4) & 0x0F;
+	DWORD valor;
 
+	/* Igual que movb10: se lee Rm y despues se decrementa Rn. */
+	valor = R(m);
 	R(n) -= 4;
-	WriteMemoryL(R(n), (DWORD *) &R(m));
+	WriteMemoryL(R(n), &valor);
 
 	PC += 2;
 

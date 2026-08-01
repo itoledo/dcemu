@@ -1,3 +1,11 @@
+/*
+	FPSCR.DN: con el bit puesto, todo desnormalizado -- de entrada o de salida --
+	sale aplastado a cero con su signo. Manual del SH-4, 6.2.3. Lo usan los
+	handlers de este archivo y los de floatgraph.c y dcopcodes.c.
+*/
+float  fpu_dn_s(float x);
+double fpu_dn_d(double x);
+
 OPCODE(fldi0170); // FLDI0 FRn (1111nnnn 10001101)
 OPCODE(fldi1171); // FLDI1 FRn (1111nnnn 10011101)
 OPCODE(fmov172); // FMOV FRm, FRn : FRm -> FRn (1111nnnn mmmm1100)

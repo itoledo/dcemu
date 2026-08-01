@@ -261,13 +261,13 @@ static void movl_predecremento(void)
 	ESPERAR_U32(leer_l(PRUEBA_DATOS - 4), 0x89ABCDEF);
 }
 
-/* El manual define MOV.x Rm,@-Rn como "R[n] -= tam; Write(R[n], R[m])": el
-   registro fuente se lee despues de restar. Con n == m -- el "push del propio
-   stack pointer" -- eso significa guardar el valor ya decrementado.
+/* Los tres con n == m. El manual escribe "Write_Byte(R[n]-1, R[m]); R[n]-=1":
+   **el valor que va a memoria es el de Rm antes de decrementar**, o sea el Rn
+   original, y la direccion si es la decrementada.
 
-   movl12() en mov.c respeta el orden porque le pasa &R(m) a WriteMemoryL
-   despues de restar. movb10() y movw11(), en cambio, se copian el byte o la
-   word a una variable local antes de restar. */
+   Estuvo al reves un tiempo -- se decrementaba y despues se leia Rm --, y lo
+   marcaron las pruebas de SingleStepTests/sh4: 21 casos de 0010nnnnmmmm0100,
+   30 de la version word y 34 de la long, justo los que caen con n == m. */
 static void movl_predecremento_mismo_registro(void)
 {
 	arnes_reset();
@@ -277,7 +277,7 @@ static void movl_predecremento_mismo_registro(void)
 	ejecutar(instr_nm(0x2006, 15, 15));		/* MOV.L R15, @-R15 */
 
 	ESPERAR_U32(R(15), PRUEBA_DATOS - 4);
-	ESPERAR_U32(leer_l(PRUEBA_DATOS - 4), PRUEBA_DATOS - 4);
+	ESPERAR_U32(leer_l(PRUEBA_DATOS - 4), PRUEBA_DATOS);
 }
 
 static void movb_predecremento_mismo_registro(void)
@@ -289,7 +289,7 @@ static void movb_predecremento_mismo_registro(void)
 	ejecutar(instr_nm(0x2004, 15, 15));		/* MOV.B R15, @-R15 */
 
 	ESPERAR_U32(R(15), PRUEBA_DATOS - 1);
-	ESPERAR_U32(leer_b(PRUEBA_DATOS - 1), (PRUEBA_DATOS - 1) & 0xFF);
+	ESPERAR_U32(leer_b(PRUEBA_DATOS - 1), PRUEBA_DATOS & 0xFF);
 }
 
 static void movw_predecremento_mismo_registro(void)
@@ -301,7 +301,7 @@ static void movw_predecremento_mismo_registro(void)
 	ejecutar(instr_nm(0x2005, 15, 15));		/* MOV.W R15, @-R15 */
 
 	ESPERAR_U32(R(15), PRUEBA_DATOS - 2);
-	ESPERAR_U32(leer_w(PRUEBA_DATOS - 2), (PRUEBA_DATOS - 2) & 0xFFFF);
+	ESPERAR_U32(leer_w(PRUEBA_DATOS - 2), PRUEBA_DATOS & 0xFFFF);
 }
 
 /* -------------------------------------------------------- postincremento */

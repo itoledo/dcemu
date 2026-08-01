@@ -48,6 +48,18 @@ static float bits_a_float(DWORD bits)
 	return f;
 }
 
+/* El camino de vuelta, para los casos que comparan patrones de bits exactos --
+   redondeo y desnormalizados -- donde una comparacion de floats no distingue
+   dos valores que difieren en el ultimo bit. */
+static DWORD float_a_bits(float f)
+{
+	DWORD b;
+
+	memcpy(&b, &f, sizeof(b));
+
+	return b;
+}
+
 /* Arma DRn con un entero, usando las propias instrucciones del emulador:
    LDS Rm,FPUL y FLOAT FPUL,DRn. Evita depender de como guarda el double. */
 static void poner_double(int n, long valor)
@@ -804,6 +816,93 @@ static void ftrc_doble_satura_por_abajo(void)
 
 /* ------------------------------------------------------------------------ */
 
+/* ------------------------------------------------ FPSCR.RM y FPSCR.DN ---- */
+
+/* RM = 01 -- truncar hacia cero -- es el valor de reset del SH-4 y lo que deja
+   KOS, o sea el modo en que corre todo. dcemu lo ignoraba y redondeaba siempre
+   al mas cercano. 1/3 es el caso mas corto: al mas cercano da 0x3EAAAAAB y
+   truncando 0x3EAAAAAA. */
+static void rm_uno_trunca_hacia_cero(void)
+{
+	arnes_reset();				/* FPSCR de reset: RM = 01 */
+
+	FR(1) = 1.0f;
+	FR(2) = 3.0f;
+	ejecutar(instr_nm(0xF003, 1, 2));		/* FDIV FR2, FR1 */
+
+	ESPERAR_U32(float_a_bits(FR(1)), 0x3EAAAAAAu);
+}
+
+static void rm_cero_redondea_al_mas_cercano(void)
+{
+	arnes_reset();
+
+	UpdateFPSCR(FPSCR & ~3u);				/* RM = 00 */
+
+	FR(1) = 1.0f;
+	FR(2) = 3.0f;
+	ejecutar(instr_nm(0xF003, 1, 2));		/* FDIV FR2, FR1 */
+
+	ESPERAR_U32(float_a_bits(FR(1)), 0x3EAAAAABu);
+}
+
+/* DN = 1: "a denormalized number (source operand or operation result) is
+   always flushed to 0" -- manual, 6.2.3. Entra y sale. */
+static void dn_aplasta_el_operando_desnormalizado(void)
+{
+	arnes_reset();				/* FPSCR de reset: DN = 1 */
+
+	FR(1) = 1.0f;
+	FR(2) = bits_a_float(0x00400000u);				/* FLT_MIN/2, subnormal */
+	ejecutar(instr_nm(0xF000, 1, 2));		/* FADD FR2, FR1 */
+
+	ESPERAR_F32(FR(1), 1.0f);				/* el subnormal valio cero */
+}
+
+static void dn_aplasta_el_resultado_desnormalizado(void)
+{
+	arnes_reset();
+
+	FR(1) = bits_a_float(0x00800000u);					/* FLT_MIN */
+	FR(2) = bits_a_float(0x3E800000u);					/* 0.25 */
+	ejecutar(instr_nm(0xF002, 1, 2));		/* FMUL FR2, FR1 */
+
+	ESPERAR_U32(float_a_bits(FR(1)), 0);			/* FLT_MIN/4 es subnormal */
+}
+
+static void sin_dn_el_desnormalizado_sobrevive(void)
+{
+	arnes_reset();
+
+	UpdateFPSCR(FPSCR & ~0x00040000u);		/* DN = 0 */
+
+	FR(1) = bits_a_float(0x00800000u);		/* FLT_MIN */
+	FR(2) = bits_a_float(0x00400000u);		/* FLT_MIN/2, subnormal */
+	ejecutar(instr_nm(0xF001, 1, 2));		/* FSUB FR2, FR1 */
+
+	ESPERAR_U32(float_a_bits(FR(1)), 0x00400000u);
+}
+
+/* FMAC redondea una sola vez: "Rounding is performed once in FMAC, but twice
+   in FADD, FSUB, and FMUL" (manual, 6.4). O sea que es un multiplicar-y-sumar
+   fusionado y el producto no pasa por simple precision.
+
+   (1 + 2^-23)^2 = 1 + 2^-22 + 2^-46. Redondeado a simple queda 1 + 2^-22
+   justo, y restarle 1 + 2^-22 da cero; sin redondeo intermedio queda el
+   2^-46. dcemu redondeaba dos veces, y eso costaba un ulp en 35 de las 500
+   pruebas de 1111nnnnmmmm1110 de SingleStepTests. */
+static void fmac_redondea_una_sola_vez(void)
+{
+	arnes_reset();
+
+	FR(0) = bits_a_float(0x3F800001u);		/* 1 + 2^-23 */
+	FR(2) = bits_a_float(0x3F800001u);
+	FR(1) = bits_a_float(0xBF800002u);		/* -(1 + 2^-22) */
+	ejecutar(instr_nm(0xF00E, 1, 2));		/* FMAC FR0, FR2, FR1 */
+
+	ESPERAR_U32(float_a_bits(FR(1)), 0x28800000u);		/* 2^-46 */
+}
+
 static const dc_caso casos[] =
 {
 	CASO(fldi0_carga_cero),
@@ -865,6 +964,12 @@ static const dc_caso casos[] =
 	CASO(fcnvds_y_fcnvsd_son_reversibles),
 	CASO(ftrc_doble_satura_por_arriba),
 	CASO(ftrc_doble_satura_por_abajo),
+	CASO(rm_uno_trunca_hacia_cero),
+	CASO(rm_cero_redondea_al_mas_cercano),
+	CASO(dn_aplasta_el_operando_desnormalizado),
+	CASO(dn_aplasta_el_resultado_desnormalizado),
+	CASO(sin_dn_el_desnormalizado_sobrevive),
+	CASO(fmac_redondea_una_sola_vez),
 };
 
 const dc_suite suite_fpu_simple = DEFINIR_SUITE("fpu-simple", casos);

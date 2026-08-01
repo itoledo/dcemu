@@ -6,9 +6,11 @@
 	inline con sintaxis de GCC. La superficie realmente usada son seis simbolos,
 	asi que se implementan aqui.
 
-	La semantica de SIMDx86Vector_Dot4 y SIMDx86Matrix_Vector4Multiply sigue a la
-	rama de referencia (#ifndef X86_OPT) de fipr y ftrv en floatgraph.c, que es la
-	que describe el manual del SH-4.
+	SIMDx86Vector_Dot4 y SIMDx86Matrix_Vector4Multiply ya no las llama nadie:
+	fipr y ftrv hacen la cuenta en floatgraph.c para poder aplicar FPSCR.DN a
+	cada operando. Se dejan con la misma semantica que aquellas -- acumulador en
+	doble y una sola redondeada, como pide el manual del SH-4 en 6.4 -- para que
+	el stub no mienta sobre lo que reemplaza.
 */
 
 #include <math.h>
@@ -38,12 +40,21 @@ double SIMDx86_rsqrtd(double value)
 	return 1.0 / sqrt(value);
 }
 
+/*
+	El acumulador va en doble y se redondea una sola vez al final. Es lo que
+	pide el manual del SH-4 (6.4: "rounding is performed when generating the
+	final operation result from the intermediate result"), y ademas evita un
+	falso NaN: con productos parciales que desbordan a infinito en simple,
+	sumar +inf con -inf da NaN donde el chip entrega un infinito. Diez de las
+	500 pruebas de FIPR de SingleStepTests y cincuenta de las de FTRV caian
+	justo ahi.
+*/
 float SIMDx86Vector_Dot4(const float* pSrc4D1, const float* pSrc4D2)
 {
-	return	pSrc4D1[0] * pSrc4D2[0] +
-			pSrc4D1[1] * pSrc4D2[1] +
-			pSrc4D1[2] * pSrc4D2[2] +
-			pSrc4D1[3] * pSrc4D2[3];
+	return (float) ((double) pSrc4D1[0] * (double) pSrc4D2[0] +
+					(double) pSrc4D1[1] * (double) pSrc4D2[1] +
+					(double) pSrc4D1[2] * (double) pSrc4D2[2] +
+					(double) pSrc4D1[3] * (double) pSrc4D2[3]);
 }
 
 /* Multiplica el vector por la matriz, en sitio. La matriz esta en el mismo orden
@@ -57,12 +68,13 @@ float SIMDx86Vector_Dot4(const float* pSrc4D1, const float* pSrc4D2)
 void SIMDx86Matrix_Vector4Multiply(float* pOut4D, const SIMDx86Matrix* pIn)
 {
 	const float * m = pIn->m;
-	float v0 = pOut4D[0], v1 = pOut4D[1], v2 = pOut4D[2], v3 = pOut4D[3];
+	double v0 = pOut4D[0], v1 = pOut4D[1], v2 = pOut4D[2], v3 = pOut4D[3];
 
-	pOut4D[0] = m[0] * v0 + m[4] * v1 + m[8]  * v2 + m[12] * v3;
-	pOut4D[1] = m[1] * v0 + m[5] * v1 + m[9]  * v2 + m[13] * v3;
-	pOut4D[2] = m[2] * v0 + m[6] * v1 + m[10] * v2 + m[14] * v3;
-	pOut4D[3] = m[3] * v0 + m[7] * v1 + m[11] * v2 + m[15] * v3;
+	/* En doble y una sola redondeada, por lo mismo que SIMDx86Vector_Dot4. */
+	pOut4D[0] = (float) (m[0] * v0 + m[4] * v1 + m[8]  * v2 + m[12] * v3);
+	pOut4D[1] = (float) (m[1] * v0 + m[5] * v1 + m[9]  * v2 + m[13] * v3);
+	pOut4D[2] = (float) (m[2] * v0 + m[6] * v1 + m[10] * v2 + m[14] * v3);
+	pOut4D[3] = (float) (m[3] * v0 + m[7] * v1 + m[11] * v2 + m[15] * v3);
 }
 
 int SIMDx86_GetMajorVersion()

@@ -153,7 +153,7 @@ bool intc(DWORD irq)
 	SET_SH4_BIT(SR_BL);
 	SET_SH4_BIT(SR_MD);
 	SET_SH4_BIT(SR_RB);
-	UpdateSR(SH4_SYSTEM_REGISTER_INTC_REWRITTEN);
+	UpdateSR_ya_escrito();
 
 
 	PC = VBR + 0x600;
