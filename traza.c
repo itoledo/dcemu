@@ -754,3 +754,56 @@ void watchpoint_lectura(unsigned long direccion, size_t tam)
 		fprintf(stderr, "watchpoint-lectura: %d informes, no se reporta mas\n",
 			WATCHPOINT_MAX);
 }
+
+/*
+	La trampa del guest: TRAPA #imm.
+
+	Es lo unico que un programa ejecuta **a proposito** para salirse de su
+	propio flujo, asi que cuando aparece es un dato y no ruido: o es un syscall
+	propio, o -- lo mas comun en un juego -- es el final de una asercion. Sin
+	esto la trampa no deja rastro y lo unico que se ve es al guest dando vueltas
+	en su manejador de excepciones, que es donde se lo encontro en Virtua
+	Tennis.
+
+	Una vez por par (PC, numero) distinto: una asercion dentro de un bucle pasa
+	miles de veces por la misma instruccion.
+*/
+
+#define TRAPA_MAX		32
+
+static DWORD	trapa_pcs[TRAPA_MAX];
+static DWORD	trapa_nums[TRAPA_MAX];
+static int		trapa_n = 0;
+static int		trapa_perdidas = 0;
+
+void traza_trapa(DWORD pc, DWORD numero)
+{
+	int i;
+
+	for (i = 0; i < trapa_n; i++)
+		if (trapa_pcs[i] == pc && trapa_nums[i] == numero)
+			return;
+
+	if (trapa_n >= TRAPA_MAX)
+	{
+		if (!trapa_perdidas++)
+			fprintf(stderr, "traza: mas de %d trampas distintas,"
+				" no se reporta mas\n", TRAPA_MAX);
+		return;
+	}
+
+	trapa_pcs[trapa_n]    = pc;
+	trapa_nums[trapa_n++] = numero;
+
+	fprintf(stderr, "traza: TRAPA #%lu (TRA %lu) desde PC %08lx, PR %08lx,"
+		" salta a %08lx, %llu ciclos\n",
+		(unsigned long) (numero >> 2), (unsigned long) numero,
+		(unsigned long) pc, (unsigned long) PR,
+		(unsigned long) (VBR + 0x100),
+		(unsigned long long) reloj_total);
+
+	/* El anillo, pero solo con la primera: lo que interesa de una trampa es
+	   **como se llego**, y 96 PC por cada una de 32 no se lee. */
+	if (trapa_n == 1)
+		traza_volcar("la primera TRAPA");
+}

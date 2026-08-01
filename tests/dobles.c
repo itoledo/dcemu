@@ -61,6 +61,14 @@ void traza_arrancar(long n)
 	(void) n;
 }
 
+/* syscontrol.c la llama desde TRAPA, pero solo con la traza activa, que aca
+   nunca lo esta. Existe porque el enlazador la nombra igual. */
+void traza_trapa(DWORD pc, DWORD numero)
+{
+	(void) pc;
+	(void) numero;
+}
+
 /* El gancho de mem.h consulta watchpoint_dir en cada escritura y solo llama si
    no es cero. traza.c no se enlaza aca, asi que el doble lo deja apagado; la
    funcion tiene que existir igual porque la macro la nombra. */

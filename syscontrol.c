@@ -9,6 +9,7 @@
 #include "excepciones.h"
 #include "graficos.h"
 #include "ta.h"			/* ta_procesar_bloque(): la FIFO de poligonos */
+#include "traza.h"		/* traza_trapa(): la trampa del guest */
 
 void dump_llamadas()
 {
@@ -874,6 +875,10 @@ OPCODE(trapa169) // TRAPA #imm (11000011 iiiiiiii)
 	SGR = R(15);	// la secuencia de excepcion del SH-4 guarda el stack pointer
 	*TRA = (imm << 2);
 	*EXPEVT = 0x160;
+
+	/* Una trampa es siempre deliberada, asi que vale la linea. Ver traza.c. */
+	if (traza_activa)
+		traza_trapa(PC, *TRA);
 
 	SET_SH4_BIT(SR_MD);
 	SET_SH4_BIT(SR_RB);

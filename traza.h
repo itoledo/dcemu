@@ -115,4 +115,10 @@ extern long				traza_desde_salto;
    disparador es un suceso del hardware. No hace nada si ya hay una traza. */
 void traza_arrancar(long n);
 
+/* Cada TRAPA #imm que ejecuta el guest, una vez por par (PC, numero) distinto.
+   Es la unica instruccion con la que un programa se sale de su propio flujo a
+   proposito: cuando aparece, o es un syscall propio o es una asercion. Ver
+   traza.c. */
+void traza_trapa(DWORD pc, DWORD numero);
+
 #endif /* _TRAZA_H_ */
