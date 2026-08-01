@@ -125,6 +125,48 @@ imprime `traza_resumen()`.
 Corridas cortas y acotadas: `--salir-tras=8` y a mirar el volcado, no dejar el emulador
 corriendo.
 
+### A.0b — Vuelto a medir el 1 de agosto de 2026, y **la tabla de arriba no es reproducible**
+
+Las mismas nueve imágenes después de los once arreglos del núcleo SH-4. Lo estable coincide
+con la tabla del 31 de julio, carácter por carácter:
+
+- **Crazy Taxi**, los dos rips: 9 escenas, una de 21 tiras, `2d2d2d0a` ← PC `0c148966`, 108
+  bucles, el último a 7,863 s. Idéntico.
+- El PC que lee `2d2d2d0a` sigue siendo el mismo por juego y distinto entre juegos:
+  `0c148966`, `8c1fb446`, `8c1dcc66`. Virtua Tenis 2 sigue con `a1000400` ← `8c28cd86`.
+- Las capturas de Capcom (USA), las dos Virtua Tennis y Tenis 2 vuelven a salir **idénticas
+  entre sí** (mismo md5): el arranque común del SDK de Sega, ya explicado abajo.
+- DCDoom sigue sin cargar por este camino, con el mismo mensaje.
+
+**Y aparece algo que la tabla no podía ver porque cada imagen se corrió una sola vez: el
+resultado cambia entre corridas del mismo binario sobre la misma imagen.** Capcom vs. SNK
+(USA), tres corridas seguidas, alterna entre dos estados:
+
+| estado | escenas | direcciones sin emular |
+| --- | --- | --- |
+| A | 2, de 0 tiras | 1 — solo `2d2d2d0a` |
+| B | 0 | 6 — `2d2d2d0a` y **escrituras a `0x00000000`, `4`, `8`, `0xC` y `0x18`** |
+
+**No es de los arreglos del SH-4**: compilado el árbol en `6c672f9` —justo antes de esa
+pasada— da la misma alternancia, dos veces A y una vez B. Es anterior y estaba tapada por
+haber medido una sola vez cada imagen.
+
+Dos consecuencias:
+
+1. **Las columnas finas de la tabla A.0 no sirven como línea base**. La aparente diferencia
+   entre Capcom (USA) y Capcom DCRES —una con 0 escenas y la otra con 2— es ruido, no el rip.
+   Lo que sí sirve es lo estable: el PC que lee `2d2d2d0a`, el md5 de la captura y las nueve
+   escenas de Crazy Taxi.
+2. **El estado B es una escritura por puntero nulo**, y esa es exactamente la forma del error
+   que la vía A.-1b ya persiguió una vez: perder un valor y llamar por un puntero que quedó en
+   cero. Que aparezca y desaparezca según la corrida dice que depende del tiempo — una
+   interrupción que cae en un sitio distinto—, que es la misma familia. Es la mejor pista que
+   hay hoy para la vía A, y se reproduce en cinco minutos.
+
+Qué la hace variar está sin identificar. El candidato obvio es el RTC, que devuelve la hora del
+anfitrión y persiste en `bios/rtc.txt`, más el momento en que caen las interrupciones respecto
+del código del juego.
+
 ### A.-1 — Lo que se midió el 31 de julio, y cambia la hipótesis
 
 Salió de mirar la franja de ruido que se ve arriba de la pantalla en Virtua Tennis y en
