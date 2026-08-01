@@ -406,37 +406,54 @@ sus etiquetas. **Es una regresión real y está acotada a dos commits**, ninguno
 El síntoma no es solo el menú: el panel del selector de fecha sale igual, con sus flechas y
 sin una letra. La BIOS no rasteriza texto en ningún lado.
 
-Medido contando los píxeles de glifo dentro de la pastilla *Play* del menú —el recorte
-(290,258)-(400,296) de la captura de 800×600, píxeles que se apartan más de 60 del color
-dominante—, arrancando con `--bios --salir-tras=25 --captura-gl` en cada revisión:
+**Bisecado hasta el commit, y es uno solo: `9edc6f5`.** Se arrancó `--bios --salir-tras=25
+--captura-gl` en cada revisión y se contaron los colores del recorte (290,258)-(400,296), que
+es el interior de la pastilla *Play*. Contar colores y no contraste es lo que hace la medida
+fiable, y es lo que corrigió una conclusión equivocada — ver más abajo.
 
-| revisión | píxeles de glifo | color de la pastilla | |
-| --- | --- | --- | --- |
-| `c86bb7b` | **582** | (101,49,9) | se lee *Play* en blanco |
-| `1175c59` las dos ventanas de VRAM | **582** | (101,49,9) | igual |
-| `dcc1292` plano de fondo y POLY1 | **145** | (189,152,113) | apenas se adivina |
-| `56963d3` | 145 | (189,152,113) | |
-| `7e3119b` | 145 | (189,152,113) | |
-| `9edc6f5` el CH2 DMA lineal | **0** | (189,152,113) | no queda nada |
-| `master` (43c2189) | 0 | (189,152,113) | |
+| revisión | relleno | borde | glifo | colores |
+| --- | --- | --- | --- | --- |
+| `c86bb7b` | (101,49,9) ×3598 | (203,150,111) ×425 | (127,74,34) ×145 | 6 |
+| `1175c59` las dos ventanas de VRAM | (101,49,9) ×3598 | ×425 | **×145** | 6 |
+| `95d94a8` DMTE del DMAC | (101,49,9) ×3598 | ×425 | **×145** | 6 |
+| `d7cd243` UBC | (101,49,9) ×3598 | ×425 | **×145** | 6 |
+| `dcc1292` plano de fondo y POLY1 | **(189,152,113)** ×3598 | ×425 | **×145** | 6 |
+| `56963d3` | (189,152,113) ×3598 | ×425 | ×145 | 6 |
+| `7e3119b` | (189,152,113) ×3598 | ×425 | **×145** | 6 |
+| `9edc6f5` el CH2 DMA lineal | (189,152,113) **×4168** | — | **—** | **4** |
+| `master` (43c2189) | (189,152,113) ×4168 | — | — | 4 |
 
-**Primera causa, `dcc1292`** —"la animación del boot ROM: el plano de fondo y el POLY1 de 32
-bytes"—. El texto cae de 582 a 145 y **la pastilla misma se lava**, de marrón oscuro a un
-pastel claro. O sea que no es un problema del texto: es toda la pasada translúcida la que
-cambió de color. Ese mismo commit arregló el fondo, que antes salía oscuro y ahora sale
-celeste —lo correcto—, así que hay que separar las dos cosas antes de tocar nada.
+El glifo son 145 píxeles y el borde de la pastilla 425, **idénticos en todas las revisiones
+hasta `7e3119b` inclusive**. En `9edc6f5` los dos desaparecen a la vez y se funden en el
+relleno: 3598 + 425 + 145 = 4168 exacto. O sea que no se perdió "el texto": se perdió **toda
+la capa de detalle de la pastilla**, borde incluido, que es la firma de una textura que dejó
+de decodificarse.
 
-**Segunda causa, `9edc6f5`** —"el CH2 DMA a RAM de vídeo escribe lineal, aunque el destino sea
-la de 64 bits"—. Su padre `7e3119b` tiene 145 píxeles de glifo y él tiene 0. Es el commit que
-arregló el cuadro de mame4all, que sale duplicado y aplastado si el DMA entrelaza.
+**`dcc1292` está absuelto, y la primera lectura de esto era un error de método.** Lo único que
+cambió ahí es el relleno, de marrón oscuro a pastel, porque ese commit arregló el plano de
+fondo: la misma pastilla translúcida sobre un fondo claro en vez de negro. Medir "píxeles
+lejos del color dominante" contaba el borde como glifo mientras el fondo era negro y dejaba de
+contarlo cuando se aclaró, y de ahí salía un falso 582 → 145. Mismos píxeles, distinta cuenta.
 
-Y ahí está el conflicto de fondo, que `CLAUDE.md` ya anticipaba: *"lo único que falta confirmar
-en hardware es que el DMA no distinga las dos ventanas; es la única lectura que encaja con las
-medidas"*. **Esta es la medida que no encaja.** mame4all necesita que el CH2 DMA escriba
-lineal; la fuente de la BIOS parece necesitar que entrelace, porque `get_texture()` la lee con
-`vram64_leer()`. Las dos no pueden ser ciertas con una regla por camino, así que falta el
-factor que las distingue —el destino, el tamaño de la ráfaga, o el registro que arma la
-transferencia— y encontrarlo es el trabajo, no elegir cuál de los dos romper.
+**El mecanismo está probado, no deducido.** `9edc6f5` hace que `ch2_dma_ejecutar()` reescriba
+un destino de la ventana de 64 bits a la de 32 (`dst = (dst & 0x007FFFFF) | 0x05000000`), con
+lo que la transferencia sale lineal. Anulando **solo** esa reescritura y volviendo a arrancar
+la BIOS, el texto vuelve exacto: 145 píxeles de glifo, igual que `7e3119b`. Así que la BIOS
+sube esa textura por el CH2 DMA y la necesita entrelazada, porque `get_texture()` la lee con
+`vram64_leer()`.
+
+Y ahí está el conflicto, que `CLAUDE.md` ya anticipaba: *"lo único que falta confirmar en
+hardware es que el DMA no distinga las dos ventanas; es la única lectura que encaja con las
+medidas"*. **Esta es la medida que no encaja**: mame4all necesita lineal y la BIOS entrelazado,
+por el mismo camino. Falta el factor que los distingue, y elegir cuál romper no es el trabajo.
+
+El candidato razonable es **la ventana concreta**: `VRAM_VENTANA_64()` mete en la misma bolsa
+`0x04`/`0xA4` y `0x11`, y KOS las nombra distinto (`0x11000000` es "VRAM 64-bit, TA=>VRAM").
+Los documentos dicen que mame4all vuelca a `0x11000000`; si la BIOS usa `0x04`, la regla
+"`0x11` lineal, `0x04` entrelazado" cierra los dos casos. **No está medido**: la única corrida
+de mame4all de esta sesión fue con el `1st_read.bin` suelto, que termina en la BIOS, así que
+las escrituras que se ven por la ventana 04 son del ROM y no del juego. Hace falta correr
+mame4all como `.iso` para separarlas.
 
 Está descartado, por medición y no por razonamiento, que sea de esta corrida: la captura del
 menú con `master` y con la rama entera es **byte a byte idéntica**, mismo md5.
