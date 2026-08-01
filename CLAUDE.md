@@ -542,13 +542,34 @@ way — GL_RGBA/GL_UNSIGNED_BYTE wants R in byte 0, which little-endian makes `0
 The texture cache keys on (size, address, bpp, bank): same indices with a different palette is
 a different texture, and `pvr-palette-wormhole` animates exactly that.
 
-**The cache lives one scene and held 10 entries with no bounds check** — `get_texture()` wrote
+**The cache held 10 entries, lived one scene, and had no bounds check** — `get_texture()` wrote
 `cached_textures[cur_tex_count]` unchecked, so the 11th distinct texture of a scene wrote past
 both arrays and bound garbage GL ids, which in the compatibility profile silently create new
 texture objects that alias each other. No KOS demo exceeds a handful; a game scene uses
 hundreds, and the symptom was Crazy Taxi's floor sampling the sky and textures *rotating*
-across objects as uploads landed on each other. `MAX_TEXTURE_COUNT` is 1024 now and the fill
-path clamps to the last slot (reported through `--traza-mem`) instead of overflowing.
+across objects as uploads landed on each other.
+
+**The cache is persistent now: 1024 entries that live across scenes and invalidate by
+generation, not by clearing.** `vram.c` keeps a generation counter per 8 KB page of video RAM;
+the two write funnels bump them (`vram64_escribir` marks itself, `video_write`'s flat 32-bit
+path marks before storing), `pvr_write` keeps a palette generation for `0x005F9000` and
+`PAL_RAM_CTRL`, and each cache entry records the generation sum of its footprint (the exact
+range `vram64_leer` gathered) plus the palette generation when indexed. A lookup that finds
+the key compares generations: unchanged → the GL texture already uploaded serves; changed →
+re-decode into the same slot. Lookups go through a hash on the texture address
+(`tex_hash[]`) — with 1024 entries always full, the linear scan at ~2600 strips per frame
+cost more than the cache saved. Full, it replaces round-robin. The CPU copy is freed right
+after `glTexImage2D`: GL owns the pixels. `pvr-fb_tex` (samples its own framebuffer, needs
+per-frame invalidation) and `pvr-palette-wormhole` (animates the palette) are the two demos
+that prove the invalidation, and both stay byte-identical.
+
+**Mipmapped textures get a GL mipmap chain** (`GL_GENERATE_MIPMAP` at upload, mip-aware MIN
+filter in `aplicar_filtros()`): dcemu decodes only the top level, and without the chain heavy
+minification aliased — the shimmering distant road. Generation costs on upload, which the
+persistent cache amortizes; Crazy Taxi's attract — the worst case, it streams textures —
+times at parity with the pre-cache build, mipmaps included, and everything that does not
+stream is pure win. Uploading the guest's own mip levels instead of generating would be more
+faithful still; noted as a residue.
 
 ## Architecture
 

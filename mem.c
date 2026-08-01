@@ -1226,6 +1226,14 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 	if (ES_CONTROL(fisica))
 	{
 		memcpy(&control_mem[fisica & 0xFFFF], p, size);
+
+		/* La RAM de paleta (0x005F9000-0x005F9FFF) y su formato
+		   (PAL_RAM_CTRL): una textura indexada decodificada con la paleta
+		   vieja es otra textura, y la cache persistente lo detecta por esta
+		   generacion. */
+		if ((fisica >= 0x005F9000 && fisica < 0x005FA000)
+		||  fisica == 0x005F8108)
+			pvr_paleta_gen++;
 	}
 
 	/* Igual que en pvr_read: las etiquetas son P2 y la ventana fisica tiene que
@@ -2145,6 +2153,10 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		vram64_escribir((DWORD) addr, p, size);
 		return;
 	}
+
+	/* El otro embudo de la invalidacion de texturas: vram64_escribir() marca
+	   sola, y este es el camino plano de 32 bits. Ver vram.h. */
+	vram_marcar((DWORD) addr, size);
 
 	switch(size)
 	{

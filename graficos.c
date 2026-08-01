@@ -331,11 +331,63 @@ struct cached_texture
 	   esten en la misma direccion, asi que el banco entra en la clave. */
 	DWORD	paleta;
 	DWORD	bpp;
+
+	/* La cache es persistente: la entrada guarda la suma de generaciones de
+	   su huella en la RAM de video (vram.h) y la generacion de la paleta al
+	   decodificarse. Si alguna cambio al volver a pedirla, se decodifica de
+	   nuevo en el mismo slot; si no, la textura de GL ya subida sirve. */
+	DWORD	gen;
+	DWORD	gen_pal;
 };
 
 typedef struct cached_texture cached_texture;
 cached_texture cached_textures[MAX_TEXTURE_COUNT];
 int cur_tex_count = 0;
+
+/* Generacion de la RAM de paleta y su formato; la incrementa pvr_write(). */
+DWORD pvr_paleta_gen = 0;
+
+/*
+	Indice hash de la cache por direccion de textura: con la cache persistente
+	las 1024 entradas estan siempre llenas, y recorrerlas linealmente unas
+	2600 veces por cuadro (una por tira) costaba mas que lo que la cache
+	ahorraba. Cadenas por -1; una entrada reemplazada se saca de su cadena
+	vieja y se mete en la nueva.
+*/
+#define TEX_HASH_BALDES	512
+static int tex_hash[TEX_HASH_BALDES];
+static int tex_hash_sig[MAX_TEXTURE_COUNT];
+static int tex_hash_listo = 0;
+
+static int tex_hash_balde(DWORD memorypos)
+{
+	return (int) ((memorypos >> 3) & (TEX_HASH_BALDES - 1));
+}
+
+static void tex_hash_sacar(int slot)
+{
+	int b = tex_hash_balde(cached_textures[slot].memorypos);
+	int * p = &tex_hash[b];
+
+	while (*p >= 0)
+	{
+		if (*p == slot)
+		{
+			*p = tex_hash_sig[slot];
+			return;
+		}
+
+		p = &tex_hash_sig[*p];
+	}
+}
+
+static void tex_hash_meter(int slot)
+{
+	int b = tex_hash_balde(cached_textures[slot].memorypos);
+
+	tex_hash_sig[slot] = tex_hash[b];
+	tex_hash[b] = slot;
+}
 
 GLuint pvr_textures[MAX_TEXTURE_COUNT];
 GLuint background_texture;
@@ -784,9 +836,17 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
 static void aplicar_filtros(int strip)
 {
 	GLint modo = TriangleStrip[strip].texture.filtermode ? GL_LINEAR : GL_NEAREST;
+	GLint min  = modo;
+
+	/* Con mipmaps (GL los genero al subir la textura; ver get_texture()), la
+	   minificacion los usa: es lo que corta el alias del piso lejano. */
+	if (TriangleStrip[strip].texture.mipmapped)
+		min = TriangleStrip[strip].texture.filtermode
+			? GL_LINEAR_MIPMAP_LINEAR
+			: GL_NEAREST_MIPMAP_NEAREST;
 
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, modo);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
 }
 
 /*
@@ -855,70 +915,16 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	size_t plano_bytes;
 	size_t mip_salto = 0;
 	int i, j;
+	int slot, slot_nuevo;
+	int rehash = 0;
+	int cuenta_guardada;
+	DWORD gen_ahora, pal_ahora;
 	DWORD bpp    = TriangleStrip[strip].texture.pvr_texture_bpp;
 	DWORD paleta = TriangleStrip[strip].texture.pvr_texture_paleta;
 	DWORD stride = TriangleStrip[strip].texture.pvr_texture_stride;
 
 	if (!volcado_fb_armado)
 		armar_volcado_si_muestrea_framebuffer(memorypos);
-
-	if (cur_tex_count > 0)
-    	for (i = 0; i < cur_tex_count; i++)
-    	{
-    		if (cached_textures[i].usize == usize
-    		&&  cached_textures[i].vsize == vsize
-    		&&  cached_textures[i].memorypos == memorypos
-    		&&  cached_textures[i].bpp == bpp
-    		&&  cached_textures[i].paleta == paleta)
-    		{
-          		logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
- 			glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
-			aplicar_filtros(strip);
-    			return;
-    		}
-    	}
-
-	logxmsg(LOG_PVR, "get_texture: creando textura %d\n", cur_tex_count);
-
-	/*
-		El unico punto que llena la cache, asi que el tope va aca. Sin el, la
-		textura MAX+1 de una escena escribia fuera de los dos arreglos y
-		ligaba ids de GL basura -- que en el perfil de compatibilidad crean
-		objetos nuevos que se pisan entre si: el sintoma era el piso de Crazy
-		Taxi mostrando el cielo, y las texturas rotando entre objetos segun
-		cual se subiera ultima. Si aun con MAX_TEXTURE_COUNT entradas se
-		llena, se pisa el ultimo slot: feo pero acotado, y avisa.
-	*/
-	if (cur_tex_count >= MAX_TEXTURE_COUNT)
-	{
-		if (traza_activa)
-		{
-			static int avisado = 0;
-
-			if (!avisado)
-			{
-				avisado = 1;
-				fprintf(stderr, "traza: cache de texturas llena (%d);"
-					" se pisa el ultimo slot\n", MAX_TEXTURE_COUNT);
-			}
-		}
-
-		cur_tex_count = MAX_TEXTURE_COUNT - 1;
-
-		if (cached_textures[cur_tex_count].twiddled)
-		{
-			free(cached_textures[cur_tex_count].data);
-			cached_textures[cur_tex_count].twiddled = false;
-		}
-	}
-
-	// si llegamos aqu�, la textura no est�.
-	cached_textures[cur_tex_count].usize = usize;
-	cached_textures[cur_tex_count].vsize = vsize;
-	cached_textures[cur_tex_count].memorypos = memorypos;
-	cached_textures[cur_tex_count].texture = pvr_textures[cur_tex_count];
-	cached_textures[cur_tex_count].bpp = bpp;
-	cached_textures[cur_tex_count].paleta = paleta;
 
 	/*
 		Una textura con mipmaps guarda sus niveles **del 1x1 al grande**, con 6
@@ -933,6 +939,10 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		corre despues del codebook, que queda al principio), la paleta de
 		4 bpp un cuarto y la de 8 la mitad. Una textura con mipmaps es
 		cuadrada, asi que el lado es usize.
+
+		El salto y el tamano se calculan ANTES de buscar en la cache porque
+		son la huella de la textura en la RAM de video, y la huella es lo que
+		decide si la entrada cacheada sigue valida.
 	*/
 	if (TriangleStrip[strip].texture.mipmapped)
 	{
@@ -950,12 +960,6 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			mip_salto = ofs16;
 	}
 
-	/*
-		`memorypos` sale de la palabra de control de textura, o sea que esta en
-		la numeracion del area de 64 bits -- la que el chip usa para leer
-		texturas -- y el bloque se guarda en la de 32. Se junta aca a un buffer
-		contiguo y los decodificadores quedan como estaban. Ver vram.h.
-	*/
 	if (vq)
 	{
 		/* El codebook de 2 KB mas los indices. El indexado twiddled de un
@@ -971,10 +975,114 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	else
 		plano_bytes = (size_t) usize * vsize * 2;
 
+	/* La generacion de la huella (vram.h) y la de la paleta si es indexada:
+	   si ninguna cambio desde que se decodifico, la textura de GL sirve. */
+	gen_ahora = vram_gen_rango64(memorypos + (DWORD) (vq ? 0 : mip_salto),
+								 plano_bytes);
+	pal_ahora = (bpp != 0) ? pvr_paleta_gen : 0;
+
+	if (!tex_hash_listo)
+	{
+		for (i = 0; i < TEX_HASH_BALDES; i++)
+			tex_hash[i] = -1;
+
+		tex_hash_listo = 1;
+	}
+
+	slot = -1;
+
+	for (i = tex_hash[tex_hash_balde(memorypos)]; i >= 0; i = tex_hash_sig[i])
+	{
+		if (cached_textures[i].memorypos == memorypos
+		&&  cached_textures[i].usize == usize
+		&&  cached_textures[i].vsize == vsize
+		&&  cached_textures[i].bpp == bpp
+		&&  cached_textures[i].paleta == paleta)
+		{
+			if (cached_textures[i].gen == gen_ahora
+			&&  cached_textures[i].gen_pal == pal_ahora)
+			{
+				logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
+				glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
+				aplicar_filtros(strip);
+				return;
+			}
+
+			/* La clave esta pero alguien escribio adentro (o cambio la
+			   paleta): se decodifica de nuevo en el mismo slot, que ya esta
+			   en la cadena correcta. */
+			slot = i;
+			break;
+		}
+	}
+
+	/*
+		La cache es persistente -- ya no se vacia por escena -- asi que un
+		slot nuevo sale del final mientras haya lugar y despues por rueda,
+		reemplazando la entrada mas vieja por orden de insercion. La textura
+		reemplazada no necesita despedida: su id de GL se reusa al subir esta.
+	*/
+	if (slot < 0)
+	{
+		static int tex_rueda = 0;
+
+		if (cur_tex_count < MAX_TEXTURE_COUNT)
+			slot = cur_tex_count;
+		else
+		{
+			slot = tex_rueda++ % MAX_TEXTURE_COUNT;
+			tex_hash_sacar(slot);	/* la victima deja su cadena vieja */
+		}
+
+		rehash = 1;					/* clave nueva: entra al hash al final */
+	}
+
+	slot_nuevo = (slot == cur_tex_count);
+
+	if (cached_textures[slot].twiddled)
+	{
+		free(cached_textures[slot].data);
+		cached_textures[slot].data = NULL;
+		cached_textures[slot].twiddled = false;
+	}
+
+	/*
+		De aca hasta el final, `cur_tex_count` ES el slot que se esta llenando:
+		el cuerpo de decodificacion entero indexa con el y queda como estaba.
+		Se restaura al salir de `cuenta_guardada` -- variable propia, porque
+		`i` y `j` los pisan los bucles del decodificador -- y crece solo si el
+		slot era nuevo.
+	*/
+	cuenta_guardada = cur_tex_count;
+	cur_tex_count = slot;
+
+	logxmsg(LOG_PVR, "get_texture: creando textura %d\n", cur_tex_count);
+
+	cached_textures[cur_tex_count].usize = usize;
+	cached_textures[cur_tex_count].vsize = vsize;
+	cached_textures[cur_tex_count].memorypos = memorypos;
+	cached_textures[cur_tex_count].texture = pvr_textures[cur_tex_count];
+	cached_textures[cur_tex_count].bpp = bpp;
+	cached_textures[cur_tex_count].paleta = paleta;
+	cached_textures[cur_tex_count].gen = gen_ahora;
+	cached_textures[cur_tex_count].gen_pal = pal_ahora;
+
+	if (rehash)
+		tex_hash_meter(cur_tex_count);
+
+	/*
+		`memorypos` sale de la palabra de control de textura, o sea que esta en
+		la numeracion del area de 64 bits -- la que el chip usa para leer
+		texturas -- y el bloque se guarda en la de 32. Se junta aca a un buffer
+		contiguo y los decodificadores quedan como estaban. Ver vram.h.
+	*/
 	plano = (unsigned char *) malloc(plano_bytes);
 
 	if (plano == NULL)
+	{
+		cur_tex_count = cuenta_guardada;
 		return;
+	}
 
 	/* Con VQ el salto no corre aca sino sobre los indices: el codebook esta
 	   al principio y tiene que venir igual. */
@@ -1121,10 +1229,35 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
 	   aplicar_filtros(strip);
 
+	/*
+		Si la textura trae mipmaps, que GL genere la cadena al subirla: dcemu
+		decodifica solo el nivel grande, y sin los chicos la minificacion
+		fuerte hace alias -- el chisporroteo del piso lejano en angulos
+		rasantes. Es estado del objeto de textura y los objetos se reusan,
+		asi que se pone en los dos sentidos. GL_GENERATE_MIPMAP es de GL 1.4;
+		con la cache persistente el costo se paga una vez por textura, no por
+		cuadro.
+	*/
+#ifndef GL_GENERATE_MIPMAP
+#define GL_GENERATE_MIPMAP 0x8191
+#endif
+	glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP,
+		TriangleStrip[strip].texture.mipmapped ? GL_TRUE : GL_FALSE);
+
     logxmsg(LOG_PVR, "get_texture: size %dx%d, mempos %x (area de 64 bits)\n", usize, vsize, memorypos);
    glTexImage2D(GL_TEXTURE_2D, 0, TriangleStrip[strip].texture.pvr_texture_components, usize, vsize, 0, TriangleStrip[strip].texture.pvr_texture_pixelformat, TriangleStrip[strip].texture.pvr_texture_pixelpack, cached_textures[cur_tex_count].data);
 
-    cur_tex_count++;
+	/* GL ya tiene su copia: la de CPU no se guarda -- mil texturas
+	   persistentes de a cientos de KB serian memoria muerta. */
+	if (cached_textures[cur_tex_count].twiddled)
+	{
+		free(cached_textures[cur_tex_count].data);
+		cached_textures[cur_tex_count].data = NULL;
+		cached_textures[cur_tex_count].twiddled = false;
+	}
+
+	/* Restaurar la cuenta: solo crece si el slot era nuevo. */
+	cur_tex_count = slot_nuevo ? cuenta_guardada + 1 : cuenta_guardada;
 
 	return;
 }
@@ -1678,7 +1811,9 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		vol_count = 0;
 		ta_reiniciar();
 		pvr_listdone = 0;
-		limpiar_texturas();
+		/* La cache de texturas ya no se vacia por escena: es persistente y
+		   se invalida por generaciones (vram.h). La textura que este render
+		   acaba de escribir se detecta sola por su huella. */
 		return;
 	}
 
@@ -2206,8 +2341,9 @@ static void terminar_escena(void)
 	   quedo no debe pegarse con el primer bloque de la escena siguiente. */
 	ta_reiniciar();
 
-	limpiar_texturas();
-//	cur_tex_count = 0;
+	/* La cache de texturas es persistente: se invalida por generaciones
+	   (vram.h), no por escena. Vaciarla aca costaba decodificar y volver a
+	   subir cada textura en cada cuadro. */
 
 	// ???
 	memread_fisico(0xa05f8128, &dw, sizeof(DWORD)); // leer TA_ISP_BASE

@@ -1,12 +1,17 @@
 #ifndef _GRAFICOS_H
 #define _GRAFICOS_H
 
-/* Entradas de la cache de texturas, que vive UNA escena (limpiar_texturas()
-   al empezar cada una). Eran 10, que a las demos de KOS les sobraba; una
-   escena de un juego usa cientos distintos -- Crazy Taxi ronda las 500 tiras
-   -- y el desborde escribia fuera de los arreglos. Ver el tope en
-   get_texture(). */
+/* Entradas de la cache de texturas. Es PERSISTENTE: las entradas viven entre
+   escenas y se invalidan por generaciones de la RAM de video y de la paleta
+   (vram.h); llena, se reemplaza por rueda. Eran 10 y por escena, que a las
+   demos de KOS les sobraba; una escena de un juego usa cientos distintos --
+   Crazy Taxi ronda las 500 tiras -- y re-decodificarlas por cuadro costaba
+   los FPS. */
 #define MAX_TEXTURE_COUNT 1024
+
+/* Generacion de la RAM de paleta y PAL_RAM_CTRL; la incrementa pvr_write()
+   (mem.c) y la consume la cache de texturas. */
+extern DWORD pvr_paleta_gen;
 
 extern	int		screenbits;
 extern	int		screenformat;

@@ -12,6 +12,57 @@ extern unsigned char * video_mem;
 #define VRAM_MASCARA	0x007FFFFF
 #define VRAM_BANCO		0x00400000
 
+/* Paginas de 8 KB: 1024 para los 8 MB. Ver vram.h. */
+#define VRAM_PAG_BITS	13
+#define VRAM_PAGINAS	(0x00800000 >> VRAM_PAG_BITS)
+
+static DWORD vram_gen[VRAM_PAGINAS];
+
+void vram_marcar(DWORD a32, size_t n)
+{
+	DWORD p, pf;
+
+	if (n == 0)
+		return;
+
+	p  = (a32 & VRAM_MASCARA) >> VRAM_PAG_BITS;
+	pf = ((a32 + (DWORD) (n - 1)) & VRAM_MASCARA) >> VRAM_PAG_BITS;
+
+	if (pf < p)
+		pf = VRAM_PAGINAS - 1;	/* un rango no da la vuelta; por si acaso */
+
+	for (; p <= pf; p++)
+		vram_gen[p]++;
+}
+
+DWORD vram_gen_rango(DWORD a32, size_t n)
+{
+	DWORD p, pf, suma = 0;
+
+	if (n == 0)
+		return 0;
+
+	p  = (a32 & VRAM_MASCARA) >> VRAM_PAG_BITS;
+	pf = ((a32 + (DWORD) (n - 1)) & VRAM_MASCARA) >> VRAM_PAG_BITS;
+
+	if (pf < p)
+		pf = VRAM_PAGINAS - 1;
+
+	for (; p <= pf; p++)
+		suma += vram_gen[p];
+
+	return suma;
+}
+
+DWORD vram_gen_rango64(DWORD a64, size_t n)
+{
+	DWORD ini = ((a64 & VRAM_MASCARA) >> 3) * 4;
+	size_t mitad = n / 2 + 8;
+
+	return vram_gen_rango(ini, mitad)
+	     + vram_gen_rango(VRAM_BANCO + ini, mitad);
+}
+
 DWORD vram_32_a_64(DWORD a32)
 {
 	DWORD y = a32 & (VRAM_BANCO - 1);
@@ -80,6 +131,14 @@ void vram64_leer(DWORD a64, void * p, size_t n)
 
 void vram64_escribir(DWORD a64, const void * p, size_t n)
 {
+	/* La huella en los dos bancos, con su colchon. Ver vram.h. */
+	{
+		DWORD ini = ((a64 & VRAM_MASCARA) >> 3) * 4;
+
+		vram_marcar(ini, n / 2 + 8);
+		vram_marcar(VRAM_BANCO + ini, n / 2 + 8);
+	}
+
 	const unsigned char *	s = (const unsigned char *) p;
 
 	while (n && (a64 & 7))

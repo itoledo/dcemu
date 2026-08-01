@@ -439,17 +439,26 @@ resueltos el mismo día — el detalle está en `CLAUDE.md` ("Graphics pipeline"
   se aplica en los constructores de color de vértice. Con esto los árboles y palmeras quedan
   como en el hardware.
 
+De ahí salieron dos rediseños, hechos el mismo día — el detalle en `CLAUDE.md`:
+
+- **La caché de texturas es persistente e invalida por generaciones**: contadores por página
+  de 8 KB en `vram.c` que marcan los dos embudos de escritura, más una generación de paleta;
+  cada entrada guarda la suma de su huella y se re-decodifica solo cuando alguien escribió
+  adentro. Búsqueda por hash de dirección (la lineal sobre 1024 entradas siempre llenas comía
+  lo ahorrado — y de paso salió que la restauración de la cuenta usaba `i`, que los bucles
+  del decodificador pisan: ese bug hacía "lenta" la primera medición). `fb_tex` y
+  `palette-wormhole`, los dos demos que viven de la invalidación, byte a byte idénticos.
+  Si el "mundo blanco" intermitente era el batido de subidas contra el driver, esto lo
+  elimina de raíz; queda en observación.
+- **Las texturas con mipmaps llevan cadena de GL** (`GL_GENERATE_MIPMAP` + filtro MIN de
+  mipmaps): corta el alias del piso lejano en ángulos rasantes. Crazy Taxi con todo puesto
+  queda a la par de la base en su peor caso (el attract, que rota texturas) y gana en todo
+  lo que no rota.
+
 Quedan anotados sin investigar:
 
-- **El piso lejano en ángulos rasantes chisporrotea/se embarra**: dcemu sube solo el nivel
-  grande y no genera la cadena de mipmaps de GL, así que la minificación fuerte hace alias
-  donde el chip cambiaría de nivel. Generar los niveles en GL (o subir los del guest) lo
-  suavizaría.
-- **El "mundo blanco" intermitente**: en algunas corridas/etapas todas las texturas del mundo
-  salen lavadas a blanco y en otras no, con el mismo binario. La sospecha es el rediseño
-  pendiente de la caché de texturas: hoy vive una escena y decodifica y re-sube ~200 texturas
-  por cuadro — un caché persistente con invalidación por escritura a VRAM es el arreglo de
-  fondo, y de paso recuperaría buena parte de los FPS.
+- **Subir los niveles de mip del guest** en vez de generarlos en GL: más fiel (son los del
+  artista) y más barato en las texturas que rotan. La tabla de offsets ya está.
 - **Tiras degeneradas por centenares**: los encabezados de sombra de Crazy Taxi dejan cientos
   de tiras con n=0 por escena (inofensivas, no dibujan) y algunos encabezados translúcidos
   llegan con `depthmode=0`/`blend=0` sin normalizar. Ruido que conviene limpiar cuando se

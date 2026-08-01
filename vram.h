@@ -53,4 +53,20 @@ DWORD vram_64_a_32(DWORD a64);
 void vram64_leer(DWORD a64, void * p, size_t n);
 void vram64_escribir(DWORD a64, const void * p, size_t n);
 
+/*
+	Generaciones por pagina de 8 KB, para invalidar la cache de texturas sin
+	adivinar: cada escritura a la RAM de video marca sus paginas, y una textura
+	guarda la suma de generaciones de su huella al decodificarse -- si al
+	volver a pedirla la suma cambio, alguien escribio adentro y hay que
+	decodificar de nuevo. Los dos embudos de escritura son video_write()
+	(camino de 32 bits) y vram64_escribir(), que marca sola.
+
+	`vram_gen_rango64` toma la huella como la ve vram64_leer(): un rango de la
+	numeracion de 64 bits toca los dos bancos, contiguo en cada uno, y el
+	colchon de un grupo por punta solo puede costar una invalidacion de mas.
+*/
+void  vram_marcar(DWORD a32, size_t n);
+DWORD vram_gen_rango(DWORD a32, size_t n);
+DWORD vram_gen_rango64(DWORD a64, size_t n);
+
 #endif /* _VRAM_H_ */
