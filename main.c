@@ -202,6 +202,7 @@ void RedibujarPantalla()
 		logxmsg(LOG_PVR, "RedibujarPantalla: SDL_GL_SwapBuffers\n");
 		DibujarFramebuffer();
 		gui_refresh();
+		capturar_gl_framebuffer();
 		SDL_GL_SwapBuffers();
 		fps_marcar_cuadro();
 		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);

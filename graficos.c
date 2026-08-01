@@ -3399,6 +3399,33 @@ void DibujarFramebuffer()
 	glEnable(GL_DEPTH_TEST);
 }
 
+/*
+	--captura-gl desde el camino 2D.
+
+	El del PVR captura en terminar_escena() y solo si la escena trajo tiras. Un
+	juego que dibuja escribiendo el framebuffer --un emulador de arcade, por
+	ejemplo-- no manda ninguna, asi que no se capturaba nunca y su pantalla no
+	habia forma de verla sin mirar la ventana. Se captura solo mientras no haya
+	habido ni una escena del PVR, para no pisar el volcado bueno de una demo 3D
+	con un cuadro 2D vacio.
+*/
+void capturar_gl_framebuffer(void)
+{
+	if (opciones.captura_gl == NULL || traza_rendidas > 0)
+		return;
+
+	if (getenv("DCEMU_CAPTURA_TODAS"))
+	{
+		static int	nf = 0;
+		char		nom[128];
+
+		snprintf(nom, sizeof(nom), "f%04d-%s", nf++, opciones.captura_gl);
+		volcar_gl(nom);
+	}
+	else
+		volcar_gl(opciones.captura_gl);
+}
+
 int glinit(void)
 {
 	int i;

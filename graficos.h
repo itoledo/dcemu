@@ -55,6 +55,10 @@ int volcar_framebuffer(const char * ruta);
    Ver el comentario en graficos.c. */
 int volcar_gl(const char * ruta);
 
+/* --captura-gl desde el camino 2D, para lo que dibuja escribiendo el
+   framebuffer y no manda tiras al PVR. Ver graficos.c. */
+void capturar_gl_framebuffer(void);
+
 /* Cuantas escenas se rindieron y con cuantas tiras las ultimas. Lo llama
    traza_resumen() al salir; solo dice algo con --traza-mem. */
 void traza_ta_resumen(void);
