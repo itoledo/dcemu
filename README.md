@@ -3,28 +3,35 @@
 Emulador de Sega Dreamcast escrito en C entre 2004 y 2007: intérprete de la CPU SH-4 y
 emulación del chip gráfico PowerVR2 traducida a OpenGL, sobre SDL.
 
-Es un proyecto histórico, sin desarrollo activo desde febrero de 2007. Se publica tal como
-quedó, con el historial completo recuperado del repositorio CVS original.
+Se publica con el historial completo recuperado del repositorio CVS original: el tronco
+llega hasta febrero de 2007, y el trabajo posterior arranca desde ahí.
 
-Llegó a correr **Doom**, **MAME** y varios homebrew compilados con
-[KallistiOS](https://github.com/KallistiOS/KallistiOS). Nunca logró arrancar un juego
-comercial.
+Corre **Doom**, **MAME** y 100 de los 135 ejemplos de
+[KallistiOS](https://github.com/KallistiOS/KallistiOS) —de los 35 restantes, 28 piden
+periféricos que no se emulan y 7 son de sonido—. Y **arranca desde el boot ROM real**: con
+`--bios` reproduce la animación del remolino, llega al menú y carga el `1ST_READ.BIN` de un
+`.cdi` de juego por su cuenta, como una consola. Lo que todavía no hace es que ese juego
+dibuje. El inventario al día está en [docs/demos-kos.md](docs/demos-kos.md) y lo que queda
+abierto en [docs/pendientes-plan.md](docs/pendientes-plan.md).
 
 ## Qué emula
 
 | Subsistema | Estado |
 |---|---|
-| CPU SH-4, enteros | Completo — despacho por tabla de saltos, delay slots, bancos de registros |
-| FPU SH-4 | Instrucciones simples y dobles, más las gráficas: `FSCA`, `FIPR`, `FTRV` |
+| CPU SH-4, enteros | Completo — despacho por tabla de saltos, delay slots, bancos de registros. Las 239 filas de la tabla, con 516 casos de prueba |
+| FPU SH-4 | Simples, dobles y las gráficas (`FSCA`, `FIPR`, `FTRV`), con los campos Cause y Flag de FPSCR y sus excepciones. Faltan los bits DN y RM |
+| MMU | TLB, traducción, excepciones y reejecución. Sin traducir la búsqueda de instrucción |
 | Store queues | Sí — es la vía por la que el juego envía geometría al tile accelerator |
-| Interrupciones | INTC, eventos ASIC, los tres timers del TMU |
-| PVR2 / TA | Listas de polígonos, texturas (incluye *twiddled* y VQ), blending, orden de translúcidos, framebuffer 2D |
-| Maple | DMA y estado del control, alimentado desde teclado o joystick |
-| GD-ROM | Vía hooks a las syscalls de BIOS; `.iso` e imágenes bin/cue mediante libcdio, con descrambling de `1st_read.bin` |
+| Interrupciones | INTC, eventos ASIC, los tres timers del TMU, el watchdog y el DMAC |
+| UBC | Completo — los dos canales de breakpoint por hardware, con máscara, dato y secuencia |
+| PVR2 / TA | Los quince tipos de vértice, todos los formatos de textura, sprites, volúmenes modificadores, render a textura, plano de fondo y las dos ventanas de la RAM de vídeo |
+| Maple | DMA y estado del control, alimentado desde teclado o gamepad (XInput) |
+| GD-ROM | La lectora de verdad: registros ATA, comandos SPI y DMA por G2, más los hooks de syscall. `.iso`, `.cdi` (DiscJuggler) y bin/cue mediante libcdio |
+| BIOS | Flash y RTC con escritura y persistencia, handshake del cable de vídeo, syscalls de fuente, flash y GD-ROM |
 | SCIF (serial) | Salida redirigida a `logs/serial.txt` |
-| DMA del SH-4 | Parcial — los registros existen, las transferencias no están implementadas |
+| DMA del SH-4 | Los cuatro canales del DMAC y el CH2 del Holly, que es el que alimenta al TA |
 | AICA / sonido | **No emulado** — se reserva la RAM y se acusa recibo del FIFO G2, nada más |
-| MMU, VMU, módem/BBA | No emulados |
+| VMU, módem/BBA, red | No emulados |
 
 Incluye un depurador dentro del emulador (F12): desensamblador, vista de registros, volcado
 de memoria y ejecución paso a paso.
@@ -80,8 +87,10 @@ cmake --build build --config Debug --target dcemu_tests
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-Son 387 casos que cubren las 239 filas de la tabla de instrucciones —una suite comprueba
-que no quede ninguna sin ejercitar—. Encontraron 16 desviaciones respecto del manual del
+Son 543 casos que cubren las 239 filas de la tabla de instrucciones —una suite comprueba
+que no quede ninguna sin ejercitar— más lo que no son opcodes: la lectora, el TA, la MMU,
+el UBC, los timers, el watchdog y las dos ventanas de la RAM de vídeo. Encontraron 16
+desviaciones respecto del manual del
 SH-4, todas corregidas; la más gruesa: `DIV1` calculaba `T = Q && M` en vez de
 `T = (Q == M)`, de modo que **toda división sin signo devolvía cociente 0**. De paso se
 implementaron las 29 instrucciones que faltaban (`ADDV`, `SUBV`, `MAC.W`, `SHAL`, las
@@ -92,14 +101,22 @@ flotante). El detalle, y lo que sigue sin emularse a propósito, está en
 ## Uso
 
 ```sh
-dcemu [1st_read.bin | imagen.iso | imagen.cue]     # por omisión: 1st_read.bin
+dcemu [opciones] [1st_read.bin | imagen.iso | imagen.cdi]   # por omisión: 1st_read.bin
 ```
 
 Requiere en el directorio de trabajo: `bios/bios.bin` (no se distribuye), `font.png` y
-`fixedfont.bmp`. Si el argumento termina en `.bin` se carga junto con `ip.bin`; en cualquier
-otro caso se abre como imagen de disco y ambos se extraen de ahí.
+`fixedfont.bmp`. `bios/flash.bin` es opcional: sin él se sintetiza una flash mínima. Si el
+argumento termina en `.bin` se carga junto con `ip.bin`; en cualquier otro caso se abre como
+imagen de disco y ambos se extraen de ahí.
 
-**Teclas**
+Con `--bios` se arranca en `0xA0000000` y trabaja el boot ROM real, sin los hooks de
+syscall: es el camino de una consola. `dcemu --ayuda` lista el resto, que son sobre todo
+herramientas de diagnóstico —trazas, watchpoints, desensamblado y volcados al salir—;
+están explicadas en [docs/bios-boot-plan.md](docs/bios-boot-plan.md).
+
+**Teclas.** También funciona un gamepad por XInput, que se carga en tiempo de ejecución: no
+agrega dependencia de compilación y el emulador arranca igual donde no esté la DLL. Los dos
+se mezclan, así que las teclas siguen funcionando con el mando enchufado.
 
 | | |
 |---|---|
@@ -109,8 +126,11 @@ otro caso se abre como imagen de disco y ambos se extraen de ahí.
 | `q` `e` | Gatillos izquierdo y derecho |
 | `y` `h` `g` `j` | Stick analógico |
 | `p` | Pausa |
+| `f` | Contador de cuadros por segundo en el título de la ventana |
 | F1 | Pantalla completa |
 | F2 | Ventana de log |
+| F5 | Volcar el framebuffer a `captura.bmp` — lo que dibujó el guest, no lo que rasterizó OpenGL |
+| F6 | Volcar el buffer de GL a `captura-gl.bmp`, que es la otra mitad: el 3D nunca pasa por la RAM de vídeo |
 | F9 / F10 / F11 | Paso a paso / detener / ejecutar |
 | F12 | Vista de depuración (arranca oculta: el emulador parte ejecutando) |
 | `+` `-` (teclado numérico) | Recorrer el volcado de memoria |
