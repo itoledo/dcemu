@@ -3312,6 +3312,15 @@ void DibujarFramebuffer()
 				(unsigned) traza_video_escrituras, (unsigned) traza_video_bytes,
 				traza_video_min, traza_video_max,
 				(unsigned) traza_video_ventanas);
+
+			/* Y por cual: la de 32 bits (0x05, 0x13) deja el bloque plano y la
+			   de 64 (0x04, 0x11) lo reparte entre los dos bancos. */
+			fprintf(stderr, "traza:   por ventana:");
+			for (i = 0; i < 0x20; i++)
+				if (traza_video_por_ventana[i])
+					fprintf(stderr, " %02x=%u", i,
+						(unsigned) traza_video_por_ventana[i]);
+			fprintf(stderr, "\n");
 		}
 
 		vueltas++;

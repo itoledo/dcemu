@@ -25,6 +25,11 @@ extern mem_access_write_t * mem_hash_write[0x100];
 extern DWORD traza_video_escrituras;
 extern DWORD traza_video_bytes;
 extern DWORD traza_video_ventanas;
+
+/* Bytes escritos por cada ventana, indexado por el byte alto de la direccion.
+   Saber **cual** ventana lleva el cuadro es lo que separa "el guest escribe
+   plano" de "el guest escribe por la de 64 bits y va a los dos bancos". */
+extern DWORD traza_video_por_ventana[0x20];
 extern long  traza_video_min;
 extern long  traza_video_max;
 

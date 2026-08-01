@@ -1,5 +1,6 @@
 // #include <windows.h>
 #include <time.h>
+#include <stdlib.h>			/* getenv(), para los interruptores de experimento */
 #include "main.h"
 #include "intc.h"
 #include "opcodes.h"
@@ -83,12 +84,23 @@ unsigned char * control_mem;	// empezando en 0x005f0000, 64 kbytes
 DWORD traza_video_escrituras = 0;
 DWORD traza_video_bytes = 0;
 DWORD traza_video_ventanas = 0;
+DWORD traza_video_por_ventana[0x20] = { 0 };
+
+/* Ver VRAM_VENTANA_64() mas abajo: lo pone inicializar_memoria() desde
+   DCEMU_11_PLANO y no se vuelve a mirar el ambiente. */
+static int vram_11_plano = 0;
 long  traza_video_min = 0x7FFFFFFF;
 long  traza_video_max = -1;
 
 int inicializar_memoria()
 {
 	logmsg("creando memoria\n");
+
+	vram_11_plano = (getenv("DCEMU_11_PLANO") != NULL);
+
+	if (vram_11_plano)
+		fprintf(stderr, "DCEMU_11_PLANO: las escrituras a RAM de video por la "
+			"ventana 0x11 no se entrelazan.\n");
 
 	memoria = (unsigned char *) malloc(sizeof(char) * MEM_SIZE); // 16 megabytes
 
@@ -564,8 +576,27 @@ void sq_write(unsigned long direccion, void * p, size_t size)
 /* Las ventanas de 64 bits sobre la RAM de video: 0x04 (y su espejo P2 0xA4) y
    la FIFO de texturas del TA en 0x11. El resto -- 0x05/0xA5, 0x13 -- es la de
    32 bits, cuya numeracion es la del bloque. Ver vram.h. */
+/*
+	EXPERIMENTO: DCEMU_11_PLANO deja las escrituras por 0x11 sin entrelazar.
+
+	mame4all escribe su framebuffer entero ahi --132 MB por corrida, de a 4
+	bytes, contra 1,8 MB por la ventana de 32 bits-- y espera verlo lineal: con
+	el entrelazado el cuadro se reparte entre los dos bancos y en pantalla sale
+	duplicado a lo ancho y aplastado a la mitad de alto. Recombinando los dos
+	bancos de a 4 bytes se reconstruye la imagen exacta, asi que lo que el guest
+	escribe es lineal.
+
+	Pero no se puede quitar sin mas: pvr-strided_texture sube su textura por la
+	misma ventana y cuenta con el entrelazado --pasa de 2 colores a 1, o sea a
+	negro--. Los otros seis demos de textura medidos no cambian. Falta saber que
+	distingue los dos casos en el hardware; mientras tanto, el interruptor.
+
+	Se lee una sola vez --en inicializar_memoria()--: esto se consulta en cada
+	escritura a RAM de video, que son decenas de millones por corrida.
+*/
 #define VRAM_VENTANA_64(direccion)	\
-	((((direccion) >> 24) & 0x1F) == 0x04 || (((direccion) >> 24) & 0x1F) == 0x11)
+	((((direccion) >> 24) & 0x1F) == 0x04 || \
+	 ((((direccion) >> 24) & 0x1F) == 0x11 && !vram_11_plano))
 
 void video_read(unsigned long direccion, void * p, size_t size)
 {
@@ -2020,7 +2051,17 @@ void video_write(unsigned long direccion, void * p, size_t size)
 		/* & 0x1F y no & 0x0F: con cuatro bits 0x11 y 0x13 caian sobre 0x04 y
 		   0x05 y el reporte no distinguia la FIFO de texturas. Los espejos P2
 		   siguen plegandose sobre la fisica, que es lo que interesa. */
+		/* La primera escritura de cada ventana, con el PC: dice quien la hace,
+		   que es lo que separa "el guest eligio esta ventana" de "dcemu
+		   resolvio mal el destino de una store queue". */
+		if (traza_video_por_ventana[(direccion >> 24) & 0x1F] == 0)
+			fprintf(stderr, "traza: primera escritura a RAM de video por la "
+				"ventana %02lx: %08lx (%u bytes) desde PC %08lx\n",
+				(direccion >> 24) & 0x1F, direccion, (unsigned) size,
+				(unsigned long) PC);
+
 		traza_video_ventanas |= 1u << ((direccion >> 24) & 0x1F);
+		traza_video_por_ventana[(direccion >> 24) & 0x1F] += (DWORD) size;
 
 		if (addr < traza_video_min)	traza_video_min = addr;
 		if (addr > traza_video_max)	traza_video_max = addr;
