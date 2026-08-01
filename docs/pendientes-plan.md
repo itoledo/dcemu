@@ -260,6 +260,44 @@ está anotada en `CLAUDE.md`: plausible y falso.
 Lo que sigue abierto de A.2: la hipótesis del registro que contesta cero baja a segundo lugar
 para Virtua Tennis, pero no está descartada para los demás.
 
+### A.4 — Virtua Tennis, mapeado hasta la cuarta espera (1 de agosto de 2026, tarde)
+
+Con las herramientas nuevas (`DCEMU_TRAZA_ESCENA`, los watchpoints y `--traza-desde`) el
+arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
+
+- **La lectura de `0x2d2d2d0a` era un herring rojo**: es el crt0 — un "touch" de un puntero
+  sin inicializar cuyo resultado se descarta (Crazy Taxi hace exactamente lo mismo y corre), y
+  los ceros byte a byte que siguen son el clear del BSS. Cerrado para todos los juegos.
+- **La tabla de `0x8C470A20` es la de handlers de eventos del ASIC** (entradas de 8 bytes
+  {función, argumento}, indexadas por número de evento). VT registra las 0-3, la 8 (fin de
+  lista modificadora opaca; instancia en `0x8C45F920`) y la 10; **des-registra la 7 a
+  propósito** (el "NULL" viene de un `MOV #0,R5` en el delay slot — es el des-registrador).
+- **Espera 3**: un bucle con timeout que sondea `[0x8C45F904] != 0`, y ese flag lo pone el
+  handler del evento 8 — que dcemu nunca emitía, porque el juego cierra su única lista como
+  opaca (evento 7) y dcemu solo emite el evento de la lista que clasificó. Con el experimento
+  `DCEMU_FIN_TODAS` (emitir también los eventos de las listas habilitadas que quedaron
+  vacías) esa espera se libera y el juego avanza a **2 escenas rendidas** (STARTRENDER
+  dispara). La semántica real del hardware — si el fin de una lista completa también a las
+  habilitadas vacías, o si en consola ese flag se pone por otro camino — es la pregunta
+  abierta antes de convertir el experimento en comportamiento.
+- **Espera 4** (donde está hoy con el experimento): el juego marca "pendiente" (bit 0 de
+  `[0x8C45F940]`, PC `8c1fa13e`) y sondea a que su ISR lo limpie. El bit se marca ~61M ciclos
+  después del único fin de lista, así que no es la carrera del punto siguiente; falta
+  identificar qué evento debería limpiarlo.
+
+Y de esa persecución salieron dos mejoras estructurales que ya quedaron:
+
+- **La traza de entregas del ASIC** (`traza: asic evento ... entregado por IRQ9/B/D` o
+  `encolado sin entregar`, con las tres máscaras): responde de una vez "¿le llegó la
+  interrupción al juego?", la pregunta de siempre.
+- **Los eventos del ASIC ocurren con demora** (`intc_add(evt, cnt)` → cnt×50 ciclos; el bit
+  de `SB_ISTNRM` y la entrega esperan al vencimiento): en el chip el fin de lista ocurre
+  cuando el TA terminó de consumirla, no en el instante del marcador. dcemu lo disparaba
+  instantáneo y le ganaba la carrera al juego que arma su espera justo después de mandar la
+  lista. **Con la demora, el arranque de VT se volvió determinista** — la alternancia A/B
+  de la tabla A.0b, que dependía de dónde caían las interrupciones, desapareció (3 corridas
+  idénticas). El barrido corto de demos y Crazy Taxi, sin cambios.
+
 Un dato más, del mismo día. Crazy Taxi (USA) por el camino de siempre, seis segundos,
 `--traza-mem`:
 

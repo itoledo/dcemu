@@ -1,6 +1,7 @@
 #include "main.h"
 #include "excepciones.h"
 #include "intc.h"
+#include "traza.h"
 #include "wdt.h"
 
 //  #define INT_QUEUE
@@ -17,6 +18,21 @@ extern	int		pvr_listdone;
 static	DWORD	pending_ints = 0;
 DWORD	intc_queuemask = 0;
 DWORD	intc_queuemask_ext = 0;
+
+/*
+	Eventos del ASIC con tiempo de transferencia pendiente. En el chip el bit
+	de SB_ISTNRM se enciende cuando el evento OCURRE -- el TA termino de
+	consumir la lista --, no cuando el guest manda el marcador: dcemu lo
+	encendia al instante, y el fin de lista se le adelantaba al juego que
+	arma su espera justo despues de mandar la lista (Virtua Tennis marca su
+	"pendiente" y la interrupcion ya habia pasado: el bit que su ISR debia
+	limpiar quedaba puesto para siempre). El `cnt` de intc_add() siempre
+	quiso ser esta demora; vale cnt*50 ciclos, y hasta vencer no existen ni
+	el bit de estado ni la entrega.
+*/
+#define INTC_DEMORAS 16
+static struct { DWORD evt; long ciclos; } intc_demora[INTC_DEMORAS];
+static DWORD intc_demorados = 0;
 
 /*
 	Las peticiones de los perifericos del SH-4 se derivan de sus banderas, no de
@@ -218,8 +234,25 @@ void intc_add(DWORD inttoadd, int cnt)
      	logxmsg(LOG_INTC, "descartando int %x\n", inttoadd);
 		return; // descartamos si ya existe una
 	}
-	SET_BIT(ASIC_ACK_A, inttoadd);
 	intc_queuemask |= inttoadd;
+
+	if (cnt > 0)
+	{
+		int di;
+
+		for (di = 0; di < INTC_DEMORAS; di++)
+			if (intc_demora[di].evt == 0)
+			{
+				intc_demora[di].evt = inttoadd;
+				intc_demora[di].ciclos = (long) cnt * 50;
+				intc_demorados |= inttoadd;
+				return;
+			}
+
+		/* Sin lugar en la tabla: sale al instante, como antes. */
+	}
+
+	SET_BIT(ASIC_ACK_A, inttoadd);
 	logxmsg(LOG_INTC, "a�adiendo int %x, total %x\n", inttoadd, intc_queuemask);
 #endif
 }
@@ -298,6 +331,42 @@ bool intc_check(DWORD intcheck)
 	return false;
 }
 
+/* Una linea por (evento, destino) distinto: que evento del ASIC se entrego por
+   que nivel, o se descarto sin mascara ('-'). Es la pregunta de siempre cuando
+   un guest espera una interrupcion que no llega. */
+static void traza_asic_entrega(DWORD evento, char nivel)
+{
+	static DWORD vistos_ok[4], vistos_no;
+
+	if (!traza_activa)
+		return;
+
+	if (nivel == '-')
+	{
+		if (vistos_no & evento)
+			return;
+
+		vistos_no |= evento;
+	}
+	else
+	{
+		int i = (nivel == '9') ? 0 : (nivel == 'B') ? 1 : 2;
+
+		if (vistos_ok[i] & evento)
+			return;
+
+		vistos_ok[i] |= evento;
+	}
+
+	fprintf(stderr, "traza: asic evento %08lx %s (IML6=%08lx IML4=%08lx IML2=%08lx)\n",
+		(unsigned long) evento,
+		(nivel == '-') ? "encolado sin entregar" :
+		(nivel == '9') ? "entregado por IRQ9" :
+		(nivel == 'B') ? "entregado por IRQB" : "entregado por IRQD",
+		(unsigned long) ASIC_IRQ9_A, (unsigned long) ASIC_IRQB_A,
+		(unsigned long) ASIC_IRQD_A);
+}
+
 void check_ints()
 {
 #ifdef INT_QUEUE
@@ -323,21 +392,28 @@ void check_ints()
      	if (pint->pending_int & ASIC_IRQ9_A
      	&&  intc(EXC_IRQ9))
      	{
+			traza_asic_entrega(pint->pending_int, '9');
           	intc_delete(pint);
           	return;
 		}
      	if (pint->pending_int & ASIC_IRQB_A
      	&&  intc(EXC_IRQB))
      	{
+			traza_asic_entrega(pint->pending_int, 'B');
           	intc_delete(pint);
           	return;
 		}
      	if (pint->pending_int & ASIC_IRQD_A
      	&&  intc(EXC_IRQD))
      	{
+			traza_asic_entrega(pint->pending_int, 'D');
           	intc_delete(pint);
           	return;
 		}
+		/* Sin mascara que lo cubra (o SR no deja entrar): se saca de la cola.
+		   El bit de SB_ISTNRM queda puesto igual, asi que un guest que
+		   sondee lo ve; uno que habilite la mascara despues, no. */
+		traza_asic_entrega(pint->pending_int, '-');
 		intc_delete(pint);
 	}
 /*	if (pending_ints & ASIC_IRQ9_A
@@ -509,25 +585,59 @@ void check_ints()
 // 	if (intc_queuemask == 0)
 //  		return;
 
- 	if (intc_queuemask & ASIC_IRQ9_A
- 	&&  intc(EXC_IRQ9))
- 	{
-		REMOVE_BIT(intc_queuemask, ASIC_IRQ9_A);
-      	return;
+	/* El tic de las demoras: esta funcion corre cada 50 ciclos mientras la
+	   cola no este vacia. Al vencer, el evento OCURRE: recien ahi se
+	   enciende su bit de SB_ISTNRM y queda entregable. */
+	if (intc_demorados != 0)
+	{
+		int di;
+
+		for (di = 0; di < INTC_DEMORAS; di++)
+			if (intc_demora[di].evt != 0)
+			{
+				intc_demora[di].ciclos -= 50;
+
+				if (intc_demora[di].ciclos <= 0)
+				{
+					SET_BIT(ASIC_ACK_A, intc_demora[di].evt);
+					intc_demorados &= ~intc_demora[di].evt;
+					intc_demora[di].evt = 0;
+				}
+			}
 	}
 
- 	if (intc_queuemask & ASIC_IRQB_A
- 	&&  intc(EXC_IRQB))
- 	{
-		REMOVE_BIT(intc_queuemask, ASIC_IRQB_A);
-      	return;
-	}
+	{
+		DWORD listos = intc_queuemask & ~intc_demorados;
 
- 	if (intc_queuemask & ASIC_IRQD_A
- 	&&  intc(EXC_IRQD))
- 	{
-		REMOVE_BIT(intc_queuemask, ASIC_IRQD_A);
-      	return;
+		if (listos & ASIC_IRQ9_A
+		&&  intc(EXC_IRQ9))
+		{
+			traza_asic_entrega(listos & ASIC_IRQ9_A, '9');
+			REMOVE_BIT(intc_queuemask, listos & ASIC_IRQ9_A);
+			return;
+		}
+
+		if (listos & ASIC_IRQB_A
+		&&  intc(EXC_IRQB))
+		{
+			traza_asic_entrega(listos & ASIC_IRQB_A, 'B');
+			REMOVE_BIT(intc_queuemask, listos & ASIC_IRQB_A);
+			return;
+		}
+
+		if (listos & ASIC_IRQD_A
+		&&  intc(EXC_IRQD))
+		{
+			traza_asic_entrega(listos & ASIC_IRQD_A, 'D');
+			REMOVE_BIT(intc_queuemask, listos & ASIC_IRQD_A);
+			return;
+		}
+
+		/* Nada salio: o ninguna mascara cubre lo maduro, o SR no deja entrar.
+		   Una linea por cada valor distinto, que es lo que responde "el
+		   evento se encolo y nunca se entrego, y estas eran las mascaras". */
+		if (listos != 0)
+			traza_asic_entrega(listos, '-');
 	}
 
 	/*

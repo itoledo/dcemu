@@ -2602,6 +2602,20 @@ void taListEnd()
 		pvr_registering = -1;
 	}
 
+	/* EXPERIMENTO (Virtua Tennis): levantar tambien los eventos de las listas
+	   habilitadas que quedaron vacias, como si el fin de lista las cerrara. */
+	if (getenv("DCEMU_FIN_TODAS"))
+	{
+		int l;
+
+		for (l = 0; l < 5; l++)
+			if ((pvr_registered & (1 << l)) && !(pvr_listdone & (1 << l)))
+			{
+				pvr_listdone |= (1 << l);
+				intc_add(pvr_lists[l], 100);
+			}
+	}
+
 	if (pvr_listdone == pvr_registered)
 	{
 //		logxmsg(LOG_PVR, "pcw: taListEnd: RENDER_DONE\n");
