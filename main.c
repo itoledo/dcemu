@@ -98,6 +98,38 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 {
 	*botones = (WORD) (joystick & mando.botones);
 
+	/* DCEMU_PULSAR_START=N: apretar Start durante 20 sondeos a partir del
+	   sondeo N (~60 por segundo emulado). Repetible con N2 separado por coma
+	   para una segunda pulsacion. Existe porque inyectar teclado desde afuera
+	   depende del foco de la ventana y Windows lo niega cuando otra ventana
+	   lo retiene: esto navega los menus de un juego de forma determinista,
+	   con la misma filosofia que DCEMU_PULSAR_A y --salir-tras. */
+	{
+		const char * e = getenv("DCEMU_PULSAR_START");
+
+		if (e != NULL)
+		{
+			static int t = 0;
+			int n1 = atoi(e), n2 = 0;
+			const char * coma = strchr(e, ',');
+
+			if (coma != NULL)
+				n2 = atoi(coma + 1);
+
+			t++;
+
+			if ((t >= n1 && t < n1 + 20) || (n2 > 0 && t >= n2 && t < n2 + 20))
+			{
+				if (traza_activa && (t == n1 || t == n2))
+					fprintf(stderr, "traza: pulsando Start en el sondeo %d, "
+						"a los %lu ms de tiempo emulado.\n",
+						t, (unsigned long) reloj_ms());
+
+				REMOVE_BIT(*botones, CONT_START);
+			}
+		}
+	}
+
 	/* EXPERIMENTO: pasar el selector de fecha del boot ROM sin nadie delante.
 	   Son cinco movimientos a la derecha --mes, dia, ano, hora, minuto-- para
 	   llegar a "Select", y ahi el boton A. La secuencia se repite por si la
