@@ -103,6 +103,10 @@ void reset()
  FPUL = 0;
  PR = 0;   // Procedure Register
  SR = 0x700000F0; // Status Register
+ /* RB vale 1 en el valor de reset, y registers[0..7] es el banco que SR nombra:
+    el banco puesto arranca siendo ese. Sin esto la primera llamada a UpdateSR()
+    veria una diferencia que no existe y cambiaria de banco sin motivo. */
+ core.context.banco_activo = SR_RB;
  SSR = 0; // Saved Status Register
  SPC = 0; // Saved Program Counter
  GBR = 0; // Global Base Register
@@ -249,32 +253,54 @@ void UpdateFPSCR(DWORD newFPSCR)
 
 
 
+/*
+	swap_registers() es lo unico que mueve R0-R7 de banco, asi que
+	core.context.banco_activo es la verdad sobre el banco **puesto**; SR.RB dice
+	cual deberia estar. Las dos cosas se separan, y de ahi salia un error: la
+	entrada a una excepcion pone RB=1 sin mirar si ya valia 1. Ver UpdateSR().
+*/
 void swap_registers(void)
 {
 	DWORD tempr[8];
-	
+
 	memcpy(&tempr[0], &core.context.registers[16], sizeof(DWORD)*8);
 	memcpy(&core.context.registers[16], &core.context.registers[0], sizeof(DWORD)*8);
 	memcpy(&core.context.registers[0], &tempr[0], sizeof(DWORD)*8);
+
+	core.context.banco_activo ^= 1;
 }
 
 void UpdateSR(DWORD new)
 {
-	int md,rb;
-	// veamos c�mo estamos ahora
-//	if (IS_SET(SR, SR_MD) && IS_SET(SR, SR_RB))
-	if (new == SH4_SYSTEM_REGISTER_INTC_REWRITTEN)
+	/*
+		Dos entradas: o el llamador ya escribio SR el mismo -- la entrada a una
+		excepcion, a una interrupcion y TRAPA, que ponen MD/RB/BL a mano y
+		avisan con el centinela -- o trae el valor nuevo y lo escribimos aca.
+
+		En los dos casos la decision es la misma y es sobre el banco **puesto**,
+		no sobre el que habia en SR: mover R0-R7 solo si el banco que SR pide no
+		es el que esta.
+
+		El centinela intercambiaba **siempre**, y ahi estaba el error. Con RB ya
+		en 1 -- una excepcion tomada desde dentro de otra, que es lo que hace un
+		manejador que baja BL para permitir anidamiento -- la entrada ponia RB=1
+		otra vez e intercambiaba igual: el manejador veia el banco 0 como si
+		fuera el suyo, y el codigo interrumpido volvia del RTE con R0-R7 del
+		otro banco. El RTE no lo deshacia, porque ese camino si compara y
+		SSR.RB == SR.RB. Virtua Tennis se caia justo ahi: perdia el indice de
+		una tabla de callbacks a traves de una interrupcion anidada, llamaba por
+		un puntero nulo y terminaba ejecutando el ROM desde la direccion 0.
+
+		Nota: no se mira MD. En el chip, con MD=0 se accede siempre al banco 0
+		aunque RB valga 1; aca no, igual que antes. Nada corre en modo usuario
+		por ahora -- KOS no -- asi que queda como estaba en vez de cambiar de
+		paso algo que no se puede verificar.
+	*/
+	if (new != SH4_SYSTEM_REGISTER_INTC_REWRITTEN)
+		SR = new;
+
+	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
-	else
-	{
-	md = SR_MD;
-	rb = SR_RB;
-	SR = new;
-	if (SR_RB != rb)
-		{
-		swap_registers();
-		}
-	}
 
 	// SR.FD apaga la FPU entera: si esta puesto, main_loop() tiene que armar
 	// el salto para poder abortar la instruccion que la toque. La funcion

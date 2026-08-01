@@ -249,6 +249,12 @@ struct context_t
 	DWORD cycles_v_int; // sin usar
 	DWORD cycles_v_int_total; // sin usar, nunca se leyo
 	DWORD registers [24]; // GENERAL PURPOSE REGISTERS
+	/* Que banco de R0-R7 esta puesto en registers[0..7]. Es estado de CPU y va
+	   aca a proposito: la instantanea de la MMU restaura el contexto entero, y
+	   si el banco quedara afuera podria desincronizarse del arreglo que si se
+	   restaura. Lo mueve swap_registers() y lo decide UpdateSR(); ver ahi por
+	   que no alcanza con mirar SR.RB. */
+	int banco_activo;
 	FPSCR_t FPSCR_REG; 
 	unsigned long SSR_REG;
 	unsigned long SPC_REG;

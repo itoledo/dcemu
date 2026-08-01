@@ -60,6 +60,11 @@ void arnes_reset(void)
 	   real, y ningun handler depende de los bits reservados. */
 	SR = 0;
 
+	/* Y con RB en cero, el banco puesto es el 0. Se escribe SR a mano aca --
+	   sin pasar por UpdateSR() -- asi que hay que dejar los dos de acuerdo o el
+	   primer cambio de banco de la prueba saldria al reves. */
+	core.context.banco_activo = 0;
+
 	core.context.cycles = 0;
 	core.context.cycles_v_int = 0;
 	core.context.cycles_v_int_total = 0;

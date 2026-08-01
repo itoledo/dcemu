@@ -773,6 +773,42 @@ static void trapa_cambia_al_banco_de_excepcion(void)
 	ESPERAR_U32(R(16), 0x0000AAAA);
 }
 
+/*
+	Y el gemelo, que es el que faltaba: con RB **ya** en 1 la entrada no cambia
+	de banco. RB se pone a 1 igual, pero poner un bit que ya estaba no mueve
+	nada -- el manual describe el banco por el valor de RB, no por la escritura.
+
+	Es el caso de una excepcion tomada desde dentro de otra, que es lo que hace
+	cualquier manejador que baje BL para permitir anidamiento. dcemu
+	intercambiaba siempre, asi que el manejador anidado veia el banco del codigo
+	normal y el interrumpido volvia del RTE con R0-R7 del otro banco. El RTE no
+	lo deshacia, porque ese camino si compara y SSR.RB == SR.RB.
+
+	Lo destapo Virtua Tennis: perdia el indice de una tabla de callbacks a
+	traves de una interrupcion anidada, llamaba por un puntero nulo, caia en la
+	direccion 0 --que es el boot ROM-- y terminaba ejecutando el bloque bajo del
+	sistema hasta toparse con un TRAPA.
+*/
+static void trapa_desde_el_banco_1_no_vuelve_a_cambiar(void)
+{
+	arnes_reset();
+
+	VBR = 0x8C030000;
+	SR_MD = 1;
+	SR_RB = 1;							/* ya estamos en el banco de excepcion */
+	core.context.banco_activo = 1;
+
+	R(0)  = 0x0000AAAA;
+	R(16) = 0x0000BBBB;
+
+	ejecutar(instr_i(0xC300, 0));		/* TRAPA #0 */
+
+	ESPERAR_U32(SR_RB, 1);
+	ESPERAR_U32(R(0),  0x0000AAAA);		/* sin intercambiar */
+	ESPERAR_U32(R(16), 0x0000BBBB);
+	ESPERAR_U32(core.context.banco_activo, 1);
+}
+
 /* La secuencia de excepcion del SH-4 guarda R15 en SGR. */
 static void trapa_guarda_r15_en_sgr(void)
 {
@@ -1032,6 +1068,7 @@ static const dc_caso casos[] =
 	CASO(stsl_y_ldsl_pr_son_reversibles),
 	CASO(trapa_arma_la_entrada_a_excepcion),
 	CASO(trapa_cambia_al_banco_de_excepcion),
+	CASO(trapa_desde_el_banco_1_no_vuelve_a_cambiar),
 	CASO(trapa_guarda_r15_en_sgr),
 	CASO(rte_vuelve_a_spc_con_ranura_de_retardo),
 	CASO(rte_restaura_sr_antes_de_la_ranura),

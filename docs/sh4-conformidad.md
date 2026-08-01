@@ -293,6 +293,43 @@ Además de las unitarias, `demos/roto` —el rotozoomer de 256 bytes, que usa `F
 `FTRC`, `FLOAT` y `MUL.L`— arranca y renderiza igual que antes con la BIOS real. Es la
 comprobación de que nada de esto rompió el camino que sí funcionaba.
 
+## El banco de registros y una excepción dentro de otra
+
+Encontrado el 31 de julio de 2026, persiguiendo por qué Virtua Tennis no dibuja. Es el
+error más gordo que quedaba en el núcleo y ninguna prueba ni ninguna demo lo veía.
+
+`SR.RB` dice qué banco de `R0-R7` **debería** estar puesto. Lo que estaba puesto de verdad no
+se registraba en ningún lado: se daba por hecho que coincidía. `UpdateSR()` tiene dos
+entradas, y la que usan la entrada a excepción, la entrada a interrupción y `TRAPA` —las tres
+escriben `SR` a mano y avisan con el centinela `SH4_SYSTEM_REGISTER_INTC_REWRITTEN`—
+**intercambiaba siempre**.
+
+Con `RB` ya en 1 eso está mal: poner un bit que ya estaba no mueve nada. Y `RB` ya vale 1
+cuando se toma una excepción **desde dentro de otra**, que es lo que hace cualquier manejador
+que baje `BL` para permitir anidamiento. Entonces:
+
+- el manejador anidado veía el banco del código normal como si fuera el suyo;
+- guardaba y restauraba `R0-R7` — pero los del banco equivocado;
+- el `RTE` no lo deshacía, porque ese camino **sí** compara y `SSR.RB == SR.RB`;
+- el código interrumpido seguía con `R0-R7` del otro banco.
+
+Ahora `core.context.banco_activo` lleva la cuenta de lo que está puesto, `swap_registers()` es
+lo único que lo mueve y los dos caminos de `UpdateSR()` comparan contra él. Va **dentro** del
+contexto a propósito: la instantánea de la MMU restaura el arreglo de registros, así que el
+banco tiene que viajar con ella. `reset()` y `arnes_reset()` lo fijan, porque los dos escriben
+`SR` sin pasar por `UpdateSR()`.
+
+**Por qué no lo vio nada de lo que ya estaba.** KOS toma sus interrupciones desde `RB=0`, así
+que el intercambio siempre es un cambio de verdad y el error no aparece; las 100 demos que
+pasan siguen pasando igual. Y la suite tenía el caso de ida (`RB` 0→1 intercambia) pero no el
+de vuelta. Está agregado: `trapa_desde_el_banco_1_no_vuelve_a_cambiar`, en `syscontrol`, que
+falla con el código viejo y pasa con el nuevo — comprobado en los dos sentidos.
+
+Lo que se ve en el juego: pierde el índice de una tabla de callbacks a través de una
+interrupción anidada, llama por un puntero nulo, cae en la dirección 0 —que es el boot ROM—,
+el ROM salta a `0x8C000018` y de ahí corre por el bloque bajo del sistema hasta toparse con
+los bytes que decodifican como `TRAPA #23`. Ver `docs/pendientes-plan.md`, vía A.
+
 ## Pendiente
 
 - Confirmar contra el manual si `LDC Rm,SGR` y `LDC.L @Rm+,SGR` existen. Si no, sacar las
