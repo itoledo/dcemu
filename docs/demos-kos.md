@@ -385,7 +385,42 @@ geometría enviada sin lista abierta; la FPU del núcleo está validada aparte (
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
 Ver `docs/sh4-conformidad.md`.
 
-## Arrancar un juego por el boot ROM (hito C): a un paso
+### El framebuffer escrito por la ventana de 64 bits (0, pero pendiente)
+
+**Ninguna demo de KOS lo sufre; mame4all sí.** Va aquí porque es de vídeo y porque el
+interruptor que lo arregla rompe una demo de esta lista.
+
+Un guest puede escribir su framebuffer por la ventana `0x11` —la del FIFO de texturas, de 64
+bits— en vez de por la de 32. mame4all lo hace: **132 MB por corrida por `0x11` contra 1,8 MB
+por la de 32 bits**, en escrituras sueltas de 4 bytes. dcemu las entrelaza, el cuadro queda
+repartido entre los dos bancos —106015 bytes no nulos en uno y 106085 en el otro— y la
+pantalla, que se lee plana, sale **duplicada a lo ancho y aplastada a la mitad de alto**.
+Recombinando los bancos de a 4 bytes sale la imagen exacta, así que lo que el guest escribe es
+lineal.
+
+Cómo se midió, por si hay que repetirlo: volcar la RAM de vídeo con `--volcar=a5000000:96000`
+y `--volcar=a5400000:96000`, armar la imagen a mano a 320 y a 640, y comparar las mitades de
+cada fila de 1280 bytes —salen distintas en 202 de 210 filas, o sea que la duplicación la pone
+la lectura y no la memoria—. `--traza-mem` reporta ahora los bytes por ventana y la primera
+escritura de cada una con su PC, que es lo que dice **cuál** ventana lleva el cuadro.
+
+`DCEMU_11_PLANO=1` deja esas escrituras sin entrelazar y mame4all se ve perfecto. **No es el
+valor por omisión** porque `pvr-strided_texture` sube su textura por esa misma ventana y
+depende del entrelazado: pasa de 2 colores a 1, o sea a negro. Sin cambio en
+`pvr-palette-wormhole`, `pvr-yuv_converter-YUV422`, `pvr-texture_render`, `pvr-bumpmap`,
+`pvr-fb_tex`, `libdream-ta` ni `conio-basic`.
+
+**Lo que falta averiguar es qué distingue los dos casos en el hardware.** La asimetría más
+concreta que quedó medida: mame4all escribe de a 4 bytes y una subida de textura va de a 32
+por store queue.
+
+## Arrancar un juego por el boot ROM (hito C): alcanzado
+
+*Lo de abajo es de la mañana del 31 de julio de 2026 y quedó obsoleto esa misma tarde: el hito
+C **está alcanzado**. El boot ROM carga el `1ST_READ.BIN` del disco y salta a él, en los dos
+formatos de selfboot y en las cinco imágenes de prueba. Lo que sigue vale como historia de por
+dónde se creyó que iba el camino —presentar el disco como GD-ROM, que resultó ser la rama
+equivocada—. La versión al día está en [bios-boot-plan.md](bios-boot-plan.md), cuarta corrida.*
 
 Medido el 31 de julio de 2026 con `Crazy Taxi - DCRES.cdi`, un *selfboot*
 (conversión a CD: sesión de audio + sesión de datos en modo 2).
