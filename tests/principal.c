@@ -39,6 +39,9 @@ static const dc_suite * const suites[] =
 	&suite_tmu,
 	&suite_vram,
 	&suite_ubc,
+	&suite_g2dma,
+	&suite_aica,
+	&suite_arm7,
 	&suite_cobertura,	/* al final: mira lo que ejecutaron las demas */
 };
 

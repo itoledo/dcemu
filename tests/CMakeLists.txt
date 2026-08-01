@@ -18,6 +18,9 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/floatcontrol.c
 	${CMAKE_SOURCE_DIR}/floatgraph.c
 	${CMAKE_SOURCE_DIR}/floatsimple.c
+	${CMAKE_SOURCE_DIR}/aica.c
+	${CMAKE_SOURCE_DIR}/arm7.c
+	${CMAKE_SOURCE_DIR}/g2dma.c
 	${CMAKE_SOURCE_DIR}/gdrom.c
 	${CMAKE_SOURCE_DIR}/log.c
 	${CMAKE_SOURCE_DIR}/logic.c
@@ -51,6 +54,9 @@ set(DCEMU_PRUEBAS
 	test_fpu_excepciones.c
 	test_fpu_graph.c
 	test_fpu_simple.c
+	test_aica.c
+	test_arm7.c
+	test_g2dma.c
 	test_gdrom.c
 	test_logic.c
 	test_mmu.c

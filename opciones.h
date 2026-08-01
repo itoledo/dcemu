@@ -63,6 +63,15 @@ struct opciones_t
 	   la ventana funcione; ver volcar_gl() en graficos.c. */
 	const char *	captura_gl;
 
+	/* El gemelo para el sonido: un .wav con lo que el mezclador del AICA
+	   produjo. Va antes que la reproduccion porque es la **medida**: el
+	   sonido es lo unico del arbol que no se verifica leyendo un volcado, y
+	   "suena bien" no es un dato. Ver audio.h. */
+	const char *	captura_audio;
+
+	int				sin_audio;		/* 1: no abrir la tarjeta de sonido */
+	int				sin_aica;		/* 1: no emular el AICA en absoluto */
+
 	/* Watchpoint de escritura: direccion (0 = apagado) y tamano en bytes.
 	   Ver options.h. */
 	unsigned long	watchpoint;

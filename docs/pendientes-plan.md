@@ -36,11 +36,11 @@ no se tocan entre sí, así que el orden es negociable salvo donde se dice lo co
 Siguiendo la letra donde quedó `bios-boot-plan.md` (el hito C es "el boot ROM arranca el
 juego del disco"):
 
-| hito | qué se ve | vía |
-| --- | --- | --- |
-| **D** | un juego comercial dibuja su primer cuadro | A |
-| **E** | una demo de KOS suena | B |
-| **F** | las 135 demos revisadas una por una, sin deuda de verificación | C |
+| hito | qué se ve | vía | estado |
+| --- | --- | --- | --- |
+| **D** | un juego comercial dibuja su primer cuadro | A | pendiente |
+| **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026: suenan cuatro** |
+| **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | pendiente |
 
 El hito D es el que importa: es lo único que separa a dcemu de "corre homebrew" de "corre un
 juego", y el README todavía dice que nunca lo logró.
@@ -71,6 +71,13 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | mame4all (`.bin` suelto) | binario suelto | 275, ~370 tiras | 295040 / 40348040 | ninguna | 42 | el menú de la BIOS |
 
 Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
+
+> **Un dato más, del 1 de agosto de 2026, ahora que el AICA se emula:** Crazy Taxi (USA) corrido
+> catorce segundos **no toca el AICA ni una vez** — cero disparos de canal, cero transferencias
+> por el G2-DMA, y el `--traza-mem` del chip completamente vacío. Es una medida barata y vale
+> para cualquiera de estas imágenes: un juego que estuviera corriendo de verdad estaría
+> disparando canales mucho antes de dibujar. Así que el sonido no era lo que le faltaba, y de
+> paso queda otro indicador para saber si un cambio de esta vía movió algo.
 
 **1. El `2d2d2d0a` es del juego, no del rip.** Aparece en seis de las ocho, y el PC que lo lee
 es **el mismo para los dos rips del mismo juego** y distinto entre juegos: `0c148966` en las dos
@@ -257,6 +264,14 @@ pena; si cada una se para en un sitio distinto, es el juego y hay que elegir el 
 ---
 
 ## Vía B — El AICA (hito E)
+
+> **Esta vía tiene su propio plan desarrollado: [aica-plan.md](aica-plan.md)**, escrito contra el
+> documento de arquitectura de Sega. Lo que sigue es el resumen del que salió.
+>
+> **Hecha hasta la fase 4, y el hito E está alcanzado: cuatro demos suenan** (1 de agosto de
+> 2026). Están el G2-DMA, el bloque de registros, el ARM7DI y los 64 canales con PCM y ADPCM,
+> más `--captura-audio` para medirlo en un archivo. Quedan la fase 5 (CDDA) y la 6 (el DSP);
+> ver "Lo que quedó" y "Lo que sigue faltando" en ese plan.
 
 Siete demos fallan y ninguna suena. El camino de subida del firmware funciona —`libdream-spu`
 reporta `Load OK, starting ARM`, o sea que los 2 MB de RAM de sonido y la ventana física se

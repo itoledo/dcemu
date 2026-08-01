@@ -110,6 +110,10 @@ set(DCEMU_SOURCES
 	tmu.c
 	ubc.c
 	vram.c
+	aica.c
+	arm7.c
+	audio.c
+	g2dma.c
 	wdt.c
 	syscontrol.c
 	traza.c

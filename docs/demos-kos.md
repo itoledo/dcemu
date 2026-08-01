@@ -8,8 +8,8 @@ un cambio rompe algo, aquí está lo que funcionaba.
 
 | | |
 | --- | --- |
-| Funcionan | **100** binarios |
-| Fallan por algo que falta emular | **7** (todas de sonido: el AICA) |
+| Funcionan | **104** binarios (100 en lo visual, y cuatro que ademas suenan) |
+| Fallan por algo que falta emular | **3** (CDDA, y dos de sonido con causa propia) |
 | No aplican: piden periféricos o herramientas del anfitrión | **28** |
 
 **Ya no falla nada del PVR ni del SH-4.** El 31 de julio pasaron las tres que quedaban
@@ -268,23 +268,56 @@ sus tres registros caían en el respaldo del bloque de control y se perdían en 
 la serpiente de esferas con su contador de cuadros. El mismo arreglo es el que hace arrancar la
 BIOS; ver [bios-boot-plan.md](bios-boot-plan.md).
 
-### Sonido y AICA (7)
+### Sonido y AICA (3)
 
-Ninguna demo de sonido llega a sonar. El camino de subida del firmware sí está —
-`libdream-spu` reporta `Load OK, starting ARM`, o sea que los 2 MB de RAM de sonido y la ventana
-física se comportan— y lo que falta es el chip: los 64 canales, sus registros y la cola de
-comandos que KOS usa para hablar con el ARM.
+**El 1 de agosto de 2026 cuatro de las siete pasaron a sonar**, con el AICA emulado: el bloque
+de registros, los tres temporizadores, el controlador de interrupciones, el G2-DMA, el ARM7DI y
+los 64 canales con PCM16, PCM8 y ADPCM. Ver [aica-plan.md](aica-plan.md).
 
-`sound-multi-stream` es el que da el diagnóstico más claro: `Assertion g2_read_32_raw(qa +
-offsetof(aica_queue_t, valid)) failed at snd_iface.c:84`. KOS escribe una cola en la RAM de
-sonido y espera que el ARM la marque como consumida.
+**Cómo se mide el sonido.** Igual que el vídeo, sobre un archivo y no de oído:
 
-Los otros seis: `sound-sfx`, `sound-sfxbuf`, `sound-hello-adx`, `sound-hello-opus`,
-`sound-cdda-basic_cdda`, `libdream-spu`.
+```sh
+dcemu demo.bin --salir-tras=8 --captura-audio=son.wav --sin-audio
+```
 
-Nota: `sound-ghettoplay-vorbis`, `sound-hello-mp3` y `sound-hello-ogg` sí dibujan su interfaz y
-llegan a crear el hilo del servidor de sonido, así que están en la lista de los que funcionan
-—en lo visual— aunque tampoco suenen.
+`--captura-audio` vuelca lo que **el mezclador produjo**, no lo que la tarjeta hizo con ello, y
+`--sin-audio` evita abrirla. Después se cuentan muestras no nulas, valores distintos, RMS y
+pico. Un `.wav` mudo es el equivalente de un BMP negro, y hubo uno: con la tabla de la
+envolvente mal leída, `sound-multi-stream` daba ocho segundos con pico **14** sobre 32767.
+
+Las cuatro que suenan, en ocho segundos de tiempo emulado:
+
+| demo | muestras no nulas | valores distintos | RMS | pico (L / R) |
+| --- | --- | --- | --- | --- |
+| `sound-multi-stream` | 692577 / 707024 | 13882 | 1467,6 | 16533 / 14541 |
+| `sound-sfx` | 125886 / 707024 | 1784 | 4604,0 | 23065 / 23065 |
+| `sound-sfxbuf` | 125886 / 707024 | 1784 | 4604,0 | 23065 / 23065 |
+| `sound-hello-adx` | 110147 / 707024 | 10738 | 768,9 | 15732 / 15732 |
+
+**`sound-sfx` y `sound-sfxbuf` sólo suenan si se pulsa un botón** — reproducen un pitido por
+cada uno de A, B, X, Y. Se las mide con `DCEMU_PULSAR_A=1 DCEMU_SOLO_A=1` en el entorno; sin
+eso su `.wav` sale mudo y eso **no** es un fallo. Ojo también con que la tecla A le cambia el
+volumen a `sound-multi-stream`: medirla con la pulsación puesta da la mitad del RMS y parece
+una regresión.
+
+`sound-multi-stream` es la mejor de las cuatro como prueba: dos flujos de ADPCM estéreo
+simultáneos, paneados a lados opuestos y alimentados por el G2-DMA. Y **dos corridas dan el
+mismo `.wav` bit a bit**, que es lo que hay que exigirle a un ADPCM con estado.
+
+Las tres que siguen sin sonar, cada una por su razón:
+
+- **`sound-cdda-basic_cdda`** pide reproducir una pista de audio del disco, que es la fase 5 del
+  plan y no está. Por el camino de KOS el CDDA no llega como paquete SPI sino como **syscall**
+  —comando 20 del vector de GD-ROM—, así que hay que atenderlo en `hack_gdrom()`.
+- **`sound-hello-opus`** no produce audio en ocho segundos y no es del AICA. Sin diagnosticar.
+- **`libdream-spu`** carga su propio reproductor de S3M en el ARM y espera en
+  `while(*snd_dbg != 3)` sobre `0xa080ffc0`. Llega a `Load OK, starting ARM` y ahí se queda. Es
+  un firmware distinto del de KOS y merece mirarse aparte.
+
+Nota: `sound-ghettoplay-vorbis`, `sound-hello-mp3` y `sound-hello-ogg` dibujan su interfaz y
+crean el hilo del servidor de sonido, así que están en la lista de los que funcionan —en lo
+visual— y tampoco suenan; `sound-hello-mp3` termina en `Exiting on error`, que es anterior a
+todo esto.
 
 ### MMU (0)
 

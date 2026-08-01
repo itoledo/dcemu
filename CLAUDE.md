@@ -119,6 +119,9 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--limitar` | no dejar que la emulación corra más rápido que una consola. Solo frena |
 | `--hacks-bios` / `--sin-hacks-bios` | fuerza o desactiva los hooks de syscall |
 | `--captura-gl=ARCHIVO` | vuelca a un BMP lo que OpenGL rasterizó, en cada cuadro |
+| `--captura-audio=ARCHIVO` | vuelca a un `.wav` lo que el mezclador del AICA produjo. Es **la medida** del sonido, no lo que hizo la tarjeta |
+| `--sin-audio` | no abrir la tarjeta de sonido. El AICA se emula igual y `--captura-audio` sigue funcionando |
+| `--sin-aica` | no emular el AICA: ni el ARM, ni los canales, ni los temporizadores. Para aislar una regresión |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -1063,6 +1066,108 @@ as working:
 and how much of *the command* it has moved. The ROM's driver keeps `SB_GDLEND` in its command
 block as "how much has landed", so leaving them to the control block's backing store feeds it
 uninitialised memory.
+
+### Sound: the AICA, the ARM7DI and the G2 DMA
+
+**Sound works: four KOS demos play.** `aica.c/h` is the chip's register block, its three timers,
+its interrupt controller, its internal DMA and the 64-channel synthesizer; `arm7.c/h` is the
+ARM7DI it carries inside; `g2dma.c/h` is the Holly's four G2-DMA channels; `audio.c/h` is the
+only piece that touches SDL. The first three are SDL-free on purpose, like `sistema.c` and
+`vram.c`, so `tests/` links them for real — suites `aica`, `arm7` and `g2dma`.
+
+The reference is Sega's *Dreamcast/Dev.Box System Architecture*: §4.2.2 and §8.4.5 for the map,
+§8.1.1 for the algorithms, §8.4.1.4 for the G2-DMA. `docs/aica-plan.md` is the plan and the
+record of what landed. **The KOS ARM firmware
+(`kernel/arch/dreamcast/sound/arm/`) is the independent check on the paper**, and in one place
+it disambiguates it — see the interrupt level below.
+
+**The ARM runs in all 135 demos, not in the seven sound ones.** `spu_init()` writes
+`0xEAFFFFF8` — a branch to itself — at sound RAM address 0 and releases the reset in *every*
+program, "so that CD audio works", and the boot ROM drives `ARMRST` three times before reaching
+its menu. So the demo sweep is regression for this subsystem, and `--sin-aica` exists to turn
+the whole chip off when isolating one.
+
+**The two windows are not the same block with a different prefix.** The SH-4 reaches the AICA
+over the G2 at `0x00700000` and the ARM from inside at `0x00800000`, and two registers exist in
+only one of them (table 8-25): `ARMRST` (`0x2C00`) is the SH-4's alone — it is the switch that
+holds the ARM in reset — and `L`/`M` (`0x2D00`/`0x2D04`), the interrupt number and the
+end-of-interrupt, are the ARM's alone. Access size is asymmetric too: the paper restricts the
+SH-4 to 4-byte accesses with only the low 16 bits valid, but the ARM writes *bytes* — KOS's
+`aica.h` defines `CHNREG8` and uses it for pan (`+0x24`), send level (`+0x25`) and volume
+(`+0x29`). So the file is byte-addressable and the restriction applies at the G2 entry.
+
+**Everything derives from `reloj_total`, like the timers.** `gcd(44100, DC_CPU_HZ) = 60`, so it
+is exactly **735 samples every 3324992 CPU cycles** — no drift, integers. And the audio block's
+22.5792 MHz is exactly `44100 × 512`, so the ARM needs no clock of its own: **512 ARM cycles per
+sample**.
+
+**The interrupt level comes from three registers, and KOS pins the reading down.** `SCILV2:SCILV1:SCILV0`
+hold one bit each at the source's position. With the values `aica_init()` writes — `0x18`,
+`0x50`, `0x08` — source 6 (timer A) comes out **2** and source 3 (MIDI in) comes out **5**,
+which are exactly the two numbers `crt0.s` compares against. Any other reading sends the
+firmware down the wrong branch of its FIQ. A pending source with no mask **stays pending**, the
+same rule the ASIC events needed.
+
+Three things about the ARM7DI cost a test case each, and all three are in the suite:
+
+- **Reading R15 gives PC+8**, and PC+12 when the shift comes from a register or when it is
+  stored to memory.
+- **`SUBS PC, R14, #4` is not a subtraction**: with `S` set and R15 as destination it restores
+  CPSR from SPSR. That is how the firmware's FIQ ends; without it the ARM enters its first
+  interrupt and never leaves FIQ mode — losing the main program's R8-R14 on the spot.
+- **The bus is 24 bits.** Without clamping the address, KOS's `0xEAFFFFF8` (a branch to PC−24,
+  i.e. `0xFFFFFFE8`) lands outside both regions of the map; with it, the core walks zeros —
+  which decode as a no-effect `AND` — and wraps, which is the infinite loop KOS's comment
+  promises. ARMv3 has no Thumb, no `LDRH`/`STRH`, no `BX` and no coprocessors: those patterns
+  take the undefined-instruction vector, which is what the real part does.
+
+**Two envelope bugs produced silence and no error message, and only the measurement found them:**
+
+- **Rate 0 in table 8-5 means ∞ — the envelope does not move — not "instantaneous".** Reading it
+  the other way switched a channel off on the first sample of the decay. The symptom was an
+  eight-second `.wav` with **peak 14 out of 32767**: the audible equivalent of a black BMP. With
+  the table right the same file peaks at 16533.
+- **The envelope advances before the sample is used, not after.** The other way round, every
+  channel's first sample comes out at rest attenuation, i.e. muted.
+
+The ADPCM follows §8.1.1.2 literally and is done in integers — the eight factors of table 8-4
+are exact in 256ths — so it is **deterministic**: two runs give a bit-identical `.wav`. Note the
+paper has a typo: entry 31 of the decay column reads `90.` between `920.` and `690.`; the
+progression is geometric and the right term is 790.
+
+**`--captura-audio=ARCHIVO.wav` is the twin of `--captura-gl`, and it goes in before the mixer,
+not after.** It dumps what the *mixer produced*, not what the sound card did with it — the same
+lesson that moved graphics off window grabs. Measure it the way BMPs are measured: non-zero
+samples, distinct values, RMS and peak. A silent `.wav` is a black BMP. It closes through
+`traza_resumen()`, so `--salir-tras` matters as much as it does for the disassembly. `--sin-audio`
+skips the sound card and keeps the dump; listening and measuring coexist, because with the
+device open the dump comes from a second ring the callback fills.
+
+**`0x005F7800-0x005F787F` are the four G2-DMA channels, and they used to vanish into
+`control_mem`** — so the guest wrote 1 to `SB_ADST`, read it back, got 1 ("DMA in progress") and
+stayed there. Same shape as the CH2 DMA and `SB_G1SYSM`. `spu_dma_transfer()` is what
+`snd_stream.c` uses to refill the stream buffer, so that one alone blocked the streaming demos.
+End of transfer is bits 15-18 of `SB_ISTNRM`, one per channel; the AICA's own interrupt
+(`G2AICINT`) is bit 1 of `SB_ISTEXT`, next to the drive's end-of-command.
+
+**The boot ROM's own firmware plays, and it is the best check there is on the pitch.** With
+`--bios` the chime comes out at 6.46 s: 70 key-ons across 48 channels, all PCM16 of the *same*
+sample (`SA 01852a`, looping `LSA 0001`..`LEA 00ab`) at ten different pitches. Those ten land on
+table 8-7 of the paper to within one LSB — C2, F♯3, G3, B3, D4, E4, F4, G♯4, A♯4, D♯5. If the
+phase increment were wrong they would not sit on the tempered scale; they would drift further
+out the further from the base note, and they don't. No KOS demo gives that check, because none
+of them plays a chord. Eight samples out of 1.4 million touch the rail, so the mixer is not
+saturating either.
+
+**What is not emulated**: CDDA, the audio DSP, the LFO, the FEG filter (the paper says how to
+leave it pass-through: `Q = 4`, `FLV = 0x1FF8`, and KOS's firmware simply turns it off) and the
+sample-interval interrupt. `docs/aica-plan.md`, "Lo que sigue faltando", has the detail —
+including that on the KOS path **CDDA arrives as a syscall, not as an SPI packet**: command 20
+of the GD-ROM vector, which `hack_gdrom()` in `dcopcodes.c` would have to answer.
+
+Two values are answered without a measurement behind them, and they are flagged as such because
+an identification register answered casually has already hung the guest twice (`REVISION` and
+`SB_G1SYSM`): `VER[3:0]` of `0x2800`, given 1, and `MEM8MB`, accepted and ignored.
 
 ### Input
 

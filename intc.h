@@ -65,8 +65,17 @@ extern DWORD	intc_queuemask_ext;
 #define ASIC_EVT_MAPLE_ERROR            (1 << 0x000d)
 #define ASIC_EVT_GDROM_DMA              (1 << 0x000e)
 
+/* El fin de transferencia de los cuatro canales del G2-DMA. El del canal 0 es
+   el del AICA, y es el que espera g2_dma_transfer() de KOS. asic.h de KOS les
+   da 0x000F a 0x0012: registro 0 --SB_ISTNRM-- y bits 15 a 18. */
+#define ASIC_EVT_G2_DMA0                (1 << 0x000f)
+#define ASIC_EVT_G2_DMA1                (1 << 0x0010)
+#define ASIC_EVT_G2_DMA2                (1 << 0x0011)
+#define ASIC_EVT_G2_DMA3                (1 << 0x0012)
+
 /* Bits del registro externo (SB_ISTEXT). */
 #define ASIC_EVT_EXT_GDROM              (1 << 0x0000)   /* fin de comando */
+#define ASIC_EVT_EXT_AICA               (1 << 0x0001)   /* G2AICINT, del AICA */
 // #define ASIC_EVT_PVR_PRIMOUTOFMEM       0x0202
 // #define ASIC_EVT_PVR_MATOUTOFMEM        0x0203
 

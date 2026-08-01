@@ -34,6 +34,9 @@
 #include "ubc.h"
 #include "wdt.h"
 #include "tmu.h"
+#include "aica.h"
+#include "arm7.h"
+#include "audio.h"
 #include "mando.h"
 #include "scramble.h"
 #include "SIMDx86/version.h"
@@ -453,6 +456,11 @@ void main_loop(void)
 				timer_check(ciclos);
 				wdt_tick(ciclos);
 
+				// El AICA no recibe ciclos: compara contra su propia marca de
+				// reloj_total, porque su reloj es otro -- 44100 Hz de muestreo
+				// y 22,5792 MHz de bloque de audio. Ver aica.h.
+				aica_tick();
+
 				// Y aca se entrega la que corresponda, si SR lo permite. Si no
 				// se puede, la bandera sigue puesta y se reintenta en la vuelta
 				// siguiente, que es lo que hace el chip.
@@ -556,6 +564,12 @@ void main_loop(void)
 		}
 //		intc_check(ASIC_EVT_PVR_VBLINT);
 		RedibujarPantalla();
+
+		// El sonido producido durante el cuadro, al .wav si hay volcado. La
+		// reproduccion no pasa por aqui: de eso se encarga la callback de SDL,
+		// en su propio hilo. Ver audio.h.
+		audio_volcar();
+
 		while (SDL_PollEvent(&event))
 		{
 			switch(event.type)
@@ -1110,6 +1124,13 @@ int main(int argc, char *argv[])
 	mem_hash_setup();
 	regmem_setup();
 	initopcodes();
+
+	// La tabla de despacho del ARM del AICA, expandida igual que la del SH-4.
+	arm7_init();
+	arm7_reset();
+
+	// La salida de sonido: la tarjeta y/o el .wav de --captura-audio.
+	audio_iniciar();
 ///*	
 	logmsg("cargando bios (bios.bin)\n");
     if (cargar_bios())

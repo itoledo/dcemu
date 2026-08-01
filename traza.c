@@ -14,6 +14,7 @@
 #include "sh4emu.h"
 
 #include "traza.h"
+#include "audio.h"
 #include "tmu.h"
 #include "opciones.h"
 #include "mem.h"
@@ -307,6 +308,12 @@ void traza_rangos(void)
 void traza_resumen(void)
 {
 	traza_rangos();
+
+	/* El .wav de --captura-audio se cierra aqui, por el mismo camino que el
+	   desensamblado y el volcado: matar el proceso desde afuera dejaria el
+	   archivo con su cabecera en cero, o sea ilegible. */
+	audio_volcar();
+	audio_terminar();
 
 	if (!traza_activa)
 		return;

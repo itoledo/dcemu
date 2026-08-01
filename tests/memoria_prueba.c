@@ -58,6 +58,15 @@ unsigned char * control_mem;
    nunca devuelva un puntero a NULL + offset. */
 static unsigned char * basura;
 
+/* La ventana fisica baja (zona 0x00): RAM de sonido y registros del AICA. La
+   usa la suite del G2-DMA, que copia entre ella y la RAM del sistema. */
+unsigned char * g2_mem;
+
+/* Los 2 MB de RAM de onda del AICA. En el emulador los reserva mem.c; aqui
+   apuntan dentro de g2_mem, en el mismo sitio donde el guest los ve
+   (0x00800000), asi que el G2-DMA y el sintetizador ven lo mismo. */
+unsigned char * sound_mem;
+
 unsigned char * mem_zone[0x100];
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
@@ -159,6 +168,8 @@ void memoria_prueba_iniciar(void)
 	regmem		= reservar(REGMEM_PRUEBA, "registros");
 	ta_mem		= reservar(TA_SIZE, "TA");
 	control_mem	= reservar(CONTROL_SIZE, "control");
+	g2_mem		= reservar(BLOQUE, "G2");
+	sound_mem	= &g2_mem[0x00800000];
 
 	for (i = 0; i < 0x100; i++)
 	{
@@ -195,6 +206,18 @@ void memoria_prueba_iniciar(void)
 	mem_hash_write[0x05] = ram_write;
 	mem_hash_write[0xA4] = ram_write;
 	mem_hash_write[0xA5] = ram_write;
+
+	/* La ventana fisica baja: por aqui llegan la RAM de sonido (0x00800000) y
+	   los registros del AICA (0x00700000). En el emulador la atiende
+	   pvr_read/pvr_write, que reparte por direccion; aqui alcanza con un
+	   bloque plano, que es lo que el G2-DMA necesita ver. */
+	mem_zone[0x00] = g2_mem;
+	mem_zone[0xA0] = g2_mem;
+
+	mem_hash_read[0x00]  = ram_read;
+	mem_hash_read[0xA0]  = ram_read;
+	mem_hash_write[0x00] = ram_write;
+	mem_hash_write[0xA0] = ram_write;
 
 	/* FIFO del TA y store queues. */
 	mem_zone[0x10] = ta_mem;

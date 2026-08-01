@@ -18,14 +18,15 @@
 #include "ta.h"				/* ta_procesar_bloque(), para el CH2 DMA */
 #include "vram.h"			/* las dos ventanas de la RAM de video */
 #include "ubc.h"			/* breakpoints por hardware */
+#include "g2dma.h"			/* los cuatro canales de DMA del bus G2 */
+#include "aica.h"			/* el chip de sonido */
 
 
 #define DWREF(p) (*(DWORD *)(p))
 
-/* Registros del AICA. No se emula el sintetizador, pero tienen que tener
-   respaldo real: el boot ROM escribe y vuelve a leer. Ver la fase 5 del plan. */
-#define AICA_REG_BASE	0x00700000
-#define AICA_REG_SIZE	0x00008000		// 32 KB: canales, comunes y el bloque 0x4xxx
+/* Los registros del AICA los lleva aica.c: eran 32 KB de respaldo mudo --el
+   boot ROM escribia y volvia a leer y nadie miraba-- y ahora tienen chip
+   detras. AICA_REG_BASE y AICA_REG_SIZE salen de aica.h. */
 
 /* RAM de sonido, 2 MB. Estaba reservada desde siempre y nunca se mapeo. */
 #define SOUND_BASE		0x00800000
@@ -44,7 +45,6 @@ unsigned char * bios_mem;
 unsigned char * ta_mem;
 unsigned char * control_mem;
 unsigned char * sound_mem;
-unsigned char * aica_mem;
 
 /* Respaldo de las zonas sin mapear. get_memory_pointer() no chequea nada, asi
    que sin esto cualquier acceso a una zona libre es una desreferencia nula.
@@ -158,13 +158,9 @@ int inicializar_memoria()
 		return 1;
 	}
 
-	aica_mem = (unsigned char *) calloc(1, AICA_REG_SIZE);
-
-	if (!aica_mem)
-	{
-		fprintf(stderr, "No se pudo crear aica_mem.\r\n");
-		return 1;
-	}
+	/* El bloque de registros del AICA es un arreglo estatico de aica.c; aqui
+	   solo se lo pone en su estado de encendido, con el ARM en reset. */
+	aica_reset();
 
 	descarte_mem = (unsigned char *) calloc(1, DESCARTE_SIZE);
 
@@ -648,6 +644,14 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		return;
 	}
 
+	/* Los cuatro canales del G2-DMA. Van a g2dma.c enteros en vez de a 32
+	   casos del switch, igual que el bloque de la lectora. Ver g2dma.h. */
+	if (G2DMA_ES_REGISTRO(fisica))
+	{
+		g2dma_leer(direccion, p, size);
+		return;
+	}
+
 	/* Las etiquetas de abajo estan escritas en forma P2 (0xa0...), pero esta
 	   funcion atiende tambien la ventana fisica (zona 0x00), por donde KOS
 	   llega a la RAM de sonido y a la AICA. Normalizar aca hace que las dos
@@ -1003,10 +1007,10 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 				break;
 			}
 
-			// Registros del AICA: respaldo real, sin sintetizador detras.
-			if (fisica >= AICA_REG_BASE && fisica + size <= AICA_REG_BASE + AICA_REG_SIZE)
+			// Registros del AICA. Ver aica.h.
+			if (AICA_ES_REGISTRO(fisica))
 			{
-				memcpy(p, &aica_mem[fisica - AICA_REG_BASE], size);
+				aica_leer(direccion, p, size);
 				break;
 			}
 
@@ -1203,6 +1207,16 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 	if (GDROM_ES_REGISTRO(fisica))
 	{
 		gdrom_write(direccion, p, size);
+		return;
+	}
+
+	/* Los cuatro canales del G2-DMA. No pasan por el respaldo del bloque de
+	   control: g2dma.c lleva su propio archivo de registros, porque SB_**ST
+	   tiene que leerse 0 despues de la transferencia y no lo que se escribio.
+	   Ver g2dma.h. */
+	if (G2DMA_ES_REGISTRO(fisica))
+	{
+		g2dma_escribir(direccion, p, size);
 		return;
 	}
 
@@ -2052,10 +2066,9 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				break;
 			}
 
-			if (fisica >= AICA_REG_BASE && fisica + size <= AICA_REG_BASE + AICA_REG_SIZE)
+			if (AICA_ES_REGISTRO(fisica))
 			{
-				memcpy(&aica_mem[fisica - AICA_REG_BASE], p, size);
-				logxmsg(LOG_MEM, "pvr_write: registro del AICA (%x)\r\n", direccion);
+				aica_escribir(direccion, p, size);
 				break;
 			}
 

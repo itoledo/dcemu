@@ -1,8 +1,8 @@
 CPP  = g++
 CC   = gcc
 
-OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/ubc.o ./obj/vram.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
-LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/ubc.o ./obj/vram.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+OBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/ubc.o ./obj/vram.o ./obj/g2dma.o ./obj/aica.o ./obj/arm7.o ./obj/audio.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
+LINKOBJ  = ./obj/graficos.o ./obj/main.o ./obj/mem.o ./obj/mmu.o ./obj/excepciones.o ./obj/log.o ./obj/BFont.o ./obj/reg.o ./obj/intc.o ./obj/arith.o ./obj/branch.o ./obj/dcopcodes.o ./obj/gdrom.o ./obj/opciones.o ./obj/sistema.o ./obj/traza.o ./obj/wdt.o ./obj/tmu.o ./obj/floatcontrol.o ./obj/floatgraph.o ./obj/floatsimple.o ./obj/logic.o ./obj/mov.o ./obj/shift.o ./obj/syscontrol.o ./obj/opcodes.o ./obj/sh4emu.o ./obj/debug.o ./obj/iso.o ./obj/iso9660_min.o ./obj/cdi.o ./obj/mando.o ./obj/ta.o ./obj/ubc.o ./obj/vram.o ./obj/g2dma.o ./obj/scramble.o ./obj/gui.o ./obj/glops.o
 
 
 LIBS = `sdl-config --libs` -Llib/linux -lSDLmain -lSDL -lcdio -lGL -liso9660 -lguichan_opengl -lguichan_sdl -lguichan -lSIMDx86
@@ -31,7 +31,7 @@ $(BIN): $(OBJ)
 ./obj/main.o: main.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h BFont.h branch.h intc.h debug.h graficos.h iso.h gui.h gdrom.h opciones.h sistema.h traza.h
 	$(CC) -c main.c -o ./obj/main.o $(CFLAGS)
 
-./obj/mem.o: mem.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h intc.h   graficos.h gui.h gdrom.h opciones.h sistema.h traza.h mmu.h vram.h
+./obj/mem.o: mem.c main.h options.h reg.h log.h sh4emu.h mem.h opcodes.h intc.h   graficos.h gui.h gdrom.h opciones.h sistema.h traza.h mmu.h vram.h g2dma.h aica.h
 	$(CC) -c mem.c -o ./obj/mem.o $(CFLAGS)
 
 ./obj/mmu.o: mmu.c mmu.h lnxdefs.h log.h excepciones.h sh4emu.h
@@ -130,7 +130,19 @@ $(BIN): $(OBJ)
 ./obj/vram.o: vram.c vram.h lnxdefs.h
 	$(CC) -c vram.c -o ./obj/vram.o $(CFLAGS)
 
-./obj/scramble.o: scramble.c 
+./obj/g2dma.o: g2dma.c g2dma.h main.h mem.h intc.h traza.h lnxdefs.h
+	$(CC) -c g2dma.c -o ./obj/g2dma.o $(CFLAGS)
+
+./obj/aica.o: aica.c aica.h main.h tmu.h intc.h traza.h arm7.h lnxdefs.h
+	$(CC) -c aica.c -o ./obj/aica.o $(CFLAGS)
+
+./obj/arm7.o: arm7.c arm7.h aica.h main.h lnxdefs.h
+	$(CC) -c arm7.c -o ./obj/arm7.o $(CFLAGS)
+
+./obj/audio.o: audio.c audio.h aica.h main.h opciones.h traza.h
+	$(CC) -c audio.c -o ./obj/audio.o $(CFLAGS)
+
+./obj/scramble.o: scramble.c
 	$(CC) -c scramble.c -o ./obj/scramble.o $(CFLAGS)
 
 ./obj/glops.o: glops.c

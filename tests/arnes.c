@@ -10,6 +10,7 @@
 #include "excepciones.h"
 #include "opcodes.h"
 #include "sh4emu.h"
+#include "arm7.h"
 
 #include "arnes.h"
 #include "dctest.h"
@@ -33,6 +34,7 @@ void arnes_iniciar(void)
 
 	initopcodes();			/* arma las cuatro tablas de 65536 punteros */
 	initCpuSubSystem();		/* reserva los bancos float y engancha core.execute */
+	arm7_init();			/* y la de 4096 del ARM del AICA */
 }
 
 void arnes_reset(void)

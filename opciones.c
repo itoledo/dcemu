@@ -27,6 +27,9 @@ struct opciones_t opciones =
 	BANDEJA_AUTO,
 	NULL,
 	NULL,				/* captura_gl */
+	NULL,				/* captura_audio */
+	0,					/* sin_audio */
+	0,					/* sin_aica */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
 	0,					/* watchpoint_lect: apagado */
@@ -56,6 +59,13 @@ void opciones_ayuda(const char * programa)
 		"                        una consola. Solo frena, nunca acelera.\n"
 		"  --captura-gl=ARCHIVO  vuelca a un BMP lo que OpenGL rasterizo, en cada\n"
 		"                        cuadro. Verifica el 3D sin capturar la ventana.\n"
+		"  --captura-audio=ARCHIVO\n"
+		"                        vuelca a un .wav lo que el mezclador del AICA\n"
+		"                        produjo. Es la medida del sonido, no la tarjeta.\n"
+		"  --sin-audio           no abrir la tarjeta de sonido. El AICA igual se\n"
+		"                        emula, y --captura-audio sigue funcionando.\n"
+		"  --sin-aica            no emular el AICA: ni el ARM, ni los canales, ni\n"
+		"                        los temporizadores. Para aislar una regresion.\n"
 		"  --traza-desde=PC[:N[:K]]\n"
 		"                        desensambla las N instrucciones que siguen a la\n"
 		"                        llegada a PC, saltandose las K primeras, con los\n"
@@ -197,6 +207,27 @@ int opciones_parsear(int argc, char ** argv)
 				fprintf(stderr, "--captura-gl necesita un nombre de archivo\n");
 				return 1;
 			}
+		}
+		else
+		if (strncmp(arg, "--captura-audio=", 16) == 0)
+		{
+			opciones.captura_audio = &arg[16];
+
+			if (opciones.captura_audio[0] == '\0')
+			{
+				fprintf(stderr, "--captura-audio necesita un nombre de archivo\n");
+				return 1;
+			}
+		}
+		else
+		if (strcmp(arg, "--sin-audio") == 0)
+		{
+			opciones.sin_audio = 1;
+		}
+		else
+		if (strcmp(arg, "--sin-aica") == 0)
+		{
+			opciones.sin_aica = 1;
 		}
 		else
 		if (strncmp(arg, "--watchpoint=", 13) == 0)

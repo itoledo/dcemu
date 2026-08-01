@@ -36,4 +36,13 @@ extern const dc_suite suite_vram;
 /* El controlador de breakpoints por hardware (ubc.h). */
 extern const dc_suite suite_ubc;
 
+/* Los cuatro canales de DMA del bus G2 (g2dma.h). */
+extern const dc_suite suite_g2dma;
+
+/* El bloque de registros del AICA (aica.h). */
+extern const dc_suite suite_aica;
+
+/* El ARM7DI que el AICA lleva adentro (arm7.h). */
+extern const dc_suite suite_arm7;
+
 #endif /* _SUITES_H_ */
