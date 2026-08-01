@@ -398,7 +398,35 @@ contestarla.
 es un fallo, es que nadie las miró. Una pasada con `--captura-gl` y el ojo cierra el hito F y
 puede destapar cosas —así salieron el filtro de textura y el recorte del volcado—.
 
-### C.7 — La BIOS perdió su texto, en dos pasos y por dos causas
+### C.7 — La BIOS perdió su texto — **resuelto: era `SB_LMMODE0`**
+
+**Lo decide el guest con un registro, y dcemu no lo miraba.** Lo zanja la documentación de
+Sega, *Dreamcast/Dev.Box System Architecture* §8.4.1.1: la dirección de `SB_C2DSTAT` nombra el
+**camino** —`0x10000000` polígonos, `0x10800000` convertidor YUV, `0x11000000` textura directa,
+y `0x12`/`0x13` sus imágenes— y sobre el último dice:
+
+> *"When transferring data to the texture memory via the TA FIFO buffer and Direct Texture
+> Path, either 64-bit access or 32-bit access can be specified by setting the SB_LMMODE0 and 1
+> registers."*
+
+`SB_LMMODE0` (`0x005F6884`) manda sobre `0x11000000-0x11FFFFFF` y `SB_LMMODE1` (`0x005F6888`)
+sobre su imagen en `0x13000000`. Bit 0: **0 = 64 bits (por omisión), 1 = 32 bits**. Los dos ya
+tenían respaldo en `control_mem`: las escrituras del guest llegaban desde siempre y nadie las
+leía — la misma forma que el `SB_G1SYSM`, el `REVISION` del PVR y el `SB_GDLEND`.
+
+Medido, no deducido: al salir, **mame4all deja `SB_LMMODE0 = 0x00000001`** y **la BIOS lo deja
+en `0x00000000`**. Con eso los dos casos que no podían ser ciertos a la vez se explican solos,
+y las dos hipótesis que se habían probado antes —la ventana y la lectura del framebuffer— eran
+descartes correctos.
+
+Verificado en los dos sentidos: la BIOS vuelve a sus 145 píxeles de glifo y sus 425 de borde,
+idéntico a `7e3119b`; mame4all sale **byte a byte idéntico** a su referencia. Y sin tocar la
+store queue, que es otro camino: `pvr-strided_texture` sigue en sus 240000 píxeles no negros.
+
+Lo que **no** vuelve es el contraste de antes de `dcc1292`: el texto se lee apagado porque el
+fondo ahora es el celeste correcto en vez de negro. Eso es lo esperado, no un residuo.
+
+#### Cómo se llegó, que es la parte reutilizable
 
 Abierto el 31 de julio de 2026, porque se vio en vivo que el menú del boot ROM ya no muestra
 sus etiquetas. **Es una regresión real y está acotada a dos commits**, ninguno de esta corrida.

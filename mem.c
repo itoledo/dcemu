@@ -1104,32 +1104,49 @@ static void ch2_dma_ejecutar(void)
 	else
 	{
 		/*
-			A RAM de video el DMA escribe **lineal**, aunque el destino nombre
-			la ventana de 64 bits.
+			Por que ventana escribe el DMA no lo dice la direccion: **lo elige
+			el guest con SB_LMMODE0/1**.
 
-			Es la unica lectura que cuadra con lo medido. SDL para Dreamcast
-			vuelca asi el cuadro entero de mame4all --275 transferencias de
-			614400 bytes a 0x11000000 en seis segundos, sin tocar el TA ni una
-			vez-- y lo muestra como framebuffer, que se lee en la numeracion de
-			32 bits; recombinando los dos bancos en el orden en que el guest
-			escribe sale la imagen exacta, o sea que lo que manda es lineal.
-			Entrelazandolo, el cuadro se parte entre bancos y sale duplicado a
-			lo ancho y aplastado a la mitad de alto.
+			"Dreamcast/Dev.Box System Architecture", 8.4.1.1: el destino de
+			SB_C2DSTAT nombra el *camino* --0x10000000 poligonos, 0x10800000
+			convertidor YUV, 0x11000000 textura directa, y 0x12/0x13 sus
+			imagenes--, y sobre el camino de textura directa dice:
 
-			Lo que **si** entrelaza es la store queue: pvr-strided_texture sube
-			su textura por esta misma ventana en rafagas de 32 bytes y depende
-			de ello --sin el entrelazado se va a negro, de 240000 pixeles no
-			negros a cero--, porque get_texture() la lee con vram64_leer(). Esa
-			pareja no se toca.
+			  "When transferring data to the texture memory via the TA FIFO
+			   buffer and Direct Texture Path, either 64-bit access or 32-bit
+			   access can be specified by setting the SB_LMMODE0 and 1
+			   registers."
 
-			Los nombres son de KOS (dc/pvr/pvr_regs.h): 0x11000000 "VRAM 64-bit,
-			TA=>VRAM" y 0x13000000 "VRAM 32-bit". Queda por confirmar en
-			hardware que el DMA no distinga las dos.
+			SB_LMMODE0 (0x005F6884) manda sobre 0x11000000-0x11FFFFFF y
+			SB_LMMODE1 (0x005F6888) sobre 0x13000000-0x13FFFFFF, que es su
+			imagen. Bit 0: **0 = 64 bits (por omision), 1 = 32 bits**.
+
+			Antes esto se decidia por la direccion y siempre lineal, que es lo
+			que cuadraba con la unica medida que habia --mame4all, que vuelca su
+			cuadro entero a 0x11000000 y lo muestra como framebuffer--. Con eso
+			el boot ROM perdia el texto de su menu: sube las texturas por el
+			mismo 0x11000000 y las necesita entrelazadas, porque get_texture()
+			las lee con vram64_leer(). Los dos casos se explican solos en cuanto
+			se mira el registro, que ademas ya estaba llegando al respaldo del
+			bloque de control sin que nadie lo leyera.
+
+			La store queue es otro camino y no pasa por aca: siempre entrelaza,
+			que es de lo que depende pvr-strided_texture.
 		*/
-		DWORD dst = destino;
+		DWORD dst  = destino;
+		DWORD zona = (destino >> 24) & 0x1F;
 
 		if (VRAM_VENTANA_64(dst))
-			dst = (dst & 0x007FFFFF) | 0x05000000;
+		{
+			DWORD lmmode = 0;
+
+			memread_fisico((zona == 0x13) ? 0xA05F6888 : 0xA05F6884,
+			               &lmmode, sizeof(DWORD));
+
+			/* Bit 0 en 1: acceso de 32 bits, o sea la numeracion del bloque. */
+			if (lmmode & 1)
+				dst = (dst & 0x007FFFFF) | 0x05000000;
+		}
 
 		for (i = 0; i + 4 <= largo; i += 4)
 		{

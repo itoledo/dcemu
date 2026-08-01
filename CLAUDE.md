@@ -774,21 +774,31 @@ address falls inside the frame the PVR writes or displays, and from then on ever
 back with `glReadPixels` and stored through the 32-bit window — before that it costs nothing, so
 no other demo pays for it.
 
-**The CH2 DMA writes to video RAM linearly, even when the destination names the 64-bit
-window.** SDL for Dreamcast dumps whole frames that way — mame4all does 275 transfers of
-614400 bytes to `0x11000000` in six seconds and displays the result as the framebuffer,
-without touching the TA once. The framebuffer is read in 32-bit numbering, so interleaving
-those transfers splits the frame across the two banks and the screen comes out duplicated
-across the width and squashed to half the height; recombining the banks in write order
-reconstructs the image exactly, which is what says the guest's stream is linear.
+**Which window the CH2 DMA writes through is not implied by the address — the guest picks it
+with `SB_LMMODE0`/`SB_LMMODE1`.** This is settled by Sega's own *Dreamcast/Dev.Box System
+Architecture*, §8.4.1.1: the address in `SB_C2DSTAT` names the **path** (`0x10000000` polygon,
+`0x10800000` YUV converter, `0x11000000` direct texture, with `0x12`/`0x13` as their images),
+and of that last one it says *"When transferring data to the texture memory via the TA FIFO
+buffer and Direct Texture Path, either 64-bit access or 32-bit access can be specified by
+setting the SB_LMMODE0 and 1 registers."* `SB_LMMODE0` (`0x005F6884`) governs
+`0x11000000-0x11FFFFFF` and `SB_LMMODE1` (`0x005F6888`) its image at `0x13000000`; bit 0 is
+**0 = 64-bit (default), 1 = 32-bit**. Both already had backing store in `control_mem` — the
+guest's writes were arriving all along, nobody read them.
 
-**The store queue does interleave, and that pair must not be touched**: `pvr-strided_texture`
-uploads its texture through the same window in 32-byte bursts and depends on it, because
-`get_texture()` reads with `vram64_leer()`. Forcing that path flat takes it to black — 240000
-non-black pixels to zero. So the rule is by *path*, not by window. The names are confirmed
-against KOS's own `dc/pvr/pvr_regs.h`: `0x11000000` is "VRAM 64-bit, TA=>VRAM" and
-`0x13000000` "VRAM 32-bit". What is still unconfirmed on hardware is that the DMA does not
-tell the two apart; it is the only reading that fits the measurements.
+That one register explains two measurements that could not both be true otherwise. mame4all
+dumps whole frames to `0x11000000` — 275 transfers of 614400 bytes in six seconds, without
+touching the TA once — and displays them as the framebuffer, which is read in 32-bit
+numbering: it sets `SB_LMMODE0` to 1 and needs the write flat, or the frame splits across the
+banks and comes out duplicated across the width and squashed to half the height. The boot ROM
+uploads its **textures** through the same `0x11000000` — `0x11413000`, `0x1141b000`,
+`0x1151b000`, 8 KB to 1 MB each — with `SB_LMMODE0` at its default 0, and needs them
+interleaved, because `get_texture()` reads with `vram64_leer()`. Deciding by address instead
+cost the boot ROM every glyph in its menu and date panel for a while; see
+`docs/pendientes-plan.md`, C.7.
+
+**The store queue is a different path and always interleaves**: `pvr-strided_texture` uploads
+its texture through the same window in 32-byte bursts and depends on it — forcing that path
+flat takes it to black, 240000 non-black pixels to zero.
 
 `--traza-mem` reports the bytes written to video RAM **per window**, and the first write to each
 with the PC that made it — which is what separates "the guest chose this window" from "dcemu
