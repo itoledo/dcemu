@@ -792,19 +792,12 @@ Con esto arrancan los dos formatos, y el ROM encuentra el `1ST_READ.BIN` en todo
   entrada (`parece_cifrado()`), y con la carpeta empaquetada en un `.iso` mame4all arranca y
   **dibuja su menú**.
 
-  Lo de vídeo también quedó medido, y es otra cosa: **mame4all escribe su framebuffer por la
-  ventana de 64 bits**. Volcando la RAM de vídeo y armando la imagen a mano sale duplicada a
-  640 y limpia a 320, con un periodo real de fila de 640 bytes contra los 1280 que declara
-  `FB_R_SIZE`; y las dos mitades de una fila de 1280 son *distintas* en 202 de 210 filas, así
-  que la duplicación no venía en la memoria sino en la lectura. **El cuadro está repartido
-  entre los dos bancos** —106015 bytes no nulos en el 0 y 106085 en el 1— y recombinándolos
-  de a 4 bytes sale la imagen exacta. La traza nueva de bytes por ventana lo confirma: 132 MB
-  por la ventana `0x11` contra 1,8 MB por la de 32 bits.
+  Lo de vídeo también quedó resuelto, y era otra cosa: **el CH2 DMA**. SDL para Dreamcast
+  vuelca el cuadro entero a `0x11000000` y lo muestra como framebuffer; dcemu entrelazaba esas
+  transferencias y el cuadro se partía entre los dos bancos. Ahora el DMA a RAM de vídeo
+  escribe lineal —la store queue sigue entrelazando, que es lo que necesitan las texturas— y
+  mame4all pasa del menú. Ver `docs/demos-kos.md`.
 
-  `DCEMU_11_PLANO` deja esas escrituras sin entrelazar y **mame4all se ve perfecto**. No es
-  el valor por omisión porque rompe `pvr-strided_texture`, que sube su textura por esa misma
-  ventana y cuenta con el entrelazado: pasa de 2 colores a 1. Los otros seis demos de textura
-  medidos no cambian. Qué distingue los dos casos en el hardware sigue abierto.
 - **El juego arranca pero no dibuja.** Tras el salto el ejecutable corre —el PC recorre
   `0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
   (`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, que carga

@@ -385,34 +385,28 @@ geometría enviada sin lista abierta; la FPU del núcleo está validada aparte (
 Cause y Flag de FPSCR, que ahora se escriben. Está en la lista de consola con veredicto.
 Ver `docs/sh4-conformidad.md`.
 
-### El framebuffer escrito por la ventana de 64 bits (0, pero pendiente)
+### El framebuffer por el CH2 DMA (0) — resuelto
 
-**Ninguna demo de KOS lo sufre; mame4all sí.** Va aquí porque es de vídeo y porque el
-interruptor que lo arregla rompe una demo de esta lista.
+**Ninguna demo de KOS lo sufría; mame4all sí, y era el CH2 DMA.** SDL para Dreamcast vuelca
+el cuadro entero por ahí —275 transferencias de 614400 bytes a `0x11000000` en seis segundos,
+sin tocar el TA ni una vez— y lo muestra como framebuffer, que se lee en la numeración de 32
+bits. Entrelazándolo, el cuadro se partía entre los dos bancos y salía duplicado a lo ancho y
+aplastado a la mitad de alto.
 
-Un guest puede escribir su framebuffer por la ventana `0x11` —la del FIFO de texturas, de 64
-bits— en vez de por la de 32. mame4all lo hace: **132 MB por corrida por `0x11` contra 1,8 MB
-por la de 32 bits**, en escrituras sueltas de 4 bytes. dcemu las entrelaza, el cuadro queda
-repartido entre los dos bancos —106015 bytes no nulos en uno y 106085 en el otro— y la
-pantalla, que se lee plana, sale **duplicada a lo ancho y aplastada a la mitad de alto**.
-Recombinando los bancos de a 4 bytes sale la imagen exacta, así que lo que el guest escribe es
-lineal.
+Cómo se midió, por si sirve de patrón: volcar los dos bancos con `--volcar=a5000000:96000` y
+`--volcar=a5400000:96000`, armar la imagen a mano a 320 y a 640, y comprobar que recombinando
+los bancos **en el orden en que el guest escribe** sale la imagen exacta —o sea que lo que
+manda es lineal—. `--traza-mem` informa los bytes a RAM de vídeo por ventana y la primera
+escritura de cada una con su PC, que es lo que llevó al `MOV.L R8,@R13` sobre `SB_C2DST`.
 
-Cómo se midió, por si hay que repetirlo: volcar la RAM de vídeo con `--volcar=a5000000:96000`
-y `--volcar=a5400000:96000`, armar la imagen a mano a 320 y a 640, y comparar las mitades de
-cada fila de 1280 bytes —salen distintas en 202 de 210 filas, o sea que la duplicación la pone
-la lectura y no la memoria—. `--traza-mem` reporta ahora los bytes por ventana y la primera
-escritura de cada una con su PC, que es lo que dice **cuál** ventana lleva el cuadro.
+Lo que **sí** entrelaza es la store queue, y no se tocó: `pvr-strided_texture` sube su textura
+por esa misma ventana en ráfagas de 32 bytes y depende de ello, porque `get_texture()` la lee
+con `vram64_leer()`. Forzando esa vía a lineal se va a negro. Por eso la regla es **por camino
+y no por ventana**.
 
-`DCEMU_11_PLANO=1` deja esas escrituras sin entrelazar y mame4all se ve perfecto. **No es el
-valor por omisión** porque `pvr-strided_texture` sube su textura por esa misma ventana y
-depende del entrelazado: pasa de 2 colores a 1, o sea a negro. Sin cambio en
-`pvr-palette-wormhole`, `pvr-yuv_converter-YUV422`, `pvr-texture_render`, `pvr-bumpmap`,
-`pvr-fb_tex`, `libdream-ta` ni `conio-basic`.
-
-**Lo que falta averiguar es qué distingue los dos casos en el hardware.** La asimetría más
-concreta que quedó medida: mame4all escribe de a 4 bytes y una subida de textura va de a 32
-por store queue.
+Los nombres están confirmados contra `dc/pvr/pvr_regs.h` de KOS: `0x11000000` es «VRAM
+64-bit, TA=>VRAM» y `0x13000000` «VRAM 32-bit». Queda por confirmar en hardware que el DMA no
+distinga las dos.
 
 ## Arrancar un juego por el boot ROM (hito C): alcanzado
 
