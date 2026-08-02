@@ -14,6 +14,7 @@
 #include "traza.h"
 #include "arm7.h"
 #include "opciones.h"
+#include "perf.h"
 
 unsigned char		aica_reg[AICA_REG_SIZE];
 unsigned long long	aica_muestras;
@@ -920,8 +921,39 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 	}
 }
 
+/*
+	Un registro es "vivo" si su valor depende del reloj del AICA. Solo esos
+	obligarian a sincronizar en el diseno de docs/hilos-plan.md; el resto sale
+	de respaldo plano y se puede contestar sin esperar a nadie. La distincion
+	es la mitad de la medida del paso 0.
+*/
+static int registro_vivo(unsigned long off)
+{
+	switch (off)
+	{
+	case AICA_MONITOR_EG:		/* ademas limpia dio_la_vuelta al leerlo */
+	case AICA_MONITOR_CA:
+	case AICA_TIMER_A:
+	case AICA_TIMER_B:
+	case AICA_TIMER_C:
+	case AICA_SCIPD:
+	case AICA_MCIPD:
+		return 1;
+	}
+
+	return 0;
+}
+
 static DWORD leer_registro(unsigned long off, int del_arm)
 {
+	if (!del_arm && perf_activa)
+	{
+		if (registro_vivo(off))
+			perf_aica_reg_vivo++;
+		else
+			perf_aica_reg_plano++;
+	}
+
 	switch (off)
 	{
 	/*
@@ -1116,16 +1148,25 @@ void aica_tick(void)
 
 	{
 		unsigned long long i;
+		PERF_MARCA(t0);
 
 		for (i = 0; i < faltan; i++)
 			mezclar_una_muestra();
+
+		PERF_SUMAR(t0, perf_ns_aica);
 	}
 
 	/*
 		Y el ARM. Su reloj no necesita cuenta aparte: 22579200 / 44100 = 512
 		exacto, asi que son 512 ciclos por muestra y punto.
 	*/
-	arm7_ejecutar((long) faltan * 512);
+	{
+		PERF_MARCA(t1);
+
+		arm7_ejecutar((long) faltan * 512);
+
+		PERF_SUMAR(t1, perf_ns_arm);
+	}
 }
 
 int aica_arm_en_reset(void)

@@ -28,6 +28,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/mov.c
 	${CMAKE_SOURCE_DIR}/opciones.c
 	${CMAKE_SOURCE_DIR}/opcodes.c
+	${CMAKE_SOURCE_DIR}/perf.c
 	${CMAKE_SOURCE_DIR}/sh4emu.c
 	${CMAKE_SOURCE_DIR}/shift.c
 	${CMAKE_SOURCE_DIR}/simdx86_stub.c

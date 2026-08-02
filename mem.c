@@ -12,6 +12,7 @@
 #include "opciones.h"
 #include "sistema.h"
 #include "traza.h"
+#include "perf.h"
 #include "mmu.h"
 #include "wdt.h"
 #include "tmu.h"
@@ -1003,6 +1004,7 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 			// RAM de sonido: 2 MB en 0x00800000. Estaba reservada y sin mapear.
 			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
 			{
+				PERF_CONTAR(perf_onda_lect);
 				memcpy(p, &sound_mem[fisica - SOUND_BASE], size);
 				break;
 			}
@@ -2069,6 +2071,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			// era un parche que tapaba justo esto.
 			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
 			{
+				PERF_CONTAR(perf_onda_escr);
 				memcpy(&sound_mem[fisica - SOUND_BASE], p, size);
 				SET_BIT(G2_FIFO, AICA_FIFO);
 				break;
@@ -2076,6 +2079,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 			if (AICA_ES_REGISTRO(fisica))
 			{
+				PERF_CONTAR(perf_aica_reg_escr);
 				aica_escribir(direccion, p, size);
 				break;
 			}

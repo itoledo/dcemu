@@ -31,6 +31,7 @@
 #include "opciones.h"
 #include "sistema.h"
 #include "traza.h"
+#include "perf.h"
 #include "ubc.h"
 #include "wdt.h"
 #include "tmu.h"
@@ -478,6 +479,7 @@ void main_loop(void)
 				// ya no hay acumuladores que sumen y resten cantidades
 				// distintas. Ver docs/clock-plan.md, fase 2.
 				DWORD ciclos = core.context.cycles;
+				PERF_MARCA_MUESTRA(t_serv, n_serv);
 
 				core.context.cycles -= ciclos;
 				reloj_total += ciclos;
@@ -499,6 +501,8 @@ void main_loop(void)
 				intc_revisar_sh4();
 
 				dma_check();
+
+				PERF_SUMAR_MUESTRA(t_serv, perf_ns_servicio);
 			}
 			if(intc_queuemask || intc_queuemask_ext)
 				check_ints();
@@ -1471,6 +1475,8 @@ int main(int argc, char *argv[])
 	printf("Build: '%s'\n", SIMDx86_GetBuildString());
 	#endif
 
+	perf_inicio();
+
 	main_loop();
 
 	/* Lo que el guest escribio en la flash -- la fecha, el idioma, los ajustes
@@ -1481,6 +1487,7 @@ int main(int argc, char *argv[])
 	mando_terminar();
 
 	traza_resumen();
+	perf_resumen();
 
 //	SDL_RemoveTimer(timer_id);
 //	SDL_RemoveTimer(vblank_id);

@@ -6,6 +6,7 @@
 #include "intc.h"
 #include "gui.h"
 #include "traza.h"
+#include "perf.h"
 #include "opciones.h"		/* --captura-gl */
 #include "ta.h"				/* clasificacion de los parametros del TA */
 #include "vram.h"			/* las dos ventanas de la RAM de video */
@@ -42,6 +43,7 @@ void fps_marcar_cuadro(void)
 	Uint32			ahora = SDL_GetTicks();
 
 	cuadros++;
+	PERF_CONTAR(perf_cuadros);
 
 	if (marca == 0)
 	{
@@ -1970,6 +1972,7 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 static void dibujar_escena(void)
 {
 	DWORD i;
+	PERF_MARCA(t_escena);
 
 	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
 	   decide, tira por tira, con que juego de parametros sale cada pixel. */
@@ -2144,8 +2147,14 @@ static void dibujar_escena(void)
 				   textura: glTexParameteri afecta a la que este ligada en ese
 				   momento, y aca todavia lo esta la del cuadro anterior. Ver
 				   el comentario en get_texture(). */
-				get_texture(TriangleStrip[i].texture.pvr_texture_size_usize, TriangleStrip[i].texture.pvr_texture_size_vsize,
-				TriangleStrip[i].texture.surface, TriangleStrip[i].texture.twiddled, TriangleStrip[i].texture.vq,i);
+				{
+					PERF_MARCA(t_tex);
+
+					get_texture(TriangleStrip[i].texture.pvr_texture_size_usize, TriangleStrip[i].texture.pvr_texture_size_vsize,
+					TriangleStrip[i].texture.surface, TriangleStrip[i].texture.twiddled, TriangleStrip[i].texture.vq,i);
+
+					PERF_SUMAR(t_tex, perf_ns_textura);
+				}
 			}
 			else
 			{
@@ -2172,6 +2181,8 @@ static void dibujar_escena(void)
 		}
 
 	glDisable(GL_STENCIL_TEST);
+
+	PERF_SUMAR(t_escena, perf_ns_escena);
 }
 
 /*
@@ -2462,7 +2473,16 @@ static void terminar_escena(void)
 	gui_refresh();
 
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
-	SDL_GL_SwapBuffers();
+	{
+		/* El intercambio es donde se paga la espera al vsync, si lo hay. Se
+		   mide aparte justamente para poder descontarlo: un tope de 60 no es
+		   lo mismo que estar lento. */
+		PERF_MARCA(t_swap);
+
+		SDL_GL_SwapBuffers();
+
+		PERF_SUMAR(t_swap, perf_ns_presentar);
+	}
 	fps_marcar_cuadro();
 	pvr_framebufferdisplay = false;
 	

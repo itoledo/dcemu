@@ -10,6 +10,7 @@
 
 #include "opciones.h"
 #include "options.h"
+#include "perf.h"
 
 struct opciones_t opciones =
 {
@@ -66,6 +67,8 @@ void opciones_ayuda(const char * programa)
 		"                        emula, y --captura-audio sigue funcionando.\n"
 		"  --sin-aica            no emular el AICA: ni el ARM, ni los canales, ni\n"
 		"                        los temporizadores. Para aislar una regresion.\n"
+		"  --perf                al salir, desglosa en que se fue el tiempo real y\n"
+		"                        cuantas veces el SH-4 toco el estado del AICA.\n"
 		"  --traza-desde=PC[:N[:K]]\n"
 		"                        desensambla las N instrucciones que siguen a la\n"
 		"                        llegada a PC, saltandose las K primeras, con los\n"
@@ -228,6 +231,11 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-aica") == 0)
 		{
 			opciones.sin_aica = 1;
+		}
+		else
+		if (strcmp(arg, "--perf") == 0)
+		{
+			perf_activa = 1;
 		}
 		else
 		if (strncmp(arg, "--watchpoint=", 13) == 0)

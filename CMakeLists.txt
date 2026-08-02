@@ -100,6 +100,7 @@ set(DCEMU_SOURCES
 	mov.c
 	opciones.c
 	opcodes.c
+	perf.c
 	reg.c
 	scramble.c
 	sh4emu.c

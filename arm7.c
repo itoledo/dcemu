@@ -21,6 +21,7 @@
 #include "main.h"			/* solo por los tipos; no se enlaza nada de SDL */
 #include "arm7.h"
 #include "aica.h"
+#include "perf.h"
 
 struct arm7_estado arm7;
 
@@ -933,5 +934,25 @@ void arm7_ejecutar(long ciclos)
 	arm7.ciclos += ciclos;
 
 	while (arm7.ciclos > 0)
+	{
+		if (perf_activa)
+		{
+			/* Un salto a si mismo deja el PC donde estaba: es la forma que
+			   tiene el ARM de esperar, y la que spu_init() de KOS deja puesta
+			   en la direccion 0. Si domina, lo que hay que hacer no es mover
+			   el ARM de hilo sino no ejecutarlo. */
+			DWORD antes = arm7.r[15];
+
+			arm7.ciclos -= arm7_paso();
+
+			perf_arm_pasos++;
+
+			if (arm7.r[15] == antes)
+				perf_arm_ocioso++;
+
+			continue;
+		}
+
 		arm7.ciclos -= arm7_paso();
+	}
 }

@@ -1,0 +1,102 @@
+/****************************************************************************
+
+	PERF - el desglose de en que se va el tiempo real
+
+	Existe para contestar la pregunta del paso 0 de docs/hilos-plan.md: cuanto
+	vale de verdad sacar el AICA y el ARM7 a otro hilo, y con que frecuencia el
+	SH-4 tocaria su estado -- que es lo que en ese diseno obliga a sincronizar y
+	por lo tanto el techo del paralelismo.
+
+	**Se mide adentro de una sola corrida, no comparando dos.** dcemu nunca fija
+	el intervalo de intercambio, asi que el vsync lo decide el driver: comparar
+	una corrida normal contra una con --sin-aica queda a merced de un tope de 60
+	que puede tapar justo la diferencia que se busca. Un desglose interno es
+	inmune a eso.
+
+	Apagado cuesta una comparacion contra cero por punto de medida, la misma
+	clase que el watchpoint. Los relojes se toman donde el llamado es caro y
+	poco frecuente -- la mezcla de una muestra ocurre 44100 veces por segundo,
+	no cuatro millones -- para que el instrumento no sea el que se mide.
+
+	Sin SDL a proposito, como aica.c y vram.c, para que tests/ lo enlace.
+
+*****************************************************************************/
+
+#ifndef _PERF_H_
+#define _PERF_H_
+
+/* --perf. Apagado en cero. */
+extern int perf_activa;
+
+/* Reloj monotono del anfitrion, en nanosegundos. */
+unsigned long long perf_ahora(void);
+
+/* Acumuladores de tiempo real, en nanosegundos. */
+extern unsigned long long perf_ns_aica;			/* mezclar_una_muestra() */
+extern unsigned long long perf_ns_arm;			/* arm7_ejecutar() */
+extern unsigned long long perf_ns_escena;		/* dibujar_escena() entera */
+extern unsigned long long perf_ns_textura;		/* get_texture(), subconjunto de la anterior */
+extern unsigned long long perf_ns_presentar;	/* el intercambio de buffers */
+extern unsigned long long perf_ns_servicio;		/* el bloque periodico de main_loop() */
+extern unsigned long long perf_ns_ta;			/* ta_procesar_bloque() por store queue */
+
+/*
+	El ARM7: cuantos pasos dio y cuantos de ellos fueron un salto a si mismo.
+	Si la segunda cifra domina, el ARM esta esperando y lo que hay que hacer no
+	es moverlo de hilo sino no ejecutarlo -- que es mucho mas barato.
+*/
+extern unsigned long long perf_arm_pasos;
+extern unsigned long long perf_arm_ocioso;
+
+/*
+	Los accesos del SH-4 al estado del AICA. En el diseno de la fase 1 de
+	docs/hilos-plan.md cada uno de estos obliga al hilo del AICA a ponerse al
+	dia, asi que su frecuencia es exactamente lo que decide si la fase sirve.
+
+	"Vivo" es un registro cuyo valor depende del reloj del AICA -- las dos
+	ventanas de monitoreo, los contadores de los temporizadores, las banderas
+	de interrupcion --; "plano" es respaldo que se puede leer sin sincronizar
+	nada. La distincion importa: solo los vivos son un costo inevitable.
+*/
+extern unsigned long long perf_aica_reg_vivo;
+extern unsigned long long perf_aica_reg_plano;
+extern unsigned long long perf_aica_reg_escr;
+extern unsigned long long perf_onda_lect;
+extern unsigned long long perf_onda_escr;
+
+/* Cuadros presentados, para poder dar fps sin depender del titulo de ventana. */
+extern unsigned long long perf_cuadros;
+
+void perf_inicio(void);
+void perf_resumen(void);
+
+#define PERF_MARCA(v)		unsigned long long v = perf_activa ? perf_ahora() : 0
+#define PERF_SUMAR(v, ac)	do { if (perf_activa) (ac) += perf_ahora() - (v); } while (0)
+#define PERF_CONTAR(c)		do { if (perf_activa) (c)++; } while (0)
+
+/*
+	La variante para lo que se llama millones de veces por segundo.
+
+	El bloque periodico de main_loop() entra unas 160 millones de veces en una
+	corrida de 40 segundos emulados: dos QueryPerformanceCounter por entrada son
+	unos 6 segundos reales, o sea que el instrumento pasaria a ser una quinta
+	parte de lo que dice medir. Se cronometra una entrada de cada PERF_MUESTREO
+	y se multiplica.
+
+	El sesgo del muestreo es despreciable con 160 mil muestras; el de medirlo
+	todo, no.
+*/
+#define PERF_MUESTREO		1024
+
+#define PERF_MARCA_MUESTRA(v, n)										\
+	static unsigned long n = 0;											\
+	int v##_va = perf_activa && ((++n & (PERF_MUESTREO - 1)) == 0);		\
+	unsigned long long v = v##_va ? perf_ahora() : 0
+
+#define PERF_SUMAR_MUESTRA(v, ac)										\
+	do {																\
+		if (v##_va)														\
+			(ac) += (perf_ahora() - (v)) * PERF_MUESTREO;				\
+	} while (0)
+
+#endif /* _PERF_H_ */

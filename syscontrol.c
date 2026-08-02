@@ -10,6 +10,7 @@
 #include "graficos.h"
 #include "ta.h"			/* ta_procesar_bloque(): la FIFO de poligonos */
 #include "traza.h"		/* traza_trapa(): la trampa del guest */
+#include "perf.h"
 
 void dump_llamadas()
 {
@@ -505,7 +506,13 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 			// misma FIFO y tiene que interpretarlos igual. Es el que junta los
 			// parametros de 64 bytes, que llegan en dos bloques -- uno por
 			// store queue.
-			ta_procesar_bloque(&ta_mem[addr & 0x3F]); // 0x00 o 0x20
+			{
+				PERF_MARCA(t_ta);
+
+				ta_procesar_bloque(&ta_mem[addr & 0x3F]); // 0x00 o 0x20
+
+				PERF_SUMAR(t_ta, perf_ns_ta);
+			}
 // 			ta_check(addr);
 		}
 	}
