@@ -202,8 +202,14 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 				con lo que un syscall le contesto -- --traza-desde no distingue
 				el sitio cuando el PC de retorno es codigo compartido. El flujo
 				de DCEMU_TRAZA_EXC=3 da el dest, el pr y la K.
+
+				Casa contra el SPC de CUALQUIER excepcion, no solo el 0x0e0:
+				un dest ffffxxxx solo aparece como syscall igual, y un dest en
+				codigo comun arma la traza sobre la excepcion que ese sitio
+				levanta -- una recarga de TLB o el primer uso de FPU de un
+				hilo, que es lo que --traza-desde no puede aislar por proceso.
+				El PR del llamador desambigua el mismo PC en dos procesos.
 			*/
-			if (codigo == 0x0e0)
 			{
 				static int		ts_estado = -1;		/* -1 sin leer, 0 apagado */
 				static DWORD	ts_dest = 0, ts_pr = 0;

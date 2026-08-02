@@ -303,9 +303,12 @@ static void noimp_avanza_pc_sin_colgar(void)
 
 /* 0xFFFF no es una instruccion del SH-4. main() escribe esa palabra en los
    vectores de syscall de la BIOS y el emulador la usa para atender el GDROM
-   desde el host. Aqui se ejecuta en la direccion del stub del GDROM con una
-   peticion de lectura de sectores; iso_read_sector() lo atiende el doble de
-   tests/dobles.c, que devuelve un patron reproducible. */
+   desde el host. El stub del GDROM lleva el ilegal en el offset 0 -- sin RTS:
+   hack_gdrom() fija el PC del retorno el mismo, de ordinario PR (asi el
+   MAINLOOP puede desviar el retorno al callback PIO del guest; ver main.c).
+   Aqui se ejecuta con una peticion de lectura de sectores; iso_read_sector()
+   lo atiende el doble de tests/dobles.c, que devuelve un patron
+   reproducible. */
 static void el_hack_de_la_bios_lee_sectores(void)
 {
 	DWORD destino = PRUEBA_DATOS + 0x1000;
@@ -324,7 +327,8 @@ static void el_hack_de_la_bios_lee_sectores(void)
 	R(6) = 0;
 	R(7) = 0;								/* GDROM_SEND_COMMAND */
 
-	PC = HACK_BASE + HACK_GDROM + 2;
+	PR = 0x8C123456;						/* el llamador del syscall */
+	PC = HACK_BASE + HACK_GDROM;
 	ejecutar(0xFFFF);
 
 	for (i = 0; i < 2048; i++)
@@ -333,7 +337,7 @@ static void el_hack_de_la_bios_lee_sectores(void)
 
 	ESPERAR_U32(distintos, 0);
 	ESPERAR_U32(R(0), 0x6969);
-	ESPERAR_U32(PC, HACK_BASE + HACK_GDROM + 4);
+	ESPERAR_U32(PC, 0x8C123456);
 }
 
 /* ------------------------------------------------------------------------ */

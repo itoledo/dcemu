@@ -41,8 +41,48 @@ static DWORD multi_sector = 0;		/* proximo sector del flujo */
 static DWORD multi_desplaz = 0;		/* offset dentro de ese sector */
 static DWORD multi_restante = 0;	/* bytes que faltan entregar */
 static DWORD multi_total = 0;
-static DWORD multi_callback = 0;	/* lo registra G1_DMA_END (r7=5) */
+static DWORD multi_callback = 0;	/* lo registra G1_DMA_END (r7=5) o
+									   SET_PIO_CALLBACK (r7=11) */
 static DWORD multi_callback_arg = 0;
+
+/* El pedazo PIO pedido (r7=12) se LATCHEA y nada mas: la copia y el aviso al
+   callback ocurren en el proximo MAINLOOP (r7=2), que la bomba de wsegacd
+   llama justo despues desde su propio hilo. Hacerlo en el momento y avisar en
+   el MAINLOOP que tocara despues parecia equivalente y no lo es: el aviso
+   caia en el MAINLOOP de otro proceso, el argumento del callback es una VA
+   relativa al proceso, y el kernel moria en panico. Es el modelo exacto del
+   gdGdcExecServer real (y el del HLE de flycast). */
+static DWORD pio_destino = 0;
+static DWORD pio_tam = 0;
+static int   pio_pedido = 0;
+
+/*
+	Escritura traducida por pedazos que no cruzan pagina. memwrite() traduce
+	UNA vez por llamada y escribe fisico contiguo desde ahi, lo que para las
+	instrucciones del guest (1 a 8 bytes, nunca cruzan pagina) es correcto --
+	pero un bloque grande que cruza paginas virtuales NO contiguas en fisico
+	rocia las paginas fisicas vecinas de la primera. La pieza de 36 KB del
+	flujo PIO de DCDoom, escrita a una pila de usuario de Windows CE, piso
+	el directorio de paginas de su propio proceso con datos del WAD (la
+	entrada leida despues por el kernel decia "SW17", un nombre de lump de
+	DOOM), y el kernel moria por doble excepcion con "Halting system". 1 KB
+	es la pagina minima del SH-4, y todo tamano de pagina es multiplo suyo.
+*/
+static void memwrite_paginado(DWORD destino, char * origen, DWORD tam)
+{
+	DWORD hecho = 0;
+
+	while (hecho < tam)
+	{
+		DWORD trozo = 0x400 - ((destino + hecho) & 0x3FF);
+
+		if (trozo > tam - hecho)
+			trozo = tam - hecho;
+
+		memwrite(destino + hecho, origen + hecho, trozo);
+		hecho += trozo;
+	}
+}
 
 OPCODE(fsca) // FSCA FPUL, DRn
 {
@@ -419,7 +459,8 @@ void hack_gdrom()
 					if (R(4) == 17)
 						memwrite_fisico(targetaddr, &targetmem[0], 2048 * secnum);
 					else
-						memwrite(targetaddr, &targetmem[0], 2048 * secnum);
+						/* Traducida y por paginas: ver memwrite_paginado(). */
+						memwrite_paginado(targetaddr, &targetmem[0], 2048 * secnum);
 
 					free(targetmem);
 
@@ -461,6 +502,7 @@ void hack_gdrom()
 				multi_id       = 0;
 				multi_restante = 0;
 				multi_callback = 0;
+				pio_pedido     = 0;
 				break;
 
 				case 40: // GET_VERS: la version del driver del GD-ROM
@@ -543,7 +585,15 @@ void hack_gdrom()
 				break;
 
 				case 38: // GDCC_MULTI_DMAREAD: lectura en flujo, sin destino
+				case 39: // GDCC_MULTI_PIOREAD: lo mismo, pero se tira con la CPU
 				{
+					/* Los dos dejan el mismo estado: la peticion queda en
+					   CONTINUE y el guest tira de a pedazos -- por r7=6 el 38,
+					   por r7=12 el 39. El "adelanto" es el Next Address del
+					   CD_READ2 (31h) del protocolo SPI (docs/cdif131e.pdf,
+					   8.2): la posicion de pre-lectura, cuyo error no se
+					   informa en este comando; aca no hay nada que adelantar.
+					   DCDoom recorre DOOM.WAD entero por el 39. */
 					int		secstart = 0, secnum = 0;
 					DWORD	adelanto = 0;	/* seekAhead; solo Windows CE lo pasa */
 
@@ -558,8 +608,9 @@ void hack_gdrom()
 					multi_total    = multi_restante;
 
 					if (traza_activa)
-						fprintf(stderr, "hack: MULTI_DMAREAD %d sectores desde %d"
+						fprintf(stderr, "hack: MULTI_%sREAD %d sectores desde %d"
 							" (flujo, adelanto=%lu)\n",
+							(R(4) == 38) ? "DMA" : "PIO",
 							secnum, secstart, (unsigned long) adelanto);
 				}
 				break;
@@ -672,6 +723,21 @@ void hack_gdrom()
 						WriteMemoryL(R(5) + i * 4, &cero);
 
 					WriteMemoryL(R(5) + 2 * 4, &transferido);
+				}
+
+				/* Un pedazo PIO latcheado y todavia no copiado es PROCESSING
+				   (1), no CONTINUE: con 3 la bomba de wsegacd entiende "datos
+				   ya entregados", se duerme a esperar el callback, y el
+				   MAINLOOP que haria la copia y lo llamaria no llega nunca --
+				   abrazo mortal medido con DCDoom en el ultimo pedazo del
+				   directorio de DOOM.WAD. Con 1 sigue en su bucle
+				   MAINLOOP+CHECK, que es lo que hace girar la copia. El HLE
+				   de flycast contesta exactamente esto ("Bust-a-move 4 likes
+				   this"). */
+				if (R(4) == multi_id && pio_pedido)
+				{
+					R(0) = 1;		// PROCESSING
+					break;
 				}
 
 				/* Un MULTI_DMAREAD con datos por entregar sigue vivo: CONTINUE
@@ -828,6 +894,80 @@ void hack_gdrom()
 			}
 			break;
 
+			case 11: // GDROM_SET_PIO_CALLBACK: como el 5, para el flujo por CPU
+			multi_callback     = R(4);
+			multi_callback_arg = R(5);
+			R(0) = 0;
+			break;
+
+			case 12: // GDROM_REQ_PIO_TRANS: un pedazo del flujo, copiado por CPU
+			{
+				/* El gemelo del 6 para el MULTI_PIOREAD (39), con dos
+				   diferencias. El destino es una direccion VIRTUAL -- lo
+				   escribe la CPU del driver, no el G1 DMA --, el espejo de la
+				   regla de las lecturas 16 (PIO, traducida) y 17 (DMA,
+				   fisica). Y aca solo se VALIDA y LATCHEA: la copia y el
+				   callback van en el MAINLOOP -- ver pio_pedido arriba. */
+				DWORD	destino = 0, tam = 0;
+
+				memread(R(5), &destino, sizeof(DWORD));
+				memread(R(5) + 4, &tam, sizeof(DWORD));
+
+				if (R(4) != multi_id || multi_id == 0 || tam > multi_restante)
+				{
+					if (traza_activa)
+						fprintf(stderr, "hack: REQ_PIO_TRANS rechazado:"
+							" id=%lx (vivo %lx), %lu bytes a %08lx con %lu"
+							" restantes\n", (unsigned long) R(4),
+							(unsigned long) multi_id, (unsigned long) tam,
+							(unsigned long) destino,
+							(unsigned long) multi_restante);
+
+					R(0) = (DWORD) -1;		// GDC_ERR
+					break;
+				}
+
+				pio_destino = destino;
+				pio_tam     = tam;
+				pio_pedido  = 1;
+
+				if (traza_activa)
+				{
+					static int vistos = 0;
+
+					if (vistos < 8)
+					{
+						vistos++;
+						fprintf(stderr, "hack: REQ_PIO_TRANS %lu bytes a %08lx"
+							" (latcheado, quedan %lu)\n", (unsigned long) tam,
+							(unsigned long) destino,
+							(unsigned long) multi_restante);
+					}
+				}
+
+				R(0) = 0;				// GDC_OK
+			}
+			break;
+
+			case 13: // GDROM_CHECK_PIO_TRANS: cuanto queda del flujo por CPU
+			{
+				/* A diferencia del 7, el restante solo se informa con el
+				   flujo vivo, y sin flujo la respuesta es error -- la
+				   asimetria es del propio driver (flycast la reproduce). */
+				DWORD	restante = multi_restante;
+
+				if (multi_id != 0 && multi_restante > 0)
+				{
+					if (R(5))
+						WriteMemoryL(R(5), &restante);
+
+					R(0) = 0;			// GDC_OK
+				}
+				else
+					R(0) = (DWORD) -1;	// GDC_ERR
+			}
+			break;
+
 			case 8: // GDROM_READ_ABORT
 			if (R(4) != 0 && (R(4) == com_viva || R(4) == multi_id))
 			{
@@ -835,6 +975,7 @@ void hack_gdrom()
 				{
 					multi_id       = 0;
 					multi_restante = 0;
+					pio_pedido     = 0;
 				}
 
 				com_viva = 0;
@@ -864,10 +1005,107 @@ void hack_gdrom()
 			break;
 
 			default:
+			/* Una funcion del vector que falta es la misma enfermedad que un
+			   comando que falta: nombrarla o no enterarse. */
 			logmsg("GDROM: error!\n");
+
+			if (traza_activa)
+			{
+				static int vistos = 0;
+
+				if (vistos < 8)
+				{
+					vistos++;
+					fprintf(stderr, "hack: funcion r7=%lu del vector GD-ROM"
+						" sin implementar (r4=%lx r5=%lx r6=%lx)\n",
+						(unsigned long) R(7), (unsigned long) R(4),
+						(unsigned long) R(5), (unsigned long) R(6));
+				}
+			}
 			break;
 		}
 	}
+
+	/*
+		El retorno del stub, que no es RTS (ver main.c): de ordinario, volver
+		al llamador. La excepcion es el MAINLOOP (r7=2) con un pedazo PIO
+		latcheado: como en el gdGdcExecServer real, el servidor hace aqui la
+		copia y "llama" al callback -- PC va al callback con R4 = su argumento
+		y PR intacto, asi el RTS del callback vuelve al llamador del MAINLOOP,
+		que es la propia bomba de wsegacd: el mismo hilo y el mismo proceso
+		que pidieron el pedazo, unica manera de que la VA del argumento
+		signifique lo que debe. Sin este aviso la bomba consulta dos veces,
+		espera para siempre y el juego termina abortando el flujo (asi se
+		quedo DCDoom sin leer DOOM.WAD). Es el modelo del HLE de flycast.
+	*/
+	if (R(6) == 0 && R(7) == 2 && pio_pedido && multi_id != 0)
+	{
+		/* Transaccional: el memwrite traducido puede fallar por TLB y abortar
+		   la instruccion entera -- el guest recarga y reejecuta este MAINLOOP,
+		   o sea esto desde cero --, asi que el estado del flujo se toca solo
+		   con la copia completa hecha. Reescribir los mismos bytes en la
+		   reejecucion es inocuo. */
+		char	sector[2048];
+		DWORD	hecho    = 0;
+		DWORD	sect     = multi_sector;
+		DWORD	desplaz  = multi_desplaz;
+
+		while (hecho < pio_tam)
+		{
+			DWORD trozo = 2048 - desplaz;
+
+			if (trozo > pio_tam - hecho)
+				trozo = pio_tam - hecho;
+
+			iso_read_sector(sector, sect, 1);
+			memwrite_paginado(pio_destino + hecho, &sector[desplaz], trozo);
+
+			hecho   += trozo;
+			desplaz += trozo;
+
+			if (desplaz >= 2048)
+			{
+				desplaz = 0;
+				sect++;
+			}
+		}
+
+		multi_sector    = sect;
+		multi_desplaz   = desplaz;
+		multi_restante -= pio_tam;
+		pio_pedido      = 0;
+
+		/* El fin de COMANDO, cuando el flujo se vacia, es la interrupcion
+		   externa de la lectora, como en el 6. Por pieza no hay ninguna: el
+		   aviso PIO es el callback. */
+		if (multi_restante == 0)
+			intc_add_ext(ASIC_EVT_EXT_GDROM);
+
+		if (traza_activa)
+		{
+			static int vistos = 0;
+
+			if (vistos < 8)
+			{
+				vistos++;
+				fprintf(stderr, "hack: MAINLOOP copia %lu bytes a %08lx"
+					" (quedan %lu) y llama al callback %08lx(%08lx)\n",
+					(unsigned long) pio_tam, (unsigned long) pio_destino,
+					(unsigned long) multi_restante,
+					(unsigned long) multi_callback,
+					(unsigned long) multi_callback_arg);
+			}
+		}
+
+		if (multi_callback != 0)
+		{
+			R(4) = multi_callback_arg;
+			PC   = multi_callback;
+			return;
+		}
+	}
+
+	PC = PR;
 }
 
 OPCODE(BIOS_HACK)
@@ -877,16 +1115,18 @@ OPCODE(BIOS_HACK)
     switch(PC)
     {
         case HACK_BASE + HACK_ROMFONT + 2:  hack_romfont(); break;
-        case HACK_BASE + HACK_GDROM + 2:    hack_gdrom();   break;
+        /* El stub del GD-ROM lleva el ilegal en el offset 0, sin RTS, y
+           hack_gdrom() fija el PC del retorno el mismo -- ver main.c. */
+        case HACK_BASE + HACK_GDROM:        hack_gdrom();   return;
         /* La entrada fija que el word de 8C0000C0 apunta en el ROM real: el
            mismo servicio del GD-ROM, llamado por direccion. Ver mem.h. */
-        case HACK_GDROM_FIJO + 2:           hack_gdrom();   break;
+        case HACK_GDROM_FIJO:               hack_gdrom();   return;
         case HACK_BASE + HACK_FLASHROM + 2: hack_flashrom(); break;
         case HACK_BASE + HACK_SYSINFO + 2:  hack_sysinfo();  break;
         case HACK_BASE + HACK_UNKNOWN + 2:  hack_mudo("UNKNOWN");   break;
         default:	logmsg("bios_hack: error\n"); break;
     }
-    
+
     PC += 2;
 }
 

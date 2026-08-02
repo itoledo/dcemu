@@ -884,6 +884,20 @@ per character straight through `pvr_prim()`:
   the winding GL sees is the opposite of the one the PVR assumes — and every quad conio drew
   was culled. Modes 2 and 3 now set `glFrontFace()` explicitly.
 
+**RENDERDONE (SB_ISTNRM bits 0-2) is raised by `cb_renderstart()` — the guest's STARTRENDER
+— not by `TA_LIST_INIT`.** On the chip those bits are the consequence of the strobe; dcemu
+raised them when a list was initialized, which KOS never distinguishes (it waits after its
+own STARTRENDER and the event arrived either way — the GL draw still happens at the next
+`TA_LIST_INIT`, which presents the accumulated scene) but Windows CE's ddraw does: it got a
+"render finished" it never asked for, before its first vertex, and its interrupt state
+machine derailed. Only the EVENT timing moved; the render pipeline is unchanged.
+
+**`FB_R_SOF1` reads back what was written** (`pvr_fb_r_sof1`, since `PVR_WRITE_CB_1`
+consumes the write before the `control_mem` backing store). A `0x00100203` hardcoded in
+2005 poisoned Windows CE's flip — ddhal read-modify-writes the register, so it rewrote the
+constant every frame and the display never pointed at a drawn surface. The DevBox doc lists
+it RW, address in 32-bit units in bits 23-2, bits 1-0 hardwired 00.
+
 `taListEnd()` raising a list-completion interrupt only `if (pvr_registering != -1)` turned out
 **not** to be a problem in practice: `pvr_list_finish()` always submits a blank polygon header
 with the right list type before the end-of-list marker, precisely because opening a list and
@@ -1045,6 +1059,17 @@ flat takes it to black, 240000 non-black pixels to zero. Note the same doc sente
 "via the TA FIFO buffer", which store-queue writes to `0x11000000` also go through, so
 `SB_LMMODE0` may well govern them too; dcemu hardcodes the interleave there, which is what
 `SB_LMMODE0 = 0` — the default, and what KOS leaves — would give anyway. Untested either way.
+
+**With the MMU on, the SQ flush target comes from the UTLB, not from QACR** (SH-4 manual
+§4.6: the `PREF` on `0xE0000000-0xE3FFFFFF` translates the full SQ virtual address; a miss
+raises the write-miss with THAT VPN). `mmu_traducir_sq()` in `mmu.c` does it —
+`docs/mmu-plan.md`, fase 6. It is how Windows CE's ddraw reaches everything: its refill
+handler serves SQ VAs from the PTE template `SetStoreQueueBase` leaves, plus bits 25-20 of
+the VA, so one base fans out to the polygon FIFO (`0xE2xxxxxx` → `0x10000000`), the direct
+texture path (`0xE3xxxxxx` → `0x11xxxxxx`) and RAM staging (`0xE0Cxxxxx`). Masking first —
+the QACR formula, which is the MMU-off rule — fed CE a miss for a slot-1 VPN its tables
+never map, and ddhal.dll died by access violation on its first blit: that single line was
+most of why DCDoom's game process exited at 2.4 s.
 
 **`0x06` and `0x07` are image areas of `0x04` and `0x05`**, per table 2-2 of the same document
 ("the addresses shown in parentheses are an image area"). They were in `mem_zone[]` as aliases
@@ -1539,8 +1564,21 @@ full width on the bus, not NUL-terminated.
 
 With `BIOS_HACKS` enabled in `options.h` **and** `opciones.hacks_bios` set at runtime,
 `main()` patches the syscall vector slots (`0x8C0000B0`-`0x8C0000E0`) to point at stub code
-it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the delay slot of an
-`RTS`, which maps to `BIOS_HACK` in `dcopcodes.c`:
+it writes at `HACK_BASE`. Most stubs are an illegal opcode in the delay slot of an `RTS`,
+which maps to `BIOS_HACK` in `dcopcodes.c`. **The GD-ROM stub is the exception: its illegal
+opcode sits at offset 0, with no RTS, and `hack_gdrom()` sets the return PC itself** —
+normally `PC = PR`, but a MAINLOOP (r7=2) with a latched PIO piece copies the data and
+"calls" the guest's PIO callback instead (PC = callback, R4 = its argument, PR untouched),
+exactly like the real `gdGdcExecServer`. The RTS shape made that impossible: `rts112`
+latches its target before the delay slot runs. Windows CE streams DOOM.WAD through that
+callback (`MULTI_PIOREAD`, command 39, plus vector functions 11/12/13 — the CPU-copy twin
+of the 38/r7=6 DMA stream; numbering verified against flycast's `gdrom_hle.h`, semantics
+grounded in `CD_READ2 (31h)` of `docs/cdif131e.pdf`). Two details cost a kernel panic each:
+the copy and the callback happen in the MAINLOOP the wsegacd pump itself calls — its own
+thread and process, the only context where the callback argument's VA means what it must —
+and a translated write of more than one page must be chunked (`memwrite_paginado()`:
+`memwrite` translates once per call, and a 36 KB piece sprayed WAD data over the process's
+own page directory — CE halted with "Halting system" by nested exception).
 
 - `hack_gdrom()` services `GDROM_SEND_COMMAND` (sector reads, TOC) directly from the mounted
   image via `iso.c`. **`GDROM_CHECK_DRIVE` answers disc type GD-ROM (`0x80`) whenever a disc
