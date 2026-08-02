@@ -150,6 +150,11 @@ DWORD pvr_fb_r_sof1 = 0x0;
 /* ta_address_pointer vive en ta.c: apunta al parametro ya completo, que puede
    ser el bloque que llego o el buffer donde se juntaron sus dos mitades. */
 
+/* 1 si la escena en curso no cupo en VertexBuffer[] o en TriangleStrip[].
+   Vive aqui, junto a los contadores, porque cb_tastart() la limpia al cerrar
+   la escena y las funciones que la levantan estan mucho mas abajo. */
+static int geometria_desbordada = 0;
+
 DWORD total_polygon_count=0;
 DWORD strip_polygon_count = 0;
 DWORD strip_count =0;
@@ -2486,6 +2491,10 @@ static void terminar_escena(void)
 
 	vol_count = 0;
 
+	/* La bandera de desborde es por escena: si la siguiente cabe, no hay por
+	   que seguir callando el aviso. */
+	geometria_desbordada = 0;
+
 	gui_refresh();
 
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
@@ -2715,6 +2724,53 @@ void objectListSet()
 	logxmsg(LOG_PVR, "pcw: Object List Set\n");
 	logxmsg(LOG_PVR, "pcw: NO IMPLEMENTADO\n");
 }
+
+
+/*
+	Reservar el proximo vertice y la proxima tira, sin salirse de los arreglos.
+
+	VertexBuffer[] y TriangleStrip[] son arreglos estaticos de 65000 y 10000
+	elementos y **no tenian ningun control de limite**: una escena con mas
+	geometria escribia detras de ellos, sobre lo que hubiera en el binario. Eso
+	no da un error, da una corrupcion cuyo efecto depende del layout, o sea que
+	aparece y desaparece al recompilar el mismo codigo -- que es exactamente
+	como se encontro: sh4zam-bruces_balls caia en una compilacion y no en otra,
+	con la misma fuente. Es la misma clase de error que la cache de texturas,
+	que escribia cached_textures[cur_tex_count] sin comparar.
+
+	VolumeBuffer[] si lo tenia (ver marcar_volumenes()); estos dos no.
+
+	Al llenarse se pierde geometria en vez de memoria: el indice se queda en el
+	ultimo elemento y los vertices que sobran se pisan entre si. Se informa una
+	vez por escena con --traza-mem, porque una escena recortada en silencio es
+	justo lo que este arbol define como error caro.
+*/
+#define VERTICES_MAX	(sizeof(VertexBuffer) / sizeof(VertexBuffer[0]))
+#define TIRAS_MAX		(sizeof(TriangleStrip) / sizeof(TriangleStrip[0]))
+
+static void desbordo(const char * que, unsigned long tope)
+{
+	if (geometria_desbordada)
+		return;
+
+	geometria_desbordada = 1;
+
+	if (traza_activa)
+		fprintf(stderr, "traza: la escena paso de %lu %s; se descarta el resto.\n",
+			tope, que);
+}
+
+/* El indice del vertice nuevo. Se queda en el ultimo si ya no cabe. */
+static DWORD vertice_reservar(void)
+{
+	if ((size_t) total_polygon_count + 2 < VERTICES_MAX)
+		return ++total_polygon_count;
+
+	desbordo("vertices", (unsigned long) VERTICES_MAX);
+
+	return total_polygon_count;
+}
+
 
 /*
 	Encabezado de sprite.
@@ -3099,9 +3155,7 @@ static vertex * vertice_nuevo(void)
 
 	memcpy(xyz, &ta_address_pointer[1], sizeof(float) * 3);
 
-	total_polygon_count++;
-
-	v = &VertexBuffer[total_polygon_count];
+	v = &VertexBuffer[vertice_reservar()];
 
 	v->x = xyz[0];
 	v->y = xyz[1];
@@ -3313,7 +3367,7 @@ static void vertice_sprite(int con_textura)
 			int		s = orden[k];
 			vertex * ve;
 
-			total_polygon_count++;
+			vertice_reservar();
 
 			ve = &VertexBuffer[total_polygon_count];
 
@@ -3677,10 +3731,13 @@ void taVertexHandler()
 			index y count se rellenan solos: el primero al llegar el proximo
 			vertice, el segundo al cerrar esta tira.
 		*/
-		if (strip_count + 1 < sizeof(TriangleStrip) / sizeof(TriangleStrip[0]))
+		if ((size_t) strip_count + 2 < TIRAS_MAX)
+		{
 			TriangleStrip[strip_count + 1] = TriangleStrip[strip_count];
-
-		strip_count++;
+			strip_count++;
+		}
+		else
+			desbordo("tiras", (unsigned long) TIRAS_MAX);
 
 		vertexstart = true;
 	}

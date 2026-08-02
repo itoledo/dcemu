@@ -68,6 +68,15 @@ unsigned char * g2_mem;
 unsigned char * sound_mem;
 
 unsigned char * mem_zone[0x100];
+
+/*
+	El camino rapido de memread()/memwrite() (ver mem.h). Aqui queda en cero a
+	proposito: las pruebas quieren que **todos** los accesos pasen por los
+	manejadores de este archivo, que es lo que les deja contar y verificar cada
+	uno. Con la tabla en cero el macro toma siempre la rama de la llamada
+	indirecta, que es justo eso.
+*/
+unsigned char mem_zona_directa[0x100];
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
 
