@@ -590,6 +590,52 @@ transparencia (alfa del punch-through en texturas chicas, probablemente el piso 
 umbral), y texturas de autos que se rompieron pasados ~80 s de una corrida larga
 (¿desalojo del caché con el juego avanzado? medir con `DCEMU_SIN_CACHE_TEX`).
 
+**Resuelto (2026-08-02): no era la lectora — era `SB_SBREV` leída de basura de heap, y
+el "es determinista" de arriba era falso.** Al retomar para correr la sonda 1, la línea
+base se negó a reproducirse: mismo binario, mismos parámetros, sin gamepad — una corrida
+limpia (`11=6481248`) y la siguiente blanca (`11=5565728`). Ocho corridas de 1 s dieron
+exactamente **dos líneas de tiempo** (5 y 3), con la bifurcación siempre en el mismo
+sitio. La cacería, con una herramienta nueva (`DCEMU_TRAZA_EN_MS=N[:M]`, en `traza.c`:
+checkpoints de PC y registros por ms emulado, y la traza de instrucciones armada al
+cruzar un instante en vez de un PC):
+
+- Checkpoints idénticos hasta el ms 118; en el 119 una línea va exactamente una
+  escritura (4 bytes) adelante de la otra en el mismo bucle. La primera interrupción se
+  entrega recién a ~330 ms, así que las interrupciones quedaron absueltas; `--sin-audio`
+  y `--sin-aica` tampoco cambiaron nada.
+- La traza del ms completo da la instrucción exacta: `0x0C073944 MOV.L @R1,R3` con
+  `R1=0xA05F689C`. Una línea leyó 0; la otra, `0x0BC4C2C9`.
+- **`0x005F689C` es `SB_SBREV`, la revisión del System Block del Holly** (`0x0B` en una
+  consola de serie; así la inicializa reicast). Sin caso de lectura caía al respaldo de
+  `control_mem` — que era un **malloc sin limpiar**: 64 KB del heap del CRT con basura
+  reciclada de las cargas del arranque, distinta según la historia de asignaciones del
+  proceso. Katana la compara contra 8 a los 118 ms de encendido para elegir su camino de
+  inicialización: **con < 8 toma el camino de Holly viejo y la fase de subida RAM→VRAM
+  del lote de ciudad no arranca nunca — ese es el mundo blanco**; con ≥ 8 arranca. La
+  madrugada de las cinco corridas "deterministas" el heap repartió ceros cinco veces; la
+  corrida limpia con gamepad fue el heap repartiendo basura ≥ 8 — la correlación con el
+  pad era coincidencia, y la "carrera interna del juego" era este volado de moneda en el
+  arranque del proceso.
+
+Los dos arreglos: **todos los bloques de `inicializar_memoria()` con `calloc`** (un
+registro sin caso debe contestar su valor de reset, no la historia del heap; además es
+lo que vuelve reproducible una corrida), y **`SB_SBREV` contestada de verdad con
+`0x0B`** — la tercera de la familia `REVISION` / `SB_G1SYSM`. Verificado: seis corridas
+cortas con checkpoints byte a byte idénticos (única línea distinta: los ms reales del
+resumen final), y dos de 60 s con `11=6481248` y 8654 syscalls exactos las dos — **la
+fase de subida arranca siempre; piso y edificios con textura, confirmado en vivo**. Las
+sondas 1-3 de arriba quedan superadas sin correrse: `CHECK_DRIVE` sigue contestando
+STANDBY y el juego carga igual (PAUSE tras lectura queda como nota de fidelidad, no como
+pendiente).
+
+Residuos vigentes tras jugar con esto puesto (2026-08-02, los tres estables ahora que el
+emulador es determinista): la sombra de los autos oscurece el techo en vez del piso — la
+simplificación documentada de `marcar_volumenes()`, el arreglo sigue siendo el conteo
+por caras de abajo; las ruedas sin transparencia (ya anotado arriba); **los árboles a lo
+lejos se ven como un triángulo invertido** — nuevo, huele a los niveles chicos de mipmap
+de los sprites VQ mal decodificados u orientados; y las texturas de autos que se rompen
+avanzada la corrida (ya anotado arriba, sospecha de desalojo del caché).
+
 **El manto oscuro con volúmenes activos es la simplificación documentada de
 `marcar_volumenes()`**: unión de triángulos en vez de conteo de caras. La sombra del taxi es
 un volumen cerrado (extruido); marcar cada triángulo enciende todo lo que sus caras cubren —

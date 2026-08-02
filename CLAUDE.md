@@ -692,6 +692,23 @@ from the flash. With the value the drive used to return, `0x2422211F`, `hardware
 reported type 1, KOS concluded it was a Set5 devkit, and `spu_init()` cleared **8 MB** of sound
 RAM instead of 2 — so 6 MB of store-queue writes landed outside everything mapped.
 
+**`0x005F689C` is `SB_SBREV`, the Holly's System Block revision, and a retail console
+answers `0x0B`** (reicast initializes it so). Third of the identification-register family
+after `REVISION` and `SB_G1SYSM`, and the worst of the three: with no read case the read
+fell through to `control_mem`, which was a malloc never cleared, so it answered recycled
+heap garbage that **varied per process instance**. Katana's startup compares it against 8
+(Crazy Taxi: PC `0x0C073944`, 118 ms after power-on) to pick its init path, and on the
+side that reads < 8 the game's RAM→VRAM texture upload phase never starts — the
+intermittent "white world" of `docs/pendientes-plan.md` A.5 was this coin toss at process
+start, not a drive race. Every block in `inicializar_memoria()` is calloc now: a register
+with no case must answer its reset value, not the heap's history, and zeroed backing is
+also what makes two runs of the deterministic reproducer byte-identical (the only line
+that differs is the wall-clock one in the exit summary). `DCEMU_TRAZA_EN_MS=N[:M]` in the
+environment is the tool that found it — per-millisecond checkpoints of PC and registers
+for the first 200 ms, plus the `--traza-desde` instruction trace armed on crossing an
+emulated *instant* rather than a PC: what you need when two runs diverge and nothing says
+where.
+
 **`0x005F810C` is `SPG_STATUS`, and it is not just the scanline.** Bits 9:0 are the line,
 10 the field number, 11 vertical blanking, 12 hsync and 13 **vsync**. It used to return
 `pvr_scanline` and nothing else, so anyone waiting on vsync waited forever — that is where

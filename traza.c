@@ -5,6 +5,7 @@
 *****************************************************************************/
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Para desensamblar el bucle donde se trabo y volcar los registros. traza.c
@@ -553,6 +554,64 @@ static void traza_instruccion(DWORD pc)
 
 void traza_paso(DWORD pc)
 {
+	/* DCEMU_TRAZA_EN_MS=N[:M]: un checkpoint por ms emulado -- PC y registros
+	   -- durante los primeros 200 ms, y la traza de M instrucciones (3000 por
+	   omision) armada al cruzar el ms N. Es --traza-desde con un instante como
+	   disparador en vez de un PC: lo que hace falta cuando dos corridas
+	   divergen y no se sabe donde. Dos corridas identicas deben dar
+	   checkpoints identicos; el primero que difiere acota el instante de la
+	   bifurcacion, y la traza armada ahi muestra la instruccion y el valor.
+	   Asi se encontro el no-determinismo de SB_SBREV. Sin la variable de
+	   entorno no cuesta nada. */
+	{
+		static long					en_ms = -2;
+		static long					en_ms_n = 3000;
+		static unsigned long long	proximo_cp = 1;
+
+		if (en_ms == -2)
+		{
+			const char * e = getenv("DCEMU_TRAZA_EN_MS");
+
+			en_ms = (e != NULL) ? atol(e) : -1;
+
+			if (e != NULL)
+			{
+				const char * dosp = strchr(e, ':');
+
+				if (dosp != NULL)
+					en_ms_n = atol(dosp + 1);
+			}
+		}
+
+		if (en_ms >= 0)
+		{
+			unsigned long long ms = reloj_ms();
+
+			if (proximo_cp <= 200 && ms >= proximo_cp)
+			{
+				fprintf(stderr, "traza: cp %llu ms pc=%08lx"
+					" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
+					" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
+					" r15=%08lx pr=%08lx sr=%08lx\n",
+					ms, (unsigned long) pc,
+					(unsigned long) R(0), (unsigned long) R(1),
+					(unsigned long) R(2), (unsigned long) R(3),
+					(unsigned long) R(4), (unsigned long) R(5),
+					(unsigned long) R(6), (unsigned long) R(7),
+					(unsigned long) R(15), (unsigned long) PR,
+					(unsigned long) SR);
+
+				proximo_cp = ms + 1;
+			}
+
+			if (ms >= (unsigned long long) en_ms)
+			{
+				en_ms = -1;
+				traza_arrancar(en_ms_n);
+			}
+		}
+	}
+
 	if (traza_disparo > 0 && --traza_disparo == 0)
 		traza_volcar("disparo");
 
