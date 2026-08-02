@@ -271,7 +271,12 @@ DMA's end-of-transfer delay (see "Interrupts and timing" and `docs/pendientes-pl
 A.6). **And Capcom vs. SNK the same day**: Memory Card warning and the Millennium Fight
 2000 title screen — a different blocker: the GD hook accepted every request instantly where
 the BIOS driver takes one at a time, and the game's un-CHECKed long read was orphaned (see
-the hook notes below and A.7).
+the hook notes below and A.7). **Virtua Tennis 2 fell the same day** (VMU warning, title
+logo and intro sequence): the day's fixes unblocked its startup — its probes of the G2
+external area (the Broadband Adapter, which it supports) fail cleanly against
+`mem_read_error()`'s deterministic zeros, so the area stays unmapped on purpose — and its
+one own blocker was the TA's current-list rule (see the pipeline section and A.8).
+**All four commercial images that parse now run.**
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -843,6 +848,17 @@ submitting nothing is a hardware error. The marker itself is 32 zero bytes, so i
 field is useless and `pvr_registering` is the only source. `--traza-mem` now prints the list
 state machine (`TA_ALLOC_CTRL`, `TA_LIST_INIT`, each end of list, `STARTRENDER`) and the GL state
 each strip goes out with, which is how both bugs above were found.
+
+**The current list is latched by the FIRST global parameter after `TA_LIST_INIT` or after an
+end-of-list; the list-type field of every later header is ignored until the next end** (Sega
+doc §3.7.4.1 — one list type at a time, and the end emits that list's event). Taking it from
+each header looked equivalent — demos and the other three games always send the field
+coherent with the open list — until Virtua Tennis 2: inside its translucent list it submits
+a sprite header with the field at 0, the "switch" made its end-of-list close an
+already-closed list, the translucent one stayed open forever, event 9 never fired and the
+game's operation machine waited without end at its title screen. `taPolyModifier()` latches
+only when no list is open, the strip lands in the OPEN list like on the chip, and a
+mismatching header leaves one trace line per run.
 
 **`pvr_prim: attempt to submit to unopened list` is not a dcemu bug** — it was listed as one here
 for a while. It is guest state end to end: `pvr_list_begin()` sets `pvr_state.list_reg_open`,

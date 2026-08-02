@@ -52,9 +52,11 @@ un juego". Crazy Taxi (los dos rips) muestra su pantalla de carga, el aviso de V
 al Start, pasa a su pantalla de título y corre el modo attract en 3D — el motor entero, a 528
 tiras por escena. **Virtua Tennis cayó el 2 de agosto** (aviso de VMU, título, Main Menu y
 attract en 3D a 2400 tiras por escena — la entrega por nivel del ASIC más la demora del CH2
-DMA, ver A.6), **y Capcom vs. SNK el mismo día** (aviso de Memory Card y pantalla de título —
+DMA, ver A.6), **Capcom vs. SNK el mismo día** (aviso de Memory Card y pantalla de título —
 era otro bloqueo: el hook del GD aceptaba toda petición al instante donde el driver de la
-BIOS acepta una por vez, ver A.7).
+BIOS acepta una por vez, ver A.7), **y Virtua Tenis 2 cayó solo con esos arreglos** (aviso
+de VMU y secuencia de título; sus sondeos de la BBA son benignos, ver A.8). **Las cuatro
+imágenes comerciales que se parsean corren.**
 
 ---
 
@@ -77,7 +79,7 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | Capcom vs. SNK DCRES | 2, LBA 228825 | 2, de 0 tiras | 16512 / 8417744 | `2d2d2d0a` ← PC `8c1fb446` | 6, último a 0,47 s | negra |
 | Virtua Tennis (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
-| Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja |
+| Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja — **corre desde el 2 de agosto, ver A.8** |
 | DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** |
 | mame4all (`.iso`) | carpeta empaquetada | 0 (no usa el TA) | 0 / 235315200 | ninguna | 105 | **su propio menú** |
 
@@ -811,7 +813,7 @@ Crazy Taxi con su discriminador exacto (`11=6481248`, 60 s del reproductor, en j
 menú del boot ROM byte a byte idéntico, y las 21 suites en verde.
 
 Lo que queda de la vía A tras esto: Capcom vs. SNK (caído el mismo día — ver A.7) y Virtua
-Tenis 2, que sondea el área externa del G2 (ver C.8).
+Tenis 2 (caído solo, sin un cambio propio — ver A.8).
 
 ### A.7 — Capcom vs. SNK arranca: una petición viva por vez en el hook del GD (2 de agosto de 2026)
 
@@ -841,6 +843,35 @@ Con eso el juego corre: aviso de Memory Card, y con dos Start la pantalla de tí
 **CAPCOM VS. SNK Millennium Fight 2000** completa — el logo y la ciudad animada de fondo, a
 3035 tiras por escena. Regresión: Crazy Taxi y Virtua Tennis con sus perfiles exactos (386 y
 1148 escenas, mismas tiras), mame4all byte a byte idéntico, y las 21 suites en verde.
+
+### A.8 — Virtua Tenis 2 arranca: los arreglos del día más el latch de la lista en curso (2 de agosto de 2026)
+
+Re-medido con A.6 y A.7 puestos, el que era "el único motor distinto" pasó de 0 escenas a
+1110 en 10 segundos sin un cambio propio, y las tres direcciones que marcaban su bloqueo
+viejo quedaron en nada. La lectura por `0x185d0b24` y la escritura en `0x00000000` eran
+síntomas del descarrilamiento de antes, no causas. Los cuatro sondeos de
+`0xA1000400`-`0xA1001800` (la Broadband Adapter en el área externa del G2 — VT2 tenía juego
+online) resultaron **benignos**: se leen una vez al arranque, `mem_read_error()` contesta
+ceros deterministas, la detección del puente GAPS falla limpio y el juego sigue sin red. La
+postura de C.8 —no inventar un dispositivo que la consola de serie no tiene— queda validada
+por la medición: no hay que mapear el área.
+
+Con eso llegó a su aviso de VMU y al logo del título… y se congeló ahí (el conteo de
+escenas clavado en 2350), en **la misma espera de operación clase A** que tuvo Virtua
+Tennis — con los arreglos de VT ya puestos: era otra causa. La traza del TA la mostró: el
+último cuadro abre su lista translúcida y adentro manda un **encabezado de sprite con el
+campo de lista en 0** (PCW `0xA0800000`); dcemu tomaba el campo de cada encabezado como "la
+lista en curso", así que el fin de lista siguiente cerró "la 0" (ya cerrada), la translúcida
+quedó abierta para siempre, el evento 9 no salió nunca y la máquina de operaciones del juego
+esperó sin fin. **En el chip la lista en curso la fija el primer parámetro global tras
+`TA_LIST_INIT` o tras un fin de lista, y el campo de los encabezados siguientes se ignora
+hasta el próximo fin** (§3.7.4.1). `taPolyModifier()` hace eso ahora: latchea solo con la
+lista cerrada, la tira aterriza en la lista abierta, y un encabezado discrepante deja una
+línea de traza (una por corrida). Ningún demo ni los otros tres juegos mandan el campo
+incoherente — por eso nunca se vio.
+
+Con el latch el juego sigue de largo: pasa el logo y entra a su secuencia de intro. **Con
+esto, las cuatro imágenes comerciales que se parsean corren.**
 
 ---
 
@@ -1202,6 +1233,9 @@ del bus G2**, o sea un dispositivo de expansión. En una consola de serie no hay
 que lo que sondea no existe — igual que el `0x03010000` que miraba Crazy Taxi. No se mapeó
 porque el documento dice "depends on device" y no define qué contesta un bus vacío; inventar
 un valor es justo lo que hace falta no hacer. Pero deja de ser una dirección misteriosa.
+**Zanjado por medición el 2 de agosto (ver A.8)**: es la detección de la Broadband Adapter,
+los ceros deterministas de `mem_read_error()` la hacen fallar limpio, y el juego sigue sin
+red. No hay que mapear el área.
 
 ### C.6 — Residuos ya diagnosticados que se dejan como están
 
