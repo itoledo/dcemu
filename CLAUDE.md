@@ -437,6 +437,16 @@ chip has four modes in TSP bits 7-6: 0 replace, 1 modulate, **2 decal**, 3 modul
 2, not 0 — mixing them up sends a surface whose vertex colour is black through modulate and it comes
 out black, which is what kept `pvr-bumpmap` blank.
 
+**And decal cannot be `GL_DECAL`, because of the alpha.** GL's decal outputs the vertex alpha
+untouched; the game relies on the **texture's** alpha reaching the blender. Crazy Taxi draws each
+traffic car's whole side as one quad over an ARGB4444 atlas (body, windows and wheels together, an
+alpha-0 ring around the silhouette) in decal on the translucent list: on hardware that ring
+vanishes against the road, under `GL_DECAL` it came out as opaque vertex-coloured pixels — a grey
+patch glued to every wheel. Decal is `GL_COMBINE` now: RGB interpolates texture/vertex by the
+texel's alpha (the decal mix) and alpha is texture × vertex, which with vertex alpha at 1.0 is the
+texel's. `pvr-bumpmap` — the one demo on this path — stays byte-identical, so once again only a
+game exercises the difference.
+
 **Punch-through had `GL_LEQUAL` hardcoded.** The depth buffer is cleared to 0.0 and a scene's z
 values land around 0.5, so "less or equal" fails against any untouched pixel — the list could
 essentially never draw. It uses the compare mode from its own ISP word, like the opaque list; what

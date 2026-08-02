@@ -659,6 +659,18 @@ de fábrica. `aplicar_filtros()` pone ahora `GL_MIRRORED_REPEAT`/`GL_CLAMP_TO_ED
 (ninguno usa Flip ni Clamp). Probable causa también de "la sombra del taxi se calcula
 mal" — mismo truco del cuarto espejado — pendiente de confirmar en vivo.
 
+**Y el "borde de los neumáticos sin transparencia" cayó al medirlo (2026-08-02): no era el
+punch-through — era el alfa del decal.** La disección con `DCEMU_TRAZA_ESCENA` +
+`DCEMU_VOLCAR_TEX` mostró que el costado entero de cada auto del tráfico es UN quad sobre
+un atlas ARGB4444 (carrocería, vidrios y ruedas juntos, con anillo de alfa 0 alrededor de
+la silueta), en decal (env 2) sobre la lista translúcida con mezcla srcalpha. `GL_DECAL`
+deja pasar el alfa del VÉRTICE (1.0) y el anillo salía como color de vértice opaco — el
+parche gris pegado a la rueda. El decal es `GL_COMBINE` ahora: RGB interpolado por el alfa
+del texel, alfa = textura × vértice. `pvr-bumpmap`, el único demo en ese camino, byte a
+byte idéntico. De paso quedaron volcados de referencia decodificados: el farol trasero del
+taxi (`5c0ba0`), el follaje (`79c520`) y los dos atlas de autos (`1f2420`, `5f17c0`),
+todos VQ+mip impecables — la cadena de decodificación quedó absuelta.
+
 **Dos lecciones de método de esta tanda, para el que retome:** (1) el reproductor NO es
 aislable mientras se juega con gamepad en otra instancia — XInput se lee global, sin
 importar el foco, así que una captura minimizada recibe el input del jugador y la ventana

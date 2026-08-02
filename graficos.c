@@ -844,13 +844,29 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
 	pero una que dibuja uno solo y espera un boton sale entera en blanco. Eso es
 	lo que le pasaba a las dos de yuv_converter.
 */
-/* CLAMP_TO_EDGE es de GL 1.2 y MIRRORED_REPEAT de 1.4; el gl.h de MSVC es
-   1.1 pero todo driver los trae, igual que los WRAP de la plantilla. */
+/* CLAMP_TO_EDGE es de GL 1.2, MIRRORED_REPEAT de 1.4 y COMBINE de 1.3; el
+   gl.h de MSVC es 1.1 pero todo driver los trae, igual que los WRAP de la
+   plantilla. */
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE	0x812F
 #endif
 #ifndef GL_MIRRORED_REPEAT
 #define GL_MIRRORED_REPEAT	0x8370
+#endif
+#ifndef GL_COMBINE
+#define GL_COMBINE			0x8570
+#define GL_COMBINE_RGB		0x8571
+#define GL_COMBINE_ALPHA	0x8572
+#define GL_INTERPOLATE		0x8575
+#define GL_PRIMARY_COLOR	0x8577
+#define GL_SOURCE0_RGB		0x8580
+#define GL_SOURCE1_RGB		0x8581
+#define GL_SOURCE2_RGB		0x8582
+#define GL_SOURCE0_ALPHA	0x8588
+#define GL_SOURCE1_ALPHA	0x8589
+#define GL_OPERAND0_RGB		0x8590
+#define GL_OPERAND1_RGB		0x8591
+#define GL_OPERAND2_RGB		0x8592
 #endif
 
 /* El codigo de wrap_u/wrap_v del TSP al enum de GL. */
@@ -2410,11 +2426,22 @@ static void tira_estado(DWORD i)
 
 					  0 replace  px = ARGB(tex)                        -> REPLACE
 					  1 modulate px = A(tex) + RGB(col)*RGB(tex)       -> MODULATE
-					  2 decal    px = RGB(tex)*A(tex) + RGB(col)*(1-A) -> DECAL
+					  2 decal    px = RGB(tex)*A(tex) + RGB(col)*(1-A) -> COMBINE
 					  3 modulate alpha  px = ARGB(col)*ARGB(tex)       -> MODULATE
 
 					Decal es el 2, no el 0: confundirlos manda a modulate una
 					superficie cuyo color de vertice es negro y sale toda negra.
+
+					Y el ALFA del decal no puede ser GL_DECAL: ese deja el del
+					vertice a secas, y el juego cuenta con que el de la textura
+					pase a la mezcla. Los costados de los autos del trafico de
+					Crazy Taxi son UN quad con el atlas ARGB4444 del auto entero
+					en decal sobre la lista translucida: el anillo con alfa 0
+					alrededor del neumatico debe desaparecer contra el fondo, y
+					con GL_DECAL salia como color de vertice opaco -- el parche
+					gris pegado a las ruedas. GL_COMBINE arma el RGB del decal
+					(interpolar textura/vertice por el alfa del texel) con alfa
+					= textura x vertice, que con vertice 1.0 es el del texel.
 				*/
 				switch (TriangleStrip[i].texture.pvr_texture_env)
 				{
@@ -2423,7 +2450,17 @@ static void tira_estado(DWORD i)
 					break;
 
 					case 2:
-					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_ALPHA);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_MODULATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_ALPHA, GL_PRIMARY_COLOR);
 					break;
 
 					default:
