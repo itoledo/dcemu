@@ -76,6 +76,20 @@ solo a los 8 segundos de tiempo emulado. Después se cuentan los colores distint
 inventario de abajo se midió con el método viejo, así que sus cifras no son comparables una a una
 con las de este, pero el veredicto sí lo es.
 
+**Desde el 2 de agosto de 2026 el emulador es determinista** (los bloques de memoria van con
+`calloc` y `SB_SBREV` se contesta de verdad — ver `docs/pendientes-plan.md`, A.5), y eso habilita
+una regresión mucho más fuerte que contar colores: correr el demo con `DCEMU_RTC_FIJO=N` en el
+ambiente y **comparar el BMP byte a byte** contra el de antes del cambio (`Get-FileHash`). Con el
+RTC fijado, hasta los demos que colocan su geometría con `rand()` (los de volúmenes) dan capturas
+idénticas. El juego de diez que se usa como control rápido — los cuatro de volúmenes, los cuatro
+críticos de profundidad (`fb_tex`, `pvr_rtt_sized`, `kgl-tunnel`, `libdream-ta`), `conio-basic`
+(punch-through) y `pvr-bumpmap` (decal) — corre en ~2 minutos con los binarios de
+`C:\dcsdk\tmp\bins`. Cinco arreglos de esa fecha se validaron así: un cambio que deba alterar solo
+los volúmenes (o solo mipmaps, o solo el decal) tiene que dejar los otros nueve BMP idénticos.
+Ojo con dos cosas: los diez no ejercitan ni el bit de mipmap, ni Flip/Clamp de UV, ni el alfa del
+decal — esos solo un juego los muestra —, y **una captura corrida mientras alguien juega con
+gamepad en otra instancia queda contaminada**: XInput se lee global, sin foco de ventana.
+
 **El volcado recortaba, y eso invalidó un barrido entero.** `volcar_gl()` leía 640×480 desde
 (0,0) —el tamaño de la pantalla emulada— pero la ventana de GL es de **800×600** y `screeninit()`
 estira los 640×480 del guest sobre ella entera con `glOrtho`. Así que salía el rectángulo de abajo

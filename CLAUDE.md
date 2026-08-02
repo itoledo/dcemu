@@ -25,6 +25,17 @@ make -f Makefile.linux    # Linux                       -> dcemu
 make -f Makefile.win clean
 ```
 
+**On this machine the emulator is built with CMake/MSVC, not with the makefiles** — there
+is no `make` or Dev-C++ gcc installed, and the CMakeLists that `tests/` brought also builds
+the `dcemu` target:
+
+```sh
+cmake --build build --config Release --target dcemu    # -> build/Release/dcemu.exe
+```
+
+Run it from the repo root (`bios/`, `font.png` and `roms/` resolve against the working
+directory). Touching only `.c` files needs no clean; MSBuild tracks headers.
+
 `obj/` and `logs/` must exist before building/running (both are kept in the repo via a
 dummy `remove.txt`). `inicializar_logs()` aborts startup if it cannot create `logs/*.txt`.
 
@@ -401,9 +412,13 @@ The lesson generalises: when the capture says blank, check the strip counts at e
 believing it.
 
 **SDL 1.2 redirects `stdout` and `stderr` to files on Windows** — `stdout.txt` and
-`stderr.txt` in the working directory. Redirecting the process's output from the shell (or
-with PowerShell's `-RedirectStandardError`) captures zero bytes and looks like the emulator
-said nothing. `--traza-mem` and the MMU's warnings come out there.
+`stderr.txt` **next to the executable**, not in the working directory: SDLmain builds the
+path from `GetModuleFileName`, so with the CMake build they land in `build/Release/` even
+when running from the repo root. Looking for them in the working directory reads as "the
+emulator said nothing", and so does redirecting the process's output from the shell (or
+with PowerShell's `-RedirectStandardError`), which captures zero bytes. `--traza-mem` and
+the MMU's warnings come out there. Two instances share that file: the second to start
+truncates it, so a measured run and a live play session overwrite each other's logs.
 
 **On screen-grabbing the window — don't, use `--captura-gl`.** Grabbing the client area
 works, until it doesn't: in one session `tunnel` went from 3036 distinct colours to 4 with no
@@ -436,6 +451,16 @@ one early leaves `u` at zero for all four corners and the texture is sampled alo
 chip has four modes in TSP bits 7-6: 0 replace, 1 modulate, **2 decal**, 3 modulate-alpha. Decal is
 2, not 0 — mixing them up sends a surface whose vertex colour is black through modulate and it comes
 out black, which is what kept `pvr-bumpmap` blank.
+
+**And decal cannot be `GL_DECAL`, because of the alpha.** GL's decal outputs the vertex alpha
+untouched; the game relies on the **texture's** alpha reaching the blender. Crazy Taxi draws each
+traffic car's whole side as one quad over an ARGB4444 atlas (body, windows and wheels together, an
+alpha-0 ring around the silhouette) in decal on the translucent list: on hardware that ring
+vanishes against the road, under `GL_DECAL` it came out as opaque vertex-coloured pixels — a grey
+patch glued to every wheel. Decal is `GL_COMBINE` now: RGB interpolates texture/vertex by the
+texel's alpha (the decal mix) and alpha is texture × vertex, which with vertex alpha at 1.0 is the
+texel's. `pvr-bumpmap` — the one demo on this path — stays byte-identical, so once again only a
+game exercises the difference.
 
 **Punch-through had `GL_LEQUAL` hardcoded.** The depth buffer is cleared to 0.0 and a scene's z
 values land around 0.5, so "less or equal" fails against any untouched pixel — the list could
@@ -494,6 +519,14 @@ already bound and does receive the parameters); one that draws a single frame an
 for a button came out entirely white. That was `pvr-yuv_converter-*` and `pvr-strided_texture`
 — three demos, one line. `aplicar_filtros()` now runs inside `get_texture()`, after both
 binds (new texture and cache hit).
+
+**The TSP's per-axis repeat modes are emulated there too: Clamp (bits 16/15) beats Flip
+(bits 18/17), and with neither the chip repeats.** None of it was wired, so every texture
+sampled with GL's default `GL_REPEAT`. Flip maps to `GL_MIRRORED_REPEAT` — and it matters
+because storing **one quarter** of a symmetric image and mirroring it is how a game builds
+a whole soft shadow blob: Crazy Taxi's pedestrian shadows came out as that quarter-circle
+tiled four times unmirrored. No KOS demo in the control set uses either bit (all ten stay
+byte-identical), so a game is again the only regression test.
 
 **Stride** (bit 25) means the rows in memory are `TEXT_CONTROL & 0x1F` × 32 texels wide
 rather than the declared `usize` — it is how a non-power-of-two texture is stored, and the
@@ -572,6 +605,17 @@ codebook, twiddled 16bpp, palette); BUMP and YUV keep `GL_GENERATE_MIPMAP`. **A 
 stops at 2×2** — the 1×1 index shares a byte with it — so `GL_TEXTURE_MAX_LEVEL` clips the
 chain; without the clip the texture is incomplete and GL samples it white. The MIN filter
 picks mipmap modes in `aplicar_filtros()` when the strip's texture carries the bit.
+
+**The small levels decode from `plano` — the gathered chain — so `plano` must outlive the
+level loop.** `free(plano)` used to sit right after the level-0 decode, before that loop: a
+use-after-free where each level's own `malloc` recycled the freed block, so every small
+level came out as structured garbage while level 0 stayed correct. On screen that was
+distance-dependent corruption a code audit kept missing because every offset checked out
+against the pvrtex table: Crazy Taxi's far palms rendered as dithered inverted triangles
+(magenta or teal by texture) and mid-distance traffic washed out, while everything near
+looked fine. `DCEMU_SIN_FILTRO_MIP` is what split it — artifact gone without mip filtering
+— and the free now runs after the chain upload. No KOS demo uses the mipmap bit, so the
+demo sweep can never catch a regression here: a game has to.
 
 **Strips with zero vertices are skipped at draw** — a game's shadow headers leave hundreds of
 empty end-of-strip records per scene that drew nothing but paid the full GL state churn.
@@ -691,6 +735,23 @@ retail console answers zero in both (`G1_SYSM_RETAIL` in `sistema.h`) — the re
 from the flash. With the value the drive used to return, `0x2422211F`, `hardware_sys_mode()`
 reported type 1, KOS concluded it was a Set5 devkit, and `spu_init()` cleared **8 MB** of sound
 RAM instead of 2 — so 6 MB of store-queue writes landed outside everything mapped.
+
+**`0x005F689C` is `SB_SBREV`, the Holly's System Block revision, and a retail console
+answers `0x0B`** (reicast initializes it so). Third of the identification-register family
+after `REVISION` and `SB_G1SYSM`, and the worst of the three: with no read case the read
+fell through to `control_mem`, which was a malloc never cleared, so it answered recycled
+heap garbage that **varied per process instance**. Katana's startup compares it against 8
+(Crazy Taxi: PC `0x0C073944`, 118 ms after power-on) to pick its init path, and on the
+side that reads < 8 the game's RAM→VRAM texture upload phase never starts — the
+intermittent "white world" of `docs/pendientes-plan.md` A.5 was this coin toss at process
+start, not a drive race. Every block in `inicializar_memoria()` is calloc now: a register
+with no case must answer its reset value, not the heap's history, and zeroed backing is
+also what makes two runs of the deterministic reproducer byte-identical (the only line
+that differs is the wall-clock one in the exit summary). `DCEMU_TRAZA_EN_MS=N[:M]` in the
+environment is the tool that found it — per-millisecond checkpoints of PC and registers
+for the first 200 ms, plus the `--traza-desde` instruction trace armed on crossing an
+emulated *instant* rather than a PC: what you need when two runs diverge and nothing says
+where.
 
 **`0x005F810C` is `SPG_STATUS`, and it is not just the scanline.** Bits 9:0 are the line,
 10 the field number, 11 vertical blanking, 12 hsync and 13 **vsync**. It used to return
@@ -1002,6 +1063,26 @@ which translucent geometry always has — leaves the mask at `GL_FALSE`, and the
 nothing and the next scene starts with the previous one's depths. `limpiar_pantalla()` and the RTT
 pass both set the mask before clearing.
 
+### Fog
+
+**Table fog is emulated; per-vertex fog is not.** TSP bits 23-22 pick the mode (0 table, 1
+vertex, 2 none, 3 table 2); the guest writes the density to `FOG_DENSITY` (`0x005F80B8`, a
+16-bit float: 1.m7 mantissa in bits 14-8, signed exponent in 7-0), the color to
+`FOG_COL_TABLE` (`0x005F80B0`) and the 128-entry curve to `0x005F8200-0x005F83FC`. All of it
+used to land in `control_mem` with no reader — the usual hole — which is why `kgl-tunnel`
+ended in a black pit instead of fading into its grey fog, hiding the arches and pillars its
+walls actually have. The table's index is `density × (1/w)` clamped to `[1, 256)` — exponent
+in the slot's high bits, 4-bit mantissa below — and each word carries the far-edge alpha in
+the high byte and the near-edge one in the low byte, interpolated by the fraction (KOS fills
+it in `pvr_fog_table_exp2()` and friends).
+
+`dibujar_niebla_tira()` evaluates that per **vertex** — from the same `q` the perspective
+correction stores — and draws the strip a second time, untextured, blended toward the fog
+color. The pass reuses the depth the strip just left: `GL_EQUAL` if it wrote z, the strip's
+own compare if it did not (it passes exactly where the original did), and never writes the
+buffer. A never-written table is all zeros, so the pass skips itself and costs the other
+demos nothing. The chip fogs per pixel; per-vertex differs only inside large triangles.
+
 ### Modifier volumes
 
 The PVR decides per pixel whether it is inside the volume and picks between the polygon's two
@@ -1013,18 +1094,28 @@ parameter sets and set 1 applies inside; the **Shadow** bit means cheap shadow �
 intensity is scaled by `FPU_SHAD_SCALE` (`0x005F8074`, factor in bits 7-0, enable in bit 8).
 `cheap_shadow` asks for 0.5 and the blue inside comes out `0x7F`, which is how you know it works.
 
-**Each affected strip is drawn twice with the stencil test inverted** — outside with set 0, inside
-with set 1 — rather than drawing set 0 whole and overlaying set 1. That way every pixel is written
-once, which is what matters with alpha blending: overlaying would blend twice.
+**Inside is decided by counting faces against the scene's depth, like the chip does.** A pixel's
+surface is inside the volume when the volume faces nearer than it (depth test `GL_GREATER`) don't
+cancel out: front faces increment the stencil, back faces decrement (`GL_INCR_WRAP`/`GL_DECR_WRAP`
+— clamping would break a pair whose back face rasterizes first), and inside = count ≠ 0. Testing
+≠ 0 also makes the winding convention irrelevant: in a closed volume crossings cancel in pairs, in
+an open one (the flat square of the KOS demos) it leaves ±1. It used to be a **screen-space union
+of triangles** with no depth at all — enough for that flat square, but Crazy Taxi's extruded car
+shadows marked everything their faces covered: the taxi's roof darkened by its own shadow and a
+blanket over half the screen. `pvr-modifier_volume_zclip` — the one KOS demo with a genuinely
+closed 3D volume, a rotating cube — is what shows the difference: its darkening now hugs the
+ground and the wall it intersects. Instruction 2 ("close excluding") keeps the old approximation —
+zeroes what it covers, now only in front of the surface — because nothing we run exercises it.
 
-Two stencil bits, not one: the volume in list 1 affects the opaque list and the one in list 3 the
-translucent list, independently (`PLANTILLA_OPACO` / `PLANTILLA_TRANS`).
-
-**It is a union of triangles, not a real volume.** The chip resolves closed 3D volumes by counting
-front and back faces; `marcar_volumenes()` just turns each triangle's bit on (instruction 2, "close
-excluding", turns it off). That covers what the KOS demos do — a flat screen-space square — and a
-shadow projected onto a plane, which is the ordinary use; a closed convex volume seen from inside
-would come out wrong.
+Counting against depth forces the order: the depth must be resolved **before** marking, so
+`dibujar_escena()` runs in phases — opaque and punch-through strips first with set 0 (that writes
+z), then the list-1 volume is counted and the affected strips are **overlaid** with set 1 where
+the count says inside (`GL_EQUAL` against the depth the strip itself left; safe because those
+lists never blend), then the stencil is cleared and the list-3 volume re-counted for the
+translucent phase — one volume class owns the whole 8-bit stencil at a time. Translucent affected
+strips are still **drawn twice with the stencil test inverted** — outside with set 0, inside with
+set 1 — because with alpha blending every pixel must be written exactly once: overlaying would
+blend twice. The per-strip GL state lives in `tira_estado()` so the overlay pass can replay it.
 
 **When measuring those demos, note they place their geometry with `rand()`**, so the volume
 overlaps a polygon in one run and not the next. A two-colour BMP proves nothing; run them a few

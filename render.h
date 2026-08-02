@@ -103,11 +103,31 @@ struct blit
 */
 typedef struct vertex
 {
+	/*
+		La correccion de perspectiva va SOLO en las coordenadas de textura:
+		cada juego lleva cuatro componentes (u*q, v*q, 0, q) con q = el 1/w
+		que entrega el TA, y glTexCoordPointer(4) deja que GL divida por q al
+		interpolar -- que es como rasteriza el chip, y para eso el TA recibe
+		1/w. Con dos componentes la interpolacion era afin y el piso cerca de
+		camara se deformaba como en una PlayStation.
+
+		Premultiplicar las POSICIONES (el otro truco clasico) corrige tambien
+		los colores, pero mueve la rasterizacion a nivel sub-pixel: pvr-fb_tex
+		-- que reconstruye pixel a pixel su propio framebuffer -- paso de sus
+		lineas a un tablero. Las posiciones quedan intactas; los colores
+		siguen afines, que no se nota.
+
+		`q` guarda el 1/w crudo del vertice; el cierre de tira premultiplica
+		las UV de los dos juegos. El orden de los campos importa: los
+		punteros de GL recorren con sizeof(vertex) de paso y cada juego
+		(s,t,r,q) tiene que ser contiguo.
+	*/
 	float x,y,z;
+	float q;
 	float r,g,b,a;
-	float t1,t2;
+	float t1,t2,tr,tq;
 	float r1,g1,b1,a1;
-	float u1,v1;
+	float u1,v1,ur,uq;
 }vertex;
 
 /*
@@ -148,6 +168,13 @@ typedef struct TriangleStripInfo
 		   el grande NO esta al principio -- get_texture() salta los chicos. */
 		DWORD mipmapped;
 		DWORD filtermode;
+
+		/* Repeticion por eje, de los bits del TSP: 0 repite (por omision del
+		   chip), 1 espeja (Flip, bits 18/17), 2 recorta (Clamp, bits 16/15,
+		   que le gana al Flip). Guardar un cuarto de circulo y espejarlo es
+		   como un juego arma un circulo de sombra entero. */
+		DWORD wrap_u;
+		DWORD wrap_v;
 		DWORD pvr_texture_size_usize;
 		DWORD pvr_texture_size_vsize;
 
@@ -194,6 +221,13 @@ typedef struct TriangleStripInfo
 		tira. La calcula cb_tastart() antes de ordenar.
 	*/
 	float prof;
+
+	/*
+		Los bits 23-22 del TSP: 0 niebla de tabla, 1 por vertice, 2 sin
+		niebla, 3 tabla modo 2. dibujar_niebla_tira() resuelve los modos de
+		tabla; el por vertice no esta emulado.
+	*/
+	DWORD niebla;
 }TSI;
 
 
@@ -219,6 +253,16 @@ typedef struct TriangleStripInfo
 */
 vertex VertexBuffer[160000];
 TSI TriangleStrip[10000];
+
+/*
+	Los topes, aqui y no en graficos.c, porque **todo lo que se indexe por
+	vertice tiene que dimensionarse con ellos**. Ese es exactamente el error que
+	este merge estuvo a punto de reintroducir: niebla_rgba[] llegaba con 65000
+	fijos de la otra rama mientras VertexBuffer[] ya iba en 160000, o sea la
+	misma escritura fuera de un arreglo estatico que se acababa de arreglar.
+*/
+#define VERTICES_MAX	(sizeof(VertexBuffer) / sizeof(VertexBuffer[0]))
+#define TIRAS_MAX		(sizeof(TriangleStrip) / sizeof(TriangleStrip[0]))
 
 /* Los triangulos de volumen modificador de la escena en curso. */
 VolTri VolumeBuffer[4096];

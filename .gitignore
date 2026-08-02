@@ -49,3 +49,6 @@ docs/*.pdf
 # CMake descarga ahi las cabeceras y binarios de sdl12-compat, y una vez se
 # colaron a un commit -- 48 mil lineas, mas que el proyecto entero.
 /build*/
+
+scrambled.bin
+descrambled.bin

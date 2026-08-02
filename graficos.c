@@ -353,6 +353,12 @@ struct cached_texture
 	   nuevo en el mismo slot; si no, la textura de GL ya subida sirve. */
 	DWORD	gen;
 	DWORD	gen_pal;
+
+	/* El bit de mipmap entra a la clave: la misma direccion decodificada con
+	   y sin cadena son texturas distintas -- sin esto, una tira que filtra
+	   con mipmaps podia ligar un objeto subido sin niveles: incompleta, y GL
+	   la muestrea BLANCA (el "mundo blanco" intermitente del juego). */
+	DWORD	con_mip;
 };
 
 typedef struct cached_texture cached_texture;
@@ -848,6 +854,39 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
 	pero una que dibuja uno solo y espera un boton sale entera en blanco. Eso es
 	lo que le pasaba a las dos de yuv_converter.
 */
+/* CLAMP_TO_EDGE es de GL 1.2, MIRRORED_REPEAT de 1.4 y COMBINE de 1.3; el
+   gl.h de MSVC es 1.1 pero todo driver los trae, igual que los WRAP de la
+   plantilla. */
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE	0x812F
+#endif
+#ifndef GL_MIRRORED_REPEAT
+#define GL_MIRRORED_REPEAT	0x8370
+#endif
+#ifndef GL_COMBINE
+#define GL_COMBINE			0x8570
+#define GL_COMBINE_RGB		0x8571
+#define GL_COMBINE_ALPHA	0x8572
+#define GL_INTERPOLATE		0x8575
+#define GL_PRIMARY_COLOR	0x8577
+#define GL_SOURCE0_RGB		0x8580
+#define GL_SOURCE1_RGB		0x8581
+#define GL_SOURCE2_RGB		0x8582
+#define GL_SOURCE0_ALPHA	0x8588
+#define GL_SOURCE1_ALPHA	0x8589
+#define GL_OPERAND0_RGB		0x8590
+#define GL_OPERAND1_RGB		0x8591
+#define GL_OPERAND2_RGB		0x8592
+#endif
+
+/* El codigo de wrap_u/wrap_v del TSP al enum de GL. */
+static GLint wrap_gl(DWORD w)
+{
+	return (w == 2) ? GL_CLAMP_TO_EDGE
+		 : (w == 1) ? GL_MIRRORED_REPEAT
+		 : GL_REPEAT;
+}
+
 static void aplicar_filtros(int strip)
 {
 	GLint modo = TriangleStrip[strip].texture.filtermode ? GL_LINEAR : GL_NEAREST;
@@ -855,13 +894,21 @@ static void aplicar_filtros(int strip)
 
 	/* Con mipmaps (GL los genero al subir la textura; ver get_texture()), la
 	   minificacion los usa: es lo que corta el alias del piso lejano. */
-	if (TriangleStrip[strip].texture.mipmapped)
+	if ((TriangleStrip[strip].texture.mipmapped || getenv("DCEMU_MIP_AUTO"))
+		&& !getenv("DCEMU_SIN_FILTRO_MIP"))
 		min = TriangleStrip[strip].texture.filtermode
 			? GL_LINEAR_MIPMAP_LINEAR
 			: GL_NEAREST_MIPMAP_NEAREST;
 
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+
+	/* La repeticion es estado del objeto de textura, igual que los filtros:
+	   se pone tras cada ligado, con lo que pida la tira en curso. */
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+		wrap_gl(TriangleStrip[strip].texture.wrap_u));
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+		wrap_gl(TriangleStrip[strip].texture.wrap_v));
 }
 
 /*
@@ -1010,13 +1057,15 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 	slot = -1;
 
+	if (!getenv("DCEMU_SIN_CACHE_TEX"))
 	for (i = tex_hash[tex_hash_balde(memorypos)]; i >= 0; i = tex_hash_sig[i])
 	{
 		if (cached_textures[i].memorypos == memorypos
 		&&  cached_textures[i].usize == usize
 		&&  cached_textures[i].vsize == vsize
 		&&  cached_textures[i].bpp == bpp
-		&&  cached_textures[i].paleta == paleta)
+		&&  cached_textures[i].paleta == paleta
+		&&  cached_textures[i].con_mip == TriangleStrip[strip].texture.mipmapped)
 		{
 			if (cached_textures[i].gen == gen_ahora
 			&&  cached_textures[i].gen_pal == pal_ahora)
@@ -1085,6 +1134,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	cached_textures[cur_tex_count].paleta = paleta;
 	cached_textures[cur_tex_count].gen = gen_ahora;
 	cached_textures[cur_tex_count].gen_pal = pal_ahora;
+	cached_textures[cur_tex_count].con_mip = TriangleStrip[strip].texture.mipmapped;
 
 	if (rehash)
 		tex_hash_meter(cur_tex_count);
@@ -1104,6 +1154,42 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	}
 
 	vram64_leer(memorypos, plano, plano_bytes);
+
+	/* DCEMU_VOLCAR_TEX=hex: la primera vez que se decodifica la textura de
+	   esa direccion, el bloque juntado tal cual sale a tex-<addr>.bin. Es la
+	   verdad de que bytes consumio el decodificador EN EL MOMENTO del draw,
+	   que un --volcar al salir no puede dar si la region se reescribe. */
+	if (traza_activa)
+	{
+		const char * e = getenv("DCEMU_VOLCAR_TEX");
+
+		if (e != NULL && (DWORD) strtoul(e, NULL, 16) == memorypos)
+		{
+			static int hecho = 0;
+
+			if (!hecho)
+			{
+				char nom[64];
+				FILE * fp;
+
+				hecho = 1;
+				snprintf(nom, sizeof(nom), "tex-%06lx.bin",
+					(unsigned long) memorypos);
+				fp = fopen(nom, "wb");
+
+				if (fp != NULL)
+				{
+					fwrite(plano, 1, plano_bytes, fp);
+					fclose(fp);
+					fprintf(stderr, "traza: textura %06lx volcada a %s"
+						" (%lu bytes, mip_salto %lu)\n",
+						(unsigned long) memorypos, nom,
+						(unsigned long) plano_bytes,
+						(unsigned long) mip_salto);
+				}
+			}
+		}
+	}
 
 	/* El nivel grande: tras el salto de los chicos en los formatos planos; en
 	   VQ el salto corre sobre los indices y el codebook queda al principio. */
@@ -1254,10 +1340,6 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		cached_textures[cur_tex_count].twiddled = true;
 	}
 
-	/* Las ramas que decodifican a un buffer propio ya no necesitan el plano. */
-	if (cached_textures[cur_tex_count].data != (void *) plano)
-		free(plano);
-
 	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
 	   aplicar_filtros(strip);
 
@@ -1286,6 +1368,13 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		int gen_gl  = con_mip
 			&& (TriangleStrip[strip].texture.pvr_texture_bump
 			 || TriangleStrip[strip].texture.pvr_texture_yuv);
+
+		/* DCEMU_MIP_AUTO: genera mipmaps tambien para texturas que no los
+		   traen. Diagnostico -- el chip real no lo hace: sirve para separar
+		   "submuestreo sin mipmaps" (el moire del piso cercano de kgl-tunnel)
+		   de una lectura mal hecha de la textura. */
+		if (!con_mip && getenv("DCEMU_MIP_AUTO"))
+			gen_gl = 1;
 
 		glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP,
 			gen_gl ? GL_TRUE : GL_FALSE);
@@ -1385,8 +1474,45 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			if (vq)
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
 					ultimo > 0 ? ultimo : 0);
+
+			/* Si alguna subida de nivel fallo, la textura queda incompleta y
+			   GL la muestrea blanca: es la primera pregunta ante un "mundo
+			   blanco". Una linea por (tamano, error) distinto. */
+			if (traza_activa)
+			{
+				GLenum e = glGetError();
+
+				if (e != 0)
+				{
+					static unsigned vistos[8];
+					int i;
+
+					for (i = 0; i < 8 && vistos[i]; i++)
+						if (vistos[i] == ((unsigned) e ^ (unsigned) usize))
+							break;
+
+					if (i < 8 && !vistos[i])
+					{
+						vistos[i] = (unsigned) e ^ (unsigned) usize;
+						fprintf(stderr, "traza: error GL %04x subiendo mipmaps"
+							" de %dx%d (vq=%d ultimo=%d)\n",
+							(unsigned) e, usize, vsize, vq, ultimo);
+					}
+				}
+			}
 		}
 	}
+
+	/* El plano recien ahora: los niveles chicos de la cadena de mipmaps se
+	   decodifican de el DESPUES del nivel grande, en el bloque de arriba.
+	   Liberarlo antes de ese bloque -- donde estaba -- era un use-after-free:
+	   el malloc de cada nivel reciclaba el bloque recien liberado y los
+	   niveles chicos salian de basura estructurada. Era el triangulo
+	   invertido tramado en las palmeras lejanas de Crazy Taxi y sus autos
+	   deslavados a media distancia; el nivel grande, decodificado antes del
+	   free, siempre estuvo bien, y por eso todo se veia sano de cerca. */
+	if (cached_textures[cur_tex_count].data != (void *) plano)
+		free(plano);
 
 	/* GL ya tiene su copia: la de CPU no se guarda -- mil texturas
 	   persistentes de a cientos de KB serian memoria muerta. */
@@ -1423,6 +1549,14 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 static void color_de_fondo(float * r, float * g, float * b)
 {
 	static float	ultimo[3] = { 0.0f, 0.0f, 0.0f };
+
+	/* Diagnostico: pintar el clear de magenta separa "esta superficie se
+	   dibujo blanca" de "aqui no se dibujo nada y se ve el fondo". */
+	if (getenv("DCEMU_FONDO_MAGENTA"))
+	{
+		*r = 1.0f; *g = 0.0f; *b = 1.0f;
+		return;
+	}
 
 	DWORD tag, skip, dir, color = 0;
 
@@ -1597,67 +1731,116 @@ int compare(const void *  f,const void * s)
 	entre los dos juegos de parametros del poligono. En OpenGL de funcion fija
 	eso es el buffer de plantilla.
 
-	Se usan dos bits, porque hay dos volumenes independientes: el de la lista 1
-	afecta a la lista opaca (0) y el de la lista 3 a la translucida (2).
+	**La cuenta es por caras contra la profundidad de la escena, como en el
+	chip.** Un pixel esta dentro del volumen si entre el ojo y su superficie
+	las caras del volumen que miran hacia aca y las que miran hacia alla no se
+	compensan: las que pasan la prueba de profundidad (GL_GREATER: mas cerca
+	que la superficie) suman en un sentido y restan en el otro, y dentro =
+	cuenta != 0. Probar contra != 0 vuelve ademas irrelevante cual de los dos
+	sentidos de giro es "la cara delantera": en un volumen cerrado los cruces
+	se cancelan de a pares y en uno abierto -- el cuadrado plano de las demos
+	de KOS -- queda +-1.
+
+	La version anterior era una union de triangulos en pantalla, sin mirar la
+	profundidad: alcanzaba para ese cuadrado plano, pero la sombra extruida del
+	taxi de Crazy Taxi marcaba todo lo que sus caras cubrieran -- el techo del
+	propio taxi oscurecido por su sombra y un manto sobre media pantalla.
+
+	Contar contra la profundidad obliga a marcar DESPUES de resolverla, no
+	antes de dibujar: ver el orden en dibujar_escena(). La plantilla entera es
+	de una sola lista de volumen a la vez -- se marca la 1 para la tanda opaca
+	y se re-marca la 3 para la translucida -- asi la cuenta tiene los 8 bits.
+
+	La instruccion 2 ("cerrar excluyendo") sigue siendo la aproximacion de
+	antes -- pone en cero lo que cubre, ahora tambien solo delante de la
+	superficie -- porque ninguna demo nuestra la ejercita.
 */
-#define PLANTILLA_OPACO		0x1
-#define PLANTILLA_TRANS		0x2
 
-/* Que bit le toca a una tira segun la lista en que vino. */
-static GLuint plantilla_bit(DWORD tipo_lista)
-{
-	return (tipo_lista == 2 || tipo_lista == 3) ? PLANTILLA_TRANS : PLANTILLA_OPACO;
-}
+/* Los WRAP son de GL 1.4 y el gl.h de MSVC es 1.1; todo driver los trae. Sin
+   wrap la cuenta se arruina cuando una cara trasera rasteriza antes que su
+   delantera: GL_DECR en 0 se queda en 0 y el par ya no se cancela. */
+#ifndef GL_INCR_WRAP
+#define GL_INCR_WRAP	0x8507
+#define GL_DECR_WRAP	0x8508
+#endif
 
-/*
-	Marca en la plantilla la region que cubren los triangulos de volumen.
-
-	**Es una union de triangulos, no un volumen de verdad.** El chip resuelve
-	volumenes cerrados en 3D contando caras delanteras y traseras; aca cada
-	triangulo prende su bit y se acabo. Alcanza para lo que hacen las demos de
-	KOS -- un cuadrado plano en coordenadas de pantalla, dos triangulos -- y
-	para cualquier sombra proyectada sobre el plano, que es el uso corriente.
-	Un volumen convexo cerrado visto desde dentro saldria mal.
-
-	La instruccion 2 ("cerrar excluyendo") apaga el bit en vez de prenderlo, que
-	es lo mas parecido a lo que hace el chip sin llevar la cuenta.
-*/
-static void marcar_volumenes(void)
+/* Hay triangulos de volumen de esta lista? (1 opaca, 3 translucida) */
+static int hay_volumen_de(DWORD lista)
 {
 	DWORD v;
 
-	if (vol_count == 0)
-		return;
+	for (v = 0; v < vol_count; v++)
+		if (VolumeBuffer[v].lista == lista)
+			return 1;
+
+	return 0;
+}
+
+/*
+	Cuenta en la plantilla el volumen de `lista` contra la profundidad que ya
+	quedo en el buffer. Deja cuenta != 0 en los pixeles cuya superficie esta
+	dentro del volumen.
+*/
+static void marcar_volumenes(DWORD lista)
+{
+	int paso;
+	DWORD v;
 
 	glEnable(GL_STENCIL_TEST);
+	glStencilMask(0xFF);
 	glClearStencil(0);
 	glClear(GL_STENCIL_BUFFER_BIT);
 
-	/* Solo la plantilla: ni color ni profundidad. El volumen no se ve. */
+	/* Solo la plantilla: ni color ni profundidad. El volumen no se ve, pero
+	   SI se compara: "delante de la superficie" es GL_GREATER, la misma
+	   convencion de las tiras (mas grande = mas cerca). */
 	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	glDepthMask(GL_FALSE);
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_CULL_FACE);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_GREATER);
 	glDisable(GL_TEXTURE_2D);
 	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glStencilFunc(GL_ALWAYS, 0, 0xFF);
 
-	glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
+	glEnable(GL_CULL_FACE);
+	glFrontFace(GL_CCW);
+
+	for (paso = 0; paso < 2; paso++)
+	{
+		glCullFace(paso ? GL_FRONT : GL_BACK);
+		glStencilOp(GL_KEEP, GL_KEEP, paso ? GL_DECR_WRAP : GL_INCR_WRAP);
+
+		glBegin(GL_TRIANGLES);
+
+		for (v = 0; v < vol_count; v++)
+		{
+			const VolTri * t = &VolumeBuffer[v];
+			int k;
+
+			if (t->lista != lista || t->instruccion == 2)
+				continue;
+
+			for (k = 0; k < 3; k++)
+				glVertex3f(t->x[k], t->y[k], t->z[k]);
+		}
+
+		glEnd();
+	}
+
+	/* La exclusion, si la hay, despues de la cuenta y sin culling. */
+	glDisable(GL_CULL_FACE);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
 
 	glBegin(GL_TRIANGLES);
 
 	for (v = 0; v < vol_count; v++)
 	{
 		const VolTri * t = &VolumeBuffer[v];
-		GLuint bit = plantilla_bit(t->lista);
 		int k;
 
-		/* glStencilMask limita la escritura al bit de esta lista, asi que los
-		   dos volumenes no se pisan. Va fuera de glBegin/glEnd. */
-		glEnd();
-		glStencilMask(bit);
-		glStencilOp(GL_KEEP, GL_KEEP,
-			(t->instruccion == 2) ? GL_ZERO : GL_REPLACE);
-		glBegin(GL_TRIANGLES);
+		if (t->lista != lista || t->instruccion != 2)
+			continue;
 
 		for (k = 0; k < 3; k++)
 			glVertex3f(t->x[k], t->y[k], t->z[k]);
@@ -1665,31 +1848,26 @@ static void marcar_volumenes(void)
 
 	glEnd();
 
-	glStencilMask(0xFF);
 	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glEnable(GL_DEPTH_TEST);
 }
 
 /*
 	Deja la prueba de plantilla como la necesita la tira `i`: `dentro` en 0
-	dibuja fuera del volumen y en 1 dentro. Una tira que ningun volumen afecta
-	se dibuja entera.
+	dibuja fuera del volumen (cuenta 0) y en 1 dentro (cuenta != 0). Una tira
+	que ningun volumen afecta se dibuja entera. `hay_volumen` es el de la
+	lista que rige la fase en curso: la plantilla vale para una a la vez.
 */
-static void plantilla_para(int i, int dentro)
+static void plantilla_para(int i, int dentro, int hay_volumen)
 {
-	GLuint bit;
-
-	if (!TriangleStrip[i].volumen || vol_count == 0)
+	if (!TriangleStrip[i].volumen || !hay_volumen)
 	{
 		glDisable(GL_STENCIL_TEST);
 		return;
 	}
 
-	bit = plantilla_bit(TriangleStrip[i].type);
-
 	glEnable(GL_STENCIL_TEST);
-	glStencilFunc(dentro ? GL_EQUAL : GL_NOTEQUAL, bit, bit);
+	glStencilFunc(dentro ? GL_NOTEQUAL : GL_EQUAL, 0, 0xFF);
 }
 
 /*
@@ -1701,12 +1879,12 @@ static void juego_de_parametros(int juego)
 	if (juego)
 	{
 		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r1);
-		glTexCoordPointer(2, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].u1);
+		glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].u1);
 	}
 	else
 	{
 		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r);
-		glTexCoordPointer(2, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].t1);
+		glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].t1);
 	}
 }
 
@@ -1955,6 +2133,14 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		/* La cache de texturas ya no se vacia por escena: es persistente y
 		   se invalida por generaciones (vram.h). La textura que este render
 		   acaba de escribir se detecta sola por su huella. */
+
+		/* El final del render, tambien para el render a textura: en el chip
+		   RENDERDONE es del RENDER, no de la pantalla. */
+		/* Los tres finales del render que lista el documento (SB_ISTNRM bits
+	   0, 1 y 2: TSP, ISP y Video): el chip los emite al terminar de
+	   rasterizar, ~milisegundos despues de STARTRENDER. Virtua Tennis
+	   tiene handler para el 0 y espera su efecto. */
+	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
 		return;
 	}
 
@@ -1971,39 +2157,162 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	dibujar_escena();
 	volcar_escena_a_framebuffer();
 	terminar_escena();
+
+	/*
+		El final del render. En el chip lo emite el ISP/TSP cuando termino de
+		rasterizar lo que STARTRENDER le pidio -- incondicional, cerrara el
+		guest las listas que cerrara --, un tiempo despues del arranque. La
+		demora importa: un juego arma su espera del render justo despues de
+		escribir STARTRENDER, igual que con el fin de lista.
+	*/
+	/* Los tres finales del render que lista el documento (SB_ISTNRM bits
+	   0, 1 y 2: TSP, ISP y Video): el chip los emite al terminar de
+	   rasterizar, ~milisegundos despues de STARTRENDER. Virtua Tennis
+	   tiene handler para el 0 y espera su efecto. */
+	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
 }
 
 /*
 	Dibuja las tiras acumuladas. Sale de cb_tastart() porque el render a
 	textura necesita exactamente lo mismo pero con otro destino y otro tamano.
 */
-static void dibujar_escena(void)
+/*
+	La niebla de tabla del PVR (bits 23-22 del TSP). El guest escribe la
+	densidad en FOG_DENSITY (0x005F80B8, un flotante de 16 bits: mantisa
+	1.m7 en los bits 14-8 y exponente con signo en 7-0), el color en
+	FOG_COL_TABLE (0x005F80B0) y los 128 alfas de la curva en
+	0x005F8200-0x005F83FC. Todo caia en el respaldo de control_mem sin que
+	nadie lo leyera -- la misma forma de agujero de siempre -- y por eso el
+	tunel de kgl-tunnel terminaba en un pozo negro en vez de desvanecerse
+	en el gris de su niebla.
+
+	El indice de la tabla es v = densidad * (1/w) -- el mismo 1/w que el TA
+	trae como z -- recortado a [1, 256): exponente en los bits altos de la
+	ranura, mantisa de 4 bits en los bajos, y cada palabra trae el alfa del
+	borde lejano de la ranura en el byte alto y el del cercano en el bajo,
+	que el chip interpola con la fraccion. KOS llena esa curva en
+	pvr_fog_table_exp2() y afines.
+
+	dcemu la evalua POR VERTICE con el q que el vertice ya guarda, y la
+	aplica como una segunda pasada del mismo triangulo mezclada hacia el
+	color de la tabla. La pasada reusa la profundidad que la tira acaba de
+	dejar: GL_EQUAL si escribio z, y la misma prueba si no la escribio --
+	pasa exactamente donde paso la original -- sin escribir el buffer. El
+	resto del estado lo repone la vuelta siguiente del bucle; el puntero de
+	color es el unico que se programa afuera, y lo devuelve
+	juego_de_parametros(0).
+*/
+/* El color de niebla por vertice. Va con VERTICES_MAX y no con un numero
+   propio: se indexa por indice de vertice (TriangleStrip[i].index + k), asi
+   que un tope distinto al de VertexBuffer[] es una escritura fuera. */
+static float niebla_rgba[VERTICES_MAX][4];
+
+static void dibujar_niebla_tira(DWORD i)
 {
-	DWORD i;
-	PERF_MARCA(t_escena);
+	DWORD	reg = 0, col = 0, palabra = 0, k, alguna = 0;
+	float	densidad, fr, fg, fb, v, m16, frac, a;
+	int	e, m;
 
-	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
-	   decide, tira por tira, con que juego de parametros sale cada pixel. */
-	marcar_volumenes();
+	if (TriangleStrip[i].niebla != 0 && TriangleStrip[i].niebla != 3)
+		return;
 
-	for(i=0; i < strip_count; i++)
+	/* Diagnostico: apaga la pasada de niebla sin tocar nada mas. */
+	if (getenv("DCEMU_SIN_NIEBLA"))
+		return;
+
+	memread_fisico(0xA05F80B8, &reg, 4);
+	memread_fisico(0xA05F80B0, &col, 4);
+
+	/* El formato del registro (System Architecture, FOG_DENSITY): mantisa de
+	   8 bits donde el bit 15 ES el bit "1.0" -- 0xFF vale 255/128, sin 1
+	   implicito -- y exponente en complemento a dos. KOS lo confirma por el
+	   camino raro: float16() arma signo|mantisa7|exponente y "niega" la
+	   densidad, con lo que el bit de signo cae exactamente donde el chip
+	   espera el bit 1.0. */
+	densidad = ldexpf((float) ((reg >> 8) & 0xFF) / 128.0f,
+		(int) (signed char) (reg & 0xFF));
+	fr = (float) ((col >> 16) & 0xFF) / 255.0f;
+	fg = (float) ((col >> 8) & 0xFF) / 255.0f;
+	fb = (float) (col & 0xFF) / 255.0f;
+
+	for (k = 0; k < TriangleStrip[i].count; k++)
+	{
+		vertex * vp = &VertexBuffer[TriangleStrip[i].index + k];
+
+		v = densidad * vp->q;
+
+		if (v < 1.0f)
+			v = 1.0f;
+		if (v > 255.9999f)
+			v = 255.9999f;
+
+		e = 0;
+		while (v >= 2.0f)
 		{
-			/* Los encabezados de sombra de un juego dejan cientos de tiras
-			   vacias por escena (fin de tira sin vertices): no dibujan nada
-			   y pagaban igual todo el estado de GL de aca abajo. */
-			if (TriangleStrip[i].count == 0)
-				continue;
+			v *= 0.5f;
+			e++;
+		}
 
-			/*
-				Fuera del volumen. Si a esta tira la afecta uno, se dibuja solo
-				donde el bit correspondiente esta apagado y la segunda pasada
-				cubre el resto; asi cada pixel sale una sola vez, que es lo que
-				importa cuando hay mezcla alfa de por medio.
-			*/
-			plantilla_para(i, 0);
+		m16 = (v - 1.0f) * 16.0f;
+		m = (int) m16;
+		frac = m16 - (float) m;
 
-			//printf(" Index %d count %d\n",TriangleStrip[i].index,TriangleStrip[i].count);
+		memread_fisico(0xA05F8200 + (e * 16 + m) * 4, &palabra, 4);
+		a = ((float) ((palabra >> 8) & 0xFF) * (1.0f - frac)
+			+ (float) (palabra & 0xFF) * frac) / 255.0f;
 
+		niebla_rgba[TriangleStrip[i].index + k][0] = fr;
+		niebla_rgba[TriangleStrip[i].index + k][1] = fg;
+		niebla_rgba[TriangleStrip[i].index + k][2] = fb;
+		niebla_rgba[TriangleStrip[i].index + k][3] = a;
+
+		if (a > 0.0f)
+			alguna = 1;
+	}
+
+	/* Una tabla que nadie escribio es todo ceros: nada que mezclar. */
+	if (!alguna)
+		return;
+
+	if (opciones.traza_mem)
+	{
+		static DWORD avisos = 0;
+
+		if (avisos < 8)
+		{
+			avisos++;
+			fprintf(stderr, "niebla: tira %lu (lista %lu, %lu vertices) "
+				"densidad %g alfa[0] %g\n",
+				(unsigned long) i, (unsigned long) TriangleStrip[i].type,
+				(unsigned long) TriangleStrip[i].count, densidad,
+				niebla_rgba[TriangleStrip[i].index][3]);
+		}
+	}
+
+	glDisable(GL_TEXTURE_2D);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glDepthMask(GL_FALSE);
+
+	if (!TriangleStrip[i].zwrite)
+		glDepthFunc(GL_EQUAL);
+
+	glColorPointer(4, GL_FLOAT, 0, niebla_rgba);
+	glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+
+	juego_de_parametros(0);
+}
+
+/*
+	Programa todo el estado de GL que pide la tira `i` -- profundidad, culling,
+	escritura de z, mezcla, prueba de alfa y textura. Extraido del bucle de
+	dibujar_escena() para poder repetirlo en la segunda pasada de los
+	volumenes, que recorre las tiras afectadas fuera de ese bucle.
+*/
+static void tira_estado(DWORD i)
+{
 			glDepthFunc(TriangleStrip[i].depthmode);
 
 			/* Iban indexadas con strip_count, que en este bucle ya es la
@@ -2104,7 +2413,7 @@ static void dibujar_escena(void)
 				umbral es 0. El alfa comparado es el ya modulado, asi que una
 				textura sin canal alfa se recorta igual por el del vertice.
 			*/
-			if (TriangleStrip[i].type == 0)
+			if (TriangleStrip[i].type == 0 && !getenv("DCEMU_SIN_ALPHATEST"))
 			{
 				DWORD	ref = 0;
 				GLfloat	umbral;
@@ -2130,11 +2439,22 @@ static void dibujar_escena(void)
 
 					  0 replace  px = ARGB(tex)                        -> REPLACE
 					  1 modulate px = A(tex) + RGB(col)*RGB(tex)       -> MODULATE
-					  2 decal    px = RGB(tex)*A(tex) + RGB(col)*(1-A) -> DECAL
+					  2 decal    px = RGB(tex)*A(tex) + RGB(col)*(1-A) -> COMBINE
 					  3 modulate alpha  px = ARGB(col)*ARGB(tex)       -> MODULATE
 
 					Decal es el 2, no el 0: confundirlos manda a modulate una
 					superficie cuyo color de vertice es negro y sale toda negra.
+
+					Y el ALFA del decal no puede ser GL_DECAL: ese deja el del
+					vertice a secas, y el juego cuenta con que el de la textura
+					pase a la mezcla. Los costados de los autos del trafico de
+					Crazy Taxi son UN quad con el atlas ARGB4444 del auto entero
+					en decal sobre la lista translucida: el anillo con alfa 0
+					alrededor del neumatico debe desaparecer contra el fondo, y
+					con GL_DECAL salia como color de vertice opaco -- el parche
+					gris pegado a las ruedas. GL_COMBINE arma el RGB del decal
+					(interpolar textura/vertice por el alfa del texel) con alfa
+					= textura x vertice, que con vertice 1.0 es el del texel.
 				*/
 				switch (TriangleStrip[i].texture.pvr_texture_env)
 				{
@@ -2143,7 +2463,17 @@ static void dibujar_escena(void)
 					break;
 
 					case 2:
-					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_ALPHA);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_MODULATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_ALPHA, GL_PRIMARY_COLOR);
 					break;
 
 					default:
@@ -2169,24 +2499,110 @@ static void dibujar_escena(void)
 				glDisable(GL_TEXTURE_2D);
 			}
 
-			glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
+}
 
-			/*
-				Dentro del volumen: la misma geometria con el juego 1. Se
-				repite el dibujo en vez de hacer otra vuelta entera al final
-				porque asi hereda el estado que se acaba de programar --
-				blend, culling, profundidad y la textura ya ligada.
-			*/
-			if (TriangleStrip[i].volumen && vol_count > 0)
-			{
-				plantilla_para(i, 1);
-				juego_de_parametros(1);
+static void dibujar_escena(void)
+{
+	DWORD i;
+	int vol_opaca, vol_trans;
+	PERF_MARCA(t_escena);
 
-				glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
+	/* DCEMU_SIN_VOLUMEN: descarta los volumenes modificadores de la escena,
+	   como si ninguna tira los trajera. Diagnostico para A.5: si el mundo
+	   blanco de Crazy Taxi depende de esto, la culpa es de la segunda
+	   pasada o del marcado de la plantilla. */
+	if (getenv("DCEMU_SIN_VOLUMEN"))
+		vol_count = 0;
 
-				juego_de_parametros(0);
-			}
+	vol_opaca = hay_volumen_de(1);
+	vol_trans = hay_volumen_de(3);
+
+	/*
+		El orden viene de como resuelve el chip, que primero deja la
+		profundidad y recien despues decide que pixel cae dentro de que
+		volumen: (1) la tanda opaca y punch-through con el juego 0, que es la
+		que escribe z; (2) el conteo del volumen de la lista 1 contra esa z y
+		el repintado de las tiras afectadas donde la cuenta dio dentro; (3) el
+		volumen de la lista 3 re-marcado sobre la misma z; (4) la tanda
+		translucida. Marcar antes de dibujar -- lo que se hacia -- no tiene
+		contra que comparar: era la union en pantalla que oscurecia el techo
+		del taxi con su propia sombra.
+	*/
+
+	/* (1) Opaca y punch-through, enteras y con el juego 0. */
+	for (i = 0; i < strip_count; i++)
+	{
+		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2)
+			continue;
+
+		glDisable(GL_STENCIL_TEST);
+		tira_estado(i);
+		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+		dibujar_niebla_tira(i);
+	}
+
+	/* (2) Dentro del volumen opaco: la misma geometria con el juego 1 (en
+	   sombra barata, el 0 escalado por FPU_SHAD_SCALE). Estas listas no
+	   mezclan, asi que repintar solo los pixeles de dentro es seguro.
+	   GL_EQUAL contra la z que la propia tira dejo limita la pasada a donde
+	   esa tira sigue visible; si la tira no escribio z, repite su prueba. */
+	if (vol_opaca)
+	{
+		marcar_volumenes(1);
+
+		for (i = 0; i < strip_count; i++)
+		{
+			if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2
+			||  !TriangleStrip[i].volumen)
+				continue;
+
+			tira_estado(i);
+			glDepthFunc(TriangleStrip[i].zwrite ? TriangleStrip[i].depthmode
+											    : GL_EQUAL);
+			glDepthMask(GL_FALSE);
+			glEnable(GL_STENCIL_TEST);
+			glStencilFunc(GL_NOTEQUAL, 0, 0xFF);
+			juego_de_parametros(1);
+
+			glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,
+				TriangleStrip[i].count);
+
+			juego_de_parametros(0);
 		}
+	}
+
+	/* (3) y (4): la tanda translucida, con su volumen re-marcado contra la
+	   profundidad que dejo la opaca. */
+	if (vol_trans)
+		marcar_volumenes(3);
+
+	for (i = 0; i < strip_count; i++)
+	{
+		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type != 2)
+			continue;
+
+		/* Fuera del volumen, o entera si ninguno la afecta. Con mezcla de
+		   por medio cada pixel tiene que salir UNA sola vez, asi que la tira
+		   afectada se parte en fuera/dentro en vez de repintarse. */
+		plantilla_para(i, 0, vol_trans);
+		tira_estado(i);
+		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+
+		/* Dentro: la misma geometria con el juego 1, aqui mismo para que
+		   herede el estado recien programado -- blend, culling, profundidad
+		   y la textura ya ligada. */
+		if (TriangleStrip[i].volumen && vol_trans)
+		{
+			plantilla_para(i, 1, vol_trans);
+			juego_de_parametros(1);
+
+			glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+
+			juego_de_parametros(0);
+		}
+
+		dibujar_niebla_tira(i);
+	}
 
 	glDisable(GL_STENCIL_TEST);
 
@@ -2708,13 +3124,16 @@ void taListEnd()
 			}
 	}
 
-	if (pvr_listdone == pvr_registered)
-	{
-//		logxmsg(LOG_PVR, "pcw: taListEnd: RENDER_DONE\n");
-		if (traza_activa)
-			fprintf(stderr, "traza: fin de lista: todas hechas, RENDERDONE\n");
-		intc_add(ASIC_EVT_PVR_RENDERDONE, 200);
-	}
+	/*
+		RENDERDONE ya no sale de aca. En el chip es el final del RENDER -- el
+		ISP/TSP termino de rasterizar, despues de STARTRENDER --, no "todas
+		las listas cerradas": emitirlo al cerrar la ultima lista era antes de
+		tiempo para todos (KOS lo toleraba porque espera en un semaforo), y
+		para un juego que habilita listas que no manda -- Virtua Tennis deja
+		la translucida habilitada y vacia -- no salia nunca, y su espera del
+		render no terminaba jamas. Sale de cb_tastart(), que ES el
+		STARTRENDER. Ver ahi la demora.
+	*/
 }
 
 void doUserClip()
@@ -2753,8 +3172,7 @@ void objectListSet()
 	vez por escena con --traza-mem, porque una escena recortada en silencio es
 	justo lo que este arbol define como error caro.
 */
-#define VERTICES_MAX	(sizeof(VertexBuffer) / sizeof(VertexBuffer[0]))
-#define TIRAS_MAX		(sizeof(TriangleStrip) / sizeof(TriangleStrip[0]))
+/* VERTICES_MAX y TIRAS_MAX viven en render.h, junto a los arreglos. */
 
 static void desbordo(const char * que, unsigned long tope)
 {
@@ -2982,6 +3400,8 @@ void taPolyModifier()
 	
 	 TriangleStrip[strip_count].alpha =  ((ta_address_pointer[2] >> 20) & 0x1); // alpha
 
+	TriangleStrip[strip_count].niebla = (ta_address_pointer[2] >> 22) & 0x3;
+
 	 /* El bit 20 del TSP es "Use Alpha": con 0 el chip fuerza a 1.0 el alfa
 	    DEL VERTICE, y nada mas -- el de la textura sigue vivo y la mezcla
 	    tambien. Se guarda aparte para aplicarlo al construir los vertices;
@@ -3132,6 +3552,21 @@ void taPolyModifier()
 		TriangleStrip[strip_count].texture.filtermode = (ta_address_pointer[2] >> 13) & 0x3;
 
 		/*
+			Repeticion por eje: Clamp en los bits 16 (U) y 15 (V), Flip en el
+			18 (U) y el 17 (V), y el Clamp le gana al Flip cuando estan los
+			dos. No se emulaba nada de esto y todo quedaba en el GL_REPEAT de
+			fabrica: la sombra circular que un juego guarda como UN cuarto y
+			espeja con Flip -- las de los peatones de Crazy Taxi -- salia como
+			ese cuarto repetido cuatro veces sin espejar.
+		*/
+		TriangleStrip[strip_count].texture.wrap_u =
+			((ta_address_pointer[2] >> 16) & 1) ? 2 :
+			((ta_address_pointer[2] >> 18) & 1) ? 1 : 0;
+		TriangleStrip[strip_count].texture.wrap_v =
+			((ta_address_pointer[2] >> 15) & 1) ? 2 :
+			((ta_address_pointer[2] >> 17) & 1) ? 1 : 0;
+
+		/*
 			Como se combina el texel con el color del vertice. No se emulaba, o
 			sea que quedaba el GL_MODULATE de fabrica para todo -- y en decal el
 			texel *reemplaza* al color. Una superficie con color de vertice
@@ -3169,9 +3604,6 @@ static vertex * vertice_nuevo(void)
 
 	v = &VertexBuffer[vertice_reservar()];
 
-	v->x = xyz[0];
-	v->y = xyz[1];
-
 	/*
 		La z del TA es 1/w: **mayor quiere decir mas cerca**, y las pruebas de
 		profundidad del PVR estan escritas asi -- GREATER deja pasar lo que esta
@@ -3194,7 +3626,14 @@ static vertex * vertice_nuevo(void)
 		"Tal cual" en el orden, no en el valor: pasa por profundidad_ta(), que
 		es monotona -- ver su comentario, la precision lineal no alcanzaba.
 	*/
+	v->x = xyz[0];
+	v->y = xyz[1];
 	v->z = profundidad_ta(xyz[2]);
+
+	/* El q de la correccion de perspectiva de las texturas (render.h): el
+	   1/w del TA tal cual, acotado por si llega 0 ("infinitamente lejos").
+	   El cierre de tira premultiplica las UV con el. */
+	v->q = (xyz[2] > 1e-6f) ? xyz[2] : 1e-6f;
 
 	/* Sin coordenadas de textura mientras el tipo no diga otra cosa: si no,
 	   quedan las del vertice anterior. */
@@ -3386,6 +3825,7 @@ static void vertice_sprite(int con_textura)
 			ve->x = x[s];
 			ve->y = y[s];
 			ve->z = profundidad_ta(z[s]);	/* igual que vertice_nuevo() */
+			ve->q = (z[s] > 1e-6f) ? z[s] : 1e-6f;
 			ve->t1 = u[s];
 			ve->t2 = v[s];
 
@@ -3708,6 +4148,23 @@ void taVertexHandler()
 #endif
 
 		TriangleStrip[strip_count].count = ((total_polygon_count+1) - TriangleStrip[strip_count].index);
+
+		/* La correccion de perspectiva de las texturas (render.h): las UV de
+		   los dos juegos se premultiplican por el q del vertice, una sola
+		   vez, con la tira ya completa. */
+		{
+			DWORD kq;
+
+			for (kq = 0; kq < TriangleStrip[strip_count].count; kq++)
+			{
+				vertex * vp = &VertexBuffer[TriangleStrip[strip_count].index + kq];
+
+				vp->t1 *= vp->q;	vp->t2 *= vp->q;
+				vp->tr  = 0.0f;		vp->tq  = vp->q;
+				vp->u1 *= vp->q;	vp->v1 *= vp->q;
+				vp->ur  = 0.0f;		vp->uq  = vp->q;
+			}
+		}
 
 		if (TexInfo.registers.texture_surface)
 		{
@@ -4293,7 +4750,7 @@ int glinit(void)
 
 	glVertexPointer			(3, GL_FLOAT,		   sizeof(vertex), &VertexBuffer);
 	glColorPointer			(4, GL_FLOAT,  sizeof(vertex), &VertexBuffer[0].r);
-	glTexCoordPointer		(2, GL_FLOAT,		   sizeof(vertex), &VertexBuffer->t1);
+	glTexCoordPointer		(4, GL_FLOAT,		   sizeof(vertex), &VertexBuffer->t1);
 
 	return 0;
 }

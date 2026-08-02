@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "sistema.h"
+#include "tmu.h"			/* reloj_ms(): el RTC fijo avanza con el tiempo emulado */
 
 /* ------------------------------------------------------------------------ */
 /* Detector de cable de video                                               */
@@ -323,6 +324,19 @@ static int		rtc_desfase_sucio = 0;
 
 DWORD sistema_rtc_desde_hora(time_t t)
 {
+	/* DCEMU_RTC_FIJO=N: el RTC arranca en N (segundos desde 1950) y avanza
+	   con el tiempo EMULADO, no con el del anfitrion. Es la unica fuente de
+	   no-determinismo entre corridas -- semilla y fase del segundo --, y con
+	   esto una corrida entera se reproduce exacta. Congelarlo del todo no
+	   sirve: hay juegos que esperan el tic del segundo en su arranque
+	   (Virtua Tennis se queda esperandolo para siempre). Solo diagnostico. */
+	{
+		const char * e = getenv("DCEMU_RTC_FIJO");
+
+		if (e != NULL)
+			return (DWORD) (strtoul(e, NULL, 0) + reloj_ms() / 1000);
+	}
+
 	if (t < 0)
 		t = 0;
 

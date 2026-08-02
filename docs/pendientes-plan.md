@@ -291,10 +291,40 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   Tennis pasa su espera 3 **sin el experimento**: STARTRENDER dispara y quedó en la espera
   4. Los demos de volúmenes, dentro de su varianza de `rand()` (medida en el mismo binario);
   el resto del subconjunto, byte a byte.
-- **Espera 4** (donde está hoy con el experimento): el juego marca "pendiente" (bit 0 de
-  `[0x8C45F940]`, PC `8c1fa13e`) y sondea a que su ISR lo limpie. El bit se marca ~61M ciclos
-  después del único fin de lista, así que no es la carrera del punto siguiente; falta
-  identificar qué evento debería limpiarlo.
+- **Espera 4** (donde está hoy): es `while ((obj = cola_pop()) == NULL) yield;` — la rutina
+  `8c1f9960` entrega búferes de comando que el pipeline de cuadro recicla, y el reciclador es
+  la **cadena enlazada de callbacks** que recorre el handler del render-done (entrada 2,
+  `8c1e84c0`: `for (n = [8c1e8598]; n; n = n->sig) n->fn(n->arg)`). El juego encadena un nodo
+  al armar cada render y el callback, al correr, des-encadena y libera; dcemu emitió sus
+  render-done antes de que el nodo existiera y la cadena corrió una sola vez (medido con
+  watchpoint-lectura sobre `8c1e8598`). El bit que se sondea es el **25** de `[0x8C45F940]`
+  (no el 0: el volcado de registros engaña según el instante), marcado en `8c1fa0de`.
+
+  De perseguirla quedaron dos semánticas corregidas de paso, las dos del papel:
+
+  - **RENDERDONE sale de STARTRENDER** (cb_tastart, los tres bits del documento: 0 TSP,
+    1 ISP, 2 Video), no de "todas las listas cerradas" — un juego que habilita listas que no
+    manda no lo recibía nunca, y KOS lo recibía antes de tiempo.
+  - **La demora del render** (~2M ciclos): el juego arma su espera ~800K ciclos después de
+    escribir STARTRENDER; el evento instantáneo se le adelantaba.
+
+  **La regresión de la demora del render, medida con precisión**: los demos estáticos del
+  subconjunto quedan byte a byte (conio, rtt_sized, strided, bumpmap); los animados driftean
+  en decenas de píxeles/colores porque la fase de cuadro corre ~10 ms — KOS espera el
+  render-done por semáforo y ahora llega cuando el render "terminó", no al cerrar la lista.
+  Es el costo esperable de la semántica correcta, no una rotura; si un barrido completo lo
+  confirma, la línea base de capturas se re-toma.
+
+  Y una herramienta nueva: **`DCEMU_RTC_FIJO=N`** — el RTC arranca en N y avanza con el
+  tiempo emulado. El RTC del anfitrión era la última fuente de no-determinismo (semilla y
+  fase del segundo: el juego espera el tic en su arranque, congelarlo del todo lo cuelga);
+  con esto una corrida se reproduce exacta, que es lo que permitió medir todo lo anterior.
+  La "rama mala" resultó ser un timeout de ~10.5 s emulados, no un cuelgue.
+
+  Lo que falta: que el pipeline de cuadro del juego gire — su cadena de render-done tiene
+  que correr una vez POR render con el nodo ya puesto, y el juego consume además los eventos
+  por el estado de `SB_ISTNRM` (los acks). Es trabajo del modelo de eventos del ASIC, no un
+  registro suelto.
 
 Y de esa persecución salieron dos mejoras estructurales que ya quedaron:
 
@@ -466,6 +496,211 @@ Y de jugarlo en vivo con todo lo anterior puesto salieron dos más, resueltos el
   registro no es constante: 0 en varias pantallas, 0x17 en los menús. Se midió con la
   herramienta nueva `DCEMU_TRAZA_ESCENA=N[:M]`, que vuelca el estado GL completo (y el
   `PT_ALPHA_REF`) de las tiras de una escena elegida.
+
+### A.5 — El "mundo blanco" de Crazy Taxi en juego, acorralado (1 de agosto, noche)
+
+Reaparecido jugando (no en el attract), con reproductor determinista propio:
+`DCEMU_RTC_FIJO=2345678901 DCEMU_PULSAR_START=300,1100 DCEMU_PULSAR_A=1 DCEMU_SOLO_A=1`
+llega al juego real en ~35 s emulados con el mundo blanco. Eliminado por medición, en orden:
+la clave del caché sin el bit de mip (arreglado igual, era real), el muestreo de mipmaps
+(`DCEMU_SIN_FILTRO_MIP`: sigue blanco), el caché entero (`DCEMU_SIN_CACHE_TEX`: sigue), el
+alpha test del punch-through (`DCEMU_SIN_ALPHATEST`: sigue), el fondo (`DCEMU_FONDO_MAGENTA`:
+no aparece magenta ⇒ todo lo blanco está DIBUJADO), errores de GL en la subida (cero), las
+UV (sanas), y el contenido de VRAM de las texturas sospechadas (`DCEMU_VOLCAR_TEX=addr`
+vuelca los bytes que consumió el decodificador EN el draw: una "dominante" resultó ser la
+cara de un peatón, perfecta).
+
+**Lo que quedó clavado**: los píxeles blancos pertenecen a 1040 tiras por escena con textura
+`0x00400000` (8×8, 565, TCW `0x08080000` — tamaño en campos cero, dirección justo en el
+borde del banco 1) y **todas con `vol=1`**: son los polígonos de dos volúmenes — los que
+reciben la sombra del taxi — que el attract no usa. Dos sondas deciden:
+
+1. `DCEMU_VOLCAR_TEX=400000` en el reproductor: si esos 128 bytes son blancos, el juego
+   de verdad muestrea una textura blanca diminuta y el problema es el **color de vértice**
+   o la **segunda pasada de volumen** (dibujar_escena repinta las tiras `vol=1` con el
+   juego 1 dentro de la plantilla — si los volúmenes degenerados marcan la pantalla entera,
+   esa pasada repinta el mundo).
+2. El parseo del encabezado de dos volúmenes (POLY3/POLY4, TSP0/TCW0 en palabras 2-3 según
+   §3.7.5.2) contra lo que llega: la traza nueva imprime el TCW crudo por tira.
+
+**Resuelto el misterio de la intermitencia (2026-08-01, madrugada) — es determinista, y el
+blanco es el resultado normal; lo raro es la corrida limpia.** Medido con el reproductor
+(5 corridas byte a byte idénticas en totales de VRAM y flujo de syscalls):
+
+- **El emulador es determinista**: b1≡b2≡c2≡c3 exactas. La corrida "limpia" difería en una
+  sola cosa: `mando: gamepad conectado` (el pad del usuario estaba encendido). Con pad, el
+  flujo de syscalls corre **una iteración de sondeo adelantado** (el par MAIN_LOOP +
+  CHECK_DRIVE aparece en la línea 30 en vez de la 1242) — bytes de entrada distintos mueven
+  el timing del guest — y esa fase decide una carrera **interna del juego**.
+- **La lectora queda absuelta**: las 487 lecturas (32 MB) son idénticas en corrida blanca y
+  limpia — los datos SÍ llegan a RAM. Lo que jamás ocurre en las blancas es la **subida
+  RAM→VRAM**: ~900 KB por CH2 DMA a `0x111A0000-0x113F0000` (las texturas de la ciudad,
+  ~600 transferencias) que la limpia hace durante la carga. A los 90 s la ventana 11 sigue
+  clavada en el mismo byte: la fase de subida no es lenta, **nunca arranca**.
+- Con las texturas ausentes el juego dibuja su mundo de respaldo: 2104 tiras/escena atadas
+  a la 8×8 de `0x00400000` moduladas por color de vértice gris — ESO es el blanco. El flujo
+  del TA es idéntico entre corridas blancas (volcados de escena byte a byte iguales), o sea
+  que no hay corrupción de parseo.
+- Niebla y volúmenes, absueltos de esto: `DCEMU_SIN_NIEBLA`/`DCEMU_SIN_VOLUMEN` no cambian
+  el resultado (la pasada de niebla además dibuja cero tiras en carrera: densidad `0x807F`
+  satura el índice a la ranura 127, cuya alfa es 0 — el juego la deja "apagada" así). Los
+  volúmenes causan el OTRO síntoma: el manto oscuro de media pantalla (ver abajo).
+
+**El gamepad NO es workaround** (probado en vivo la misma noche: pad conectado y jugando,
+sigue blanco). Lo que la corrida limpia demuestra es otra cosa: la fase de subida EXISTE en
+el juego y una perturbación de timing de entrada la destrabó UNA vez — la carrera interna
+cae del lado malo en casi todas las líneas de tiempo de dcemu, y en la consola real caía
+del bueno. Hay que encontrar qué espera el cargador, no perturbarlo.
+
+**Los datos duros para retomar** (todos medidos, reproducibles con el reproductor de
+arriba + `--traza-mem`, 60 s):
+
+- Discriminador instantáneo al salir: `bytes a RAM de video por ventana:` — **blanca:
+  `11=5565728`; limpia: `11=6481248`**. Equivalente: en la limpia hay `CH2 DMA ... ->
+  111a0000-113fxxxx` (~600 transferencias, las texturas de ciudad); en la blanca los
+  destinos saltan de `1140xxxx` para arriba. Los autos, taxi y HUD son del lote base y
+  se ven bien siempre — lo que falta es solo el lote de ciudad.
+- El flujo de syscalls GD (`hack:` en stderr) es el MISMO multiconjunto en ambas (8654
+  llamadas, 487 lecturas, 32 MB): los datos llegan a RAM. La única diferencia es de fase:
+  un par MAIN_LOOP (r7=2) + CHECK_DRIVE (r7=4) corrido de la línea 30 a la 1242.
+- En la limpia, las subidas CH2 aparecen intercaladas entre tandas de lecturas durante la
+  carga; en la blanca las lecturas corren seguidas y la fase de subida no llega nunca.
+  A los 90 s la ventana 11 sigue en el mismo byte: **no es lenta, no arranca**.
+- Los PR de los sitios de llamada del cargador del juego (para `--traza-desde`):
+  SEND=`0c15d42a`, CHECK=`0c15d4e8`, CHECK_DRIVE=`0c15d5f4`, MAIN_LOOP=`0c15d6ce`
+  (PC siempre `8c000202`, el stub).
+
+**Las sondas que siguen, en orden de costo:**
+
+1. **`CHECK_DRIVE` contesta STANDBY (2) siempre**, porque en el camino de syscalls nadie
+   mueve `gdrom.unidad`. En la consola el drive queda en **PAUSE (1)** al terminar una
+   lectura y el cargador de Katana puede estar esperando esa transición para procesar el
+   lote y disparar las subidas. Experimento de una línea en `hack_gdrom()` (vector r7=4):
+   contestar 1 tras una lectura completada (o probar 1 fijo) y mirar el discriminador.
+2. **`--watchpoint=5F6808:4` (SB_C2DST)** en el reproductor: da el PC/PR del código que SÍ
+   programa las subidas del lote base en la corrida blanca. Con ese PC, `--traza-desde`
+   sobre la rutina muestra la decisión que salta el lote de ciudad — qué variable mira.
+3. **Variar la demora del fin de DMA de Maple en `INTC_DEMORAS`** (la fase de entrada es
+   lo único que movió la aguja): si una demora más realista hace caer la carrera siempre
+   del lado bueno, es la señal de que el modelo de eventos es el que manda aquí — la misma
+   familia que la espera 5 de Virtua Tennis (reciclaje de buffers por render-done).
+
+Residuos menores reportados en vivo, para después: el borde de los neumáticos sin
+transparencia (alfa del punch-through en texturas chicas, probablemente el piso del
+umbral), y texturas de autos que se rompieron pasados ~80 s de una corrida larga
+(¿desalojo del caché con el juego avanzado? medir con `DCEMU_SIN_CACHE_TEX`).
+
+**Resuelto (2026-08-02): no era la lectora — era `SB_SBREV` leída de basura de heap, y
+el "es determinista" de arriba era falso.** Al retomar para correr la sonda 1, la línea
+base se negó a reproducirse: mismo binario, mismos parámetros, sin gamepad — una corrida
+limpia (`11=6481248`) y la siguiente blanca (`11=5565728`). Ocho corridas de 1 s dieron
+exactamente **dos líneas de tiempo** (5 y 3), con la bifurcación siempre en el mismo
+sitio. La cacería, con una herramienta nueva (`DCEMU_TRAZA_EN_MS=N[:M]`, en `traza.c`:
+checkpoints de PC y registros por ms emulado, y la traza de instrucciones armada al
+cruzar un instante en vez de un PC):
+
+- Checkpoints idénticos hasta el ms 118; en el 119 una línea va exactamente una
+  escritura (4 bytes) adelante de la otra en el mismo bucle. La primera interrupción se
+  entrega recién a ~330 ms, así que las interrupciones quedaron absueltas; `--sin-audio`
+  y `--sin-aica` tampoco cambiaron nada.
+- La traza del ms completo da la instrucción exacta: `0x0C073944 MOV.L @R1,R3` con
+  `R1=0xA05F689C`. Una línea leyó 0; la otra, `0x0BC4C2C9`.
+- **`0x005F689C` es `SB_SBREV`, la revisión del System Block del Holly** (`0x0B` en una
+  consola de serie; así la inicializa reicast). Sin caso de lectura caía al respaldo de
+  `control_mem` — que era un **malloc sin limpiar**: 64 KB del heap del CRT con basura
+  reciclada de las cargas del arranque, distinta según la historia de asignaciones del
+  proceso. Katana la compara contra 8 a los 118 ms de encendido para elegir su camino de
+  inicialización: **con < 8 toma el camino de Holly viejo y la fase de subida RAM→VRAM
+  del lote de ciudad no arranca nunca — ese es el mundo blanco**; con ≥ 8 arranca. La
+  madrugada de las cinco corridas "deterministas" el heap repartió ceros cinco veces; la
+  corrida limpia con gamepad fue el heap repartiendo basura ≥ 8 — la correlación con el
+  pad era coincidencia, y la "carrera interna del juego" era este volado de moneda en el
+  arranque del proceso.
+
+Los dos arreglos: **todos los bloques de `inicializar_memoria()` con `calloc`** (un
+registro sin caso debe contestar su valor de reset, no la historia del heap; además es
+lo que vuelve reproducible una corrida), y **`SB_SBREV` contestada de verdad con
+`0x0B`** — la tercera de la familia `REVISION` / `SB_G1SYSM`. Verificado: seis corridas
+cortas con checkpoints byte a byte idénticos (única línea distinta: los ms reales del
+resumen final), y dos de 60 s con `11=6481248` y 8654 syscalls exactos las dos — **la
+fase de subida arranca siempre; piso y edificios con textura, confirmado en vivo**. Las
+sondas 1-3 de arriba quedan superadas sin correrse: `CHECK_DRIVE` sigue contestando
+STANDBY y el juego carga igual (PAUSE tras lectura queda como nota de fidelidad, no como
+pendiente).
+
+Residuos vigentes tras jugar con esto puesto (2026-08-02, los tres estables ahora que el
+emulador es determinista): la sombra de los autos oscurece el techo en vez del piso — la
+simplificación documentada de `marcar_volumenes()`, el arreglo sigue siendo el conteo
+por caras de abajo; las ruedas sin transparencia (ya anotado arriba); **los árboles a lo
+lejos se ven como un triángulo invertido** — nuevo, huele a los niveles chicos de mipmap
+de los sprites VQ mal decodificados u orientados; y las texturas de autos que se rompen
+avanzada la corrida (ya anotado arriba, sospecha de desalojo del caché).
+
+**Los árboles-triángulo y los autos deslavados cayeron juntos (2026-08-02): eran un
+use-after-free, no un error de offsets.** `DCEMU_SIN_FILTRO_MIP` partió el problema en dos
+(sin filtro de mipmaps las palmeras salían con sus frondas y los autos nítidos ⇒ los
+niveles chicos contenían basura), la auditoría de offsets dio limpia contra la tabla de
+pvrtex en los tres formatos… y la respuesta estaba en el orden: `free(plano)` corría entre
+la decodificación del nivel grande y el bucle de niveles chicos, que lee `plano` — el
+`malloc` de cada nivel reciclaba el bloque recién liberado y salía basura estructurada,
+dependiente de la historia del heap (por eso también "se pudrían" texturas avanzada la
+corrida). El free va después del bucle ahora. Verificado: el cuadro 40 s del reproductor
+con palmeras verdes y tráfico nítido CON mipmaps activos, confirmado en vivo jugando, y
+los diez demos KOS de control byte a byte idénticos (ninguno usa el bit de mipmap — por
+eso el barrido nunca podía ver esto). La sombra del taxi, confirmada bien en vivo tras el
+conteo por caras. **Queda pendiente de esa lista: las ruedas sin transparencia.**
+
+**Y de validar en vivo salió otro clásico (2026-08-02): las sombras de los peatones como
+"un cuarto de círculo repetido cuatro veces".** Esa frase es la firma: el juego guarda UN
+cuarto del círculo y lo espeja con los bits Flip U/V del TSP (18/17), que dcemu ignoraba
+— como también los Clamp (16/15, que le ganan al Flip) — dejando todo en el `GL_REPEAT`
+de fábrica. `aplicar_filtros()` pone ahora `GL_MIRRORED_REPEAT`/`GL_CLAMP_TO_EDGE`/
+`GL_REPEAT` por eje según el TSP. Los diez demos de control, byte a byte idénticos
+(ninguno usa Flip ni Clamp). Probable causa también de "la sombra del taxi se calcula
+mal" — mismo truco del cuarto espejado — pendiente de confirmar en vivo.
+
+**Y el "borde de los neumáticos sin transparencia" cayó al medirlo (2026-08-02): no era el
+punch-through — era el alfa del decal.** La disección con `DCEMU_TRAZA_ESCENA` +
+`DCEMU_VOLCAR_TEX` mostró que el costado entero de cada auto del tráfico es UN quad sobre
+un atlas ARGB4444 (carrocería, vidrios y ruedas juntos, con anillo de alfa 0 alrededor de
+la silueta), en decal (env 2) sobre la lista translúcida con mezcla srcalpha. `GL_DECAL`
+deja pasar el alfa del VÉRTICE (1.0) y el anillo salía como color de vértice opaco — el
+parche gris pegado a la rueda. El decal es `GL_COMBINE` ahora: RGB interpolado por el alfa
+del texel, alfa = textura × vértice. `pvr-bumpmap`, el único demo en ese camino, byte a
+byte idéntico. De paso quedaron volcados de referencia decodificados: el farol trasero del
+taxi (`5c0ba0`), el follaje (`79c520`) y los dos atlas de autos (`1f2420`, `5f17c0`),
+todos VQ+mip impecables — la cadena de decodificación quedó absuelta.
+
+**Dos lecciones de método de esta tanda, para el que retome:** (1) el reproductor NO es
+aislable mientras se juega con gamepad en otra instancia — XInput se lee global, sin
+importar el foco, así que una captura minimizada recibe el input del jugador y la ventana
+05 sale distinta (la 04 y la 11 aguantan, porque la carga termina antes de que el input
+pese); (2) los números del discriminador dependen del contenido de `bios/flash.bin`, que
+dcemu persiste al salir si el juego lo escribió — hasta ahora no ha cambiado (sigue con
+fecha 2004), pero si cambia, la línea de tiempo entera del reproductor se mueve.
+
+**El manto oscuro con volúmenes activos es la simplificación documentada de
+`marcar_volumenes()`**: unión de triángulos en vez de conteo de caras. La sombra del taxi es
+un volumen cerrado (extruido); marcar cada triángulo enciende todo lo que sus caras cubren —
+media pantalla — y la segunda pasada oscurece eso. El arreglo real: plantilla por conteo
+(`GL_INCR` caras delanteras, `GL_DECR` traseras, dentro = cuenta > 0), re-marcando entre la
+tanda opaca y la translúcida para tener los 8 bits enteros por clase.
+
+**Hecho (2026-08-02): el conteo por caras contra la profundidad quedó implementado.** Los
+detalles que el plan de arriba no decía: la cuenta va con `GL_INCR_WRAP`/`GL_DECR_WRAP`
+(sin wrap, una cara trasera que rasteriza antes que su delantera clava el 0 y el par no se
+cancela), dentro = cuenta **≠ 0** (así el sentido de giro da igual: cerrado cancela de a
+pares, abierto queda ±1), y contar contra la profundidad obliga a marcar **después** de
+resolverla — `dibujar_escena()` quedó en fases: opaca+PT con juego 0, conteo de la lista 1
+y repintado de las afectadas solo dentro (`GL_EQUAL` contra su propia z; sin mezcla es
+seguro), re-marca de la lista 3, y la translúcida con sus afectadas partidas fuera/dentro
+como antes. Verificado: los seis demos de control (`fb_tex`, `rtt_sized`, `tunnel`,
+`libdream-ta`, `conio-basic`, `bumpmap`) **byte a byte idénticos** antes/después con
+`DCEMU_RTC_FIJO`; los tres demos de volumen plano idénticos (con el cuadrado delante de
+todo, unión y conteo coinciden); `pvr-modifier_volume_zclip` — el único con un volumen 3D
+cerrado de verdad, un cubo rotando — pasa del bloque recto en pantalla al oscurecido que
+abraza el piso y la pared que atraviesa. El flujo del guest, intacto (discriminador
+`11=6481248` idéntico).
 
 Y de la segunda sesión de juego en vivo salieron tres más, los tres del pipeline translúcido,
 resueltos el mismo día — el detalle está en `CLAUDE.md` ("Graphics pipeline"):
@@ -692,6 +927,26 @@ desaparecen. ICON (la 2) y el vector sin nombre de `0x8C0000E0` siguen mudos, y 
 33 binarios están en "dibujan; la captura tiene contenido pero no se revisó una por una". No
 es un fallo, es que nadie las miró. Una pasada con `--captura-gl` y el ojo cierra el hito F y
 puede destapar cosas —así salieron el filtro de textura y el recorte del volcado—.
+
+### C.9 — kgl-tunnel: la niebla salió, el texto no
+
+De mirar kgl-tunnel con el ojo (2026-08-01) salieron tres cosas, dos cerradas:
+
+- **La niebla de tabla del PVR no estaba emulada** — densidad, color y la curva de 128
+  entradas caían en `control_mem` sin lector, y el túnel terminaba en un pozo negro que
+  tapaba los arcos y columnas de sus paredes. **Resuelto**: `dibujar_niebla_tira()` en
+  `graficos.c` (ver CLAUDE.md, "Fog"). La niebla por vértice (modo 1 del TSP) sigue sin
+  emular; ninguna demo del parque la usa.
+- **El moiré del piso cercano** es submuestreo: la KGL nueva sube `tile.pcx` sin mipmaps y
+  la minificación fuerte con `GL_LINEAR` hace franjas horizontales. En hardware pasa igual
+  (y la niebla lo atenúa); `DCEMU_MIP_AUTO=1` genera mipmaps para texturas que no traen y
+  lo suaviza, como diagnóstico, no por omisión.
+- **El texto no se dibuja** — ni el `plprint()` del título ("Tunnel V1.5...") ni las seis
+  líneas del menú de ayuda; el panel translúcido de `do_help()` sí sale, y por eso se ve
+  como un rectángulo oscuro sin nada dentro (se confundía con "una ventana en la pared").
+  La fuente la dibuja PLIB (`plprint.h` en la demo). **Pendiente**: falta medir qué manda
+  — si es una textura de fuente con un formato que dcemu decodifica mal, o vértices que no
+  llegan. `DCEMU_TRAZA_ESCENA` sobre un cuadro del túnel es el primer paso.
 
 ### C.7 — La BIOS perdió su texto — **resuelto: era `SB_LMMODE0`**
 

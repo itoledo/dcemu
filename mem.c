@@ -97,7 +97,17 @@ int inicializar_memoria()
 {
 	logmsg("creando memoria\n");
 
-	memoria = (unsigned char *) malloc(sizeof(char) * MEM_SIZE); // 16 megabytes
+	/*
+		Todo con calloc, no con malloc. Los bloques grandes ya salian en cero
+		porque el sistema entrega paginas nuevas, pero los chicos (control_mem,
+		ta_mem) venian del heap del CRT con basura reciclada de las cargas de
+		arranque -- distinta en cada corrida. Un guest que leia un registro sin
+		caso propio (SB_SBREV, 0x005F689C) recibia ese azar y dos corridas
+		identicas tomaban caminos distintos: eso era el "no-determinismo" que
+		partia al reproductor de Crazy Taxi. Los registros deben arrancar en su
+		valor de reset, y el respaldo en cero es la parte comun de eso.
+	*/
+	memoria = (unsigned char *) calloc(1, MEM_SIZE); // 16 megabytes
 
 	if (!memoria)
 	{
@@ -112,7 +122,7 @@ int inicializar_memoria()
 
 	logmsg("creando memoria de video\n");
 	
-	video_mem = (unsigned char *) malloc(sizeof(unsigned char) * VIDEO_SIZE); // 8 megabytes
+	video_mem = (unsigned char *) calloc(1, VIDEO_SIZE); // 8 megabytes
 
 	if (!video_mem)
 	{
@@ -122,7 +132,7 @@ int inicializar_memoria()
 
 	logmsg("creando memoria de registros\n");
 
-	regmem = (unsigned char *) malloc(sizeof(unsigned char) * 0x00FFFFFF); // 16 megabytes
+	regmem = (unsigned char *) calloc(1, 0x00FFFFFF); // 16 megabytes
 
 	if (!regmem)
 	{
@@ -130,7 +140,7 @@ int inicializar_memoria()
 		return 1;
 	}
 
-	bios_mem = (unsigned char *) malloc(sizeof(unsigned char) * BIOS_SIZE); // 2 MB
+	bios_mem = (unsigned char *) calloc(1, BIOS_SIZE); // 2 MB
 
 	if (!bios_mem)
 	{
@@ -138,7 +148,7 @@ int inicializar_memoria()
 		return 1;
 	}
 	
-	ta_mem = (unsigned char *) malloc(sizeof(unsigned char) * TA_SIZE);
+	ta_mem = (unsigned char *) calloc(1, TA_SIZE);
 
 	if (!ta_mem)
 	{
@@ -146,7 +156,7 @@ int inicializar_memoria()
 		return 1;
 	}
 	
-	control_mem = (unsigned char *) malloc(sizeof(unsigned char) * CONTROL_SIZE);
+	control_mem = (unsigned char *) calloc(1, CONTROL_SIZE);
 
 	if (!control_mem)
 	{
@@ -687,6 +697,28 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		{
 			memcpy(p, &G2_FIFO, size);
 			REMOVE_BIT(G2_FIFO, AICA_FIFO);
+		}
+		break;
+
+		case 0xa05f689c: // SB_SBREV, revision del System Block del Holly
+		{
+			/*
+				0x0B en una consola de serie (reicast la inicializa asi). El
+				arranque de Katana la lee y la compara contra 8 para elegir su
+				camino de inicializacion -- Crazy Taxi lo hace en 0x0C073944,
+				a los 118 ms de encendido.
+
+				Sin este caso la lectura caia en el respaldo del bloque de
+				control, que ademas era un malloc sin limpiar: contestaba
+				basura del heap distinta en cada corrida, y ese bit de azar
+				partia las corridas del reproductor determinista en dos lineas
+				de tiempo. El mismo tipo de trampa que REVISION y SB_G1SYSM:
+				un registro de identificacion contestado a la ligera manda al
+				software por el camino equivocado.
+			*/
+			dw = 0x0000000B;
+			memcpy(p, &dw, size);
+			logxmsg(LOG_PVR, "pvr_read: SB_SBREV\n");
 		}
 		break;
 
