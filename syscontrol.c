@@ -469,9 +469,19 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 
 	if (R(n) >= 0xe0000000 && R(n) <= 0xeffffffc)
 	{
-	    addr = (R(n) & 0x03FFFFC0) | ((( ((R(n) & 0x20) ? *QACR1 : *QACR0)  >> 2) & 0x07) << 26);
-
-//		logmsg("PREF: %lx\r\n", addr);
+		/*
+			El destino del volcado. Con la MMU activa lo da la UTLB sobre la VA
+			completa de la SQ y QACR no participa (mmu_traducir_sq(), que si
+			falla no vuelve: el fallo de escritura reejecuta este PREF, con la
+			VPN de la SQ en PTEH -- lo que el manejador de Windows CE espera).
+			Apagada, rige la formula de QACR: bits 28-26 del registro, 25-6 de
+			la direccion. Los dos caminos dejan una fisica cruda, y el despacho
+			de abajo (FIFO del TA, convertidor YUV) es el mismo.
+		*/
+		if (mmu_activa)
+			addr = mmu_traducir_sq(R(n)) & ~(DWORD) 0x1F;
+		else
+			addr = (R(n) & 0x03FFFFC0) | ((( ((R(n) & 0x20) ? *QACR1 : *QACR0)  >> 2) & 0x07) << 26);
 
 	    if (R(n) & 0x20)
 	    {
@@ -482,7 +492,7 @@ OPCODE(pref142) // PREF @Rn : (Rn) -> operand cache (0000nnnn 10000011)
 			src = SQ0;
 
 //		logxmsg(LOG_MEM, "PREF %x\n", addr);
-		memwrite(addr, src, 32); // 32 bytes por cada SQ
+		memwrite_fisico(addr, src, 32); // 32 bytes por cada SQ
 
 		/* Solo la FIFO de poligonos, 0x10000000-0x107FFFFF. El chequeo de antes
 		   era "addr & 0x10000000", un AND de bits que tambien daba verdadero

@@ -934,8 +934,17 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 		case 0xa05f8050:
 		{
-			dw = 0x00100203;
-			memcpy(p, &dw, size);
+			/*
+				FB_R_SOF1 se lee de vuelta, no una constante. El driver de video
+				de Windows CE (ddhal.dll) hace el flip leyendo este registro y
+				decidiendo con lo leido; el 0x00100203 que quedo cableado aca
+				desde 2005 envenenaba ese ciclo -- ddhal reescribia la constante
+				cuadro tras cuadro y el display nunca apuntaba a la superficie
+				del juego, que quedaba dibujada e invisible. La fuente de verdad
+				es pvr_fb_r_sof1: la escritura no llega al respaldo de
+				control_mem porque PVR_WRITE_CB_1 la consume.
+			*/
+			memcpy(p, &pvr_fb_r_sof1, size);
 		}
 		break;
 

@@ -140,6 +140,16 @@ extern int mmu_activa;
 */
 DWORD mmu_traducir(DWORD direccion, int escritura);
 
+/*
+	El volcado de una store queue (el PREF sobre 0xE0000000-0xE3FFFFFF) con
+	MMUCR.AT: traduce por la UTLB la VA completa como escritura -- QACR no
+	participa -- y aplica MMUCR.SQMD (fase 6 de docs/mmu-plan.md). Devuelve la
+	fisica CRUDA, sin ventana, porque el llamador despacha por zona fisica.
+	Si falla no vuelve, como mmu_traducir(). Es lo que SetStoreQueueBase de
+	Windows CE espera: el fallo lleva la VPN de la SQ, no la del destino.
+*/
+DWORD mmu_traducir_sq(DWORD direccion);
+
 /* Carga UTLB[URC] desde PTEH/PTEL/PTEA. La llama el opcode LDTLB. */
 void mmu_ldtlb(DWORD pteh, DWORD ptel, DWORD ptea, int urc);
 

@@ -281,6 +281,18 @@ por la UTLB como cualquier otra, y `MMUCR.SQMD` decide si el modo usuario puede 
 Hay que respetar ambas cosas sin romper `pref142()`, que es el camino por el que entra toda
 la geometría al TA.
 
+**Hecha para el volcado (2 de agosto de 2026).** `mmu_traducir_sq()` en mmu.c: con `AT=1`
+el `PREF` sobre `0xE0000000-0xE3FFFFFF` traduce por la UTLB la VA COMPLETA de la SQ —
+QACR no participa — como escritura, con SQMD. La primera versión enmascaraba antes de
+traducir (la fórmula de QACR) y el manejador de recarga de Windows CE recibía un fallo por
+una VPN de la ranura 1 que sus tablas no mapean: el blit de video de ddhal.dll moría por
+violación de acceso. El manejador de CE atiende las VA de SQ por una rama propia
+(`8c012540`): plantilla de PTE que deja `SetStoreQueueBase` más los bits 25-20 de la VA —
+así una misma base sirve `0xE2xxxxxx` → FIFO de polígonos (`0x10000000`), `0xE3xxxxxx` →
+camino directo de textura (`0x11xxxxxx`) y `0xE0Cxxxxx` → RAM. Lo que queda de la fase:
+SQMD sobre las ESCRITURAS al buffer (la `MOV` a `0xE3xxxxxx`, que entra por `sq_write()`
+sin pasar por la traducción); CE corre con SQMD en 0 y no lo distingue.
+
 ## Fase 7 — Búsqueda de instrucción
 
 El último eslabón y el más invasivo: `main_loop()` hace hoy
@@ -579,8 +591,13 @@ Ver `docs/pendientes-plan.md`, la sección de DCDoom.
 
 ### Lo que sigue faltando
 
-- **Fase 6**: las store queues resuelven por `QACR0`/`QACR1` y no respetan `MMUCR.SQMD`.
-  Medido sobre DCDoom: su CE no usa las SQ con la MMU activa, así que tampoco la pide él.
+- **Fase 6, la mitad que falta**: el volcado del `PREF` ya traduce por la UTLB con SQMD
+  (`mmu_traducir_sq()`; el ddraw de Windows CE lo usa para todo — blits de píxeles y la
+  geometría al TA), pero las ESCRITURAS al buffer de la SQ (`sq_write()`) siguen sin pasar
+  por SQMD. CE corre con SQMD en 0, así que nada de lo que corre lo distingue. La nota de
+  antes — "su CE no usa las SQ con la MMU activa" — era falsa: las usa para todo el video,
+  y lo que la hacía parecer cierta era que el fallo con la VPN enmascarada mataba a ddhal
+  antes de que se viera.
 - La traducción recorre las 64 entradas desempaquetando al vuelo, ahora también en cada
   fallo de cache del fetch. Es lo más lento posible y está bien por ahora; si molesta, el
   paso siguiente es un arreglo decodificado en paralelo, actualizado en los cuatro sitios

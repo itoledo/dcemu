@@ -1657,6 +1657,24 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 		fprintf(stderr, "traza: STARTRENDER: hechas=%02x habilitadas=%02x tiras=%d\n",
 			(unsigned) pvr_listdone, (unsigned) pvr_registered, strip_count);
 
+	/*
+		Los tres finales del render (SB_ISTNRM bits 0, 1 y 2: TSP, ISP y
+		Video): en el chip son la consecuencia de STARTRENDER -- el ISP/TSP
+		los emite al terminar de rasterizar lo que este strobe le pidio,
+		milisegundos despues --, asi que salen de aca y NO de TA_LIST_INIT,
+		donde estuvieron mientras solo corria KOS. KOS no distingue: espera el
+		fin del render despues de su STARTRENDER y lo recibe igual (el dibujo
+		GL sigue saliendo del proximo TA_LIST_INIT, que presenta la escena
+		acumulada -- solo cambia el instante del EVENTO). El ddraw de Windows
+		CE si distingue: recibia un "render terminado" que nunca pidio -- el
+		LIST_INIT de su init dispara el evento antes del primer vertice -- y
+		su maquina de estados, que en hardware ve los eventos en orden, se
+		descolocaba y el juego moria en "Timeout for Tile Accelerator". La
+		demora de 40000 ciclos importa: un juego arma su espera del render
+		justo despues de escribir el strobe, igual que con el fin de lista.
+	*/
+	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
+
 	logxmsg(LOG_PVR, "tag address: %08x\n", (pvr_isp_backgnd_t >> 3) & 0x1FFFFF);
 	logxmsg(LOG_PVR, "param_base:  %08x\n", (pvr_param_base));
 
@@ -2134,13 +2152,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 		   se invalida por generaciones (vram.h). La textura que este render
 		   acaba de escribir se detecta sola por su huella. */
 
-		/* El final del render, tambien para el render a textura: en el chip
-		   RENDERDONE es del RENDER, no de la pantalla. */
-		/* Los tres finales del render que lista el documento (SB_ISTNRM bits
-	   0, 1 y 2: TSP, ISP y Video): el chip los emite al terminar de
-	   rasterizar, ~milisegundos despues de STARTRENDER. Virtua Tennis
-	   tiene handler para el 0 y espera su efecto. */
-	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
+		/* RENDERDONE ya no sale de aca: lo levanta cb_renderstart(), que es
+		   el STARTRENDER del guest -- ver la nota alla. */
 		return;
 	}
 
@@ -2158,18 +2171,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	volcar_escena_a_framebuffer();
 	terminar_escena();
 
-	/*
-		El final del render. En el chip lo emite el ISP/TSP cuando termino de
-		rasterizar lo que STARTRENDER le pidio -- incondicional, cerrara el
-		guest las listas que cerrara --, un tiempo despues del arranque. La
-		demora importa: un juego arma su espera del render justo despues de
-		escribir STARTRENDER, igual que con el fin de lista.
-	*/
-	/* Los tres finales del render que lista el documento (SB_ISTNRM bits
-	   0, 1 y 2: TSP, ISP y Video): el chip los emite al terminar de
-	   rasterizar, ~milisegundos despues de STARTRENDER. Virtua Tennis
-	   tiene handler para el 0 y espera su efecto. */
-	intc_add((1 << 0) | (1 << 1) | ASIC_EVT_PVR_RENDERDONE, 40000);
+	/* RENDERDONE ya no sale de aca: lo levanta cb_renderstart(), que es el
+	   STARTRENDER del guest -- ver la nota alla. */
 }
 
 /*

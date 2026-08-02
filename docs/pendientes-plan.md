@@ -1042,6 +1042,193 @@ forma: algo que el juego consulta del registro o del entorno (¿configuración d
 consola. El histograma y el censo (`DCEMU_TRAZA_EXC`) más los ganchos temporales de esta
 sesión (documentados aquí) son el camino de vuelta.
 
+#### La decisión de salida resuelta: era el lanzador, y detrás la lectura en flujo que dcemu no implementaba (2 de agosto, tercera sesión)
+
+Los ganchos temporales son permanentes ahora — **`DCEMU_TRAZA_EXC=3`** vuelca el flujo
+completo de syscalls (uno por línea con ms, destino, PR y proceso: lo que el censo
+resume, y que del segundo 0 no veía nada) y **`DCEMU_TRAZA_SYSCALL=dest[:pr[:N[:K]]]`**
+arma la traza de instrucciones en la K-ésima aparición de un syscall (hex:hex:dec:dec;
+es `DCEMU_TRAZA_ATA` para las trampas de CE) — y con ellos la "decisión de salida" se
+leyó entera. No era del juego:
+
+- **El proceso que salía era un stub de autorun** (el que el censo llamaba "el juego"):
+  su rutina final hace GetTickCount, `RegOpenKeyExW(HKLM, "init")`,
+  `RegQueryValueExW(.., "Autorun")` — ambas devuelven 0, éxito; el dato es
+  **`"dcdoom.exe"`, importado del AUTORUN.REG del disco** — y le pasa ese nombre a
+  `CreateProcessW`. Todo leído de la traza: la clave y el valor carácter por carácter en
+  el servidor de registro, el dato en el memcpy de vuelta.
+- **`CreateProcessW("dcdoom.exe") devolvía 0**: el stub hace `TST R0` y salta al mismo
+  epílogo de error que usa para el registro; su ExitProcess es el fin normal de un
+  lanzador. El hijo real (`8cf5f000`, pilas de slot 1) nacía, el loader le cargaba todo,
+  y a los 188 ms el attach de un DLL ejecutaba basura y el kernel deshacía el proceso
+  entero.
+- **La basura tenía firma**: la página del entry de `WINCE/CEMM.DLL` (el DLL multimedia,
+  entry RVA `0x4b00` → `01d24b00`, reubicado desde base `0x10000000`) era ceros con
+  `F1D2` — `FMUL FR13,FR1` — exactamente en las medias palabras altas de los 25 slots
+  HIGHLOW de su `.reloc` en ese rango, uno por uno: **la página quedó en cero y el loader
+  aplicó las reubicaciones encima** (0 + delta `0xF1D20000`). La excepción FPU 0x800 que
+  la sesión anterior tomó por "primer uso de FPU" era el primer word de basura con pinta
+  de instrucción, con `SR.FD` puesto. La imagen física entera (`0x0CCF9000+`) estaba así.
+- **Los datos nunca llegaban porque viajan por un protocolo que el hook no hablaba**: el
+  loader de CE (wsegacd/maple.dll) carga las secciones grandes con **`MULTI_DMAREAD`
+  (comando 38)** — `{sector, cuenta, adelanto}`, sin destino: la petición queda en
+  **CONTINUE (3, el "STREAMING" del comentario del propio hook)** y el guest tira de a
+  pedazos con **`REQ_DMA_TRANS` (función 7=6 del vector)** `{destino, tamaño}`, consulta
+  lo que queda con **`CHECK_DMA_TRANS` (r7=7)** y registra un callback con **`G1_DMA_END`
+  (r7=5)**. dcemu contestaba el 38 con un id válido y COMPLETED sin mover un byte — el
+  `default:` mudo de siempre — y las funciones 5-8 caían a otro `default` mudo. La
+  numeración y la semántica están verificadas contra el HLE de flycast
+  (`core/reios/gdrom_hle.*`, que corre esta misma plataforma): 36=`REQ_STAT` (el sondeo
+  de estado con cuatro punteros que CE repite en régimen), 38=`MULTI_DMAREAD`,
+  40=`GET_VERSION` — consistente con el caso 40 que el hook ya tenía.
+- **Y el segundo bug lo tapaba el primero**: implementado el flujo, todo el sistema se
+  paraba a los 173 ms. La bomba de wsegacd (SEND/MAINLOOP/CHECK) consulta una vez, ve
+  CONTINUE, y **duerme hasta el fin de comando — la interrupción externa del GD
+  (`SB_ISTEXT` bit 0, que CE habilita en `SB_IML6EXT`)** para volver a consultar y ver
+  el COMPLETED. `check_ints()` **descartaba en silencio los eventos externos que no podía
+  entregar en el momento** (`SR.BL`, IMASK, máscara apagada): el mismo descarte que ya se
+  curó en los timers y en el registro normal, vivo en la cola externa. El evento queda en
+  cola ahora y se reintenta; el drenaje del flujo levanta `ASIC_EVT_EXT_GDROM`.
+
+Con las dos cosas, medido con el censo y el histograma: **CreateProcess funciona, DCDoom
+vive 2.3 segundos** — cuatro flujos servidos (el `.text` y el `.data` del EXE, CEMM.DLL
+entero, y DSOUND.DLL, que antes ni se llegaba a cargar), nueve DLLs con sus attach, uso
+de FPU sostenido (6/s) y una ráfaga de paginación en el segundo 2 — y a los 2440 ms hace
+su ExitProcess voluntario, ahora sí el suyo: la ráfaga de `fffffe01` desde `8c0149ea`
+son los detach de todos sus módulos, y la cadena cierra en `01e69188` como siempre.
+**DOOM.WAD no se tocó jamás** (ni un sector de 13227..19285), así que la decisión es
+anterior a los datos del juego. Lo último que su propio código hace: **seis llamadas al
+apiset 17 método 42 desde `0x39c98`** (código del EXE), con toda la pinta del init de
+video/DirectDraw de la plataforma.
+
+**El siguiente paso concreto**: nombrar el apiset 17 y leer qué devuelve el método 42 —
+`DCEMU_TRAZA_SYSCALL=ffffdbad:39c98:N` cae exactamente ahí, y el retorno al EXE muestra
+el chequeo. El sospechoso por forma es el ddraw/GAPI de la plataforma contra el
+framebuffer o el vblank de dcemu (el ddraw del anfitrión de drivers ocioso a 6 Hz es
+normal, pero el juego pide superficies). La regresión guardiana: los cuatro juegos de
+Katana pasan por el mismo `hack_gdrom()` — Capcom vs. SNK es el sensible a la semántica
+del CHECK (A.7) — y la suite entera más esa corrida están verdes con todo lo de arriba.
+
+#### El apiset 17 nombrado y cinco capas más abajo: DCDoom vive, carga su WAD y su ddraw somete al TA (2 de agosto, cuarta sesión)
+
+El "apiset 17 método 42" resultó ser **DefWindowProcW** — y las seis llamadas, la rutina
+de creación de su ventana. Lo que las nombró es la herramienta nueva de la sesión y vale
+para todo lo que venga: **la imagen XIP de `0WINCEOS.BIN` se parsea entera desde el
+archivo** (`xip.py` y `nombres.py` en el scratchpad; ROMHDR con firma `ECEC` en imagen
++0x40, 19 módulos con sus `o32_realaddr`), la tabla de exports de coredll.dll (2100
+funciones) da el nombre del API que contiene cualquier PR de `01e6xxxx`, y el trampolín de
+cada export — `MOV.W` de un literal `ffffxxxx` + `JMP` — da la tabla **destino de trampa →
+nombre**: 380 syscalls de CE decodificados de una vez. El mapa de módulos en memoria:
+coredll `01e61000`, wdmlib `01e11000`, wdmoem `01e01000`, wsegacd `01df1000`, maple
+`01de1000`, ddraw `01dc1000`, **ddhal `01d81000`** (su `.data` en `01da5000`), sndcore
+`01d71000`; CEMM (del CD) en `01d24000`.
+
+Con nombres, la muerte de 2440 ms se leyó entera y era una cascada de **cinco causas, cada
+una tapando la siguiente**:
+
+1. **El volcado de una store queue con la MMU activa enmascaraba antes de traducir.**
+   `pref142()` aplicaba siempre la fórmula de QACR y el `memwrite` traducía esa dirección
+   ya mutilada: el manejador de recarga de CE recibía un fallo por una VPN de la ranura 1
+   que sus tablas no mapean, confirmaba PTE 0, y el blit de `ddhal.dll` — que usa las SQ
+   para TODO: píxeles y geometría — moría por violación de acceso `c0000005` en su primer
+   `PREF` (VA `e3000200`). El `__except` de nivel superior de coredll (la zona tras
+   `IsProcessDying`: `GetProcName` + `LoadStringW` ×2 + WMGR.50) mostraba el cartel fatal
+   y ExitProcess. La excepción FPU 0x800 que el plan anterior apuntaba era inocente: el
+   primer uso de FPU del hilo (un `FDIV` legítimo de ddhal), manejado limpio por el
+   contexto perezoso. **Arreglo**: `mmu_traducir_sq()` (mmu.c) — la UTLB traduce la VA
+   completa del `PREF`, con `MMUCR.SQMD`; ver `mmu-plan.md`, fase 6, con el detalle de la
+   rama `8c012540` del manejador de CE y la plantilla de `SetStoreQueueBase`.
+2. **`FB_R_SOF1` se leía como la constante `0x00100203`, cableada desde 2005.** El flip de
+   ddraw lee el registro y decide con eso; la constante envenenaba el ciclo — reescribía
+   `0x00100203` cuadro tras cuadro y el display nunca apuntó a una superficie del juego.
+   El DevBox lo lista **RW** (bits 23-2 la dirección en unidades de 32 bits, bits 1-0 en
+   00 — la constante hasta violaba el formato). Con la lectura real, ddhal alterna
+   `00107280`/`00507280`: doble buffer entre los dos bancos, un flip por vblank.
+3. **DOOM.WAD viaja por el flujo PIO, que faltaba entero**: `MULTI_PIOREAD` (39) +
+   `SET_PIO_CALLBACK`/`REQ_PIO_TRANS`/`CHECK_PIO_TRANS` (r7=11/12/13, numeración
+   verificada contra el `gdrom_hle.h` de flycast). La semántica de fondo es el **CD_READ2
+   (31h)** del protocolo SPI (`docs/cdif131e.pdf`, 8.2): el "adelanto" es su Next Address,
+   la posición de pre-lectura cuyo error no se informa en este comando. Tres sutilezas que
+   costaron una corrida cada una: el pedazo se **latchea** en el r7=12 y la copia con el
+   aviso van en el **MAINLOOP siguiente** — que la bomba de wsegacd llama desde su propio
+   hilo, único contexto donde la VA del argumento del callback significa lo que debe
+   (avisar en el MAINLOOP de otro proceso mató al kernel); el aviso es **llamar al
+   callback** como lo hace el `gdGdcExecServer` real — PC al callback, R4 su argumento, PR
+   intacto — y para poder desviar ese retorno **el stub del GD ya no es RTS + ranura**: el
+   ilegal va en el offset 0 y `hack_gdrom()` fija el PC él mismo (main.c; la prueba
+   `el_hack_de_la_bios_lee_sectores` documenta el contrato nuevo); y el `GET_CMD_STAT` con
+   un pedazo latcheado contesta **PROCESSING (1)**, no CONTINUE — con 3 la bomba se duerme
+   a esperar un callback que necesita el MAINLOOP que ella misma dejó de llamar (flycast:
+   "Bust-a-move 4 likes this").
+4. **La escritura traducida de más de una página rociaba físico contiguo.** `memwrite()`
+   traduce UNA vez por llamada; la pieza de 36 KB del flujo, escrita a una pila de usuario,
+   cruzó nueve páginas virtuales no contiguas en físico y pisó **el directorio de páginas
+   del propio proceso** con datos del WAD — la entrada que el kernel leyó después decía
+   `"SW17"`, un nombre de lump de DOOM — y CE moría con `"Halting system"` por doble
+   excepción (el contador de anidamiento en KData+0x85, el `DT` de `8c0122dc`).
+   **Arreglo**: `memwrite_paginado()` en dcopcodes.c — pedazos que no cruzan páginas de
+   1 KB, la mínima del SH-4 — usado por el flujo PIO y por la lectura 16.
+5. **RENDERDONE salía de `TA_LIST_INIT` y no de STARTRENDER.** En el chip los bits 0-2 de
+   `SB_ISTNRM` son la consecuencia del strobe; dcemu los levantaba al iniciar la lista —
+   KOS no distingue (espera tras su STARTRENDER y lo recibe igual; el dibujo GL sigue
+   saliendo del próximo LIST_INIT), pero el ddraw de CE recibía un "render terminado" que
+   nunca pidió, antes de su primer vértice. Movido a `cb_renderstart()`.
+
+**Dónde queda DCDoom** (commit de esta sesión): CE arranca entero, CreateProcess funciona,
+el juego abre DOOM.WAD por `CreateFileW`/`ReadFile` — el montaje ISO9660 de CE sirviendo
+por los dos flujos —, lee sus lumps (paleta, colormaps, flats: sectores 15024-15033,
+17735+, el flujo de 18041), crea su ventana (las seis DefWindowProcW), su IST de vblank
+corre a 60 Hz y el proceso vive indefinidamente a ~1030 syscalls/s. **La pantalla sigue
+negra y la frontera es la máquina de estados del ddraw HAL**: somete al TA — por las SQ
+traducidas — `TA_ALLOC_CTRL=00010113`, el soft reset, bases ISP/OL, `TA_LIST_INIT`, un
+encabezado (`pcw=80040008`, lista opaca) y cuatro vértices (`pcw=e0000000`, el quad de
+pantalla armado por FPU)... y ahí espera, sin cerrar listas ni escribir STARTRENDER,
+reintentando cada ~76 ms con **"Timeout for Tile Accelerator"** (13/s por
+`NKvDbgPrintfW`; el formato vive en ddhal+0x29b4, el que sigue es "Timeout on render.
+Frame %d"). Su función de render rehúsa arrancar porque `[ctx+0x17e8] = 7` — un estado
+del pipeline cuyo manejador (`01d92222`, despachado desde `01d92186` sobre eventos del
+IST) espera algo que no llega. Qué evento espera el estado 7 — y si dcemu debe emitir
+alguno de los fines de lista de otra forma — es la pregunta abierta. Herramientas para
+retomar: la tabla de trampas (`nombres.py trampas`), el flujo anotado
+(`... | python nombres.py flujo`), y los desensamblados de ddhal desde la copia XIP
+(`staging = 8c0c7000 + (VA - 01d81000)`).
+
+### A.10 — Crazy Taxi bajo --bios: el tipo de disco en el traspaso, y la lectura que no sale (2 de agosto de 2026)
+
+El "--bios con juego se congela" de siempre (554 escenas y quieto) se bisectó y son dos
+capas:
+
+**La resuelta: `SECTNUM` cambia de cara en el traspaso del arranque.** El juego reintentaba
+`gdGdcGetDrvStat` a 2.4/s para siempre sin emitir un SPI — el chequeo del tipo de disco de
+`gdFsInit` (el mismo del hito D), ahora contra el driver del ROM real, que lee el registro
+`SECTNUM` de la lectora emulada. La mentira permanente no sirve: la detección del propio
+ROM (~82 ms, PC `8c002xxx`) elige la rama MIL-CD con este nibble, y con GD-ROM fijo todo
+disco terminaba en `menu(1)` — cuya pantalla animada da capturas "ricas" (~480000 píxeles,
+~18500 colores) que ya se confundieron una vez con el attract de un juego: números de
+escena idénticos entre dos discos distintos son el menú. La separación es estructural: el
+**único ATA NOP de la corrida** — el cierre del bootstrap del IP.BIN, a los 12.4 s, 12 ms
+antes de los primeros comandos del juego — marca el traspaso (`gdrom_traspaso` en gdrom.c,
+que sobrevive a los reset del drive a propósito: el gdFsInit del juego resetea la lectora).
+Honesto antes, GD-ROM después; en el menú sin juego el NOP no llega y el registro queda
+honesto. flycast concilia lo mismo por otra vía: su GET_DRV_STAT saca el tipo del IP.BIN
+(`ip_meta.isGDROM()`), no de la imagen. Con esto el juego corre su gdFsInit entero — 0x70,
+el verificador 0x71 (1024 bytes), `GET_TOC` de las dos áreas —, arranca Maple, configura
+el TA (`TA_ALLOC_CTRL=00101313`), sube texturas por CH2 DMA y dibuja su pantalla LOADING
+(las 21 tiras).
+
+**La abierta: su primera lectura de datos nunca se emite.** Tras el init, cero comandos al
+GD en 77 segundos: el juego encola su lectura por el vector y sondea el estado en su capa
+gdFs (el anillo: `0c14xxxx`/`0c15xxxx`) mientras el driver del ROM no la procesa jamás —
+ni un `PACKET`. El despachador del vector está mapeado (tabla auto-relativa en `8C001180`:
+ReqCmd=`8c002ff4`, GetCmdStat=`8c003072`, ExecServer=`8c001918`, GetDrvStat=`8c003174` —
+verificado contra el cuerpo ya trazado) y la corrida es determinista; el siguiente paso es
+trazar ReqCmd/ExecServer pasado el segundo 13 y ver dónde muere la petición — el flag de
+comando activo (`[base+0xC4]`, visto en 0 en el GetDrvStat trazado) huele a GetCmdStat
+contestando NO_ACTIVE a una petición que nunca entró. Ojo con dos trampas de medición que
+esta sesión pagó: `--salir-tras` va en DECIMAL (`5a` son 5 segundos), y una sección de
+`stderr.txt` con dos corridas mezcladas inventó un "bucle de retardo en el ROM" que no
+existe.
+
 ---
 
 ## Vía B — El AICA (hito E)

@@ -455,6 +455,55 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 	return fisica | 0xA0000000ul;
 }
 
+/*
+	El volcado de una store queue con la MMU activa -- la fase 6 de
+	docs/mmu-plan.md. Con MMUCR.AT puesto, el PREF sobre 0xE0000000-0xE3FFFFFF
+	traduce por la UTLB la VA COMPLETA de la SQ y QACR no participa (manual del
+	SH-4, 4.6: el destino sale de la entrada de la TLB); con SQMD en 1 el
+	acceso de usuario es error de direccion. Es exactamente lo que configura
+	SetStoreQueueBase de Windows CE: mapea la VA de la SQ en sus tablas, y su
+	manejador de recarga atiende las VA altas por una rama propia, asi que el
+	fallo tiene que llevar ESA VPN. Enmascarar antes de traducir -- la formula
+	de QACR, que es la de MMU apagada -- le presentaba a CE un fallo por una
+	VPN de la ranura 1 que sus tablas no mapean, el recorrido por software
+	confirmaba PTE 0, y el blit de video de ddhal.dll moria por violacion de
+	acceso c0000005 en el PREF: DCDoom entero se iba por ese error.
+
+	Devuelve la fisica cruda, sin ventana: el llamador despacha por zona
+	fisica (VRAM, FIFO del TA, RAM), igual que con la formula de QACR. Si
+	falla no vuelve, como mmu_traducir().
+
+	Lo que queda de la fase 6: SQMD tambien proteje las ESCRITURAS al buffer
+	de la SQ (la MOV a 0xE3xxxxxx), que entran por sq_write() sin pasar por
+	aca. CE corre con SQMD en 0, asi que nada de lo que corre lo distingue.
+*/
+DWORD mmu_traducir_sq(DWORD direccion)
+{
+	int usuario = (SR_MD == 0);
+	int sv      = (*MMUCR & MMUCR_SV) != 0;
+	DWORD mascara, d1;
+	int i, pr;
+
+	if (usuario && (*MMUCR & MMUCR_SQMD))
+		return fallar(MMU_EXC_DIR_W, MMU_VEC_GENERAL, direccion);
+
+	i = utlb_encontrar(direccion, usuario, sv, &mascara);
+
+	if (i < 0)
+		return fallar(MMU_EXC_FALLO_W, MMU_VEC_FALLO, direccion);
+
+	d1 = mmu_utlb_dat1[i];
+	pr = (d1 >> 5) & 3;
+
+	if ((usuario && pr < 2) || !(pr & 1))
+		return fallar(MMU_EXC_PROT_W, MMU_VEC_GENERAL, direccion);
+
+	if (!(mmu_utlb_dir[i] & BIT_D_DIR))
+		return fallar(MMU_EXC_PRIMERA_W, MMU_VEC_GENERAL, direccion);
+
+	return ((d1 & 0x1FFFFC00ul) & ~mascara) | (direccion & mascara);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Busqueda de instrucciones (fase 7)                                       */
 /* ------------------------------------------------------------------------ */
