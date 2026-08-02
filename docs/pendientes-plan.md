@@ -1042,6 +1042,73 @@ forma: algo que el juego consulta del registro o del entorno (¿configuración d
 consola. El histograma y el censo (`DCEMU_TRAZA_EXC`) más los ganchos temporales de esta
 sesión (documentados aquí) son el camino de vuelta.
 
+#### La decisión de salida resuelta: era el lanzador, y detrás la lectura en flujo que dcemu no implementaba (2 de agosto, tercera sesión)
+
+Los ganchos temporales son permanentes ahora — **`DCEMU_TRAZA_EXC=3`** vuelca el flujo
+completo de syscalls (uno por línea con ms, destino, PR y proceso: lo que el censo
+resume, y que del segundo 0 no veía nada) y **`DCEMU_TRAZA_SYSCALL=dest[:pr[:N[:K]]]`**
+arma la traza de instrucciones en la K-ésima aparición de un syscall (hex:hex:dec:dec;
+es `DCEMU_TRAZA_ATA` para las trampas de CE) — y con ellos la "decisión de salida" se
+leyó entera. No era del juego:
+
+- **El proceso que salía era un stub de autorun** (el que el censo llamaba "el juego"):
+  su rutina final hace GetTickCount, `RegOpenKeyExW(HKLM, "init")`,
+  `RegQueryValueExW(.., "Autorun")` — ambas devuelven 0, éxito; el dato es
+  **`"dcdoom.exe"`, importado del AUTORUN.REG del disco** — y le pasa ese nombre a
+  `CreateProcessW`. Todo leído de la traza: la clave y el valor carácter por carácter en
+  el servidor de registro, el dato en el memcpy de vuelta.
+- **`CreateProcessW("dcdoom.exe") devolvía 0**: el stub hace `TST R0` y salta al mismo
+  epílogo de error que usa para el registro; su ExitProcess es el fin normal de un
+  lanzador. El hijo real (`8cf5f000`, pilas de slot 1) nacía, el loader le cargaba todo,
+  y a los 188 ms el attach de un DLL ejecutaba basura y el kernel deshacía el proceso
+  entero.
+- **La basura tenía firma**: la página del entry de `WINCE/CEMM.DLL` (el DLL multimedia,
+  entry RVA `0x4b00` → `01d24b00`, reubicado desde base `0x10000000`) era ceros con
+  `F1D2` — `FMUL FR13,FR1` — exactamente en las medias palabras altas de los 25 slots
+  HIGHLOW de su `.reloc` en ese rango, uno por uno: **la página quedó en cero y el loader
+  aplicó las reubicaciones encima** (0 + delta `0xF1D20000`). La excepción FPU 0x800 que
+  la sesión anterior tomó por "primer uso de FPU" era el primer word de basura con pinta
+  de instrucción, con `SR.FD` puesto. La imagen física entera (`0x0CCF9000+`) estaba así.
+- **Los datos nunca llegaban porque viajan por un protocolo que el hook no hablaba**: el
+  loader de CE (wsegacd/maple.dll) carga las secciones grandes con **`MULTI_DMAREAD`
+  (comando 38)** — `{sector, cuenta, adelanto}`, sin destino: la petición queda en
+  **CONTINUE (3, el "STREAMING" del comentario del propio hook)** y el guest tira de a
+  pedazos con **`REQ_DMA_TRANS` (función 7=6 del vector)** `{destino, tamaño}`, consulta
+  lo que queda con **`CHECK_DMA_TRANS` (r7=7)** y registra un callback con **`G1_DMA_END`
+  (r7=5)**. dcemu contestaba el 38 con un id válido y COMPLETED sin mover un byte — el
+  `default:` mudo de siempre — y las funciones 5-8 caían a otro `default` mudo. La
+  numeración y la semántica están verificadas contra el HLE de flycast
+  (`core/reios/gdrom_hle.*`, que corre esta misma plataforma): 36=`REQ_STAT` (el sondeo
+  de estado con cuatro punteros que CE repite en régimen), 38=`MULTI_DMAREAD`,
+  40=`GET_VERSION` — consistente con el caso 40 que el hook ya tenía.
+- **Y el segundo bug lo tapaba el primero**: implementado el flujo, todo el sistema se
+  paraba a los 173 ms. La bomba de wsegacd (SEND/MAINLOOP/CHECK) consulta una vez, ve
+  CONTINUE, y **duerme hasta el fin de comando — la interrupción externa del GD
+  (`SB_ISTEXT` bit 0, que CE habilita en `SB_IML6EXT`)** para volver a consultar y ver
+  el COMPLETED. `check_ints()` **descartaba en silencio los eventos externos que no podía
+  entregar en el momento** (`SR.BL`, IMASK, máscara apagada): el mismo descarte que ya se
+  curó en los timers y en el registro normal, vivo en la cola externa. El evento queda en
+  cola ahora y se reintenta; el drenaje del flujo levanta `ASIC_EVT_EXT_GDROM`.
+
+Con las dos cosas, medido con el censo y el histograma: **CreateProcess funciona, DCDoom
+vive 2.3 segundos** — cuatro flujos servidos (el `.text` y el `.data` del EXE, CEMM.DLL
+entero, y DSOUND.DLL, que antes ni se llegaba a cargar), nueve DLLs con sus attach, uso
+de FPU sostenido (6/s) y una ráfaga de paginación en el segundo 2 — y a los 2440 ms hace
+su ExitProcess voluntario, ahora sí el suyo: la ráfaga de `fffffe01` desde `8c0149ea`
+son los detach de todos sus módulos, y la cadena cierra en `01e69188` como siempre.
+**DOOM.WAD no se tocó jamás** (ni un sector de 13227..19285), así que la decisión es
+anterior a los datos del juego. Lo último que su propio código hace: **seis llamadas al
+apiset 17 método 42 desde `0x39c98`** (código del EXE), con toda la pinta del init de
+video/DirectDraw de la plataforma.
+
+**El siguiente paso concreto**: nombrar el apiset 17 y leer qué devuelve el método 42 —
+`DCEMU_TRAZA_SYSCALL=ffffdbad:39c98:N` cae exactamente ahí, y el retorno al EXE muestra
+el chequeo. El sospechoso por forma es el ddraw/GAPI de la plataforma contra el
+framebuffer o el vblank de dcemu (el ddraw del anfitrión de drivers ocioso a 6 Hz es
+normal, pero el juego pide superficies). La regresión guardiana: los cuatro juegos de
+Katana pasan por el mismo `hack_gdrom()` — Capcom vs. SNK es el sensible a la semántica
+del CHECK (A.7) — y la suite entera más esa corrida están verdes con todo lo de arriba.
+
 ---
 
 ## Vía B — El AICA (hito E)

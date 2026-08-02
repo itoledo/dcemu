@@ -737,7 +737,12 @@ void check_ints()
       	return;
 	}
 
-	REMOVE_BIT(intc_queuemask_ext, ASIC_ACK_B);
+	/* Sin entrega -- SR.BL, IMASK alto, o la mascara todavia apagada -- el
+	   evento QUEDA en la cola y se reintenta: en el hardware la peticion
+	   sigue afirmada hasta que el guest la atiende. Barrer aca la cola era
+	   el mismo descarte silencioso que ya se curo en los timers y en el
+	   registro normal, y costo el fin de comando que Windows CE espera para
+	   consultar su lectura en flujo. */
 #endif
 }
 

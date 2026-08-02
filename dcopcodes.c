@@ -2,6 +2,7 @@
 #include "sh4emu.h"
 #include "opcodes.h"
 #include <math.h>
+#include "intc.h"		/* el fin de DMA que levanta REQ_DMA_TRANS */
 #include "iso.h"
 #include "gdrom.h"
 #include "sistema.h"
@@ -25,6 +26,23 @@ static DWORD com_lectura_bytes = 0;
    su CHECK_COMMAND no llegaba nunca y la capa de CRI esperaba el fin de una
    lectura ya hecha para siempre. */
 static DWORD com_viva = 0;
+
+/* La lectura en flujo del MULTI_DMAREAD (comando 38): no lleva destino -- la
+   peticion queda en CONTINUE (3, el "STREAMING" del driver de la BIOS) y el
+   guest tira de a pedazos con REQ_DMA_TRANS (r7=6), cada pedazo con su
+   {destino, tamano}. Es el camino por el que Windows CE carga TODO binario
+   grande -- el .text de DCDOOM.EXE y sus DLL del CD --, y contestarle
+   COMPLETED sin datos dejaba esas paginas en cero: el loader les aplicaba
+   las reubicaciones encima y el primer DllMain ejecutaba basura. La
+   numeracion de funciones y la semantica estan verificadas contra el HLE de
+   flycast (core/reios/gdrom_hle.*), que corre esta misma plataforma. */
+static DWORD multi_id = 0;			/* peticion multi viva; 0 si ninguna */
+static DWORD multi_sector = 0;		/* proximo sector del flujo */
+static DWORD multi_desplaz = 0;		/* offset dentro de ese sector */
+static DWORD multi_restante = 0;	/* bytes que faltan entregar */
+static DWORD multi_total = 0;
+static DWORD multi_callback = 0;	/* lo registra G1_DMA_END (r7=5) */
+static DWORD multi_callback_arg = 0;
 
 OPCODE(fsca) // FSCA FPUL, DRn
 {
@@ -437,8 +455,12 @@ void hack_gdrom()
 				   Aqui gdrom_iniciar() ya la dejo en el estado que pidio
 				   --bandeja y los sectores salen de iso.c, no de un motor, asi
 				   que no queda nada por hacer: lo que importa es contestar que
-				   salio bien. Es el primer comando que manda Crazy Taxi. */
+				   salio bien. Es el primer comando que manda Crazy Taxi.
+				   Corta un flujo pendiente, como el driver real. */
 				logmsg("GDROM_INIT_DRIVE\r\n");
+				multi_id       = 0;
+				multi_restante = 0;
+				multi_callback = 0;
 				break;
 
 				case 40: // GET_VERS: la version del driver del GD-ROM
@@ -520,15 +542,96 @@ void hack_gdrom()
 				}
 				break;
 
+				case 38: // GDCC_MULTI_DMAREAD: lectura en flujo, sin destino
+				{
+					int		secstart = 0, secnum = 0;
+					DWORD	adelanto = 0;	/* seekAhead; solo Windows CE lo pasa */
+
+					memread(R(5), &secstart, sizeof(int));
+					memread(R(5) + 4, &secnum, sizeof(int));
+					memread(R(5) + 8, &adelanto, sizeof(DWORD));
+
+					multi_id       = com;
+					multi_sector   = (DWORD) secstart;
+					multi_desplaz  = 0;
+					multi_restante = 2048 * (DWORD) secnum;
+					multi_total    = multi_restante;
+
+					if (traza_activa)
+						fprintf(stderr, "hack: MULTI_DMAREAD %d sectores desde %d"
+							" (flujo, adelanto=%lu)\n",
+							secnum, secstart, (unsigned long) adelanto);
+				}
+				break;
+
+				case 36: // GDCC_REQ_STAT: el estado del drive, en cuatro punteros
+				{
+					/* {estado | repeticiones<<8, track, (adr<<28)|(ctrl<<24)|fad,
+					   indice}, cada uno a su puntero. Windows CE lo sondea
+					   periodicamente desde wsegacd. Mismos valores ficticios que
+					   GETSCD: parado al principio del area de programa. */
+					DWORD	destino[4] = { 0, 0, 0, 0 };
+					DWORD	valores[4];
+					int		i;
+
+					for (i = 0; i < 4; i++)
+						memread(R(5) + i * 4, &destino[i], sizeof(DWORD));
+
+					valores[0] = (gdrom.unidad == 2) ? 1 : gdrom.unidad;
+					valores[1] = 1;								/* track */
+					valores[2] = (1u << 28) | (4u << 24) | 150;	/* adr|ctrl|fad */
+					valores[3] = 1;								/* indice */
+
+					for (i = 0; i < 4; i++)
+						if (destino[i])
+							memwrite(destino[i], &valores[i], sizeof(DWORD));
+
+					if (traza_activa)
+					{
+						static int visto = 0;
+
+						if (!visto)
+						{
+							visto = 1;
+							fprintf(stderr, "hack: REQ_STAT a %08lx %08lx %08lx"
+								" %08lx, estado %lu\n",
+								(unsigned long) destino[0], (unsigned long) destino[1],
+								(unsigned long) destino[2], (unsigned long) destino[3],
+								(unsigned long) valores[0]);
+						}
+					}
+				}
+				break;
+
 				default:
 				/* El guest se lleva un identificador valido igual, asi que da
-				   su peticion por hecha. Nombrar el comando que falta es lo
-				   unico que impide que eso pase inadvertido. */
+				   su peticion por hecha. Nombrar el comando que falta -- con sus
+				   parametros: la corrida determinista convierte ese volcado en
+				   la semantica del comando -- es lo unico que impide que eso
+				   pase inadvertido. Asi se encontro el 38 que dejaba a Windows
+				   CE sin el codigo de sus DLL. */
 				logmsg("GDROM_SEND_COMMAND: comando %d sin implementar\r\n", R(4));
 
 				if (traza_activa)
-					fprintf(stderr, "hack: comando %lu del GD-ROM sin implementar\n",
-						(unsigned long) R(4));
+				{
+					DWORD	parametros[6];
+					int		i;
+
+					for (i = 0; i < 6; i++)
+					{
+						parametros[i] = 0;
+
+						if (R(5))
+							memread(R(5) + i * 4, &parametros[i], sizeof(DWORD));
+					}
+
+					fprintf(stderr, "hack: comando %lu del GD-ROM sin implementar,"
+						" parametros %08lx %08lx %08lx %08lx %08lx %08lx\n",
+						(unsigned long) R(4),
+						(unsigned long) parametros[0], (unsigned long) parametros[1],
+						(unsigned long) parametros[2], (unsigned long) parametros[3],
+						(unsigned long) parametros[4], (unsigned long) parametros[5]);
+				}
    				break;
 			}
 			com_viva = com;
@@ -562,14 +665,29 @@ void hack_gdrom()
 										? com_lectura_bytes : 0;
 					int		i;
 
+					if (R(4) == multi_id)
+						transferido = multi_total - multi_restante;
+
 					for (i = 0; i < 4; i++)
 						WriteMemoryL(R(5) + i * 4, &cero);
 
 					WriteMemoryL(R(5) + 2 * 4, &transferido);
 				}
 
+				/* Un MULTI_DMAREAD con datos por entregar sigue vivo: CONTINUE
+				   (el "STREAMING" del driver), y la peticion no se libera --
+				   los REQ_DMA_TRANS que vienen se validan contra su id. */
+				if (R(4) == multi_id && multi_restante > 0)
+				{
+					R(0) = 3;		// CONTINUE
+					break;
+				}
+
 				/* Consultada: el driver queda libre para la proxima. */
 				com_viva = 0;
+
+				if (R(4) == multi_id)
+					multi_id = 0;
 
 				R(0) = 2;			// COMPLETED
 			}
@@ -612,6 +730,118 @@ void hack_gdrom()
 				valor = GD_DISCO_GDROM << 4;	/* 0x80 */
 			WriteMemoryL(R(4) + 4, &valor);
 			R(0) = 0;
+			break;
+
+			case 5: // GDROM_G1_DMA_END: registrar el callback de fin de DMA
+			/* En la consola el driver lo llama cuando termina un pedazo del
+			   flujo; aca el aviso va por la interrupcion (ASIC_EVT_GDROM_DMA)
+			   que REQ_DMA_TRANS levanta, asi que solo se registra. */
+			multi_callback     = R(4);
+			multi_callback_arg = R(5);
+			R(0) = 0;
+			break;
+
+			case 6: // GDROM_REQ_DMA_TRANS: un pedazo del flujo del MULTI_DMAREAD
+			{
+				/* r4 es el id de la peticion multi y r5 apunta a {destino,
+				   tamano}. El destino es fisico, como el de la lectura 17: el
+				   G1 DMA de la consola no pasa por la MMU. */
+				DWORD	destino = 0, tam = 0;
+
+				memread(R(5), &destino, sizeof(DWORD));
+				memread(R(5) + 4, &tam, sizeof(DWORD));
+
+				if (R(4) != multi_id || multi_id == 0
+					|| tam == 0 || tam > multi_restante)
+				{
+					R(0) = (DWORD) -1;		// GDC_ERR
+					break;
+				}
+
+				{
+					char	sector[2048];
+					DWORD	hecho = 0;
+
+					while (hecho < tam)
+					{
+						DWORD trozo = 2048 - multi_desplaz;
+
+						if (trozo > tam - hecho)
+							trozo = tam - hecho;
+
+						iso_read_sector(sector, multi_sector, 1);
+						memwrite_fisico(destino + hecho,
+							&sector[multi_desplaz], trozo);
+
+						hecho          += trozo;
+						multi_desplaz  += trozo;
+
+						if (multi_desplaz >= 2048)
+						{
+							multi_desplaz = 0;
+							multi_sector++;
+						}
+					}
+
+					multi_restante -= tam;
+				}
+
+				if (traza_activa)
+				{
+					static int vistos = 0;
+
+					if (vistos < 8)
+					{
+						vistos++;
+						fprintf(stderr, "hack: REQ_DMA_TRANS %lu bytes a %08lx,"
+							" quedan %lu\n", (unsigned long) tam,
+							(unsigned long) destino,
+							(unsigned long) multi_restante);
+					}
+				}
+
+				/* El fin de DMA, con el retraso proporcional de siempre: al
+				   instante, la interrupcion le gana al driver que vuelve del
+				   disparo (la leccion del CH2 DMA con Virtua Tennis). */
+				intc_add(ASIC_EVT_GDROM_DMA, tam / 200 + 10);
+
+				/* El pedazo que vacia el flujo termina el COMANDO, y el fin de
+				   comando es la interrupcion externa del GD-ROM, como en la
+				   lectora real. La bomba de wsegacd espera esa señal para
+				   volver a consultar (CHECK) y ver el COMPLETED: sin ella,
+				   consulto una vez el CONTINUE y no vuelve nunca. */
+				if (multi_restante == 0)
+					intc_add_ext(ASIC_EVT_EXT_GDROM);
+
+				R(0) = 0;				// GDC_OK
+			}
+			break;
+
+			case 7: // GDROM_CHECK_DMA_TRANS: cuanto queda del flujo
+			{
+				DWORD	restante = multi_restante;
+
+				if (R(5))
+					WriteMemoryL(R(5), &restante);
+
+				R(0) = (multi_id != 0 && multi_restante > 0) ? 0 : 1;
+			}
+			break;
+
+			case 8: // GDROM_READ_ABORT
+			if (R(4) != 0 && (R(4) == com_viva || R(4) == multi_id))
+			{
+				if (R(4) == multi_id)
+				{
+					multi_id       = 0;
+					multi_restante = 0;
+				}
+
+				com_viva = 0;
+				R(0) = 0;
+			}
+			else
+				R(0) = (DWORD) -1;
 			break;
 
 			case 10: // GDROM_SECTOR_MODE

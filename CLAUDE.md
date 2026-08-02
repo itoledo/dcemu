@@ -180,13 +180,19 @@ los segundos de `--salir-tras`). **Las variables de entorno `DCEMU_*` van en dec
 (`atoi`): pasarle `3e8` a `DCEMU_PULSAR_START` se lee como 3, y el Start cae en el cuadro
 equivocado sin ningún aviso — ya costó una corrida.
 
-Dos de esas variables existen por Windows CE y sirven para cualquier guest con MMU o
+Tres de esas variables existen por Windows CE y sirven para cualquier guest con MMU o
 syscalls por trampa. **`DCEMU_TRAZA_EXC=1`** (con `--traza-mem`) imprime un histograma de
 excepciones por segundo emulado — recargas de TLB (040/060), syscalls de CE (0e0), FPU
 (820) — que es la vista macro de si el sistema vive, quedó ocioso o tormenta, y en qué
 segundo cambió; **`=2`** añade el censo de sitios de syscall pasado el arranque: una línea
 por (destino, llamador, proceso) distinto, que es como se identifica qué hilo sigue vivo y
-qué espera. **`DCEMU_WATCHPOINT_MAX`** sube el tope de informes del watchpoint (200 por
+qué espera; **`=3`** añade el flujo completo — cada syscall en orden con su instante en
+ms — que es lo que el censo resume y la única vista del segundo 0, donde DCDoom decidía
+morir. **`DCEMU_TRAZA_SYSCALL=dest[:pr[:N[:K]]]`** (hex:hex:dec:dec) arma la traza de
+instrucciones en la K-ésima aparición del syscall a `dest` desde `pr`: es `DCEMU_TRAZA_ATA`
+para las trampas de CE, y la manera de leer qué hizo el guest con lo que un syscall le
+contestó. El flujo de `=3` provee el dest, el pr y la K. Nota: los destinos de CE
+decodifican como `0xFFFFFE01 - dest = (apiset << 9) | (método << 1)`. **`DCEMU_WATCHPOINT_MAX`** sube el tope de informes del watchpoint (200 por
 omisión): el tope fijo ya costó una conclusión falsa — "cero escrituras en la ventana" que
 era el corte callado, con el aviso del corte perdido por un filtro sobre la salida.
 

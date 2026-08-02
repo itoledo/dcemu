@@ -84,8 +84,10 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 				const char * v = getenv("DCEMU_TRAZA_EXC");
 
 				/* 1: el histograma. 2: ademas, cada syscall (0x0e0) pasado el
-				   segundo 3, con su destino y su llamador -- quien sigue vivo
-				   y que pide, con tope para no inundar. */
+				   segundo 0, con su destino y su llamador -- quien sigue vivo
+				   y que pide, con tope para no inundar. 3: ademas, el flujo
+				   completo de syscalls linea por linea, incluido el segundo 0
+				   -- que es donde DCDOOM.EXE decidio salir y el censo no ve. */
 				habilitado = (v != NULL) ? atoi(v) : 0;
 			}
 
@@ -162,6 +164,86 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 							(unsigned long) directorio);
 					}
 
+				}
+
+				if (habilitado >= 3 && codigo == 0x0e0)
+				{
+					/* El flujo que el censo resume: cada syscall en orden con
+					   su instante. El tope avisa al cortar -- un corte callado
+					   ya costo una conclusion falsa con el watchpoint. */
+					static long	quedan = 50000;
+
+					if (quedan > 0)
+					{
+						unsigned long long	us = reloj_us();
+						DWORD				directorio = 0;
+
+						if (*TTB)
+							memread_fisico(*TTB, &directorio, sizeof(DWORD));
+
+						fprintf(stderr, "traza: sc %llu.%llums %08lx"
+							" PR=%08lx proc=%08lx\n",
+							us / 1000, (us / 100) % 10,
+							(unsigned long) SPC, (unsigned long) PR,
+							(unsigned long) directorio);
+
+						if (--quedan == 0)
+							fprintf(stderr, "traza: sc: tope de lineas"
+								" alcanzado, flujo cortado aca.\n");
+					}
+				}
+			}
+
+			/*
+				DCEMU_TRAZA_SYSCALL=dest[:pr[:N[:K]]] (hex:hex:dec:dec) traza N
+				instrucciones (3000 por omision) desde la K-esima aparicion del
+				syscall a dest con llamador pr. Es DCEMU_TRAZA_ATA para las
+				trampas de Windows CE: la unica manera de leer que hizo el guest
+				con lo que un syscall le contesto -- --traza-desde no distingue
+				el sitio cuando el PC de retorno es codigo compartido. El flujo
+				de DCEMU_TRAZA_EXC=3 da el dest, el pr y la K.
+			*/
+			if (codigo == 0x0e0)
+			{
+				static int		ts_estado = -1;		/* -1 sin leer, 0 apagado */
+				static DWORD	ts_dest = 0, ts_pr = 0;
+				static long		ts_n = 3000, ts_saltar = 0;
+				static int		ts_con_pr = 0;
+
+				if (ts_estado == -1)
+				{
+					const char * v = getenv("DCEMU_TRAZA_SYSCALL");
+
+					ts_estado = 0;
+
+					if (v != NULL)
+					{
+						char * resto = NULL;
+
+						ts_dest   = strtoul(v, &resto, 16);
+						ts_estado = 1;
+
+						if (resto != NULL && *resto == ':')
+						{
+							ts_pr     = strtoul(resto + 1, &resto, 16);
+							ts_con_pr = 1;
+						}
+
+						if (resto != NULL && *resto == ':')
+							ts_n = strtol(resto + 1, &resto, 0);
+
+						if (resto != NULL && *resto == ':')
+							ts_saltar = strtol(resto + 1, NULL, 0);
+					}
+				}
+
+				if (ts_estado == 1 && SPC == ts_dest
+					&& (!ts_con_pr || PR == ts_pr))
+				{
+					if (ts_saltar > 0)
+						ts_saltar--;
+					else
+						traza_arrancar(ts_n);
 				}
 			}
 		}
