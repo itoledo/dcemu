@@ -1193,6 +1193,42 @@ retomar: la tabla de trampas (`nombres.py trampas`), el flujo anotado
 (`... | python nombres.py flujo`), y los desensamblados de ddhal desde la copia XIP
 (`staging = 8c0c7000 + (VA - 01d81000)`).
 
+### A.10 — Crazy Taxi bajo --bios: el tipo de disco en el traspaso, y la lectura que no sale (2 de agosto de 2026)
+
+El "--bios con juego se congela" de siempre (554 escenas y quieto) se bisectó y son dos
+capas:
+
+**La resuelta: `SECTNUM` cambia de cara en el traspaso del arranque.** El juego reintentaba
+`gdGdcGetDrvStat` a 2.4/s para siempre sin emitir un SPI — el chequeo del tipo de disco de
+`gdFsInit` (el mismo del hito D), ahora contra el driver del ROM real, que lee el registro
+`SECTNUM` de la lectora emulada. La mentira permanente no sirve: la detección del propio
+ROM (~82 ms, PC `8c002xxx`) elige la rama MIL-CD con este nibble, y con GD-ROM fijo todo
+disco terminaba en `menu(1)` — cuya pantalla animada da capturas "ricas" (~480000 píxeles,
+~18500 colores) que ya se confundieron una vez con el attract de un juego: números de
+escena idénticos entre dos discos distintos son el menú. La separación es estructural: el
+**único ATA NOP de la corrida** — el cierre del bootstrap del IP.BIN, a los 12.4 s, 12 ms
+antes de los primeros comandos del juego — marca el traspaso (`gdrom_traspaso` en gdrom.c,
+que sobrevive a los reset del drive a propósito: el gdFsInit del juego resetea la lectora).
+Honesto antes, GD-ROM después; en el menú sin juego el NOP no llega y el registro queda
+honesto. flycast concilia lo mismo por otra vía: su GET_DRV_STAT saca el tipo del IP.BIN
+(`ip_meta.isGDROM()`), no de la imagen. Con esto el juego corre su gdFsInit entero — 0x70,
+el verificador 0x71 (1024 bytes), `GET_TOC` de las dos áreas —, arranca Maple, configura
+el TA (`TA_ALLOC_CTRL=00101313`), sube texturas por CH2 DMA y dibuja su pantalla LOADING
+(las 21 tiras).
+
+**La abierta: su primera lectura de datos nunca se emite.** Tras el init, cero comandos al
+GD en 77 segundos: el juego encola su lectura por el vector y sondea el estado en su capa
+gdFs (el anillo: `0c14xxxx`/`0c15xxxx`) mientras el driver del ROM no la procesa jamás —
+ni un `PACKET`. El despachador del vector está mapeado (tabla auto-relativa en `8C001180`:
+ReqCmd=`8c002ff4`, GetCmdStat=`8c003072`, ExecServer=`8c001918`, GetDrvStat=`8c003174` —
+verificado contra el cuerpo ya trazado) y la corrida es determinista; el siguiente paso es
+trazar ReqCmd/ExecServer pasado el segundo 13 y ver dónde muere la petición — el flag de
+comando activo (`[base+0xC4]`, visto en 0 en el GetDrvStat trazado) huele a GetCmdStat
+contestando NO_ACTIVE a una petición que nunca entró. Ojo con dos trampas de medición que
+esta sesión pagó: `--salir-tras` va en DECIMAL (`5a` son 5 segundos), y una sección de
+`stderr.txt` con dos corridas mezcladas inventó un "bucle de retardo en el ROM" que no
+existe.
+
 ---
 
 ## Vía B — El AICA (hito E)

@@ -69,6 +69,13 @@ static int reservar(int n)
 /* Estado de la unidad                                                      */
 /* ------------------------------------------------------------------------ */
 
+/* 1 desde que el bootstrap del IP.BIN cerro la carga del juego con su ATA
+   NOP: de ahi en adelante quien pregunta es el juego, no el boot ROM.
+   Es un hecho de la sesion de arranque, no de la lectora: sobrevive a
+   proposito los reset del drive (el gdFsInit del juego resetea la lectora y
+   la mentira de SECTNUM tiene que seguir en pie). Ver el caso de SECTNUM. */
+static int gdrom_traspaso = 0;
+
 static int hay_disco(void)
 {
 	return gdrom.unidad != GD_NODISC && gdrom.unidad != GD_OPEN;
@@ -932,7 +939,12 @@ static void ejecutar_ata(BYTE comando)
 
 		case ATA_NOP:
 			/* Segun ATA, NOP se aborta siempre. Es como el driver de la ROM
-			   cierra una lectura de la que no se llevo el ultimo sector. */
+			   cierra una lectura de la que no se llevo el ultimo sector --
+			   y en el arranque por --bios ese cierre es EL momento del
+			   traspaso: el bootstrap del IP.BIN acaba de cargar el binario
+			   del juego y lo que corre despues es el juego. SECTNUM cambia
+			   de cara ahi; ver su caso. */
+			gdrom_traspaso = 1;
 			fallar(GD_SENTIDO_ABORTADO, 0, 0);
 			break;
 
@@ -1166,6 +1178,39 @@ static DWORD registro_leer(unsigned long fisica, size_t size)
 			return gdrom.razon;
 
 		case GDROM_SECTNUM:
+			/*
+				El tipo de disco cambia de cara en el traspaso del arranque, y
+				las dos caras se midieron por separado (Crazy Taxi USA bajo
+				--bios):
+
+				- Antes del traspaso lo lee la deteccion de disco del boot ROM
+				  (PC 8c002xxx, a los ~82 ms), y tiene que ser el formato
+				  HONESTO: la rama MIL-CD -- la que arranca estos selfboot --
+				  se elige con este nibble, y con GD-ROM permanente el ROM se
+				  iba por su rama GD, el FAD del binario no pasaba la puerta
+				  de 0x6DDD0 y todo disco terminaba en menu(1). (El menu
+				  animado da 480000 pixeles y ~18500 colores en la captura:
+				  una pantalla "rica" que ya se confundio una vez con el
+				  attract de un juego. Numeros de escena identicos entre dos
+				  discos distintos son el menu, no el juego.)
+
+				- Despues del traspaso lo lee gdGdcGetDrvStat por encargo del
+				  JUEGO, y la regla es la del hito D (GDROM_CHECK_DRIVE del
+				  hook): el disco original de un juego comercial es un GD-ROM
+				  y gdFsInit de Katana compara contra 0x80 -- con el XA
+				  honesto Crazy Taxi reintentaba el sondeo a 2.4/s para
+				  siempre, sin emitir un solo SPI.
+
+				El traspaso lo marca el unico ATA NOP de la corrida (12.4 s):
+				el cierre del bootstrap del IP.BIN, medido contra el flujo
+				completo de comandos -- los SPI del juego empiezan 12 ms
+				despues. En el menu sin juego el NOP no llega nunca y el
+				registro queda honesto.
+			*/
+			if (gdrom_traspaso
+				&& gdrom.unidad != GD_OPEN && gdrom.unidad != GD_NODISC)
+				return (DWORD) ((GD_DISCO_GDROM << 4) | (gdrom.unidad & 0x0F));
+
 			return (DWORD) ((gdrom.formato << 4) | (gdrom.unidad & 0x0F));
 
 		case GDROM_BYCTLLO:
