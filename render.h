@@ -214,6 +214,13 @@ typedef struct TriangleStripInfo
 		tira. La calcula cb_tastart() antes de ordenar.
 	*/
 	float prof;
+
+	/*
+		Los bits 23-22 del TSP: 0 niebla de tabla, 1 por vertice, 2 sin
+		niebla, 3 tabla modo 2. dibujar_niebla_tira() resuelve los modos de
+		tabla; el por vertice no esta emulado.
+	*/
+	DWORD niebla;
 }TSI;
 
 

@@ -749,6 +749,26 @@ desaparecen. ICON (la 2) y el vector sin nombre de `0x8C0000E0` siguen mudos, y 
 es un fallo, es que nadie las miró. Una pasada con `--captura-gl` y el ojo cierra el hito F y
 puede destapar cosas —así salieron el filtro de textura y el recorte del volcado—.
 
+### C.9 — kgl-tunnel: la niebla salió, el texto no
+
+De mirar kgl-tunnel con el ojo (2026-08-01) salieron tres cosas, dos cerradas:
+
+- **La niebla de tabla del PVR no estaba emulada** — densidad, color y la curva de 128
+  entradas caían en `control_mem` sin lector, y el túnel terminaba en un pozo negro que
+  tapaba los arcos y columnas de sus paredes. **Resuelto**: `dibujar_niebla_tira()` en
+  `graficos.c` (ver CLAUDE.md, "Fog"). La niebla por vértice (modo 1 del TSP) sigue sin
+  emular; ninguna demo del parque la usa.
+- **El moiré del piso cercano** es submuestreo: la KGL nueva sube `tile.pcx` sin mipmaps y
+  la minificación fuerte con `GL_LINEAR` hace franjas horizontales. En hardware pasa igual
+  (y la niebla lo atenúa); `DCEMU_MIP_AUTO=1` genera mipmaps para texturas que no traen y
+  lo suaviza, como diagnóstico, no por omisión.
+- **El texto no se dibuja** — ni el `plprint()` del título ("Tunnel V1.5...") ni las seis
+  líneas del menú de ayuda; el panel translúcido de `do_help()` sí sale, y por eso se ve
+  como un rectángulo oscuro sin nada dentro (se confundía con "una ventana en la pared").
+  La fuente la dibuja PLIB (`plprint.h` en la demo). **Pendiente**: falta medir qué manda
+  — si es una textura de fuente con un formato que dcemu decodifica mal, o vértices que no
+  llegan. `DCEMU_TRAZA_ESCENA` sobre un cuadro del túnel es el primer paso.
+
 ### C.7 — La BIOS perdió su texto — **resuelto: era `SB_LMMODE0`**
 
 **Lo decide el guest con un registro, y dcemu no lo miraba.** Lo zanja la documentación de

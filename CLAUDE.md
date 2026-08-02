@@ -1002,6 +1002,26 @@ which translucent geometry always has — leaves the mask at `GL_FALSE`, and the
 nothing and the next scene starts with the previous one's depths. `limpiar_pantalla()` and the RTT
 pass both set the mask before clearing.
 
+### Fog
+
+**Table fog is emulated; per-vertex fog is not.** TSP bits 23-22 pick the mode (0 table, 1
+vertex, 2 none, 3 table 2); the guest writes the density to `FOG_DENSITY` (`0x005F80B8`, a
+16-bit float: 1.m7 mantissa in bits 14-8, signed exponent in 7-0), the color to
+`FOG_COL_TABLE` (`0x005F80B0`) and the 128-entry curve to `0x005F8200-0x005F83FC`. All of it
+used to land in `control_mem` with no reader — the usual hole — which is why `kgl-tunnel`
+ended in a black pit instead of fading into its grey fog, hiding the arches and pillars its
+walls actually have. The table's index is `density × (1/w)` clamped to `[1, 256)` — exponent
+in the slot's high bits, 4-bit mantissa below — and each word carries the far-edge alpha in
+the high byte and the near-edge one in the low byte, interpolated by the fraction (KOS fills
+it in `pvr_fog_table_exp2()` and friends).
+
+`dibujar_niebla_tira()` evaluates that per **vertex** — from the same `q` the perspective
+correction stores — and draws the strip a second time, untextured, blended toward the fog
+color. The pass reuses the depth the strip just left: `GL_EQUAL` if it wrote z, the strip's
+own compare if it did not (it passes exactly where the original did), and never writes the
+buffer. A never-written table is all zeros, so the pass skips itself and costs the other
+demos nothing. The chip fogs per pixel; per-vertex differs only inside large triangles.
+
 ### Modifier volumes
 
 The PVR decides per pixel whether it is inside the volume and picks between the polygon's two

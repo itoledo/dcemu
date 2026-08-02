@@ -2075,6 +2075,107 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	Dibuja las tiras acumuladas. Sale de cb_tastart() porque el render a
 	textura necesita exactamente lo mismo pero con otro destino y otro tamano.
 */
+/*
+	La niebla de tabla del PVR (bits 23-22 del TSP). El guest escribe la
+	densidad en FOG_DENSITY (0x005F80B8, un flotante de 16 bits: mantisa
+	1.m7 en los bits 14-8 y exponente con signo en 7-0), el color en
+	FOG_COL_TABLE (0x005F80B0) y los 128 alfas de la curva en
+	0x005F8200-0x005F83FC. Todo caia en el respaldo de control_mem sin que
+	nadie lo leyera -- la misma forma de agujero de siempre -- y por eso el
+	tunel de kgl-tunnel terminaba en un pozo negro en vez de desvanecerse
+	en el gris de su niebla.
+
+	El indice de la tabla es v = densidad * (1/w) -- el mismo 1/w que el TA
+	trae como z -- recortado a [1, 256): exponente en los bits altos de la
+	ranura, mantisa de 4 bits en los bajos, y cada palabra trae el alfa del
+	borde lejano de la ranura en el byte alto y el del cercano en el bajo,
+	que el chip interpola con la fraccion. KOS llena esa curva en
+	pvr_fog_table_exp2() y afines.
+
+	dcemu la evalua POR VERTICE con el q que el vertice ya guarda, y la
+	aplica como una segunda pasada del mismo triangulo mezclada hacia el
+	color de la tabla. La pasada reusa la profundidad que la tira acaba de
+	dejar: GL_EQUAL si escribio z, y la misma prueba si no la escribio --
+	pasa exactamente donde paso la original -- sin escribir el buffer. El
+	resto del estado lo repone la vuelta siguiente del bucle; el puntero de
+	color es el unico que se programa afuera, y lo devuelve
+	juego_de_parametros(0).
+*/
+static float niebla_rgba[65000][4];
+
+static void dibujar_niebla_tira(DWORD i)
+{
+	DWORD	reg = 0, col = 0, palabra = 0, k, alguna = 0;
+	float	densidad, fr, fg, fb, v, m16, frac, a;
+	int	e, m;
+
+	if (TriangleStrip[i].niebla != 0 && TriangleStrip[i].niebla != 3)
+		return;
+
+	memread_fisico(0xA05F80B8, &reg, 4);
+	memread_fisico(0xA05F80B0, &col, 4);
+
+	densidad = ldexpf(1.0f + (float) ((reg >> 8) & 0x7F) / 128.0f,
+		(int) (signed char) (reg & 0xFF));
+	fr = (float) ((col >> 16) & 0xFF) / 255.0f;
+	fg = (float) ((col >> 8) & 0xFF) / 255.0f;
+	fb = (float) (col & 0xFF) / 255.0f;
+
+	for (k = 0; k < TriangleStrip[i].count; k++)
+	{
+		vertex * vp = &VertexBuffer[TriangleStrip[i].index + k];
+
+		v = densidad * vp->q;
+
+		if (v < 1.0f)
+			v = 1.0f;
+		if (v > 255.9999f)
+			v = 255.9999f;
+
+		e = 0;
+		while (v >= 2.0f)
+		{
+			v *= 0.5f;
+			e++;
+		}
+
+		m16 = (v - 1.0f) * 16.0f;
+		m = (int) m16;
+		frac = m16 - (float) m;
+
+		memread_fisico(0xA05F8200 + (e * 16 + m) * 4, &palabra, 4);
+		a = ((float) ((palabra >> 8) & 0xFF) * (1.0f - frac)
+			+ (float) (palabra & 0xFF) * frac) / 255.0f;
+
+		niebla_rgba[TriangleStrip[i].index + k][0] = fr;
+		niebla_rgba[TriangleStrip[i].index + k][1] = fg;
+		niebla_rgba[TriangleStrip[i].index + k][2] = fb;
+		niebla_rgba[TriangleStrip[i].index + k][3] = a;
+
+		if (a > 0.0f)
+			alguna = 1;
+	}
+
+	/* Una tabla que nadie escribio es todo ceros: nada que mezclar. */
+	if (!alguna)
+		return;
+
+	glDisable(GL_TEXTURE_2D);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glDepthMask(GL_FALSE);
+
+	if (!TriangleStrip[i].zwrite)
+		glDepthFunc(GL_EQUAL);
+
+	glColorPointer(4, GL_FLOAT, 0, niebla_rgba);
+	glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+
+	juego_de_parametros(0);
+}
+
 static void dibujar_escena(void)
 {
 	DWORD i;
@@ -2277,6 +2378,8 @@ static void dibujar_escena(void)
 
 				juego_de_parametros(0);
 			}
+
+			dibujar_niebla_tira(i);
 		}
 
 	glDisable(GL_STENCIL_TEST);
@@ -2988,6 +3091,8 @@ void taPolyModifier()
 		logxmsg(LOG_PVR, "dstblend: dst select\n");
 	
 	 TriangleStrip[strip_count].alpha =  ((ta_address_pointer[2] >> 20) & 0x1); // alpha
+
+	TriangleStrip[strip_count].niebla = (ta_address_pointer[2] >> 22) & 0x3;
 
 	 /* El bit 20 del TSP es "Use Alpha": con 0 el chip fuerza a 1.0 el alfa
 	    DEL VERTICE, y nada mas -- el de la textura sigue vivo y la mezcla
