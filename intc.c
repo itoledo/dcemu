@@ -3,6 +3,7 @@
 #include "intc.h"
 #include "traza.h"
 #include "wdt.h"
+#include "tmu.h"			/* reloj_total: el vencimiento de las demoras */
 
 //  #define INT_QUEUE
 
@@ -30,8 +31,23 @@ DWORD	intc_queuemask_ext = 0;
 	quiso ser esta demora; vale cnt*50 ciclos, y hasta vencer no existen ni
 	el bit de estado ni la entrega.
 */
+/*
+	**El vencimiento es absoluto contra reloj_total, no una cuenta regresiva.**
+
+	Estaba como cuenta regresiva que restaba 50 por vuelta, dando por sentado
+	que check_ints() corre cada 50 ciclos. En cuanto el bloque periodico de
+	main_loop() cambio de compas -- RELOJ_GRANO, ver tmu.h -- eso dejo de ser
+	cierto y las demoras pasaron a durar ocho veces mas en tiempo emulado: con
+	grano 400 Crazy Taxi no pasaba de la advertencia de VMU, y la rama sola si
+	pasaba. Un tic acoplado a la frecuencia con que alguien lo mira es
+	exactamente lo que docs/clock-plan.md saco de todos los demas relojes de
+	este arbol; faltaba este.
+
+	Con una marca absoluta da igual cada cuanto se mire: el evento ocurre en el
+	ciclo emulado que le toca.
+*/
 #define INTC_DEMORAS 16
-static struct { DWORD evt; long ciclos; } intc_demora[INTC_DEMORAS];
+static struct { DWORD evt; unsigned long long vence; } intc_demora[INTC_DEMORAS];
 static DWORD intc_demorados = 0;
 
 /*
@@ -257,7 +273,7 @@ void intc_add(DWORD inttoadd, int cnt)
 			if (intc_demora[di].evt == 0)
 			{
 				intc_demora[di].evt = inttoadd;
-				intc_demora[di].ciclos = (long) cnt * 50;
+				intc_demora[di].vence = reloj_total + (unsigned long long) cnt * 50;
 				intc_demorados |= inttoadd;
 				return;
 			}
@@ -369,7 +385,6 @@ static void traza_asic_entrega(DWORD evento, char nivel)
 
 	if (entregas_crudas >= 0 && nivel != '-')
 	{
-		extern unsigned long long reloj_total;
 		static unsigned long long segundo_marca = 0;
 		static unsigned long cuenta_seg = 0;
 
@@ -637,9 +652,9 @@ void check_ints()
 // 	if (intc_queuemask == 0)
 //  		return;
 
-	/* El tic de las demoras: esta funcion corre cada 50 ciclos mientras la
-	   cola no este vacia. Al vencer, el evento OCURRE: recien ahi se
-	   enciende su bit de SB_ISTNRM y queda entregable. */
+	/* Las demoras vencidas. Al vencer, el evento OCURRE: recien ahi se enciende
+	   su bit de SB_ISTNRM y queda entregable. Se compara contra reloj_total, asi
+	   que no importa cada cuanto se llame a esta funcion. */
 	if (intc_demorados != 0)
 	{
 		int di;
@@ -647,9 +662,7 @@ void check_ints()
 		for (di = 0; di < INTC_DEMORAS; di++)
 			if (intc_demora[di].evt != 0)
 			{
-				intc_demora[di].ciclos -= 50;
-
-				if (intc_demora[di].ciclos <= 0)
+				if (reloj_total >= intc_demora[di].vence)
 				{
 					SET_BIT(ASIC_ACK_A, intc_demora[di].evt);
 					intc_demorados &= ~intc_demora[di].evt;
