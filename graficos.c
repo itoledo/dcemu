@@ -343,6 +343,12 @@ struct cached_texture
 	   nuevo en el mismo slot; si no, la textura de GL ya subida sirve. */
 	DWORD	gen;
 	DWORD	gen_pal;
+
+	/* El bit de mipmap entra a la clave: la misma direccion decodificada con
+	   y sin cadena son texturas distintas -- sin esto, una tira que filtra
+	   con mipmaps podia ligar un objeto subido sin niveles: incompleta, y GL
+	   la muestrea BLANCA (el "mundo blanco" intermitente del juego). */
+	DWORD	con_mip;
 };
 
 typedef struct cached_texture cached_texture;
@@ -1006,7 +1012,8 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		&&  cached_textures[i].usize == usize
 		&&  cached_textures[i].vsize == vsize
 		&&  cached_textures[i].bpp == bpp
-		&&  cached_textures[i].paleta == paleta)
+		&&  cached_textures[i].paleta == paleta
+		&&  cached_textures[i].con_mip == TriangleStrip[strip].texture.mipmapped)
 		{
 			if (cached_textures[i].gen == gen_ahora
 			&&  cached_textures[i].gen_pal == pal_ahora)
@@ -1075,6 +1082,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	cached_textures[cur_tex_count].paleta = paleta;
 	cached_textures[cur_tex_count].gen = gen_ahora;
 	cached_textures[cur_tex_count].gen_pal = pal_ahora;
+	cached_textures[cur_tex_count].con_mip = TriangleStrip[strip].texture.mipmapped;
 
 	if (rehash)
 		tex_hash_meter(cur_tex_count);
