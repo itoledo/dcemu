@@ -180,6 +180,16 @@ los segundos de `--salir-tras`). **Las variables de entorno `DCEMU_*` van en dec
 (`atoi`): pasarle `3e8` a `DCEMU_PULSAR_START` se lee como 3, y el Start cae en el cuadro
 equivocado sin ningún aviso — ya costó una corrida.
 
+Dos de esas variables existen por Windows CE y sirven para cualquier guest con MMU o
+syscalls por trampa. **`DCEMU_TRAZA_EXC=1`** (con `--traza-mem`) imprime un histograma de
+excepciones por segundo emulado — recargas de TLB (040/060), syscalls de CE (0e0), FPU
+(820) — que es la vista macro de si el sistema vive, quedó ocioso o tormenta, y en qué
+segundo cambió; **`=2`** añade el censo de sitios de syscall pasado el arranque: una línea
+por (destino, llamador, proceso) distinto, que es como se identifica qué hilo sigue vivo y
+qué espera. **`DCEMU_WATCHPOINT_MAX`** sube el tope de informes del watchpoint (200 por
+omisión): el tope fijo ya costó una conclusión falsa — "cero escrituras en la ventana" que
+era el corte callado, con el aviso del corte perdido por un filtro sobre la salida.
+
 **`--traza-mem` is the tool for working on the BIOS boot.** It prints each unemulated
 address once with the PC that asked for it, and when the last 96 PCs collapse into 64 or
 fewer distinct values over four million instructions it dumps the ring, **disassembles the
@@ -286,14 +296,21 @@ direct loader reads now instead of hardcoding it (the ROM always did; it is the 
 leaves at GBR+0x9C). CE is what finally exercised MMU phase 7 (instruction-fetch
 translation, with a page cache — see `docs/mmu-plan.md`), the `MMUCR.URC` advance its TLB
 refill handler relies on, the P2 image of area 7 (zone `0xBF` — its HAL starts the system
-tick writing TSTR at `0xBFD80004`), and the Maple hardware trigger (`SB_MDTSEL=1`: the
-DMA walks itself at each vblank; CE never writes `SB_MDST`). The CE kernel boots whole —
-MMU on, software TLB refills, syscalls via jumps to `0xFFFFFxxx` (address-error traps),
-lazy FPU context over `SR.FD`, ticks, pad enumerated, the AICA's ARM running the firmware
-CE uploads — and then stalls: a section teardown at 119.4 ms unmaps `maple.dll` just
-before its entry point runs, the demand page-in never restores it, and the boot serializes
-behind that thread; the CD driver never touches the drive, so `DCDOOM.EXE` is never
-loaded. The frontier is mapped to the cycle in `docs/pendientes-plan.md`, A.9.
+tick writing TSTR at `0xBFD80004`), the Maple hardware trigger (`SB_MDTSEL=1`: the
+DMA walks itself at each vblank; CE never writes `SB_MDST`), and **the ROM's fixed GD-ROM
+service entry at `8C0010F0`** — see the syscall section: its maple.dll calls it as a
+constant, without reading any vector, and with zeroed RAM there its driver init failed and
+unloaded itself, leaving a zombie worker thread that faulted on the unmapped DLL. With all
+of it in place the CE kernel boots whole — MMU on, software TLB refills, syscalls via
+jumps to `0xFFFFFxxx` (address-error traps), lazy FPU context over `SR.FD`, ticks, the
+pad polled at 60 Hz through the Maple auto-poll, the AICA's ARM running the firmware CE
+uploads — and **CE mounts the disc's ISO9660 through the GD syscalls**: volume descriptor,
+root directory, all of `DCDOOM.EXE` in one 645-sector read, and `\WINCE` modules
+demand-paged from the CD in 16 KB pieces. Where it stands: the driver host idles at a
+steady 284 syscalls/s heartbeat (maple/wdmlib/ddraw alive), the game's process loaded and
+sleeps without drawing, and a second process retries a WaitForAPIReady pattern every 5 s
+for an API set that never registers. `docs/pendientes-plan.md`, A.9, has the whole story
+and the tools to resume.
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -1540,6 +1557,19 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
   count in the third status word, and **`GETSCD` (command 34) is answered** with the SPI
   header — audio status `0x15`, "no audio info" — and the data track's subQ; COMPLETED with
   an unwritten buffer left status `0x00`, which is no code at all.
+  **The same stub is also installed at `8C0010F0`, the ROM's fixed GD service entry, and
+  the word at `8C0000C0` — a fifth vector the hooks never filled — points there**
+  (`SYSCALL_GDROM_FIJO`/`HACK_GDROM_FIJO`). Measured against the real 1.01d with `--bios`:
+  the ROM installs a 16-function dispatcher at exactly `8C0010F0` (self-relative table at
+  `8C001180`) and leaves its address in `8C0000C0`. Windows CE's maple.dll calls the
+  address as a build-time constant without reading any vector; with that RAM zeroed the
+  guest slid through ~28 KB of NOIMPs into the IP.BIN bytes and its driver init failed.
+  **`GDROM_INIT` (function 3) answers `R0 = 0`** — it left R0 untouched, and CE checks it.
+  **The DMA read's target (function 17) is written physical** (`memwrite_fisico`): the
+  console's G1 DMA does not pass through the MMU, and translating it as virtual sent CE's
+  buffers — passed as physical addresses like `0x0CF77000` — into another slot's unmapped
+  space. Function 16 (PIO, the driver's CPU writes) stays translated. Katana games pass P1
+  addresses and cannot tell the two apart.
 - `hack_romfont()` services the ROM font syscall. **This one takes its function number in
   `R1`, not `R7`** (see KOS's `syscall_font.s`): 0 returns the font address, 1 takes the
   mutex, 2 releases it. The lock must answer **0** to mean granted.

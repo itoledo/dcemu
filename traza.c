@@ -712,6 +712,13 @@ static DWORD	wp_anterior = 0;
 static int		wp_arrancado = 0;
 static int		wp_informes = 0;
 
+/* El tope de informes: WATCHPOINT_MAX por omision, DCEMU_WATCHPOINT_MAX (en
+   decimal, como toda variable de entorno) lo cambia sin recompilar. Existe
+   porque el tope fijo ya costo una conclusion falsa: "cero escrituras en la
+   ventana" que en realidad era el corte a los 200 informes -- el aviso del
+   corte estaba, pero un filtro sobre la salida lo dejo afuera. */
+static int		wp_tope = -1;
+
 void watchpoint_escritura(unsigned long direccion, size_t tam)
 {
 	DWORD escrita  = (DWORD) direccion & 0x1FFFFFFFu;
@@ -723,7 +730,14 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 	if (escrita + tam <= vigilada || escrita >= vigilada + watchpoint_tam)
 		return;
 
-	if (wp_informes >= WATCHPOINT_MAX)
+	if (wp_tope < 0)
+	{
+		const char * v = getenv("DCEMU_WATCHPOINT_MAX");
+
+		wp_tope = (v != NULL) ? atoi(v) : WATCHPOINT_MAX;
+	}
+
+	if (wp_informes >= wp_tope)
 		return;
 
 	memread_fisico(watchpoint_dir, &ahora, watchpoint_tam);
@@ -759,9 +773,9 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 
 	wp_anterior = ahora;
 
-	if (++wp_informes >= WATCHPOINT_MAX)
-		fprintf(stderr, "watchpoint: %d informes, no se reporta mas\n",
-			WATCHPOINT_MAX);
+	if (++wp_informes >= wp_tope)
+		fprintf(stderr, "watchpoint: %d informes, no se reporta mas"
+			" (DCEMU_WATCHPOINT_MAX lo sube)\n", wp_tope);
 }
 
 /* ------------------------------------------------------------------------ */

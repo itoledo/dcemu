@@ -1526,6 +1526,13 @@ int main(int argc, char *argv[])
 	wvalor = 0x000B; /* RTS */			memwrite(HACK_BASE + HACK_GDROM, &wvalor, 2);
 	wvalor = 0xFFFF; /* BIOS_HACK*/		memwrite(HACK_BASE + HACK_GDROM + 2, &wvalor, 2);
 
+	// La entrada fija del GD-ROM y el word de 8C0000C0 que el ROM real deja
+	// apuntandola. Windows CE la llama por la direccion, no por el vector;
+	// ver SYSCALL_GDROM_FIJO en mem.h.
+	dwvalor = HACK_GDROM_FIJO;			memwrite(SYSCALL_GDROM_FIJO, &dwvalor, sizeof(DWORD));
+	wvalor = 0x000B; /* RTS */			memwrite(HACK_GDROM_FIJO, &wvalor, 2);
+	wvalor = 0xFFFF; /* BIOS_HACK */	memwrite(HACK_GDROM_FIJO + 2, &wvalor, 2);
+
 	// SYSINFO y UNKNOWN siguen sin hacer nada, pero ahora lo dicen: mismo par
 	// RTS + opcode ilegal que los otros tres, despachado a hack_mudo(). Eran
 	// RTS + NOP, o sea que volvian en silencio y un juego que dependiera de
