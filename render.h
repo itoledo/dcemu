@@ -168,6 +168,13 @@ typedef struct TriangleStripInfo
 		   el grande NO esta al principio -- get_texture() salta los chicos. */
 		DWORD mipmapped;
 		DWORD filtermode;
+
+		/* Repeticion por eje, de los bits del TSP: 0 repite (por omision del
+		   chip), 1 espeja (Flip, bits 18/17), 2 recorta (Clamp, bits 16/15,
+		   que le gana al Flip). Guardar un cuarto de circulo y espejarlo es
+		   como un juego arma un circulo de sombra entero. */
+		DWORD wrap_u;
+		DWORD wrap_v;
 		DWORD pvr_texture_size_usize;
 		DWORD pvr_texture_size_vsize;
 

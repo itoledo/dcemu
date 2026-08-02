@@ -650,6 +650,23 @@ los diez demos KOS de control byte a byte idénticos (ninguno usa el bit de mipm
 eso el barrido nunca podía ver esto). La sombra del taxi, confirmada bien en vivo tras el
 conteo por caras. **Queda pendiente de esa lista: las ruedas sin transparencia.**
 
+**Y de validar en vivo salió otro clásico (2026-08-02): las sombras de los peatones como
+"un cuarto de círculo repetido cuatro veces".** Esa frase es la firma: el juego guarda UN
+cuarto del círculo y lo espeja con los bits Flip U/V del TSP (18/17), que dcemu ignoraba
+— como también los Clamp (16/15, que le ganan al Flip) — dejando todo en el `GL_REPEAT`
+de fábrica. `aplicar_filtros()` pone ahora `GL_MIRRORED_REPEAT`/`GL_CLAMP_TO_EDGE`/
+`GL_REPEAT` por eje según el TSP. Los diez demos de control, byte a byte idénticos
+(ninguno usa Flip ni Clamp). Probable causa también de "la sombra del taxi se calcula
+mal" — mismo truco del cuarto espejado — pendiente de confirmar en vivo.
+
+**Dos lecciones de método de esta tanda, para el que retome:** (1) el reproductor NO es
+aislable mientras se juega con gamepad en otra instancia — XInput se lee global, sin
+importar el foco, así que una captura minimizada recibe el input del jugador y la ventana
+05 sale distinta (la 04 y la 11 aguantan, porque la carga termina antes de que el input
+pese); (2) los números del discriminador dependen del contenido de `bios/flash.bin`, que
+dcemu persiste al salir si el juego lo escribió — hasta ahora no ha cambiado (sigue con
+fecha 2004), pero si cambia, la línea de tiempo entera del reproductor se mueve.
+
 **El manto oscuro con volúmenes activos es la simplificación documentada de
 `marcar_volumenes()`**: unión de triángulos en vez de conteo de caras. La sombra del taxi es
 un volumen cerrado (extruido); marcar cada triángulo enciende todo lo que sus caras cubren —

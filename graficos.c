@@ -844,6 +844,23 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
 	pero una que dibuja uno solo y espera un boton sale entera en blanco. Eso es
 	lo que le pasaba a las dos de yuv_converter.
 */
+/* CLAMP_TO_EDGE es de GL 1.2 y MIRRORED_REPEAT de 1.4; el gl.h de MSVC es
+   1.1 pero todo driver los trae, igual que los WRAP de la plantilla. */
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE	0x812F
+#endif
+#ifndef GL_MIRRORED_REPEAT
+#define GL_MIRRORED_REPEAT	0x8370
+#endif
+
+/* El codigo de wrap_u/wrap_v del TSP al enum de GL. */
+static GLint wrap_gl(DWORD w)
+{
+	return (w == 2) ? GL_CLAMP_TO_EDGE
+		 : (w == 1) ? GL_MIRRORED_REPEAT
+		 : GL_REPEAT;
+}
+
 static void aplicar_filtros(int strip)
 {
 	GLint modo = TriangleStrip[strip].texture.filtermode ? GL_LINEAR : GL_NEAREST;
@@ -859,6 +876,13 @@ static void aplicar_filtros(int strip)
 
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+
+	/* La repeticion es estado del objeto de textura, igual que los filtros:
+	   se pone tras cada ligado, con lo que pida la tira en curso. */
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+		wrap_gl(TriangleStrip[strip].texture.wrap_u));
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+		wrap_gl(TriangleStrip[strip].texture.wrap_v));
 }
 
 /*
@@ -3383,6 +3407,21 @@ void taPolyModifier()
 			logxmsg(LOG_PVR, "texture: no stride\n");
 	
 		TriangleStrip[strip_count].texture.filtermode = (ta_address_pointer[2] >> 13) & 0x3;
+
+		/*
+			Repeticion por eje: Clamp en los bits 16 (U) y 15 (V), Flip en el
+			18 (U) y el 17 (V), y el Clamp le gana al Flip cuando estan los
+			dos. No se emulaba nada de esto y todo quedaba en el GL_REPEAT de
+			fabrica: la sombra circular que un juego guarda como UN cuarto y
+			espeja con Flip -- las de los peatones de Crazy Taxi -- salia como
+			ese cuarto repetido cuatro veces sin espejar.
+		*/
+		TriangleStrip[strip_count].texture.wrap_u =
+			((ta_address_pointer[2] >> 16) & 1) ? 2 :
+			((ta_address_pointer[2] >> 18) & 1) ? 1 : 0;
+		TriangleStrip[strip_count].texture.wrap_v =
+			((ta_address_pointer[2] >> 15) & 1) ? 2 :
+			((ta_address_pointer[2] >> 17) & 1) ? 1 : 0;
 
 		/*
 			Como se combina el texel con el color del vertice. No se emulaba, o

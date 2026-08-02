@@ -495,6 +495,14 @@ for a button came out entirely white. That was `pvr-yuv_converter-*` and `pvr-st
 — three demos, one line. `aplicar_filtros()` now runs inside `get_texture()`, after both
 binds (new texture and cache hit).
 
+**The TSP's per-axis repeat modes are emulated there too: Clamp (bits 16/15) beats Flip
+(bits 18/17), and with neither the chip repeats.** None of it was wired, so every texture
+sampled with GL's default `GL_REPEAT`. Flip maps to `GL_MIRRORED_REPEAT` — and it matters
+because storing **one quarter** of a symmetric image and mirroring it is how a game builds
+a whole soft shadow blob: Crazy Taxi's pedestrian shadows came out as that quarter-circle
+tiled four times unmirrored. No KOS demo in the control set uses either bit (all ten stay
+byte-identical), so a game is again the only regression test.
+
 **Stride** (bit 25) means the rows in memory are `TEXT_CONTROL & 0x1F` × 32 texels wide
 rather than the declared `usize` — it is how a non-power-of-two texture is stored, and the
 declared size is rounded up (640×480 is submitted as 1024×512). `get_texture()` copies row by
