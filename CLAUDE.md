@@ -25,6 +25,17 @@ make -f Makefile.linux    # Linux                       -> dcemu
 make -f Makefile.win clean
 ```
 
+**On this machine the emulator is built with CMake/MSVC, not with the makefiles** — there
+is no `make` or Dev-C++ gcc installed, and the CMakeLists that `tests/` brought also builds
+the `dcemu` target:
+
+```sh
+cmake --build build --config Release --target dcemu    # -> build/Release/dcemu.exe
+```
+
+Run it from the repo root (`bios/`, `font.png` and `roms/` resolve against the working
+directory). Touching only `.c` files needs no clean; MSBuild tracks headers.
+
 `obj/` and `logs/` must exist before building/running (both are kept in the repo via a
 dummy `remove.txt`). `inicializar_logs()` aborts startup if it cannot create `logs/*.txt`.
 
@@ -401,9 +412,13 @@ The lesson generalises: when the capture says blank, check the strip counts at e
 believing it.
 
 **SDL 1.2 redirects `stdout` and `stderr` to files on Windows** — `stdout.txt` and
-`stderr.txt` in the working directory. Redirecting the process's output from the shell (or
-with PowerShell's `-RedirectStandardError`) captures zero bytes and looks like the emulator
-said nothing. `--traza-mem` and the MMU's warnings come out there.
+`stderr.txt` **next to the executable**, not in the working directory: SDLmain builds the
+path from `GetModuleFileName`, so with the CMake build they land in `build/Release/` even
+when running from the repo root. Looking for them in the working directory reads as "the
+emulator said nothing", and so does redirecting the process's output from the shell (or
+with PowerShell's `-RedirectStandardError`), which captures zero bytes. `--traza-mem` and
+the MMU's warnings come out there. Two instances share that file: the second to start
+truncates it, so a measured run and a live play session overwrite each other's logs.
 
 **On screen-grabbing the window — don't, use `--captura-gl`.** Grabbing the client area
 works, until it doesn't: in one session `tunnel` went from 3036 distinct colours to 4 with no
