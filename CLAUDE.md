@@ -264,9 +264,12 @@ long-standing path reaches (no `--bios`, through the syscall hooks), so what the
 from there was a separate problem — **and it is solved for Crazy Taxi: hito D is reached**
 (2026-08-01). On the hooks path both rips run — loading screen, VMU warning, Start works,
 title screen, 3D attract mode. What unblocked it was the disc type answered by
-`GDROM_CHECK_DRIVE` (see "BIOS syscall emulation") plus `SYSINFO` function 3; Virtua Tennis
-and Capcom vs. SNK still stop earlier, in the SDK's common startup
-(`docs/pendientes-plan.md`, vía A).
+`GDROM_CHECK_DRIVE` (see "BIOS syscall emulation") plus `SYSINFO` function 3. **Virtua
+Tennis runs too** (2026-08-02): VMU warning, title, Main Menu and the 3D attract at 2400
+strips per scene — what unblocked it was the ASIC's level-triggered delivery plus the CH2
+DMA's end-of-transfer delay (see "Interrupts and timing" and `docs/pendientes-plan.md`,
+A.6). Capcom vs. SNK, re-measured with that in, still stops — it shared the symptom, not
+the cause.
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -1178,16 +1181,27 @@ events.
 `intc.c` queues ASIC events with `intc_add()` into `intc_queuemask`; `check_ints()` drains
 them and `intc()` performs the actual SH-4 exception entry (SSR/SPC save, VBR jump).
 
-**A queued ASIC event that no mask covers stays queued.** `check_ints()` used to end with
-`REMOVE_BIT(intc_queuemask, ASIC_ACK_A)` — if none of the three masks covered the event at
-that instant, it was thrown away. On the chip the `SB_ISTNRM` bit stays set until the guest
-acknowledges it by writing the register, and if the guest enables the mask afterwards the
-interrupt still arrives. Same mistake the timers had before `intc_revisar_sh4()` (see
-`docs/clock-plan.md`), on the ASIC side, and what it loses leaves no trace. The boot ROM is
-what exposed it: it enables the Maple DMA, starts it, and waits for the end by interrupt —
-enabling the mask *after* queueing it — so it lost that event every time and never polled
-the bus again. Only the guest's acknowledge clears a pending event now, in the `SB_ISTNRM`
-case of `pvr_write()`.
+**The ASIC's normal interrupt lines are level-triggered, derived from `SB_ISTNRM` against
+its three masks — delivery consumes nothing.** Only the guest's acknowledge (the `SB_ISTNRM`
+case of `pvr_write()`) or masking lowers a line. This replaced a queue in two steps, both
+the same mistake the timers had before `intc_revisar_sh4()` (see `docs/clock-plan.md`):
+first `check_ints()` threw away events no mask covered at that instant — the boot ROM
+enables the Maple DMA's mask *after* starting it, lost the end-of-DMA every time, and never
+polled the bus again —; then delivery consumed from the queue *all* the bits a mask covered
+at once. Katana's ISR dispatches **one** bit per entry — the lowest set in
+`ISTNRM & softmask` —, acks just that one and returns, trusting the still-asserted line to
+re-enter for the rest: under queue semantics Virtua Tennis got the render-done of video and
+the ISP/TSP ones stayed set without ever interrupting again, so its frame pipeline never
+turned. `intc_asic_pendiente()` is the gate `main_loop` uses, and it runs in the 50-cycle
+block next to `intc_revisar_sh4()`: with level semantics the gate is true whenever any bit
+is unacknowledged — nearly always — and checking per instruction cost 9× in Crazy Taxi.
+
+**Events with transfer time keep their delay** (`intc_add(evt, cnt)`, cnt×50 cycles): the
+status bit turns on when the event *occurs*, not when the guest kicks the operation. The
+CH2 DMA's end is delayed by size (`largo/200 + 10` counts) for the same reason the list and
+render ends are: instantaneous, the interrupt beat Katana's driver back from the kick path —
+its own state said no transfer was in flight, so the ISR discarded the end as spurious and
+Virtua Tennis waited forever for a completion that had already passed.
 
 `wdt.c/h` is the SH-4 watchdog timer: two key-protected registers and an 8-bit up-counter
 that either resets the machine (watchdog mode) or raises `EXC_WDT_ITI` (interval mode).

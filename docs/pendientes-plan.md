@@ -50,8 +50,9 @@ juego del disco"):
 El hito D era el que importaba: es lo único que separaba a dcemu de "corre homebrew" a "corre
 un juego". Crazy Taxi (los dos rips) muestra su pantalla de carga, el aviso de VMU, responde
 al Start, pasa a su pantalla de título y corre el modo attract en 3D — el motor entero, a 528
-tiras por escena. Virtua Tennis y Capcom vs. SNK siguen parados, en el **otro** bloqueo (el
-del arranque común del SDK, A.-1b); ese hilo sigue abierto.
+tiras por escena. **Virtua Tennis cayó el 2 de agosto** (aviso de VMU, título, Main Menu y
+attract en 3D a 2400 tiras por escena — la entrega por nivel del ASIC más la demora del CH2
+DMA, ver A.6); Capcom vs. SNK, re-medido con eso puesto, sigue parado: era otro bloqueo.
 
 ---
 
@@ -440,8 +441,8 @@ Lo que queda de la vía A, medido el mismo día con los dos arreglos puestos:
 | imagen | estado |
 | --- | --- |
 | Crazy Taxi (USA y DCRES) | **corre** — título y attract en 3D |
-| Virtua Tennis (los dos rips) | igual que antes: 0 escenas. Su bloqueo es el de A.-1b: las lecturas por `0x902940E4`/`0x020A8618` desde `0x8C1FA438` |
-| Capcom vs. SNK | igual: se para **antes** de tocar la lectora (un solo INIT), en el arranque común del SDK — mismo hilo que Virtua Tennis |
+| Virtua Tennis (los dos rips) | ~~0 escenas~~ → **corre desde el 2 de agosto**: aviso de VMU, título, Main Menu y attract en 3D — ver A.6 |
+| Capcom vs. SNK | re-medido tras A.6: **sigue igual** (2 escenas de 0 tiras) — compartía síntoma, no causa |
 | mame4all | idéntico, byte a byte: 93650 colores |
 
 La lectura de `0x2d2d2d0a` quedó explicada por el lado que no acusaba: en Crazy Taxi ocurre
@@ -748,6 +749,70 @@ Los dos residuos que quedaban, hechos también:
   incompleta y GL la muestrea blanca.
 - **Las tiras con cero vértices se saltan al dibujar**: los encabezados de sombra dejan
   cientos por escena que no pintaban nada y pagaban todo el estado de GL igual.
+
+### A.6 — Virtua Tennis arranca: la entrega por nivel y la demora del CH2 DMA (2 de agosto de 2026)
+
+Retomada la espera 4 con todo lo de A.5 puesto, el mapa cambió: `cola_pop()` ya entregaba su
+búfer y el juego quedaba en la **cola del mismo armado** — espera que la operación 0 de su
+"clase A" complete: `[8C45F940]` es una máscara de operaciones en vuelo, un handler escribe
+la máscara a limpiar en el mailbox `[8C45F94C]`, y nadie lo escribía jamás. Perseguirlo
+exigió desarmar el despacho de interrupciones de Katana entero, y lo que salió vale para
+todos los juegos del SDK:
+
+- **El ISR de Katana despacha UN bit por entrada** (el más bajo de `ISTNRM & máscara
+  blanda`), lo acusa, y retorna confiando en que la línea siga afirmada para re-entrar por
+  los demás. La entrega de dcemu sacaba de la cola **todos** los bits cubiertos de una vez:
+  el juego atendía el render-done de video y los de ISP/TSP quedaban puestos sin volver a
+  interrumpir nunca. **La entrega es por nivel ahora** (`check_ints()`): la petición se
+  deriva de `SB_ISTNRM` contra las máscaras, no consume nada, y solo el acuse del guest (o
+  enmascarar) la baja — la tercera forma del error que ya tuvieron los temporizadores y el
+  descarte sin máscara.
+- La tabla del ISR traduce bit→índice (`8c20c960`) con handlers de 16 bytes; el fin de
+  lista va a `8c202fa0` con sub-id, que marca una máscara de "hechas" y la compara contra
+  la esperada — **0x8001: fin de lista opaca (bit 0) más fin del CH2 DMA (bit 15, del bit
+  19 de ISTNRM vía el sub-id 0x12)**. El bit 7 de ISTNRM llegaba (dcemu lo emite al cerrar
+  la lista); el 19 estaba puesto desde el arranque y su despacho no corría nunca.
+- **El fin del CH2 DMA salía instantáneo** (`intc_add(..., 0)` dentro de la escritura de
+  `SB_C2DST`): la interrupción le ganaba la carrera al driver, que todavía no había vuelto
+  del disparo ni dejado su estado en "transferencia en vuelo", así que la descartaba por
+  espuria — y el fin que esperaba ya había pasado. La misma familia que la demora del
+  render y los fines de lista de A.4, para el DMA: **demora proporcional al tamaño**
+  (`largo/200 + 10` cuentas de 50 ciclos) en `ch2_dma_ejecutar()`.
+
+Con las dos cosas, **Virtua Tennis (USA) arranca**: el pipeline de cuadro gira (1150
+escenas en los primeros 10 s), sube 2 MB de texturas por la ventana 11, muestra su aviso de
+VMU con el texto perfecto, y con dos `DCEMU_PULSAR_START` (900 y 1650) pasa por su pantalla
+de título hasta el **Main Menu** completo — ARCADE / EXHIBITION / WORLD CIRCUIT / OPTIONS,
+texturado, a 147 tiras por escena. El mismo punto del flujo donde Crazy Taxi alcanzó el
+hito D.
+
+De la cacería quedaron dos lecciones de método y una herramienta:
+
+- **La compuerta de la entrega va en el bloque de 50 ciclos** (`intc_asic_pendiente()`):
+  con nivel, "hay algo pendiente" es casi siempre verdadero, y llamar a `check_ints()` por
+  instrucción costó 9× en Crazy Taxi. En el mismo compás que `intc_revisar_sh4()`, el costo
+  desaparece y el tic de las demoras pasa a valer lo que dice.
+- **Un `getenv()` en un camino caliente cuesta 5×**, y el centinela que lo cachea tiene que
+  distinguir "sin resolver" (−1) de "resuelto y apagado" (−2): el guard `< 0` los confundía
+  y el diagnóstico nuevo re-consultaba el entorno 2,4 millones de veces por segundo. Medido
+  con QueryPerformanceCounter alrededor de `check_ints`: 12,7 s de pared por segundo
+  emulado, que eran TODO el costo.
+- **`DCEMU_TRAZA_ENTREGAS=1`**: cada entrega del ASIC con su ciclo, sin dedup (tope 600 +
+  total por segundo). Es lo que respondió "¿se está re-entregando?" cuando el dedup por
+  valor de la traza normal tapaba la cadencia — y lo que mostró las ráfagas de 6 entregas
+  sin acuse que identificaron el descarte por espuria.
+
+La regresión, completa: los 7 demos de control byte a byte (los 2 animados driftean un
+cuadro y caen exactamente en los números de referencia: fb_tex 93, libdream-ta 65480),
+Crazy Taxi con su discriminador exacto (`11=6481248`, 60 s del reproductor, en juego con
+1671 tiras/escena) a 0,57x contra 0,53x de la base, mame4all en rango (93689 colores), el
+menú del boot ROM byte a byte idéntico, y las 21 suites en verde.
+
+Lo que queda de la vía A tras esto: **Capcom vs. SNK, medido el mismo día: sigue en 2
+escenas de 0 tiras** — compartía el síntoma con Virtua Tennis pero no la causa; su bloqueo
+es otro y hay que mapearlo desde cero con las mismas herramientas (empezando por el anillo
+de PC y `[8c45f9xx]`-equivalentes suyos). Y Virtua Tenis 2, que sondea el área externa del
+G2 (ver C.8).
 
 ---
 

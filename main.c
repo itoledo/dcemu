@@ -498,10 +498,17 @@ void main_loop(void)
 				// siguiente, que es lo que hace el chip.
 				intc_revisar_sh4();
 
+				// El ASIC va en el mismo compas. Con la peticion por nivel la
+				// compuerta es verdadera mientras haya un bit sin acusar, o
+				// sea casi siempre: por instruccion costaba 9 veces mas en
+				// Crazy Taxi. Cada 50 ciclos la latencia queda a la par de la
+				// de los perifericos del SH-4, y el tic de las demoras pasa a
+				// valer lo que dice (50 ciclos por vuelta).
+				if (intc_asic_pendiente())
+					check_ints();
+
 				dma_check();
 			}
-			if(intc_queuemask || intc_queuemask_ext)
-				check_ints();
 
 /*			if (PC == BreakPoint)
 				DebugMode = DBG_STOP; */
