@@ -326,3 +326,94 @@ Con A refutado y 0.1 esperando una consola elevada, el orden que queda es:
 Y una conclusión que este experimento deja sin haberla buscado: **120 MIPS en Debug con
 0,60 instrucciones por ciclo emulado** dice que el intérprete no está lejos de lo razonable.
 Lo que falta para 1,0× no está escondido en el despacho.
+
+---
+
+# La premisa del plan quedó vencida
+
+Este documento arranca diciendo que el intérprete es el 71,6 % y "queda esto y nada más".
+Medido de nuevo el 2026-08-02, sobre el banco corregido y después de los tres merges, eso
+ya no es cierto — y en un binario optimizado no lo es ni de lejos.
+
+Las cuatro corridas hacen **el mismo trabajo exacto**: 22 280 016 491 instrucciones, 10 001
+escenas, 1182 tiras por escena, 10 008 cuadros. Así que los absolutos se comparan directo.
+
+| | Debug | Release | |
+| --- | --- | --- | --- |
+| total | 318 219 ms | 252 550 ms | −20,6 % |
+| **intérprete** | **189 011 ms** | **84 207 ms** | **−55,4 %** |
+| bloque periódico | 70 201 | 23 679 | −66,3 % |
+| AICA (ARM7) | 53 245 | 17 178 | −67,7 % |
+| **`dibujar_escena()`** | **53 398** | **142 120** | **+166 %** |
+| de eso texturas | 27 608 | 81 206 | +194 % |
+
+Y el reparto, que es lo que decide dónde trabajar:
+
+| | Debug | Release |
+| --- | --- | --- |
+| intérprete | 59,3 % | **33,3 %** |
+| `dibujar_escena()` | 16,7 % | **56,2 %** |
+| de eso texturas | 8,6 % | **32,1 %** |
+| bloque periódico | 22,0 % | 9,3 % |
+| AICA | 17,2 % | 7,1 % |
+
+## Tres cosas que salen de ahí
+
+**1. Compilar con `/O2` le saca al intérprete más del doble de lo que podría cualquier
+candidato de este plan.** De 189 s a 84 s, un 55 %. Por instrucción son **8,48 ns → 3,78 ns**,
+o sea unos 42 → 19 ciclos. Diecinueve ciclos por instrucción emulada es una cifra normal
+para un intérprete de tabla; el margen que queda ahí es modesto. Y no hay excusa de
+corrección: Release da 21/21 en `ctest` y **113 191 ok, 0 fallan** en SingleStepTests, lo
+mismo que Debug.
+
+**2. `dibujar_escena()` es *más lento* en Release, y eso no es un absurdo: es el síntoma de
+que el cuello pasó a la GPU.** En Debug el emulador va tan despacio que el driver siempre
+tiene la cola vacía y las llamadas a GL vuelven enseguida; en Release el CPU la alimenta
+más rápido y las llamadas empiezan a bloquear. `presentar` sigue en 0,2 %, así que no es el
+vsync del intercambio: es adentro de las llamadas de dibujo, y sobre todo de las de textura.
+
+**3. "El PVR nunca fue el cuello (2,1 %)" era verdad y dejó de serlo.** Esa medida es
+anterior a los tres merges que trajeron toda la cadena de texturas —mipmaps subidos del
+guest, VQ nivel por nivel, la caché persistente, bump, paletas—. Hoy `get_texture()` sola
+es el **32,1 %** del tiempo real: 81 s en 10 001 escenas, unos 8 ms por escena. Con una
+caché de 1024 entradas que debería evitar las resubidas, esa cifra pide explicación.
+
+## El orden, corregido
+
+| # | qué | por qué |
+| --- | --- | --- |
+| 1 | **Correr en Release** | 55 % del intérprete, gratis, ya verificado |
+| 2 | **Medir aciertos y fallos de la caché de texturas** | el 32 % del tiempo real no tiene todavía una explicación |
+| 3 | Reordenar `context_t` | ver abajo: es barato y es lo único del plan que ataca lo que `/O2` no puede |
+| 4 | 0.1, el perfil de muestreo | ahora dentro de un 33 %, no de un 71 % |
+| ~~A~~ | ~~tabla compacta~~ | **refutado**, pierde 1,2-2,5 % |
+| ~~B~~ | ~~cachear el puntero de búsqueda~~ | sólo tiene sentido junto con (3) |
+
+### Lo que queda del candidato C, y por qué es barato
+
+`/O2` registeriza dentro de cada handler, pero **no puede evitar el tráfico de líneas de
+caché entre una instrucción y la siguiente**: el estado vive en la global `core` y cada
+handler lo escribe antes de volver. Ahí sí queda algo, y la disposición actual lo empeora
+sin necesidad:
+
+```
+  0   cycles                <- CADA instruccion lo escribe     linea 0
+  4   cycles_v_int          <- SIN USAR
+  8   cycles_v_int_total    <- SIN USAR
+ 12   registers[24]         R0..R15 en 12..75                  lineas 0 y 1
+                            R0_BANK..R7_BANK en 76..107  (frios)
+108   banco_activo .. 148 PR
+152   PC_REG                <- CADA instruccion lo escribe     linea 2
+156   SR_REG                <- SR_T lo tocan muchisimas        linea 2
+```
+
+Cada instrucción toca la línea 0 (`cycles`), una de registros y la línea **2** (`PC`): dos o
+tres donde alcanzarían una o dos. Y ocho bytes de la línea más caliente los ocupan dos
+campos que el comentario declara sin usar, conservados "para no cambiar el tamaño del
+contexto" — motivo que no se sostiene, porque la instantánea copia con `sizeof`.
+
+Poner `cycles, PC_REG, SR_REG, registers[0..15]` primero son 76 bytes: dos líneas, y lo frío
+detrás. **No es refactorizar `core`, es cambiar el orden de los campos**, y nada depende de
+él. Eso además habilita al candidato B, que solo no cerraba: si el par (zona, base) de la
+búsqueda de instrucciones vive en esa misma línea, se lee gratis con el `PC` que ya se
+cargó.
