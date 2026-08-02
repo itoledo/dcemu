@@ -155,6 +155,9 @@ DWORD pvr_fb_r_sof1 = 0x0;
    la escena y las funciones que la levantan estan mucho mas abajo. */
 static int geometria_desbordada = 0;
 
+/* Cuantos vertices pidio la escena en curso, incluidos los que no cupieron. */
+static unsigned long vertices_pedidos = 0;
+
 DWORD total_polygon_count=0;
 DWORD strip_polygon_count = 0;
 DWORD strip_count =0;
@@ -2495,6 +2498,11 @@ static void terminar_escena(void)
 	   que seguir callando el aviso. */
 	geometria_desbordada = 0;
 
+	if (perf_activa && vertices_pedidos > perf_vertices_max)
+		perf_vertices_max = vertices_pedidos;
+
+	vertices_pedidos = 0;
+
 	gui_refresh();
 
 	logxmsg(LOG_PVR, "cb_tastart: SDL_GL_SwapBuffers\n");
@@ -2763,6 +2771,10 @@ static void desbordo(const char * que, unsigned long tope)
 /* El indice del vertice nuevo. Se queda en el ultimo si ya no cabe. */
 static DWORD vertice_reservar(void)
 {
+	/* Se cuentan los pedidos, quepan o no: es lo que dice de que tamano
+	   deberian ser los arreglos. Ver perf_vertices_max en perf.h. */
+	vertices_pedidos++;
+
 	if ((size_t) total_polygon_count + 2 < VERTICES_MAX)
 		return ++total_polygon_count;
 

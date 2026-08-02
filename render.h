@@ -197,7 +197,27 @@ typedef struct TriangleStripInfo
 }TSI;
 
 
-vertex VertexBuffer[65000];
+/*
+	La geometria de la escena en curso.
+
+	Los dos tamanos eran 65000 y 10000, numeros de dcemu y no del PVR, y hasta
+	que se midio nadie sabia si alcanzaban. Ahora hay cifras: con --perf, el
+	pico de vertices que **pide** una escena es
+
+	  Crazy Taxi en juego     9 603   (1889 tiras)
+	  sh4zam-bruces_balls    78 120   (1860 tiras)
+
+	o sea que un juego entra con holgura y una demo de geometria intensiva no
+	entraba: se pasaba del arreglo y escribia detras. Con 160000 hay algo mas
+	del doble de la escena mas grande medida, y las tiras sobran cinco veces.
+
+	El control de limite de vertice_reservar() se queda igual, como red: crecer
+	el arreglo hace que el recorte no ocurra en la practica, no que sea
+	imposible. Y recortar tampoco es ajeno al hardware -- el chip tiene su
+	propio tope de memoria de parametros y avisa con TA_PARAM_OVERFLOW --, lo
+	que no puede pasar es escribir fuera.
+*/
+vertex VertexBuffer[160000];
 TSI TriangleStrip[10000];
 
 /* Los triangulos de volumen modificador de la escena en curso. */

@@ -37,6 +37,7 @@ unsigned long long perf_ns_captura	= 0;
 unsigned long long perf_escenas		= 0;
 unsigned long long perf_tiras		= 0;
 unsigned long      perf_tiras_max	= 0;
+unsigned long      perf_vertices_max= 0;
 
 unsigned long long perf_sync_instantes = 0;
 unsigned long long perf_ns_espera	= 0;
@@ -176,6 +177,10 @@ void perf_resumen(void)
 			" %lu la mayor\n",
 			perf_escenas, (double) perf_tiras / (double) perf_escenas,
 			perf_tiras_max);
+
+	if (perf_vertices_max)
+		fprintf(stderr, "perf: pico de vertices pedidos por una escena: %lu\n",
+			perf_vertices_max);
 
 	if (perf_arm_pasos)
 		fprintf(stderr, "perf: ARM7: %llu pasos, %llu ociosos (%.1f %%)\n",

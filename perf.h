@@ -63,6 +63,14 @@ extern unsigned long long perf_tiras;
 extern unsigned long      perf_tiras_max;
 
 /*
+	El pico de vertices que **pidio** una escena, contando los que no cupieron.
+	Es lo que dice de que tamano deberian ser VertexBuffer[] y TriangleStrip[]:
+	65000 y 10000 son numeros de dcemu, no del PVR, y hasta ahora nadie habia
+	medido cuanto pide una escena real.
+*/
+extern unsigned long      perf_vertices_max;
+
+/*
 	Los alcances de verdad, que no son los accesos.
 
 	En el diseno de la fase 1 de docs/hilos-plan.md el hilo principal espera al
