@@ -1290,10 +1290,6 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		cached_textures[cur_tex_count].twiddled = true;
 	}
 
-	/* Las ramas que decodifican a un buffer propio ya no necesitan el plano. */
-	if (cached_textures[cur_tex_count].data != (void *) plano)
-		free(plano);
-
 	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
 	   aplicar_filtros(strip);
 
@@ -1456,6 +1452,17 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			}
 		}
 	}
+
+	/* El plano recien ahora: los niveles chicos de la cadena de mipmaps se
+	   decodifican de el DESPUES del nivel grande, en el bloque de arriba.
+	   Liberarlo antes de ese bloque -- donde estaba -- era un use-after-free:
+	   el malloc de cada nivel reciclaba el bloque recien liberado y los
+	   niveles chicos salian de basura estructurada. Era el triangulo
+	   invertido tramado en las palmeras lejanas de Crazy Taxi y sus autos
+	   deslavados a media distancia; el nivel grande, decodificado antes del
+	   free, siempre estuvo bien, y por eso todo se veia sano de cerca. */
+	if (cached_textures[cur_tex_count].data != (void *) plano)
+		free(plano);
 
 	/* GL ya tiene su copia: la de CPU no se guarda -- mil texturas
 	   persistentes de a cientos de KB serian memoria muerta. */

@@ -573,6 +573,17 @@ stops at 2×2** — the 1×1 index shares a byte with it — so `GL_TEXTURE_MAX_
 chain; without the clip the texture is incomplete and GL samples it white. The MIN filter
 picks mipmap modes in `aplicar_filtros()` when the strip's texture carries the bit.
 
+**The small levels decode from `plano` — the gathered chain — so `plano` must outlive the
+level loop.** `free(plano)` used to sit right after the level-0 decode, before that loop: a
+use-after-free where each level's own `malloc` recycled the freed block, so every small
+level came out as structured garbage while level 0 stayed correct. On screen that was
+distance-dependent corruption a code audit kept missing because every offset checked out
+against the pvrtex table: Crazy Taxi's far palms rendered as dithered inverted triangles
+(magenta or teal by texture) and mid-distance traffic washed out, while everything near
+looked fine. `DCEMU_SIN_FILTRO_MIP` is what split it — artifact gone without mip filtering
+— and the free now runs after the chain upload. No KOS demo uses the mipmap bit, so the
+demo sweep can never catch a regression here: a game has to.
+
 **Strips with zero vertices are skipped at draw** — a game's shadow headers leave hundreds of
 empty end-of-strip records per scene that drew nothing but paid the full GL state churn.
 

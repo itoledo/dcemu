@@ -636,6 +636,20 @@ lejos se ven como un triángulo invertido** — nuevo, huele a los niveles chico
 de los sprites VQ mal decodificados u orientados; y las texturas de autos que se rompen
 avanzada la corrida (ya anotado arriba, sospecha de desalojo del caché).
 
+**Los árboles-triángulo y los autos deslavados cayeron juntos (2026-08-02): eran un
+use-after-free, no un error de offsets.** `DCEMU_SIN_FILTRO_MIP` partió el problema en dos
+(sin filtro de mipmaps las palmeras salían con sus frondas y los autos nítidos ⇒ los
+niveles chicos contenían basura), la auditoría de offsets dio limpia contra la tabla de
+pvrtex en los tres formatos… y la respuesta estaba en el orden: `free(plano)` corría entre
+la decodificación del nivel grande y el bucle de niveles chicos, que lee `plano` — el
+`malloc` de cada nivel reciclaba el bloque recién liberado y salía basura estructurada,
+dependiente de la historia del heap (por eso también "se pudrían" texturas avanzada la
+corrida). El free va después del bucle ahora. Verificado: el cuadro 40 s del reproductor
+con palmeras verdes y tráfico nítido CON mipmaps activos, confirmado en vivo jugando, y
+los diez demos KOS de control byte a byte idénticos (ninguno usa el bit de mipmap — por
+eso el barrido nunca podía ver esto). La sombra del taxi, confirmada bien en vivo tras el
+conteo por caras. **Queda pendiente de esa lista: las ruedas sin transparencia.**
+
 **El manto oscuro con volúmenes activos es la simplificación documentada de
 `marcar_volumenes()`**: unión de triángulos en vez de conteo de caras. La sombra del taxi es
 un volumen cerrado (extruido); marcar cada triángulo enciende todo lo que sus caras cubren —
