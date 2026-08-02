@@ -288,7 +288,29 @@ como están para los usos internos.
 Las dos preservan el gancho de la MMU, el del UBC y el del watchpoint: son comparaciones
 contra cero que quedan donde están.
 
-### 2.4 Menos trabajo por instrucción en `main_loop()`
+### 2.4 Menos trabajo por instrucción en `main_loop()` — **medida: no vale nada**
+
+Antes de pagar el riesgo de esta fase se midió el techo, con el mismo método que el grano:
+un binario desechable con **las cuatro comprobaciones quitadas** (`DebugMode`,
+`traza_activa`, `ubc_activa`, `excepcion_vigilar`), corrido contra el normal en la misma
+tanda:
+
+| | tiempo real |
+| --- | --- |
+| con las cuatro comprobaciones | 104 376 ms |
+| sin ninguna | 105 888 ms |
+
+**No hay nada que ganar** — la corrida sin comprobaciones sale 1,4 % *más lenta*, o sea que
+la diferencia es ruido entre corridas. Cuatro ramas por instrucción que el predictor acierta
+siempre no cuestan nada medible.
+
+Queda descartada, y con eso se evita un refactor de cuatro banderas globales con escritores
+en cuatro módulos distintos cuyo modo de fallo era saltarse un chequeo **en silencio**.
+
+> El experimento costó dos compilaciones y seis minutos. El refactor habría costado un día
+> y habría dado cero.
+
+### 2.4 (texto original del plan)
 
 El cuerpo del bucle interno hace, además del despacho: `DebugMode == DBG_STOP`,
 `traza_activa`, `ubc_activa`, `excepcion_vigilar`, `cycles >= 50`,
