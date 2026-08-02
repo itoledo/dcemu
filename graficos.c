@@ -851,7 +851,7 @@ static void aplicar_filtros(int strip)
 
 	/* Con mipmaps (GL los genero al subir la textura; ver get_texture()), la
 	   minificacion los usa: es lo que corta el alias del piso lejano. */
-	if (TriangleStrip[strip].texture.mipmapped)
+	if (TriangleStrip[strip].texture.mipmapped && !getenv("DCEMU_SIN_FILTRO_MIP"))
 		min = TriangleStrip[strip].texture.filtermode
 			? GL_LINEAR_MIPMAP_LINEAR
 			: GL_NEAREST_MIPMAP_NEAREST;
@@ -1006,6 +1006,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 	slot = -1;
 
+	if (!getenv("DCEMU_SIN_CACHE_TEX"))
 	for (i = tex_hash[tex_hash_balde(memorypos)]; i >= 0; i = tex_hash_sig[i])
 	{
 		if (cached_textures[i].memorypos == memorypos
@@ -1102,6 +1103,42 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	}
 
 	vram64_leer(memorypos, plano, plano_bytes);
+
+	/* DCEMU_VOLCAR_TEX=hex: la primera vez que se decodifica la textura de
+	   esa direccion, el bloque juntado tal cual sale a tex-<addr>.bin. Es la
+	   verdad de que bytes consumio el decodificador EN EL MOMENTO del draw,
+	   que un --volcar al salir no puede dar si la region se reescribe. */
+	if (traza_activa)
+	{
+		const char * e = getenv("DCEMU_VOLCAR_TEX");
+
+		if (e != NULL && (DWORD) strtoul(e, NULL, 16) == memorypos)
+		{
+			static int hecho = 0;
+
+			if (!hecho)
+			{
+				char nom[64];
+				FILE * fp;
+
+				hecho = 1;
+				snprintf(nom, sizeof(nom), "tex-%06lx.bin",
+					(unsigned long) memorypos);
+				fp = fopen(nom, "wb");
+
+				if (fp != NULL)
+				{
+					fwrite(plano, 1, plano_bytes, fp);
+					fclose(fp);
+					fprintf(stderr, "traza: textura %06lx volcada a %s"
+						" (%lu bytes, mip_salto %lu)\n",
+						(unsigned long) memorypos, nom,
+						(unsigned long) plano_bytes,
+						(unsigned long) mip_salto);
+				}
+			}
+		}
+	}
 
 	/* El nivel grande: tras el salto de los chicos en los formatos planos; en
 	   VQ el salto corre sobre los indices y el codebook queda al principio. */
@@ -1383,6 +1420,32 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			if (vq)
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
 					ultimo > 0 ? ultimo : 0);
+
+			/* Si alguna subida de nivel fallo, la textura queda incompleta y
+			   GL la muestrea blanca: es la primera pregunta ante un "mundo
+			   blanco". Una linea por (tamano, error) distinto. */
+			if (traza_activa)
+			{
+				GLenum e = glGetError();
+
+				if (e != 0)
+				{
+					static unsigned vistos[8];
+					int i;
+
+					for (i = 0; i < 8 && vistos[i]; i++)
+						if (vistos[i] == ((unsigned) e ^ (unsigned) usize))
+							break;
+
+					if (i < 8 && !vistos[i])
+					{
+						vistos[i] = (unsigned) e ^ (unsigned) usize;
+						fprintf(stderr, "traza: error GL %04x subiendo mipmaps"
+							" de %dx%d (vq=%d ultimo=%d)\n",
+							(unsigned) e, usize, vsize, vq, ultimo);
+					}
+				}
+			}
 		}
 	}
 
@@ -1421,6 +1484,14 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 static void color_de_fondo(float * r, float * g, float * b)
 {
 	static float	ultimo[3] = { 0.0f, 0.0f, 0.0f };
+
+	/* Diagnostico: pintar el clear de magenta separa "esta superficie se
+	   dibujo blanca" de "aqui no se dibujo nada y se ve el fondo". */
+	if (getenv("DCEMU_FONDO_MAGENTA"))
+	{
+		*r = 1.0f; *g = 0.0f; *b = 1.0f;
+		return;
+	}
 
 	DWORD tag, skip, dir, color = 0;
 
@@ -2122,7 +2193,7 @@ static void dibujar_escena(void)
 				umbral es 0. El alfa comparado es el ya modulado, asi que una
 				textura sin canal alfa se recorta igual por el del vertice.
 			*/
-			if (TriangleStrip[i].type == 0)
+			if (TriangleStrip[i].type == 0 && !getenv("DCEMU_SIN_ALPHATEST"))
 			{
 				DWORD	ref = 0;
 				GLfloat	umbral;

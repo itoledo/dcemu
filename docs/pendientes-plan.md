@@ -497,6 +497,32 @@ Y de jugarlo en vivo con todo lo anterior puesto salieron dos más, resueltos el
   herramienta nueva `DCEMU_TRAZA_ESCENA=N[:M]`, que vuelca el estado GL completo (y el
   `PT_ALPHA_REF`) de las tiras de una escena elegida.
 
+### A.5 — El "mundo blanco" de Crazy Taxi en juego, acorralado (1 de agosto, noche)
+
+Reaparecido jugando (no en el attract), con reproductor determinista propio:
+`DCEMU_RTC_FIJO=2345678901 DCEMU_PULSAR_START=300,1100 DCEMU_PULSAR_A=1 DCEMU_SOLO_A=1`
+llega al juego real en ~35 s emulados con el mundo blanco. Eliminado por medición, en orden:
+la clave del caché sin el bit de mip (arreglado igual, era real), el muestreo de mipmaps
+(`DCEMU_SIN_FILTRO_MIP`: sigue blanco), el caché entero (`DCEMU_SIN_CACHE_TEX`: sigue), el
+alpha test del punch-through (`DCEMU_SIN_ALPHATEST`: sigue), el fondo (`DCEMU_FONDO_MAGENTA`:
+no aparece magenta ⇒ todo lo blanco está DIBUJADO), errores de GL en la subida (cero), las
+UV (sanas), y el contenido de VRAM de las texturas sospechadas (`DCEMU_VOLCAR_TEX=addr`
+vuelca los bytes que consumió el decodificador EN el draw: una "dominante" resultó ser la
+cara de un peatón, perfecta).
+
+**Lo que quedó clavado**: los píxeles blancos pertenecen a 1040 tiras por escena con textura
+`0x00400000` (8×8, 565, TCW `0x08080000` — tamaño en campos cero, dirección justo en el
+borde del banco 1) y **todas con `vol=1`**: son los polígonos de dos volúmenes — los que
+reciben la sombra del taxi — que el attract no usa. Dos sondas deciden:
+
+1. `DCEMU_VOLCAR_TEX=400000` en el reproductor: si esos 128 bytes son blancos, el juego
+   de verdad muestrea una textura blanca diminuta y el problema es el **color de vértice**
+   o la **segunda pasada de volumen** (dibujar_escena repinta las tiras `vol=1` con el
+   juego 1 dentro de la plantilla — si los volúmenes degenerados marcan la pantalla entera,
+   esa pasada repinta el mundo).
+2. El parseo del encabezado de dos volúmenes (POLY3/POLY4, TSP0/TCW0 en palabras 2-3 según
+   §3.7.5.2) contra lo que llega: la traza nueva imprime el TCW crudo por tira.
+
 Y de la segunda sesión de juego en vivo salieron tres más, los tres del pipeline translúcido,
 resueltos el mismo día — el detalle está en `CLAUDE.md` ("Graphics pipeline"):
 
