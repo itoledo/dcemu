@@ -17,6 +17,7 @@
 
 #include "excepciones.h"
 #include "mmu.h"
+#include "mem.h"		/* get_memory_pointer: el fetch devuelve punteros host */
 
 /* ------------------------------------------------------------------------ */
 /* Ayudantes                                                                */
@@ -522,6 +523,150 @@ static void modo_usuario_no_llega_a_la_pagina_privilegiada(void)
 	mmu_activa = 0;
 }
 
+/* ---------------------------------------------- busqueda de instrucciones --- */
+
+/*
+	Fase 7: el fetch traduce por la misma UTLB que los datos, via
+	mmu_fetch_resolver(), que ademas repuebla el cache de pagina. En las
+	pruebas no hay salto armado, asi que un fetch que falla VUELVE (fallar()
+	deja el codigo anotado y sigue); en el emulador real nunca vuelve, porque
+	con la MMU activa main_loop() siempre arma el salto antes de buscar.
+*/
+static void fetch_traduce_por_la_utlb_y_cachea_la_pagina(void)
+{
+	partir();
+	mmu_activa = 1;
+	mmu_fetch_invalidar();
+
+	cargar(0, 0x12345000, 0, 0x0C001000, PAG4K_RW);
+
+	ESPERAR_U32(mmu_fetch_resolver(0x12345678)
+		== (unsigned char *) get_memory_pointer(0xAC001678), 1);
+
+	/* El cache quedo apuntando a la pagina, con el modo del momento. */
+	ESPERAR_U32(mmu_fetch_vpn, 0x12345000);
+	ESPERAR_U32(mmu_fetch_mascara, 0xFFF);
+	ESPERAR_U32(mmu_fetch_md, (DWORD) SR_MD);
+
+	mmu_activa = 0;
+	mmu_fetch_invalidar();
+}
+
+static void fetch_sin_entrada_es_fallo_de_lectura_por_el_vector_de_tlb(void)
+{
+	partir();
+	mmu_activa = 1;
+	mmu_fetch_invalidar();
+
+	*PTEH = 0x00000055;
+
+	mmu_fetch_resolver(0x01df17c4);
+
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_FALLO_R);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_FALLO);
+	ESPERAR_U32(*TEA, 0x01df17c4);
+	ESPERAR_U32(*PTEH & 0xFFFFFC00, 0x01df1400 & 0xFFFFFC00);
+	ESPERAR_U32(*PTEH & 0xFF, 0x55);
+
+	mmu_activa = 0;
+	mmu_fetch_invalidar();
+}
+
+static void fetch_de_p1_no_traduce_y_cachea_la_zona_entera(void)
+{
+	partir();
+	mmu_activa = 1;
+	mmu_fetch_invalidar();
+
+	SR_MD = 1;
+
+	ESPERAR_U32(mmu_fetch_resolver(0x8C012345)
+		== (unsigned char *) get_memory_pointer(0x8C012345), 1);
+
+	/* La "pagina" es la zona de 16 MB: mem_zone[] resuelve por byte alto. */
+	ESPERAR_U32(mmu_fetch_vpn, 0x8C000000);
+	ESPERAR_U32(mmu_fetch_mascara, 0x00FFFFFF);
+
+	mmu_activa = 0;
+	mmu_fetch_invalidar();
+}
+
+static void fetch_de_usuario_respeta_la_proteccion(void)
+{
+	partir();
+	mmu_activa = 1;
+	mmu_fetch_invalidar();
+
+	/* PR=01: solo privilegiado. */
+	cargar(0, 0x12345000, 0, 0x0C001000, 0x00000010ul | (1ul << 5) | BIT_D_DAT);
+
+	SR_MD = 0;
+	mmu_fetch_resolver(0x12345000);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_PROT_R);
+	ESPERAR_U32(excepcion_vector, MMU_VEC_GENERAL);
+
+	/* Y P1 desde usuario es error de direccion. */
+	mmu_fetch_invalidar();
+	mmu_fetch_resolver(0x8C001000);
+	ESPERAR_U32(excepcion_codigo, MMU_EXC_DIR_R);
+
+	SR_MD = 1;
+	mmu_activa = 0;
+	mmu_fetch_invalidar();
+}
+
+static void ldtlb_invalida_el_cache_del_fetch(void)
+{
+	partir();
+	mmu_activa = 1;
+	mmu_fetch_invalidar();
+
+	cargar(0, 0x12345000, 0, 0x0C001000, PAG4K_RW);
+	mmu_fetch_resolver(0x12345000);
+	ESPERAR_U32(mmu_fetch_vpn, 0x12345000);
+
+	/* Cualquier LDTLB puede haber cambiado que traduccion vale. */
+	cargar(1, 0x00040000, 0, 0x0C002000, PAG4K_RW);
+	ESPERAR_U32(mmu_fetch_vpn, 0xFFFFFFFF);
+
+	mmu_activa = 0;
+	mmu_fetch_invalidar();
+}
+
+/*
+	URC avanza con cada acceso a la UTLB -- acierte o falle -- y con URB > 0
+	vuelve a cero al alcanzarlo. Es lo que hace que el LDTLB del manejador de
+	recarga no pise siempre la misma entrada: el de Windows CE no escribe URC
+	jamas, y sin el avance la pagina de codigo y la de datos de una misma
+	instruccion se desalojaban mutuamente en un ping-pong infinito.
+*/
+static void urc_avanza_con_cada_acceso_a_la_utlb(void)
+{
+	partir();
+	mmu_activa = 1;
+
+	cargar(0, 0x12345000, 0, 0x0C001000, PAG4K_RW);
+
+	*MMUCR = (*MMUCR & ~0x00FFFC00ul) | (5ul << 10);	/* URC=5, URB=0 */
+	mmu_traducir(0x12345000, MMU_LECTURA);
+	ESPERAR_U32(MMUCR_URC(*MMUCR), 6);
+
+	/* Tambien en un fallo. */
+	mmu_traducir(0x40000000, MMU_LECTURA);
+	ESPERAR_U32(MMUCR_URC(*MMUCR), 7);
+
+	/* P1 no pasa por la UTLB: no avanza. */
+	mmu_traducir(0x8C001000, MMU_LECTURA);
+	ESPERAR_U32(MMUCR_URC(*MMUCR), 7);
+
+	/* Con URB puesto, al alcanzarlo vuelve a cero. */
+	*MMUCR = (*MMUCR & ~0x00FFFC00ul) | (3ul << 18) | (2ul << 10); /* URB=3, URC=2 */
+	mmu_traducir(0x12345000, MMU_LECTURA);
+	ESPERAR_U32(MMUCR_URC(*MMUCR), 0);
+
+	mmu_activa = 0;
+}
+
 /* ------------------------------------------------------------------------ */
 
 static const dc_caso casos[] =
@@ -550,6 +695,12 @@ static const dc_caso casos[] =
 	CASO(escribir_en_pagina_limpia_es_primera_escritura),
 	CASO(pr_decide_quien_lee_y_quien_escribe),
 	CASO(modo_usuario_no_llega_a_la_pagina_privilegiada),
+	CASO(fetch_traduce_por_la_utlb_y_cachea_la_pagina),
+	CASO(fetch_sin_entrada_es_fallo_de_lectura_por_el_vector_de_tlb),
+	CASO(fetch_de_p1_no_traduce_y_cachea_la_zona_entera),
+	CASO(fetch_de_usuario_respeta_la_proteccion),
+	CASO(ldtlb_invalida_el_cache_del_fetch),
+	CASO(urc_avanza_con_cada_acceso_a_la_utlb),
 };
 
 const dc_suite suite_mmu = DEFINIR_SUITE("mmu", casos);

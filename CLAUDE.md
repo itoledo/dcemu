@@ -280,6 +280,21 @@ external area (the Broadband Adapter, which it supports) fail cleanly against
 one own blocker was the TA's current-list rule (see the pipeline section and A.8).
 **All four commercial images that parse now run.**
 
+**DCDoom loads now, and it is a Windows CE game** (2026-08-02): the boot binary is
+`0WINCEOS.BIN`, not `1ST_READ.BIN` — the name comes from IP.BIN offset 0x60, which the
+direct loader reads now instead of hardcoding it (the ROM always did; it is the pointer it
+leaves at GBR+0x9C). CE is what finally exercised MMU phase 7 (instruction-fetch
+translation, with a page cache — see `docs/mmu-plan.md`), the `MMUCR.URC` advance its TLB
+refill handler relies on, the P2 image of area 7 (zone `0xBF` — its HAL starts the system
+tick writing TSTR at `0xBFD80004`), and the Maple hardware trigger (`SB_MDTSEL=1`: the
+DMA walks itself at each vblank; CE never writes `SB_MDST`). The CE kernel boots whole —
+MMU on, software TLB refills, syscalls via jumps to `0xFFFFFxxx` (address-error traps),
+lazy FPU context over `SR.FD`, ticks, pad enumerated, the AICA's ARM running the firmware
+CE uploads — and then stalls: a section teardown at 119.4 ms unmaps `maple.dll` just
+before its entry point runs, the demand page-in never restores it, and the boot serializes
+behind that thread; the CD driver never touches the drive, so `DCDOOM.EXE` is never
+loaded. The frontier is mapped to the cycle in `docs/pendientes-plan.md`, A.9.
+
 Two things had to be right before the drive fixes below mattered:
 
 - **The `bios.bin` matters, but not the way it first looked.** The one in the repo is
@@ -708,8 +723,10 @@ and `dcopcodes.c` for Dreamcast-specific behaviour. Each handler advances `PC` i
 Regions: `0x0C-0x0F/0x8C-0x8F/0xAC-0xAF` system RAM (16 MB, mirrored 4× per window),
 `0x04/0x05/0xA4/0xA5` video RAM (8 MB), `0x11/0x13` the TA texture FIFO (also video RAM),
 `0x00/0xA0` PVR/system control registers, `0x10` TA polygon FIFO, `0xE0-0xE3` store queues,
-`0x1F/0xFF` SH-4 on-chip registers, `0xF0-0xF7` the P4 cache and TLB arrays (`mmu.c`),
-`0x70/0x80` BIOS. Unmapped zones default to
+`0x1F/0xFF/0xBF` SH-4 on-chip registers (`0xBF` is area 7 seen through P2 — Windows CE's
+HAL starts the system tick writing TSTR at `0xBFD80004`; with the zone unbound the write
+vanished silently and CE's scheduler idled forever), `0xF0-0xF7` the P4 cache and TLB
+arrays (`mmu.c`), `0x70/0x80` BIOS. Unmapped zones default to
 `mem_read_error`/`mem_write_error`, and their `mem_zone[]` entry points at a 16 MB discard
 block so `get_memory_pointer()` never dereferences NULL.
 
@@ -1474,6 +1491,12 @@ The controller bus lives inside `pvr_write()`, in the `SB_MDST` case (`0x005F6C1
 a device — a standard HKT-7700 controller — and the other ports get `0xFFFFFFFF`, which is
 "nothing here". Two commands are implemented: `Device Request` (1) and `GetCondition` (9).
 
+**The hardware trigger exists too**: with `SB_MDTSEL=1` and `SB_MDEN=1` the chip starts the
+DMA by itself at each vblank — `maple_vblank()` (mem.c), called by `main_loop()` next to the
+vblank event, synthesizes the `SB_MDST` write so both paths walk the same code. Windows CE
+polls the pad exactly this way and never writes `SB_MDST`; KOS and the boot ROM kick by
+software, which is why the trigger was never missed before DCDoom.
+
 **The first word of a transfer descriptor is legitimately zero.** It holds the length in
 bits 0-7, the pattern in 8-15, the port in 16-17 and end-of-list in bit 31, so a one-word
 frame to port A that is not the last of the list leaves all four at zero. The code used to
@@ -1691,6 +1714,12 @@ renderer. `log.c` writes `logs/{disasm,memoria,serial,pvr,intc,glop}.txt`.
   run inside an instruction must use the `_fisico` pair — that means the Maple and GD-ROM
   DMA, the PVR callbacks and the DMAC. Everything else internal uses `0x8C...` (P1), which
   is never translated either way. `mmu.c` owns the TLB and translation (`docs/mmu-plan.md`).
+  **Instruction fetch translates too** (phase 7): `main_loop()`, the delay slots and the
+  RTE fetch through `MMU_FETCH_PUNTERO()`, a page cache that costs one compare when the MMU
+  is off. The RTE's slot is fetched *before* `SR` is written — the manual's rule, and with
+  the MMU on it matters: a kernel's return-to-user has its slot in a privileged page.
+  `MMUCR.URC` advances on every UTLB access, which is what lets a software TLB-miss
+  handler's `LDTLB` pick a fresh entry each time — Windows CE's relies on it.
   **One `memwrite` in the Maple DMA was missed** (`mem.c`, the `0xFFFFFFFF` fill for a port
   with no device) and it cost `basic/mmu/pvrmap` a double fault. These only misbehave with
   the MMU on, so nothing else in the tree shows them — grep before assuming they are all

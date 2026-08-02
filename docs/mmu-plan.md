@@ -531,16 +531,60 @@ hay que revisar.
 Con las dos demos pasando, lo que sigue faltando de la MMU son las fases 6 y 7, que no las
 pide ninguna de ellas.
 
+### Fase 7, hecha — y quién la pidió (2026-08-02)
+
+Ninguna demo de KOS la pedía; **Windows CE sí**. DCDoom es un juego de CE (arranca
+`0WINCEOS.BIN`, no `1ST_READ.BIN`), su kernel enciende `AT` y ejecuta los procesos de
+usuario en P0 por la TLB: sin traducir la búsqueda, el PC aterrizaba en `0x00005b90`
+—dentro del boot ROM físico— y ejecutaba bytes de la BIOS como si fueran el proceso.
+
+La forma final es la que la fase anticipaba, con un cache de página en vez de pagarlo por
+instrucción:
+
+- `MMU_FETCH_PUNTERO(pc)` (mmu.h) es la macro que usan los tres sitios que buscan
+  instrucciones: `main_loop()`, `EJECUTAR_RANURA()` de branch.c y la ranura del RTE. Con
+  `mmu_activa` en cero es el `get_memory_pointer()` de siempre; encendida, el acierto es
+  una comparación de página más una de modo (`SR.MD` participa porque la protección
+  depende de él), y el fallo repuebla vía `mmu_fetch_resolver()`.
+- `traducir_busqueda()` comparte con los datos el recorrido de la UTLB
+  (`utlb_encontrar()`, extraído para que la regla de coincidencia no pueda divergir) y los
+  códigos: fallo `0x040` por el vector `0x400`, protección `0x0A0`, error de dirección
+  `0x0E0`. La ITLB real es un cache que el chip rellena solo desde la UTLB, así que se
+  busca directo en la UTLB; lo único que se pierde es una escritura directa al arreglo de
+  la ITLB por P4, que ningún sistema usa para mapear código.
+- P1 y P2 salen sin traducir con la zona entera de 16 MB como "página" —`mem_zone[]`
+  resuelve por byte alto, así que el puntero base vale para toda la zona y el kernel de CE
+  (que vive en P1) acierta casi siempre.
+- Invalidan el cache: `LDTLB`, las escrituras a los arreglos de la UTLB por P4, `MMUCR`, y
+  `PTEH` porque lleva el ASID (un `case 0x000000` nuevo en `regmap_write`).
+- **La ranura del RTE se busca ANTES de escribir `SR`**: el manual manda que el acceso a
+  instrucción de la ranura use el SR previo y sus accesos a datos el nuevo. Con la MMU
+  activa la diferencia se ve: el RTE del kernel hacia modo usuario tiene su ranura en una
+  página privilegiada, y buscarla ya en modo usuario la rechazaría. `rte143()` captura la
+  palabra primero y ejecuta después de `UpdateSR(SSR)`.
+
+**`MMUCR.URC` avanza ahora con cada acceso a la UTLB** —acierte o falle, con vuelta a cero
+al alcanzar `URB`—, que es lo que la fase 2 ya declaraba ("lo mueve la búsqueda, no la
+carga") y nadie implementaba. No es un detalle: el manejador de recarga de CE no escribe
+`URC` jamás y confía en ese avance para que cada `LDTLB` caiga en una entrada distinta.
+Sin él, la página de código y la de datos de una misma instrucción se desalojaban
+mutuamente —recarga de fetch pisa a la de datos, y al revés— en un ping-pong infinito.
+
+Verificado: 6 casos nuevos en la suite `mmu` (traducción de búsqueda con cache, fallo por
+el vector de TLB con `TEA`/`PTEH`, P1 sin traducir, protección en usuario, invalidación
+por LDTLB, avance de URC), las 21 pruebas de CTest en verde, y el kernel de DCDoom
+arrancando: MMU, recarga de TLB por software, syscalls por error de dirección
+(`0xFFFFFxxx`), y el contexto perezoso de FPU por `SR.FD` (0x800/0x820), todo en uso real.
+Ver `docs/pendientes-plan.md`, la sección de DCDoom.
+
 ### Lo que sigue faltando
 
 - **Fase 6**: las store queues resuelven por `QACR0`/`QACR1` y no respetan `MMUCR.SQMD`.
-- **Fase 7**: la búsqueda de instrucción sigue siendo `get_memory_pointer(PC)` directo, sin
-  traducir y sin ITLB. Los arreglos de la ITLB se leen y escriben, pero nadie los consulta.
-- `MMUCR.URC` no se incrementa por búsqueda, así que no hay reemplazo por LRU.
-- La traducción recorre las 64 entradas desempaquetando al vuelo. Es lo más lento posible y
-  está bien por ahora; si molesta, el paso siguiente es un arreglo decodificado en paralelo,
-  actualizado en los cuatro sitios que mutan la TLB.
+  Medido sobre DCDoom: su CE no usa las SQ con la MMU activa, así que tampoco la pide él.
+- La traducción recorre las 64 entradas desempaquetando al vuelo, ahora también en cada
+  fallo de cache del fetch. Es lo más lento posible y está bien por ahora; si molesta, el
+  paso siguiente es un arreglo decodificado en paralelo, actualizado en los cuatro sitios
+  que mutan la TLB. Con CE encima el costo ya se ve: ~0.2-0.5× del tiempo real durante el
+  arranque, entre la instantánea por instrucción y este recorrido.
 - No hay chequeo de alineación, así que los errores de dirección por acceso desalineado no
   se levantan. dcemu tampoco los chequeaba antes.
-
-Y sigue sin arreglar el arranque de KOS, que era el punto de la advertencia inicial.

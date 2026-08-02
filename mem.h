@@ -21,6 +21,10 @@ typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size)
 extern mem_access_read_t * mem_hash_read[0x100];
 extern mem_access_write_t * mem_hash_write[0x100];
 
+/* El disparo por hardware del Maple (SB_MDTSEL=1): main_loop() lo llama en
+   cada vblank. Ver mem.c. */
+void maple_vblank(void);
+
 /* Contadores de escrituras a RAM de video, solo con --traza-mem. */
 extern DWORD traza_video_escrituras;
 extern DWORD traza_video_bytes;

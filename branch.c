@@ -7,18 +7,24 @@
 #include "sh4emu.h"
 #include "excepciones.h"
 #include "mem.h"
+#include "mmu.h"
 
 /*
 	La ranura de retardo se ejecuta con un core.execute() anidado. La bandera
 	solo la mira run(), para distinguir la excepcion de FPU deshabilitada
 	general (0x800) de la de ranura (0x820). Si la instruccion aborta, el
 	longjmp se salta el bajado: main_loop() la limpia al recibir el salto.
+
+	La busqueda pasa por la MMU (MMU_FETCH_PUNTERO): la ranura puede caer en
+	la pagina siguiente a la del salto, y esa puede no estar mapeada. Si la
+	busqueda falla, el longjmp deja SPC en el salto, que es lo que pide el
+	manual.
 */
 #define EJECUTAR_RANURA()										\
 	do															\
 	{															\
 		en_ranura_retardo = 1;									\
-		core.execute(*(WORD *) get_memory_pointer(PC));			\
+		core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));			\
 		en_ranura_retardo = 0;									\
 	} while (0)
 

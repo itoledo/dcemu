@@ -80,7 +80,7 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | Virtua Tennis (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja — **corre desde el 2 de agosto, ver A.8** |
-| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** |
+| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** — resuelto: es Windows CE, ver A.9 |
 | mame4all (`.iso`) | carpeta empaquetada | 0 (no usa el TA) | 0 / 235315200 | ninguna | 105 | **su propio menú** |
 
 Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
@@ -119,6 +119,8 @@ lista `CLAUDE.md` —LBA 0, 302 sectores de audio y LBA 11702, 18487 de datos—
 sin problema desde el lsn 19136. Lo que falla es el recorrido del ISO9660 del cargador
 directo, que es otro código que el del ROM: la tabla de `CLAUDE.md` dice que **el ROM sí**
 encuentra su `1ST_READ.BIN`. Así que es anterior a este trabajo y está acotado a un camino.
+**Resuelto el 2 de agosto: no había tal archivo — el binario de arranque se llama
+`0WINCEOS.BIN` y el nombre lo declara el IP.BIN. Es un juego de Windows CE; ver A.9.**
 
 Nota sobre mame4all: la fila decía "el menú de la BIOS" porque se había corrido el
 `1st_read.bin` **suelto**, que no es la configuración que funciona. **Vuelto a medir el 1 de
@@ -873,6 +875,82 @@ incoherente — por eso nunca se vio.
 
 Con el latch el juego sigue de largo: pasa el logo y entra a su secuencia de intro. **Con
 esto, las cuatro imágenes comerciales que se parsean corren.**
+
+### A.9 — DCDoom carga y resulta ser Windows CE: el kernel arranca, el arranque se queda a medias (2 de agosto de 2026)
+
+El "no carga por este camino" de A.0 tenía una causa de una línea y un mundo entero
+detrás. La causa: el cargador directo buscaba `1st_read.bin` **con el nombre cableado**, y
+el directorio raíz de DCDoom no tiene tal archivo — tiene `0WINCEOS.BIN`, `DCDOOM.EXE`,
+`DOOM.WAD`, `AUTORUN.REG` y un directorio `WINCE`. **DCDoom es un juego de Windows CE.**
+El nombre del binario de arranque lo declara el IP.BIN en su cabecera (offset `0x60`, 16
+bytes rellenos con espacios) y es el mismo campo que usa el boot ROM — el puntero que deja
+en `GBR+0x9C`; la tabla de `bios-boot-plan.md` ya decía que el ROM "encuentra
+1ST_READ.BIN" en FAD 11895, que es exactamente donde vive `0WINCEOS.BIN`. `main.c` toma el
+nombre de ahí ahora, con `1st_read.bin` de valor por omisión.
+
+Con eso el binario carga, se descifra y corre — y pide todo lo que ningún juego de Katana
+pidió jamás. **Lo que se le dio, en orden de aparición:**
+
+- **La fase 7 de la MMU** (la búsqueda de instrucciones por la TLB) y **el avance de
+  `MMUCR.URC`** — ver `mmu-plan.md`, que documenta ambos. CE ejecuta sus procesos de
+  usuario en P0 traducido, recarga la TLB por software con el manejador en `VBR+0x400`, y
+  su manejador cuenta con que cada `LDTLB` caiga en una entrada distinta.
+- **La zona `0xBF`** en `mem_hash_read/write`: el área 7 física (`0x1F000000`) vista por
+  P2. El HAL de CE arranca el tick del sistema escribiendo `TSTR` en `0xBFD80004`; dcemu
+  solo tenía enlazadas `0x1F` y `0xFF`, la escritura caía al vacío sin aviso y el
+  planificador quedaba ocioso para siempre. La forma de siempre: algo que el guest pide,
+  contestado sin querer decirlo.
+- **El disparo por hardware del Maple** (`maple_vblank()` en mem.c): con `SB_MDTSEL=1` y
+  `SB_MDEN=1` el chip camina la lista de comandos solo, en cada vblank. CE no escribe
+  `SB_MDST` jamás — arma el disparo y espera los fines de DMA. Se reusa el caso de
+  `SB_MDST` de `pvr_write()` escribiendo el registro como lo haría el guest, así el
+  recorrido es idéntico por los dos caminos. El boot ROM y los juegos de Katana usan el
+  arranque por software — por eso nunca se vio.
+
+**Dónde queda DCDoom con todo eso** (medido con `--traza-mem` y el histograma de
+excepciones por segundo): el kernel de CE arranca entero — MMU encendida, recargas de TLB
+a miles por segundo, syscalls por salto a `0xFFFFFxxx` (error de dirección en la búsqueda,
+que la fase 7 levanta y CE atrapa: así implementa CE sus llamadas al sistema), contexto
+perezoso de FPU por `SR.FD` con los códigos 0x800/0x820, tick del TMU cada 25 ms acusado
+por su ISR, el mando enumerado por el sondeo automático del Maple, el ARM del AICA
+corriendo el firmware que CE le sube (63 M de instrucciones, cero indefinidas) y el driver
+de pantalla pintando su primer cuadro por la ventana de 32 bits. Del segundo 2 en
+adelante el sistema queda **ocioso en el despachador del kernel**: todos los hilos
+esperan, y la lectora no recibe ni un comando ATA en 25 segundos — `DCDOOM.EXE` nunca se
+llega a cargar del disco.
+
+**La frontera está mapeada al hilo y al ciclo.** El bloqueo de fondo: a los 118.8 ms el
+loader de CE construye el mapeo de la sección de código de `maple.dll` (PTE `8cfcb42c` en
+la tabla del proceso, PC `8c02447e`); a los 119.4 ms **la misma corrida lo desmonta** — la
+rutina de teardown de secciones (`8c02587c`) barre la tabla entera, patrón de creación de
+proceso deshecha —; a los 133.4 ms un hilo de coredll salta a `01df17c4` (maple.dll+0x7c4,
+su punto de entrada: la sección va de `03df1000` a `03df5d73` según la o32 del XIP, sin
+comprimir, con los bytes en RAM en `8c0ac000`), la búsqueda falla en la TLB, el recorrido
+por software del propio CE confirma PTE=0, y la paginación por demanda **nunca lo
+repone** (el PTE sigue en 0 a los 20 segundos, medido con watchpoint). El hilo sobrevive
+—reaparece a los 146 ms en un bucle `ResetEvent` + `WaitForMultipleObjects(1, evt, 0,
+5000)` que reintenta para siempre— y el resto del arranque queda serializado detrás:
+`wsegacd.dll` (el driver de CD) registró su interrupción (IML4 bit 14) y no llegó a tocar
+el drive.
+
+Lo descartado con medición, para no volver a recorrerlo: el ack de `SB_ISTNRM` nunca llega
+del guest porque su ISR real sí corre (el enmascaramiento de IML4 `0x7000→0x4000` es el
+patrón normal de CE: la fuente se re-habilita en `InterruptDone`, que nunca ocurre porque
+el IST de maple queda detrás del mismo bloqueo); el evento que ese hilo espera no está en
+la tabla de eventos por interrupción (`8c1119a0`: [10]/[11] maple, [12] GD-DMA — espera a
+otro hilo, no a una interrupción); CE no usa las store queues con la MMU activa (la fase 6
+no es esto); y el firmware ARM que CE sube corre sano. La imagen XIP se parseó entera
+desde la RAM emulada (ROMHDR en `8c10c478`, 19 módulos listados en la sección A.9 del
+histórico de esta corrida): `nk.exe`, `coredll.dll`, `filesys.exe`, `gwes.exe`,
+`wsegacd.dll`, `maple.dll`, `sndcore.dll`, `dinputx.dll`, etc.
+
+**El siguiente paso concreto**: entender por qué el teardown de los 119.4 ms deja un hilo
+vivo apuntando a una sección desmontada — si la creación del proceso falló por algo que
+dcemu contesta mal en esos 0.55 ms, o si el desmontaje es normal y lo roto es que la
+paginación posterior no repone la sección. La corrida es determinista: los ciclos de arriba
+se repiten exactos, y `--traza-desde` con los PC anotados (`8c02447e` el que mapea,
+`8c02587c` el que desmonta, `8c01bc68` el despachador de kcalls/excepciones) retoma donde
+esto quedó.
 
 ---
 
