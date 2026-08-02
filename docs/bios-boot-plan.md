@@ -801,8 +801,12 @@ Con esto arrancan los dos formatos, y el ROM encuentra el `1ST_READ.BIN` en todo
   escribe lineal —la store queue sigue entrelazando, que es lo que necesitan las texturas— y
   mame4all pasa del menú. Ver `docs/demos-kos.md`.
 
-- **El juego arranca pero no dibuja.** Tras el salto el ejecutable corre —el PC recorre
+- ~~**El juego arranca pero no dibuja.**~~ Tras el salto el ejecutable corre —el PC recorre
   `0x0C14xxxx`-`0x0C17xxxx`— y termina leyendo por punteros que no apuntan a nada
   (`0x10000011` en adelante, de a 0x2C). Lo mismo pasa por el camino de siempre, que carga
   el `1ST_READ.BIN` a mano y descifra 2084052 bytes sin quejarse, así que no es del arranque
   por BIOS: es el primer problema de emulación *del juego*, y es una investigación nueva.
+  **Resuelta**: fue la vía A entera de `docs/pendientes-plan.md` — el banco de registros
+  (A.-1b), el disco que el SDK exige (A.3), el modelo de eventos del ASIC con sus demoras
+  (A.6), el hook de la lectora (A.7) y la lista en curso del TA (A.8). Los cuatro juegos
+  comerciales corren desde el 2 de agosto de 2026.

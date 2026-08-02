@@ -6,20 +6,22 @@ emulación del chip gráfico PowerVR2 traducida a OpenGL, sobre SDL.
 Se publica con el historial completo recuperado del repositorio CVS original: el tronco
 llega hasta febrero de 2007, y el trabajo posterior arranca desde ahí.
 
-Corre **Doom**, **MAME** y 100 de los 135 ejemplos de
-[KallistiOS](https://github.com/KallistiOS/KallistiOS) —de los 35 restantes, 28 piden
-periféricos que no se emulan y 7 son de sonido—. Y **arranca desde el boot ROM real**: con
-`--bios` reproduce la animación del remolino, llega al menú y carga el `1ST_READ.BIN` de un
-`.cdi` de juego por su cuenta, como una consola. Lo que todavía no hace es que ese juego
-dibuje. El inventario al día está en [docs/demos-kos.md](docs/demos-kos.md) y lo que queda
-abierto en [docs/pendientes-plan.md](docs/pendientes-plan.md).
+Corre **juegos comerciales**: Crazy Taxi, Virtua Tennis, Capcom vs. SNK y Virtua Tennis 2
+arrancan desde sus `.cdi` y llegan a su pantalla de título y su attract en 3D. Corre además
+**Doom**, **MAME** y 104 de los 135 ejemplos de
+[KallistiOS](https://github.com/KallistiOS/KallistiOS) —de los 31 restantes, 28 piden
+periféricos que no se emulan y 3 esperan CDDA o el DSP de audio—. Y **arranca desde el boot
+ROM real**: con `--bios` reproduce la animación del remolino con su campanada, llega al menú
+y carga el `1ST_READ.BIN` de un `.cdi` de juego por su cuenta, como una consola. El
+inventario al día está en [docs/demos-kos.md](docs/demos-kos.md) y lo que queda abierto en
+[docs/pendientes-plan.md](docs/pendientes-plan.md).
 
 ## Qué emula
 
 | Subsistema | Estado |
 |---|---|
-| CPU SH-4, enteros | Completo — despacho por tabla de saltos, delay slots, bancos de registros. Las 239 filas de la tabla, con 516 casos de prueba |
-| FPU SH-4 | Simples, dobles y las gráficas (`FSCA`, `FIPR`, `FTRV`), con los campos Cause y Flag de FPSCR y sus excepciones. Faltan los bits DN y RM |
+| CPU SH-4, enteros | Completo — despacho por tabla de saltos, delay slots, bancos de registros. Las 239 filas de la tabla, con 615 casos de prueba, y 116.500 casos de SingleStepTests/sh4 en verde |
+| FPU SH-4 | Simples, dobles y las gráficas (`FSCA`, `FIPR`, `FTRV`), con los campos Cause y Flag de FPSCR, sus excepciones, y los modos DN y RM |
 | MMU | TLB, traducción, excepciones y reejecución. Sin traducir la búsqueda de instrucción |
 | Store queues | Sí — es la vía por la que el juego envía geometría al tile accelerator |
 | Interrupciones | INTC, eventos ASIC, los tres timers del TMU, el watchdog y el DMAC |
@@ -30,8 +32,9 @@ abierto en [docs/pendientes-plan.md](docs/pendientes-plan.md).
 | BIOS | Flash y RTC con escritura y persistencia, handshake del cable de vídeo, syscalls de fuente, flash y GD-ROM |
 | SCIF (serial) | Salida redirigida a `logs/serial.txt` |
 | DMA del SH-4 | Los cuatro canales del DMAC y el CH2 del Holly, que es el que alimenta al TA |
-| AICA / sonido | **No emulado** — se reserva la RAM y se acusa recibo del FIFO G2, nada más |
-| VMU, módem/BBA, red | No emulados |
+| AICA / sonido | El chip entero: el ARM7DI de adentro, los 64 canales (PCM8/16 y ADPCM), envolventes, temporizadores, su INTC y el G2-DMA. Suena el boot ROM y las demos de KOS; `--captura-audio` lo vuelca a `.wav`. Faltan CDDA, el DSP y el LFO |
+| Interrupciones del ASIC | Por nivel, derivadas de `SB_ISTNRM` contra las máscaras, con demoras de transferencia — lo que exige el despacho de un-bit-por-entrada de Katana |
+| VMU, módem/BBA, red | No emulados — la detección de la BBA falla limpio y los juegos siguen sin red |
 
 Incluye un depurador dentro del emulador (F12): desensamblador, vista de registros, volcado
 de memoria y ejecución paso a paso.
@@ -87,9 +90,12 @@ cmake --build build --config Debug --target dcemu_tests
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-Son 543 casos que cubren las 239 filas de la tabla de instrucciones —una suite comprueba
+Son 615 casos que cubren las 239 filas de la tabla de instrucciones —una suite comprueba
 que no quede ninguna sin ejercitar— más lo que no son opcodes: la lectora, el TA, la MMU,
-el UBC, los timers, el watchdog y las dos ventanas de la RAM de vídeo. Encontraron 16
+el UBC, los timers, el watchdog, las dos ventanas de la RAM de vídeo, y el AICA con su
+ARM7DI y el G2-DMA. Un segundo binario, `dcemu_sh4json`, corre el núcleo contra los
+116.500 casos de [SingleStepTests/sh4](https://github.com/SingleStepTests/sh4) (92 MB,
+fuera del repo; sin ellos la prueba se salta sola). Encontraron 16
 desviaciones respecto del manual del
 SH-4, todas corregidas; la más gruesa: `DIV1` calculaba `T = Q && M` en vez de
 `T = (Q == M)`, de modo que **toda división sin signo devolvía cociente 0**. De paso se

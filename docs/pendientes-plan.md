@@ -20,7 +20,7 @@ No se inventó nada: cada punto viene anotado en un documento o en el código.
 
 ## El estado del que se parte
 
-Actualizado el 1 de agosto de 2026.
+Actualizado el 2 de agosto de 2026.
 
 | | |
 | --- | --- |
@@ -31,7 +31,7 @@ Actualizado el 1 de agosto de 2026.
 | El núcleo contra SingleStepTests/sh4 | **116.500 casos, 0 fallos** |
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
 | mame4all | arranca desde el `.iso` y dibuja su menú |
-| **Crazy Taxi** | **corre**: título y modo attract en 3D, responde al mando (A.3) |
+| **Los cuatro juegos comerciales** | **corren**: Crazy Taxi (A.3), Virtua Tennis (A.6), Capcom vs. SNK (A.7) y Virtua Tenis 2 (A.8) — todos con título y attract/menú |
 
 Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
 no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
@@ -43,7 +43,7 @@ juego del disco"):
 
 | hito | qué se ve | vía | estado |
 | --- | --- | --- | --- |
-| **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026: Crazy Taxi corre** — ver A.3 |
+| **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026 (Crazy Taxi, A.3) y por cuadruplicado el 2 (VT A.6, CvS A.7, VT2 A.8)** |
 | **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026: suenan cuatro** |
 | **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | pendiente |
 
@@ -60,7 +60,7 @@ imágenes comerciales que se parsean corren.**
 
 ---
 
-## Vía A — El juego arranca y no dibuja (hito D)
+## Vía A — El juego arranca y no dibuja (hito D) — **cerrada el 2 de agosto de 2026: los cuatro juegos corren**
 
 Lo que está anotado: tras el salto el ejecutable corre —el PC recorre `0x0C14xxxx`-`0x0C17xxxx`—
 y termina leyendo por punteros que no apuntan a nada, `0x10000011` en adelante y de a `0x2C`.
@@ -296,7 +296,7 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   Tennis pasa su espera 3 **sin el experimento**: STARTRENDER dispara y quedó en la espera
   4. Los demos de volúmenes, dentro de su varianza de `rand()` (medida en el mismo binario);
   el resto del subconjunto, byte a byte.
-- **Espera 4** (donde está hoy): es `while ((obj = cola_pop()) == NULL) yield;` — la rutina
+- **Espera 4** (donde quedó ese día; su resolución es A.6): es `while ((obj = cola_pop()) == NULL) yield;` — la rutina
   `8c1f9960` entrega búferes de comando que el pipeline de cuadro recicla, y el reciclador es
   la **cadena enlazada de callbacks** que recorre el handler del render-done (entrada 2,
   `8c1e84c0`: `for (n = [8c1e8598]; n; n = n->sig) n->fn(n->arg)`). El juego encadena un nodo
@@ -329,7 +329,8 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   Lo que falta: que el pipeline de cuadro del juego gire — su cadena de render-done tiene
   que correr una vez POR render con el nodo ya puesto, y el juego consume además los eventos
   por el estado de `SB_ISTNRM` (los acks). Es trabajo del modelo de eventos del ASIC, no un
-  registro suelto.
+  registro suelto. **Resuelto en A.6**: era exactamente eso — la entrega por nivel más la
+  demora del fin del CH2 DMA.
 
 Y de esa persecución salieron dos mejoras estructurales que ya quedaron:
 
@@ -994,7 +995,8 @@ escritura sin emular en 00000000 (4 bytes) desde PC 8c29a444
 ```
 
 Las cuatro de `0xA10004xx`-`0xA10018xx` son un dispositivo del bus G2, sondeado desde un mismo
-PC: es la cuarta sospecha de A.2, y aquí sale sola. Sin veredicto por el serial.
+PC: es la cuarta sospecha de A.2, y aquí sale sola. Sin veredicto por el serial. **Cerrado en
+A.8**: era la detección de la Broadband Adapter, es benigna, y el juego corre.
 
 ### C.2 — El README quedó de antes de todo esto — **resuelto**
 
@@ -1327,9 +1329,11 @@ la variante x64. Ninguna bloquea nada.
    candidatos de A.2 (ninguno era la causa: los stubs mudos no llegan a llamarse en Crazy
    Taxi), arreglaron una imagen y dejaron de mentir en la portada. De paso salió la lectura
    de `0x2d2d2d0a` que está anotada en la vía A.
-2. **Vía A.0** — media sesión. La tabla de dónde se para cada imagen hoy. Sin esto se puede
-   estar persiguiendo un fantasma de hace una semana.
-3. **Vía A.1 y A.2** — el hito D. Es donde está el valor.
+2. ~~**Vía A.0**~~ — hecha, y rehecha el 1 de agosto (A.0b).
+3. ~~**Vía A.1 y A.2**~~ — **hecho: el hito D cayó por cuadruplicado** (Crazy Taxi el 1 de
+   agosto, A.3; Virtua Tennis, Capcom vs. SNK y Virtua Tenis 2 el 2, A.6-A.8). La vía A
+   queda cerrada; lo que sigue de los juegos es jugarlos y anotar residuos, que es C.5 con
+   otro parque.
 4. ~~**Vía D.1**~~ — **hecho el 1 de agosto de 2026**, y no costó una llamada: la pasada de
    SingleStepTests trajo RM y DN y otros nueve arreglos del núcleo. Queda **D.2**, las dos
    filas de `SGR`, que sigue siendo lo más barato de la lista.
@@ -1355,8 +1359,10 @@ Lo de siempre en este árbol, y por escrito porque cada punto ya costó tiempo u
 
 ## El riesgo real
 
-- **Que la vía A no sea una cosa sola.** Es lo más probable y es lo que pasó con la lectora
-  (cinco fallos, cada uno tapando al siguiente). Se mitiga con A.0: cinco imágenes, no una.
+- ~~**Que la vía A no sea una cosa sola.**~~ No lo era, y el pronóstico acertó: cuatro
+  causas, cada una tapando a la siguiente (el banco de registros, el modelo de eventos del
+  ASIC, el hook de la lectora, la lista en curso del TA). A.0 fue lo que permitió verlas
+  por separado.
 - **Que la vía B se coma el proyecto.** Un ARM7DI más 64 canales más ADPCM es comparable a lo
   que ya hay escrito del PVR. Si se entra, se entra por fases con veredicto en cada una, y la
   primera es "la aserción de `snd_iface.c:84` deja de saltar".
@@ -1372,13 +1378,13 @@ Muy gruesa, en sesiones de trabajo:
 | --- | --- | --- |
 | C.1-C.4 (residuos que alimentan A) | 1 | hecho el 31 de julio |
 | A.0 (la tabla) | 0,5 | hecha, y rehecha el 1 de agosto — ver A.0b |
-| A.1-A.2 (el hito D) | 2 a 8, sin piso claro | **pendiente, y es lo que importa** |
+| A.1-A.2 (el hito D) | 2 a 8, sin piso claro | **hecho: 1-2 de agosto, los cuatro juegos (A.3, A.6-A.8)** |
 | D.1 (RM, DN) | 1 | hecho el 1 de agosto |
 | D.2 (las dos filas de `SGR`) | 0,5 | pendiente, lo más barato de todo |
 | B (el AICA completo) | 8 a 15 | hasta la fase 4; quedan CDDA y el DSP |
 | C.5 (revisar las 33) | 1 | pendiente |
 | D.3-D.5, E | 3 | pendiente |
 
-El rango de A es honesto: puede ser un registro sin caso —como fueron el `REVISION` del PVR y
-el `SB_G1SYSM`, media hora cada uno una vez encontrados— o puede ser una función del juego que
-depende de algo que no está. Lo que acota el rango es A.0.
+El rango de A resultó honesto en las dos puntas: cada causa una vez encontrada fue barata
+(un syscall, una demora, un latch), y encontrarlas costó lo que costó — cuatro causas
+distintas en dos días, ninguna repetida.

@@ -176,7 +176,9 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--salir-tras=N` | sale solo a los `N` segundos de tiempo **emulado** |
 
 Los de diagnóstico son los seis últimos y **todos sus números van en hexadecimal** (salvo
-los segundos de `--salir-tras`).
+los segundos de `--salir-tras`). **Las variables de entorno `DCEMU_*` van en decimal**
+(`atoi`): pasarle `3e8` a `DCEMU_PULSAR_START` se lee como 3, y el Start cae en el cuadro
+equivocado sin ningún aviso — ya costó una corrida.
 
 **`--traza-mem` is the tool for working on the BIOS boot.** It prints each unemulated
 address once with the PC that asked for it, and when the last 96 PCs collapse into 64 or
@@ -358,6 +360,7 @@ Both selfboot layouts work, and the ROM finds `1ST_READ.BIN` on all of them:
 | Crazy Taxi (USA) | LBA 0, 33600, datos | LBA 45000, 306552, datos | datos/datos |
 | Virtua Tennis (USA) | LBA 0, 33600, datos | LBA 45000, 314830, datos | datos/datos |
 | Capcom vs. SNK (USA) | LBA 0, 33600, datos | LBA 45000, 314569, datos | datos/datos |
+| Virtua Tenis 2 (USA) | LBA 0, 33600, **audio** | LBA 45000, 286564, datos (2336, modo 2) | audio/datos, CDI 3.0 |
 
 **The TOC's byte order on the wire is not the struct's.** Each entry goes out with the
 **control byte first** and the FAD behind it big-endian, like every other SPI response;
