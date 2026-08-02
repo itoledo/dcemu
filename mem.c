@@ -58,6 +58,9 @@ BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 
 unsigned char * mem_zone[0x100]; // para las zonas de memoria
 
+/* Zonas que son memoria plana. Ver mem.h; la llena mem_hash_setup(). */
+unsigned char mem_zona_directa[0x100];
+
 mem_access_read_t video_read;
 mem_access_read_t ram_read;
 mem_access_read_t regmap_read;
@@ -505,6 +508,17 @@ void mem_hash_setup(void)
 		mem_hash_read[i]  = mmu_p4_read;
 		mem_hash_write[i] = mmu_p4_write;
 	}
+
+	/*
+		Y el camino rapido de memread()/memwrite(): que zonas son memoria plana.
+		**Va al final a proposito**, cuando ya estan puestos todos los
+		manejadores, y se deriva de ellos en vez de listarse aparte: asi las dos
+		cosas no pueden divergir cuando alguien agregue o mueva una zona. Ver
+		mem.h.
+	*/
+	for (i = 0; i <= 0xFF; i++)
+		mem_zona_directa[i] = (unsigned char)
+			(mem_hash_read[i] == ram_read && mem_hash_write[i] == ram_write);
 }
 
 void mem_read_error(unsigned long direccion, void * p, size_t size)

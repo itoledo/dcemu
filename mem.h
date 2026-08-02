@@ -21,6 +21,26 @@ typedef void mem_access_write_t (unsigned long direccion, void * p, size_t size)
 extern mem_access_read_t * mem_hash_read[0x100];
 extern mem_access_write_t * mem_hash_write[0x100];
 
+/*
+	1 en las zonas que son memoria respaldada y sin efectos secundarios: leer o
+	escribir ahi es exactamente mover bytes a traves de mem_zone[], que es lo
+	que hacen ram_read() y ram_write().
+
+	Existe porque **cada carga y cada guardado del programa emulado costaba una
+	llamada indirecta**: memread() despachaba por mem_hash_read[dir >> 24] a una
+	funcion que recibe un puntero y un tamano, hace un switch sobre el tamano y
+	escribe a traves del puntero. Son tres instrucciones de trabajo util dentro
+	de una llamada que el compilador no puede ver a traves, y entre un 30 y un
+	40 % de las instrucciones del SH-4 son accesos a memoria. Ver
+	docs/rendimiento-plan.md, fase 2.3.
+
+	**La tabla se deriva de los manejadores, no se lista aparte**, para que no
+	puedan divergir: una zona es directa si sus dos manejadores son los de RAM.
+	La RAM de video, el PVR, los registros y las store queues tienen efectos
+	secundarios y siguen por la llamada indirecta, que es donde deben estar.
+*/
+extern unsigned char mem_zona_directa[0x100];
+
 /* Contadores de escrituras a RAM de video, solo con --traza-mem. */
 extern DWORD traza_video_escrituras;
 extern DWORD traza_video_bytes;
@@ -97,16 +117,63 @@ extern int ubc_operando_activa;
 void ubc_operando(unsigned long direccion, const void * valor, size_t tam,
 				  int escritura);
 
+/*
+	El movimiento de bytes del camino directo. Son macros y no funciones a
+	proposito: el tamano es constante en todos los llamadores -- ReadMemoryL
+	pasa sizeof(DWORD) -- asi que el switch se resuelve al compilar, y con una
+	funcion el compilador tendria que inlinearla para lograr lo mismo, cosa que
+	no hace sin optimizacion. La idea es que el acceso quede dentro del handler
+	del opcode, no que cambie una llamada por otra.
+*/
+#define MEM_DIRECTO_LEER(dir, target, size)								\
+	do																	\
+	{																	\
+		unsigned char * _md_p = get_memory_pointer(dir);				\
+																		\
+		switch (size)													\
+		{																\
+			case 1:  *(BYTE *)  (target) = *(BYTE *)  _md_p;	break;		\
+			case 2:  *(WORD *)  (target) = *(WORD *)  _md_p;	break;		\
+			case 4:  *(DWORD *) (target) = *(DWORD *) _md_p;	break;		\
+			default: memcpy((target), _md_p, (size));		break;		\
+		}																\
+	} while (0)
+
+#define MEM_DIRECTO_ESCRIBIR(dir, source, size)							\
+	do																	\
+	{																	\
+		unsigned char * _md_p = get_memory_pointer(dir);				\
+																		\
+		switch (size)													\
+		{																\
+			case 1:  *(BYTE *)  _md_p = *(BYTE *)  (source);	break;		\
+			case 2:  *(WORD *)  _md_p = *(WORD *)  (source);	break;		\
+			case 4:  *(DWORD *) _md_p = *(DWORD *) (source);	break;		\
+			default: memcpy(_md_p, (source), (size));		break;		\
+		}																\
+	} while (0)
+
 #ifdef MEMORY_FUNCTIONS
 void memread(unsigned long direccion, void * target, size_t size);
 void memwrite(unsigned long direccion, void * source, size_t size);
 #else
+/*
+	El camino rapido: si la zona es memoria plana y no hay watchpoint armado,
+	el acceso se hace aqui mismo. El watchpoint tiene que caer del lado lento
+	porque su gancho vive en memread_fisico/memwrite_fisico, que es el unico
+	sitio por el que pasan **todas** las escrituras -- saltearlo dejaria
+	--watchpoint sin ver la RAM, que es justo lo que se vigila. Apagado, la
+	comparacion contra cero es la misma que ya habia.
+*/
 #define memread(direccion, target, size) \
 	do { \
 		unsigned long _ubc_d = (direccion); \
 		unsigned long _mmu_d = _ubc_d; \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_LECTURA); \
-		memread_fisico(_mmu_d, (target), (size)); \
+		if (mem_zona_directa[_mmu_d >> 24] && !watchpoint_lectura_dir) \
+			MEM_DIRECTO_LEER(_mmu_d, (target), (size)); \
+		else \
+			memread_fisico(_mmu_d, (target), (size)); \
 		if (ubc_operando_activa) \
 			ubc_operando(_ubc_d, (target), (size), 0); \
 	} while (0)
@@ -116,7 +183,10 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 		unsigned long _ubc_d = (direccion); \
 		unsigned long _mmu_d = _ubc_d; \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_ESCRITURA); \
-		memwrite_fisico(_mmu_d, (source), (size)); \
+		if (mem_zona_directa[_mmu_d >> 24] && !watchpoint_dir) \
+			MEM_DIRECTO_ESCRIBIR(_mmu_d, (source), (size)); \
+		else \
+			memwrite_fisico(_mmu_d, (source), (size)); \
 		if (ubc_operando_activa) \
 			ubc_operando(_ubc_d, (source), (size), 1); \
 	} while (0)

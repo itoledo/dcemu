@@ -434,9 +434,23 @@ void main_loop(void)
 			{
 				// Camino rapido: sin MMU, sin SR.FD y sin bits de Enable en
 				// FPSCR no hay falta que abortar, asi que no se saca
-				// instantanea ni se arma el salto. Es todo lo que corre hoy y
-				// tiene que costar exactamente lo de antes.
-				core.execute(*(WORD *) get_memory_pointer(PC));
+				// instantanea ni se arma el salto. Es todo lo que corre hoy.
+				//
+				// Y se despacha **derecho a la tabla**, sin pasar por
+				// core.execute. Eran dos llamadas indirectas por instruccion:
+				// core.execute es un puntero a funcion dentro de una estructura
+				// que llama a run(), que hace oplist[arg](arg). run() sigue
+				// existiendo y sigue siendo el camino de las ranuras de retardo
+				// -- branch.c y rte143() lo necesitan, porque su prueba de
+				// SR.FD es lo que distingue 0x800 de 0x820 --, pero aqui no
+				// hace falta: !excepcion_vigilar implica fpu_deshabilitada en
+				// cero, que es la unica razon por la que run() mira algo.
+				// Ver docs/rendimiento-plan.md, fase 2.1.
+				{
+					WORD instr = *(WORD *) get_memory_pointer(PC);
+
+					oplist[instr](instr);
+				}
 			}
 			else if (setjmp(excepcion_salto) == 0)
 			{
