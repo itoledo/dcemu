@@ -103,11 +103,31 @@ struct blit
 */
 typedef struct vertex
 {
+	/*
+		La correccion de perspectiva va SOLO en las coordenadas de textura:
+		cada juego lleva cuatro componentes (u*q, v*q, 0, q) con q = el 1/w
+		que entrega el TA, y glTexCoordPointer(4) deja que GL divida por q al
+		interpolar -- que es como rasteriza el chip, y para eso el TA recibe
+		1/w. Con dos componentes la interpolacion era afin y el piso cerca de
+		camara se deformaba como en una PlayStation.
+
+		Premultiplicar las POSICIONES (el otro truco clasico) corrige tambien
+		los colores, pero mueve la rasterizacion a nivel sub-pixel: pvr-fb_tex
+		-- que reconstruye pixel a pixel su propio framebuffer -- paso de sus
+		lineas a un tablero. Las posiciones quedan intactas; los colores
+		siguen afines, que no se nota.
+
+		`q` guarda el 1/w crudo del vertice; el cierre de tira premultiplica
+		las UV de los dos juegos. El orden de los campos importa: los
+		punteros de GL recorren con sizeof(vertex) de paso y cada juego
+		(s,t,r,q) tiene que ser contiguo.
+	*/
 	float x,y,z;
+	float q;
 	float r,g,b,a;
-	float t1,t2;
+	float t1,t2,tr,tq;
 	float r1,g1,b1,a1;
-	float u1,v1;
+	float u1,v1,ur,uq;
 }vertex;
 
 /*

@@ -851,7 +851,8 @@ static void aplicar_filtros(int strip)
 
 	/* Con mipmaps (GL los genero al subir la textura; ver get_texture()), la
 	   minificacion los usa: es lo que corta el alias del piso lejano. */
-	if (TriangleStrip[strip].texture.mipmapped && !getenv("DCEMU_SIN_FILTRO_MIP"))
+	if ((TriangleStrip[strip].texture.mipmapped || getenv("DCEMU_MIP_AUTO"))
+		&& !getenv("DCEMU_SIN_FILTRO_MIP"))
 		min = TriangleStrip[strip].texture.filtermode
 			? GL_LINEAR_MIPMAP_LINEAR
 			: GL_NEAREST_MIPMAP_NEAREST;
@@ -1322,6 +1323,13 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			&& (TriangleStrip[strip].texture.pvr_texture_bump
 			 || TriangleStrip[strip].texture.pvr_texture_yuv);
 
+		/* DCEMU_MIP_AUTO: genera mipmaps tambien para texturas que no los
+		   traen. Diagnostico -- el chip real no lo hace: sirve para separar
+		   "submuestreo sin mipmaps" (el moire del piso cercano de kgl-tunnel)
+		   de una lectura mal hecha de la textura. */
+		if (!con_mip && getenv("DCEMU_MIP_AUTO"))
+			gen_gl = 1;
+
 		glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP,
 			gen_gl ? GL_TRUE : GL_FALSE);
 
@@ -1770,12 +1778,12 @@ static void juego_de_parametros(int juego)
 	if (juego)
 	{
 		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r1);
-		glTexCoordPointer(2, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].u1);
+		glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].u1);
 	}
 	else
 	{
 		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r);
-		glTexCoordPointer(2, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].t1);
+		glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].t1);
 	}
 }
 
@@ -3170,9 +3178,6 @@ static vertex * vertice_nuevo(void)
 
 	v = &VertexBuffer[total_polygon_count];
 
-	v->x = xyz[0];
-	v->y = xyz[1];
-
 	/*
 		La z del TA es 1/w: **mayor quiere decir mas cerca**, y las pruebas de
 		profundidad del PVR estan escritas asi -- GREATER deja pasar lo que esta
@@ -3195,7 +3200,14 @@ static vertex * vertice_nuevo(void)
 		"Tal cual" en el orden, no en el valor: pasa por profundidad_ta(), que
 		es monotona -- ver su comentario, la precision lineal no alcanzaba.
 	*/
+	v->x = xyz[0];
+	v->y = xyz[1];
 	v->z = profundidad_ta(xyz[2]);
+
+	/* El q de la correccion de perspectiva de las texturas (render.h): el
+	   1/w del TA tal cual, acotado por si llega 0 ("infinitamente lejos").
+	   El cierre de tira premultiplica las UV con el. */
+	v->q = (xyz[2] > 1e-6f) ? xyz[2] : 1e-6f;
 
 	/* Sin coordenadas de textura mientras el tipo no diga otra cosa: si no,
 	   quedan las del vertice anterior. */
@@ -3387,6 +3399,7 @@ static void vertice_sprite(int con_textura)
 			ve->x = x[s];
 			ve->y = y[s];
 			ve->z = profundidad_ta(z[s]);	/* igual que vertice_nuevo() */
+			ve->q = (z[s] > 1e-6f) ? z[s] : 1e-6f;
 			ve->t1 = u[s];
 			ve->t2 = v[s];
 
@@ -3709,6 +3722,23 @@ void taVertexHandler()
 #endif
 
 		TriangleStrip[strip_count].count = ((total_polygon_count+1) - TriangleStrip[strip_count].index);
+
+		/* La correccion de perspectiva de las texturas (render.h): las UV de
+		   los dos juegos se premultiplican por el q del vertice, una sola
+		   vez, con la tira ya completa. */
+		{
+			DWORD kq;
+
+			for (kq = 0; kq < TriangleStrip[strip_count].count; kq++)
+			{
+				vertex * vp = &VertexBuffer[TriangleStrip[strip_count].index + kq];
+
+				vp->t1 *= vp->q;	vp->t2 *= vp->q;
+				vp->tr  = 0.0f;		vp->tq  = vp->q;
+				vp->u1 *= vp->q;	vp->v1 *= vp->q;
+				vp->ur  = 0.0f;		vp->uq  = vp->q;
+			}
+		}
 
 		if (TexInfo.registers.texture_surface)
 		{
@@ -4291,7 +4321,7 @@ int glinit(void)
 
 	glVertexPointer			(3, GL_FLOAT,		   sizeof(vertex), &VertexBuffer);
 	glColorPointer			(4, GL_FLOAT,  sizeof(vertex), &VertexBuffer[0].r);
-	glTexCoordPointer		(2, GL_FLOAT,		   sizeof(vertex), &VertexBuffer->t1);
+	glTexCoordPointer		(4, GL_FLOAT,		   sizeof(vertex), &VertexBuffer->t1);
 
 	return 0;
 }
