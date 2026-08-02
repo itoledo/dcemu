@@ -58,6 +58,80 @@ cambio, y anotar el número**. Este documento se va llenando con esos números.
 
 ---
 
+## Resultado, al 2026-08-02
+
+Todo lo de abajo es Debug, en el i9-13900, sobre Crazy Taxi **en juego** (~1000 tiras por
+escena) con `--salir-tras=60` y la secuencia de teclas que llega al gameplay. Las corridas
+que se comparan son idénticas: mismos cuadros, mismas escenas, mismas tiras.
+
+| | tiempo real | velocidad | gana |
+| --- | --- | --- | --- |
+| punto de partida | 211 266 ms | 0,28× | — |
+| + grano del bloque periódico (fase 2.5) | 187 867 ms | 0,31× | 11,1 % |
+| + camino directo de memoria y despacho (2.1 y 2.3a) | **166 939 ms** | **0,35×** | 11,1 % |
+
+**Acumulado: 21 %**, o sea 1,27×. Las tres corridas dan 3070 cuadros, así que son la
+misma ejecución y los tiempos se comparan sin reservas.
+
+(El grano había dado 19,5 % en una corrida de 40 s que se quedaba en los menús, y aquí da
+11,1 %. No se contradicen: en juego el intérprete pesa más y el bloque periódico
+proporcionalmente menos. Es la razón por la que las mediciones se hacen en gameplay.)
+
+El reparto quedó así:
+
+```
+  AICA total          32900 ms   19.7 %
+  bloque periodico    39347 ms   23.5 %   <- de los cuales 32900 son el AICA
+  dibujar_escena()     ~5500 ms    3.3 %
+  resto (interprete) 119624 ms   71.6 %
+```
+
+O sea que **el bloque periódico ya no pesa**: descontado el AICA, que está anidado ahí,
+queda en un 3,8 %. Era el 21 %. Lo que queda por delante es el intérprete, y el PVR sigue
+sin aparecer.
+
+Dos cosas que la medición cerró y ahorran trabajo futuro:
+
+- **La fase 3 entera (el pipeline de GL) no tiene caso.** `dibujar_escena()` cuesta 2,1 %
+  con mil tiras por escena. Las 40 000 llamadas a GL por cuadro que este documento estimaba
+  no existen: con 1016 tiras son unas 15 000, y no se notan.
+- **La fase 2.3b (accesores tipados) es redundante.** Su objetivo era que
+  `memread(dir, &v, 4)` no tuviera que materializar `v` en memoria; con el macro de 2.3a el
+  acceso ya se expande a un guardado directo sobre el registro destino.
+
+### Cómo se valida
+
+`herramientas/barrido.ps1` corre las 150 demos de KOS con `--captura-gl` y
+`--salir-tras=8`, y `comparar.ps1` compara **hash del BMP**, no cuenta de colores — que
+tiene dos trampas anotadas en `docs/demos-kos.md` y además puede dar el mismo número para
+dos capturas distintas.
+
+El grano 400 pasó así: **141 de 150 byte a byte idénticas**. De las nueve restantes, una
+corrida de control con el mismo binario mostró que **cinco son no deterministas por sí
+solas** (`pvr-cheap_shadow` y `pvr-modifier_volume` ya estaban documentadas: colocan la
+geometría con `rand()`). Las otras cuatro cambian sin romperse: tres son fase de animación
+—`basic-threading-once` resultó ser la pantalla de fecha del boot ROM, porque la demo ya
+había terminado— y `modem-ppp` pasó de 1 color a 11, o sea que dibuja **más** que antes.
+
+**La corrida de control es parte del método, no un extra.** Sin ella las nueve parecían
+regresiones.
+
+La fase 2 pasó igual: **144 de 150 idénticas**, las mismas cinco no deterministas, y una
+sexta —`sh4zam-bruces_balls`— que pasó de `rv=0` a acceso inválido y **no era regresión de
+la fase 2**. El bisecto lo demostró en tres pasos: apagando el camino directo de memoria
+seguía cayendo, apagando además el despacho directo seguía cayendo, y **recompilando el
+árbol completo del commit anterior también caía**, aunque el binario guardado de ese mismo
+estado pasaba.
+
+Mismo código, mismo `RELOJ_GRANO`, distinto binario, distinto comportamiento: era una
+corrupción de memoria latente —`VertexBuffer[]` y `TriangleStrip[]` sin control de límite—
+cuyo efecto depende del layout del binario. Está arreglada.
+
+> **Un crash reproducible dentro de un binario puede no serlo entre binarios.** El control
+> decisivo fue recompilar el commit anterior, no razonar sobre el diff. Y el barrido
+> encontró un error que no era el que estaba validando: sin él seguía latente, esperando
+> otro layout.
+
 ## Fase 0 — Medir
 
 Sin esto lo demás es adivinanza. Tres instrumentos, del más barato al más caro.
