@@ -202,6 +202,16 @@ PENDING_INT * int_list;
 int interrupt_queue = 0;
 #endif
 
+/* La compuerta de main_loop: hay que llamar a check_ints() si hay demoras
+   corriendo, algo en la cola externa, o una linea del ASIC afirmada -- que
+   con peticion por nivel es estado, no cola: SB_ISTNRM contra las mascaras. */
+bool intc_asic_pendiente(void)
+{
+	return intc_demorados != 0
+	    || intc_queuemask_ext != 0
+	    || (ASIC_ACK_A & (ASIC_IRQ9_A | ASIC_IRQB_A | ASIC_IRQD_A)) != 0;
+}
+
 void intc_add(DWORD inttoadd, int cnt)
 {
 #ifdef INT_QUEUE
@@ -229,16 +239,19 @@ void intc_add(DWORD inttoadd, int cnt)
 	intc_queuemask |= inttoadd;
 	logxmsg(LOG_INTC, "a�adiendo int %x, total %x, count %d\n", inttoadd, intc_queuemask, interrupt_queue);
 #else
-	if (intc_queuemask & inttoadd)
-	{
-     	logxmsg(LOG_INTC, "descartando int %x\n", inttoadd);
-		return; // descartamos si ya existe una
-	}
-	intc_queuemask |= inttoadd;
-
 	if (cnt > 0)
 	{
 		int di;
+
+		/* El mismo evento ya demorado no se duplica: el chip tampoco genera
+		   dos fines para la misma transferencia. Uno ya ocurrido (bit de
+		   SB_ISTNRM puesto sin acusar) no necesita descarte: volver a poner
+		   un bit puesto es lo que hace el hardware. */
+		if (intc_demorados & inttoadd)
+		{
+			logxmsg(LOG_INTC, "descartando int %x, ya demorada\n", inttoadd);
+			return;
+		}
 
 		for (di = 0; di < INTC_DEMORAS; di++)
 			if (intc_demora[di].evt == 0)
@@ -253,7 +266,7 @@ void intc_add(DWORD inttoadd, int cnt)
 	}
 
 	SET_BIT(ASIC_ACK_A, inttoadd);
-	logxmsg(LOG_INTC, "a�adiendo int %x, total %x\n", inttoadd, intc_queuemask);
+	logxmsg(LOG_INTC, "a�adiendo int %x, estado %x\n", inttoadd, ASIC_ACK_A);
 #endif
 }
 
@@ -337,9 +350,48 @@ bool intc_check(DWORD intcheck)
 static void traza_asic_entrega(DWORD evento, char nivel)
 {
 	static DWORD vistos_ok[4], vistos_no;
+	static int	entregas_crudas = -1;
 
 	if (!traza_activa)
 		return;
+
+	/* DCEMU_TRAZA_ENTREGAS=1: cada entrega con su ciclo, sin dedup, con tope.
+	   Para medir la cadencia real cuando el dedup por valor tapa la pregunta
+	   "¿se esta re-entregando?". El centinela va con == -1: el estado
+	   "resuelto y apagado" (-2) tambien es negativo, y un getenv por llamada
+	   en este camino costo 5x de velocidad una vez. */
+	if (entregas_crudas == -1)
+	{
+		const char * v = getenv("DCEMU_TRAZA_ENTREGAS");
+
+		entregas_crudas = (v != NULL && v[0] == '1') ? 0 : -2;
+	}
+
+	if (entregas_crudas >= 0 && nivel != '-')
+	{
+		extern unsigned long long reloj_total;
+		static unsigned long long segundo_marca = 0;
+		static unsigned long cuenta_seg = 0;
+
+		/* El total por segundo emulado ademas de las primeras 600: la
+		   cadencia sigue visible cuando el tope ya se comio el detalle. */
+		cuenta_seg++;
+
+		if (reloj_total - segundo_marca >= 199499520ULL)
+		{
+			fprintf(stderr, "traza: entregas del ultimo segundo: %lu\n",
+				cuenta_seg);
+			segundo_marca = reloj_total;
+			cuenta_seg = 0;
+		}
+
+		if (entregas_crudas < 600)
+		{
+			entregas_crudas++;
+			fprintf(stderr, "traza: entrega cruda %c %08lx a %llu ciclos\n",
+				nivel, (unsigned long) evento, reloj_total);
+		}
+	}
 
 	if (nivel == '-')
 	{
@@ -606,14 +658,34 @@ void check_ints()
 			}
 	}
 
+	/*
+		Nivel, no flanco: la peticion de cada linea se deriva del estado --
+		SB_ISTNRM contra su mascara -- y la entrega no consume nada. Lo unico
+		que baja la linea es el acuse del guest en SB_ISTNRM (pvr_write), o
+		enmascarar.
+
+		Antes habia una cola: la entrega sacaba de ella TODOS los bits que la
+		mascara cubria, de una vez, y un bit sin mascara que lo cubriera se
+		tiraba (eso ultimo costo el mando en el boot ROM: habilitaba el DMA del
+		Maple, lo arrancaba y ponia la mascara despues, asi que perdia el fin
+		por interrupcion y no volvia a sondear el bus). Con la cola, un ISR que
+		atiende UN bit por entrada -- el mas bajo --, lo acusa y confia en que
+		la linea siga afirmada para re-entrar por los demas (Katana hace
+		exactamente eso) no recibia mas que el primero: Virtua Tennis atendia
+		el render-done de video y los de ISP y TSP quedaban puestos sin volver
+		a interrumpir jamas, y su pipeline de cuadro no giraba. Es el mismo
+		error que tenian los temporizadores antes de intc_revisar_sh4() -- ver
+		docs/clock-plan.md --, en sus dos formas sucesivas: primero se tiraba
+		lo no cubierto, despues se consumia con la entrega.
+	*/
 	{
-		DWORD listos = intc_queuemask & ~intc_demorados;
+		DWORD listos = ASIC_ACK_A & ~intc_demorados;
+		DWORD sin_mascara;
 
 		if (listos & ASIC_IRQ9_A
 		&&  intc(EXC_IRQ9))
 		{
 			traza_asic_entrega(listos & ASIC_IRQ9_A, '9');
-			REMOVE_BIT(intc_queuemask, listos & ASIC_IRQ9_A);
 			return;
 		}
 
@@ -621,7 +693,6 @@ void check_ints()
 		&&  intc(EXC_IRQB))
 		{
 			traza_asic_entrega(listos & ASIC_IRQB_A, 'B');
-			REMOVE_BIT(intc_queuemask, listos & ASIC_IRQB_A);
 			return;
 		}
 
@@ -629,35 +700,17 @@ void check_ints()
 		&&  intc(EXC_IRQD))
 		{
 			traza_asic_entrega(listos & ASIC_IRQD_A, 'D');
-			REMOVE_BIT(intc_queuemask, listos & ASIC_IRQD_A);
 			return;
 		}
 
-		/* Nada salio: o ninguna mascara cubre lo maduro, o SR no deja entrar.
-		   Una linea por cada valor distinto, que es lo que responde "el
-		   evento se encolo y nunca se entrego, y estas eran las mascaras". */
-		if (listos != 0)
-			traza_asic_entrega(listos, '-');
+		/* Lo ocurrido que ninguna mascara cubre: si el guest no la habilita
+		   despues, no va a salir nunca -- eso es lo que vale reportar. Lo
+		   bloqueado por SR sale solo en una vuelta proxima. */
+		sin_mascara = listos & ~(ASIC_IRQ9_A | ASIC_IRQB_A | ASIC_IRQD_A);
+
+		if (sin_mascara != 0)
+			traza_asic_entrega(sin_mascara, '-');
 	}
-
-	/*
-		Aca estaba REMOVE_BIT(intc_queuemask, ASIC_ACK_A), o sea: si en este
-		instante ninguna de las tres mascaras cubria el evento, se tiraba.
-
-		En el chip no funciona asi. El bit de SB_ISTNRM queda puesto hasta que
-		el guest lo acusa escribiendo el registro, y si habilita la mascara
-		despues la interrupcion llega igual. Es el mismo error que tenian los
-		temporizadores antes de intc_revisar_sh4() -- ver docs/clock-plan.md --,
-		solo que del lado del ASIC, y lo que se pierde asi no deja rastro.
-
-		Lo que si lo delata: el boot ROM habilita el DMA del Maple, lo arranca y
-		espera el fin por interrupcion. La habilita despues de encolarla, asi
-		que la perdia siempre y no volvia a sondear el bus nunca mas -- por eso
-		llegaba a su pantalla pero no veia el mando.
-
-		Ahora el bit se queda pendiente y lo limpia el guest, en el caso
-		SB_ISTNRM de pvr_write().
-	*/
 
 	/* Registro externo. La lectora avisa el fin de comando por aca. */
 	if (intc_queuemask_ext == 0)

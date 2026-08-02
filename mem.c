@@ -1253,7 +1253,17 @@ static void ch2_dma_ejecutar(void)
 	SB_C2DLEN = 0;
 	SB_C2DST  = 0;
 
-	intc_add(ASIC_EVT_PVR_DMA, 0);
+	/*
+		El fin de DMA ocurre con demora, como los fines de lista y el render:
+		en el chip mover `largo` bytes tarda, y el driver usa ese tiempo para
+		volver del disparo y dejar su propio estado en "transferencia en
+		vuelo". Instantaneo, la interrupcion le gana la carrera al driver de
+		Katana, que la descarta por espuria y espera para siempre un fin que
+		ya paso -- Virtua Tennis se quedaba clavado en su primer cuadro
+		exactamente asi. La cuenta va en unidades de 50 ciclos: ~4 bytes por
+		ciclo de CPU con un piso que cubre el camino de retorno del driver.
+	*/
+	intc_add(ASIC_EVT_PVR_DMA, (int) (largo / 200) + 10);
 }
 
 void pvr_write(unsigned long direccion, void * p, size_t size)
@@ -1339,12 +1349,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		case 0xa05f6900: // SB_ISTNRM, acuse de los eventos normales
 		{
 			memcpy(&dw, p, size);
-			REMOVE_BIT(ASIC_ACK_A, dw);
 
-			/* El acuse del guest es lo unico que baja un evento pendiente.
-			   check_ints() ya no los tira por su cuenta cuando la mascara no
-			   los deja pasar; ver el comentario en intc.c. */
-			REMOVE_BIT(intc_queuemask, dw);
+			/* El acuse del guest es lo unico que baja la peticion: la linea
+			   se deriva por nivel de estos bits contra las mascaras; ver el
+			   comentario en check_ints(). */
+			REMOVE_BIT(ASIC_ACK_A, dw);
 
 			logxmsg(LOG_INTC, "pvr_write: ASIC_ACK_A: quitando bits %x, quedamos en %x\r\n", dw, ASIC_ACK_A);
 		}

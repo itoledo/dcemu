@@ -264,9 +264,19 @@ long-standing path reaches (no `--bios`, through the syscall hooks), so what the
 from there was a separate problem — **and it is solved for Crazy Taxi: hito D is reached**
 (2026-08-01). On the hooks path both rips run — loading screen, VMU warning, Start works,
 title screen, 3D attract mode. What unblocked it was the disc type answered by
-`GDROM_CHECK_DRIVE` (see "BIOS syscall emulation") plus `SYSINFO` function 3; Virtua Tennis
-and Capcom vs. SNK still stop earlier, in the SDK's common startup
-(`docs/pendientes-plan.md`, vía A).
+`GDROM_CHECK_DRIVE` (see "BIOS syscall emulation") plus `SYSINFO` function 3. **Virtua
+Tennis runs too** (2026-08-02): VMU warning, title, Main Menu and the 3D attract at 2400
+strips per scene — what unblocked it was the ASIC's level-triggered delivery plus the CH2
+DMA's end-of-transfer delay (see "Interrupts and timing" and `docs/pendientes-plan.md`,
+A.6). **And Capcom vs. SNK the same day**: Memory Card warning and the Millennium Fight
+2000 title screen — a different blocker: the GD hook accepted every request instantly where
+the BIOS driver takes one at a time, and the game's un-CHECKed long read was orphaned (see
+the hook notes below and A.7). **Virtua Tennis 2 fell the same day** (VMU warning, title
+logo and intro sequence): the day's fixes unblocked its startup — its probes of the G2
+external area (the Broadband Adapter, which it supports) fail cleanly against
+`mem_read_error()`'s deterministic zeros, so the area stays unmapped on purpose — and its
+one own blocker was the TA's current-list rule (see the pipeline section and A.8).
+**All four commercial images that parse now run.**
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -839,6 +849,17 @@ field is useless and `pvr_registering` is the only source. `--traza-mem` now pri
 state machine (`TA_ALLOC_CTRL`, `TA_LIST_INIT`, each end of list, `STARTRENDER`) and the GL state
 each strip goes out with, which is how both bugs above were found.
 
+**The current list is latched by the FIRST global parameter after `TA_LIST_INIT` or after an
+end-of-list; the list-type field of every later header is ignored until the next end** (Sega
+doc §3.7.4.1 — one list type at a time, and the end emits that list's event). Taking it from
+each header looked equivalent — demos and the other three games always send the field
+coherent with the open list — until Virtua Tennis 2: inside its translucent list it submits
+a sprite header with the field at 0, the "switch" made its end-of-list close an
+already-closed list, the translucent one stayed open forever, event 9 never fired and the
+game's operation machine waited without end at its title screen. `taPolyModifier()` latches
+only when no list is open, the strip lands in the OPEN list like on the chip, and a
+mismatching header leaves one trace line per run.
+
 **`pvr_prim: attempt to submit to unopened list` is not a dcemu bug** — it was listed as one here
 for a while. It is guest state end to end: `pvr_list_begin()` sets `pvr_state.list_reg_open`,
 `pvr_list_finish()` clears it, and `pvr_prim()` warns when it is `PVR_LIST_NONE`. Nothing the
@@ -1178,16 +1199,27 @@ events.
 `intc.c` queues ASIC events with `intc_add()` into `intc_queuemask`; `check_ints()` drains
 them and `intc()` performs the actual SH-4 exception entry (SSR/SPC save, VBR jump).
 
-**A queued ASIC event that no mask covers stays queued.** `check_ints()` used to end with
-`REMOVE_BIT(intc_queuemask, ASIC_ACK_A)` — if none of the three masks covered the event at
-that instant, it was thrown away. On the chip the `SB_ISTNRM` bit stays set until the guest
-acknowledges it by writing the register, and if the guest enables the mask afterwards the
-interrupt still arrives. Same mistake the timers had before `intc_revisar_sh4()` (see
-`docs/clock-plan.md`), on the ASIC side, and what it loses leaves no trace. The boot ROM is
-what exposed it: it enables the Maple DMA, starts it, and waits for the end by interrupt —
-enabling the mask *after* queueing it — so it lost that event every time and never polled
-the bus again. Only the guest's acknowledge clears a pending event now, in the `SB_ISTNRM`
-case of `pvr_write()`.
+**The ASIC's normal interrupt lines are level-triggered, derived from `SB_ISTNRM` against
+its three masks — delivery consumes nothing.** Only the guest's acknowledge (the `SB_ISTNRM`
+case of `pvr_write()`) or masking lowers a line. This replaced a queue in two steps, both
+the same mistake the timers had before `intc_revisar_sh4()` (see `docs/clock-plan.md`):
+first `check_ints()` threw away events no mask covered at that instant — the boot ROM
+enables the Maple DMA's mask *after* starting it, lost the end-of-DMA every time, and never
+polled the bus again —; then delivery consumed from the queue *all* the bits a mask covered
+at once. Katana's ISR dispatches **one** bit per entry — the lowest set in
+`ISTNRM & softmask` —, acks just that one and returns, trusting the still-asserted line to
+re-enter for the rest: under queue semantics Virtua Tennis got the render-done of video and
+the ISP/TSP ones stayed set without ever interrupting again, so its frame pipeline never
+turned. `intc_asic_pendiente()` is the gate `main_loop` uses, and it runs in the 50-cycle
+block next to `intc_revisar_sh4()`: with level semantics the gate is true whenever any bit
+is unacknowledged — nearly always — and checking per instruction cost 9× in Crazy Taxi.
+
+**Events with transfer time keep their delay** (`intc_add(evt, cnt)`, cnt×50 cycles): the
+status bit turns on when the event *occurs*, not when the guest kicks the operation. The
+CH2 DMA's end is delayed by size (`largo/200 + 10` counts) for the same reason the list and
+render ends are: instantaneous, the interrupt beat Katana's driver back from the kick path —
+its own state said no transfer was in flight, so the ISR discarded the end as spurious and
+Virtua Tennis waited forever for a completion that had already passed.
 
 `wdt.c/h` is the SH-4 watchdog timer: two key-protected registers and an 8-bit up-counter
 that either resets the machine (watchdog mode) or raises `EXC_WDT_ITI` (interval mode).
@@ -1471,7 +1503,17 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
   MIL-CD layout: no selfboot ships that check patched). Fixing it is what took the game from
   its loading screen to the title and the 3D attract mode — hito D. The `--bios` path does
   not come through here and keeps seeing the CD the image really is, which its MIL-CD branch
-  needs.
+  needs. **The hook accepts one live request at a time, like the BIOS driver** (`com_viva`):
+  a `SEND_COMMAND` while another is un-CHECKed returns 0 without doing the work, and
+  `CHECK_COMMAND` consumes it. Accepting everything instantly seemed harmless until Capcom
+  vs. SNK: it sends its long CRI read and, before checking it, sends the periodic subcode
+  poll — on the console that second SEND bounces and Katana retries it while polling the
+  read; accepted, Katana's current-command slot moved on and the read was orphaned, its
+  completion never observed, and the CRI layer waited forever. Request ids grow one by one
+  (a fixed id conflates consecutive requests), `CHECK_COMMAND` reports the transferred byte
+  count in the third status word, and **`GETSCD` (command 34) is answered** with the SPI
+  header — audio status `0x15`, "no audio info" — and the data track's subQ; COMPLETED with
+  an unwritten buffer left status `0x00`, which is no code at all.
 - `hack_romfont()` services the ROM font syscall. **This one takes its function number in
   `R1`, not `R7`** (see KOS's `syscall_font.s`): 0 returns the font address, 1 takes the
   mutex, 2 releases it. The lock must answer **0** to mean granted.

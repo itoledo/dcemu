@@ -3234,17 +3234,51 @@ void taPolyModifier()
 
 	logxmsg(LOG_PVR, "pcw: Polygon or Modifier Volume\n");
 
-	/* Que lista abre cada encabezado, con el PCW crudo: es lo que decide que
-	   evento de fin de lista se emite, y clasificarla mal manda el evento
-	   equivocado. Una linea por cambio de lista, no por encabezado. */
-	if (traza_activa && pvr_registering != (int) TA.registers.pcw_list_type)
-		fprintf(stderr, "traza: encabezado abre lista %d (pcw=%08lx, PC=%08lx)\n",
-			(int) TA.registers.pcw_list_type,
-			(unsigned long) TA.control, (unsigned long) PC);
+	/*
+		La lista en curso la fija el PRIMER parametro global despues de
+		TA_LIST_INIT o de un fin de lista; el campo de lista de los
+		encabezados siguientes SE IGNORA hasta el proximo fin (documento de
+		Sega, §3.7.4.1: un solo tipo de lista a la vez, y el fin emite el
+		evento de esa lista). Tomarlo de cada encabezado parecia lo mismo
+		--los demos y los otros juegos mandan el campo coherente con la lista
+		abierta-- hasta Virtua Tenis 2: dentro de su lista translucida manda
+		un encabezado de sprite con el campo en 0, el "cambio" a la lista 0
+		hacia que su fin de lista cerrara una lista ya cerrada, la translucida
+		quedaba abierta para siempre, el evento 9 no salia nunca y el juego
+		esperaba su maquina de operaciones sin fin. La tira aterriza en la
+		lista ABIERTA, como en el chip.
+	*/
+	if (pvr_registering == -1)
+	{
+		pvr_registering = TA.registers.pcw_list_type;
 
-	pvr_registering = TA.registers.pcw_list_type;
+		/* Que lista abre cada encabezado, con el PCW crudo: es lo que decide
+		   que evento de fin de lista se emite, y clasificarla mal manda el
+		   evento equivocado. */
+		if (traza_activa)
+			fprintf(stderr, "traza: encabezado abre lista %d (pcw=%08lx, PC=%08lx)\n",
+				(int) TA.registers.pcw_list_type,
+				(unsigned long) TA.control, (unsigned long) PC);
+	}
+	else if (traza_activa
+	     &&  pvr_registering != (int) TA.registers.pcw_list_type)
+	{
+		/* El campo discrepa de la lista abierta: en el chip no hace nada,
+		   pero es la firma de un guest que confia en esa regla. Una vez por
+		   corrida alcanza. */
+		static int avisado = 0;
 
-	TriangleStrip[strip_count].type = TA.registers.pcw_list_type;
+		if (!avisado)
+		{
+			avisado = 1;
+			fprintf(stderr, "traza: encabezado con lista %d dentro de la lista "
+				"%d abierta, campo ignorado (pcw=%08lx, PC=%08lx)\n",
+				(int) TA.registers.pcw_list_type, pvr_registering,
+				(unsigned long) TA.control, (unsigned long) PC);
+		}
+	}
+
+	TriangleStrip[strip_count].type = pvr_registering;
 	/*
 	switch(TA.registers.pcw_list_type)
 	{

@@ -26,6 +26,11 @@ void check_ints();
 bool intc_check();
 void intc_add(DWORD inttoadd, int cnt);
 
+/* Si main_loop tiene que llamar a check_ints(): demoras corriendo, cola
+   externa, o una linea del ASIC afirmada (SB_ISTNRM contra las mascaras --
+   la peticion es por nivel, asi que es estado y no cola). */
+bool intc_asic_pendiente(void);
+
 /* El ASIC tiene dos registros de estado: el normal (SB_ISTNRM, ASIC_ACK_A) y
    el externo (SB_ISTEXT, ASIC_ACK_B). El fin de comando de la lectora llega
    por el externo, asi que hace falta una cola aparte. */

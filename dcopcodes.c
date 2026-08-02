@@ -11,6 +11,21 @@
 
 DWORD com=0;
 
+/* La ultima lectura servida por el hook: su peticion y cuanto movio, para que
+   GDROM_CHECK_COMMAND pueda informar lo transferido. */
+static DWORD com_lectura = 0;
+static DWORD com_lectura_bytes = 0;
+
+/* La peticion aceptada y todavia no consultada. El driver de la BIOS acepta
+   UNA por vez: un SEND_COMMAND con otra viva se rechaza con 0, y el guest
+   reintenta. Aceptarlo todo al instante parecia inofensivo hasta Capcom vs.
+   SNK: manda su lectura larga, y sin consultarla todavia manda el sondeo de
+   subcodigo -- en la consola ese segundo SEND rebota, aca se aceptaba, el
+   "comando actual" de Katana pasaba al sondeo y la lectura quedaba huerfana:
+   su CHECK_COMMAND no llegaba nunca y la capa de CRI esperaba el fin de una
+   lectura ya hecha para siempre. */
+static DWORD com_viva = 0;
+
 OPCODE(fsca) // FSCA FPUL, DRn
 {
 //	long n = (arg >> 8) & 0x0F;
@@ -321,6 +336,22 @@ void hack_gdrom()
 		{
 			case 0: // GDROM_SEND_COMMAND
 			logmsg("GDROM_SEND_COMMAND: r4=%x, r5=%x\r\n", R(4), R(5));
+
+			/* Una peticion viva por vez, como el driver de la BIOS: si la
+			   anterior no se consulto todavia, esta se rechaza sin hacer el
+			   trabajo y el guest la reintentara. */
+			if (com_viva != 0)
+			{
+				R(0) = 0;
+				break;
+			}
+
+			/* El identificador de esta peticion. Crece de a uno desde 0x6969:
+			   con un id fijo, dos peticiones consecutivas se confunden en la
+			   contabilidad del guest. El trabajo se hace en el momento, aca
+			   abajo. */
+			com = (com < 0x6969) ? 0x6969 : com + 1;
+
 			switch(R(4))
 			{
 				/* 16 es la lectura por PIO y 17 la misma por DMA: mismos
@@ -358,6 +389,10 @@ void hack_gdrom()
 					}
 					memwrite(targetaddr, &targetmem[0], 2048 * secnum);
 					free(targetmem);
+
+					/* Para que CHECK_COMMAND pueda informar lo transferido. */
+					com_lectura = com;
+					com_lectura_bytes = 2048 * (DWORD) secnum;
 				}
 				break;
 
@@ -408,6 +443,68 @@ void hack_gdrom()
 				}
 				break;
 
+				case 34: // GETSCD: el subcodigo Q, como el paquete SPI GET_SCD
+				{
+					/* Parametros {formato, tamano, destino}, como los pasa el
+					   driver de la BIOS (y reicast los lee igual). La respuesta
+					   lleva el encabezado del SPI: [0] reservado, [1] estado de
+					   audio, [2..3] largo, y detras el subcodigo del formato
+					   pedido. Sin CD-DA sonando el estado es 0x15 --"sin
+					   informacion de audio"-- y la posicion es el track de
+					   datos. Contestar COMPLETED sin escribir el bufer dejaba
+					   el estado en 0x00, que no es ningun codigo, y la capa de
+					   CRI de Capcom vs. SNK repetia el sondeo para siempre. */
+					DWORD	formato = 0, tam = 0, destino = 0;
+					BYTE	scd[100];
+
+					memread(R(5), &formato, sizeof(DWORD));
+					memread(R(5) + 4, &tam, sizeof(DWORD));
+					memread(R(5) + 8, &destino, sizeof(DWORD));
+
+					if (tam > sizeof(scd))
+						tam = sizeof(scd);
+
+					memset(scd, 0, sizeof(scd));
+					scd[0] = (BYTE) formato;
+					scd[1] = 0x15;					/* sin estado de audio */
+					scd[2] = (BYTE) (tam >> 8);
+					scd[3] = (BYTE) tam;
+
+					if (formato == 1 && tam >= 14)
+					{
+						/* Solo la Q: control/ADR, track, indice, y las dos
+						   posiciones en FAD de 24 bits. Un track de datos
+						   parado al principio del area de programa. */
+						scd[4] = 0x41;				/* datos, ADR = posicion */
+						scd[5] = 1;					/* track */
+						scd[6] = 1;					/* indice */
+						scd[7] = 0; scd[8] = 0; scd[9] = 0;		/* transcurrido */
+						scd[10] = 0;
+						scd[11] = 0; scd[12] = 0; scd[13] = 150;	/* FAD absoluto */
+					}
+
+					if (destino && tam)
+						memwrite(destino, scd, tam);
+
+					if (traza_activa)
+					{
+						static int visto = 0;
+
+						if (!visto)
+						{
+							visto = 1;
+							fprintf(stderr, "hack: GETSCD formato=%lu tam=%lu "
+								"a %08lx, estado 0x15\n",
+								(unsigned long) formato, (unsigned long) tam,
+								(unsigned long) destino);
+						}
+					}
+
+					logmsg("GDROM_GETSCD: formato %d, %d bytes a %x\r\n",
+						formato, tam, destino);
+				}
+				break;
+
 				default:
 				/* El guest se lleva un identificador valido igual, asi que da
 				   su peticion por hecha. Nombrar el comando que falta es lo
@@ -419,10 +516,7 @@ void hack_gdrom()
 						(unsigned long) R(4));
    				break;
 			}
-			/* El identificador de la peticion, que el guest usara para
-			   preguntar por ella. Aqui es fijo porque nunca hay mas de una
-			   viva: el trabajo ya se hizo mas arriba, en el momento. */
-			com = 0x6969;
+			com_viva = com;
 			R(0) = com;
 			break;
 
@@ -431,26 +525,36 @@ void hack_gdrom()
 			/*
 				gdGdcGetCmdStat(peticion, estado). Como SEND_COMMAND hace el
 				trabajo en el momento, cuando el guest pregunta el comando ya
-				termino: COMPLETED. Devolver NO_ACTIVE la primera vez que se
-				preguntaba por una peticion --que es lo que hacia-- se lee como
-				"esa peticion no existe", y Crazy Taxi respondia reintentando la
+				termino: COMPLETED, para cualquier id que este hook haya
+				repartido. Devolver NO_ACTIVE la primera vez que se preguntaba
+				por una peticion --que es lo que hacia-- se lee como "esa
+				peticion no existe", y Crazy Taxi respondia reintentando la
 				inicializacion entera, para siempre.
 
 				Los codigos son los del driver de la BIOS: 0 NO_ACTIVE,
 				1 PROCESSING, 2 COMPLETED, 3 STREAMING, 4 BUSY.
 			*/
-		    if (R(4) == com)
+		    if (R(4) != 0 && R(4) == com_viva)
 			{
-				/* Cuatro words de estado. Sin error que informar van en cero;
-				   dejarlos sin tocar le entregaba al guest lo que hubiera. */
+				/* Cuatro words de estado. Sin error que informar van en cero
+				   --dejarlos sin tocar le entregaba al guest lo que hubiera--,
+				   y el tercero es lo transferido: la capa de CRI de Capcom
+				   vs. SNK contabiliza su lectura por aca. */
 				if (R(5))
 				{
 					DWORD	cero = 0;
+					DWORD	transferido = (R(4) == com_lectura)
+										? com_lectura_bytes : 0;
 					int		i;
 
 					for (i = 0; i < 4; i++)
 						WriteMemoryL(R(5) + i * 4, &cero);
+
+					WriteMemoryL(R(5) + 2 * 4, &transferido);
 				}
+
+				/* Consultada: el driver queda libre para la proxima. */
+				com_viva = 0;
 
 				R(0) = 2;			// COMPLETED
 			}
