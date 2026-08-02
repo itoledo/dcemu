@@ -170,18 +170,30 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 				REMOVE_BIT(*botones, CONT_A);
 		}
 		else
-		if (t < 900)
+		if (t >= 300 && t < 4000)
 		{
-			/* La fecha: cinco a la derecha hasta "Select" y ahi el boton. */
-			if (t >= 300 && t < 500)
+			/* La fecha: cinco a la derecha hasta "Select" y ahi el boton.
+
+			   El ciclo **se repite** cada 600 sondeos, que es lo que el
+			   comentario de arriba siempre dijo y el codigo no hacia: la
+			   secuencia corria una sola vez entre los sondeos 300 y 560, o sea
+			   entre los 5 y los 9 segundos emulados, y el panel de la fecha
+			   aparece bastante despues de que el ROM termina su animacion. Con
+			   una sola pasada las cinco flechas se gastan contra una pantalla
+			   que todavia no existe, el ROM se queda pidiendo la fecha para
+			   siempre y **ningun disco arranca** -- dos juegos distintos dan
+			   escenas identicas, que es como se encontro. */
+			int f = (t - 300) % 600;
+
+			if (f < 200)
 			{
-				if (((t - 300) % 40) < 15)
+				if ((f % 40) < 15)
 					REMOVE_BIT(*botones, CONT_DPAD_RIGHT);
 			}
 			else
-			if (t >= 500 && t < 560)
+			if (f < 260)
 			{
-				if (((t - 500) % 30) < 15)
+				if (((f - 200) % 30) < 15)
 					REMOVE_BIT(*botones, CONT_A);
 			}
 		}

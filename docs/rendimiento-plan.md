@@ -58,7 +58,56 @@ cambio, y anotar el número**. Este documento se va llenando con esos números.
 
 ---
 
-## Resultado, al 2026-08-02
+## Lo que quedó ganado, medido contra la rama sin rendimiento
+
+Rehecho el 2026-08-02 después de los tres merges, con
+[`herramientas/rama-ab.ps1`](../herramientas/rama-ab.ps1). La rama de referencia es
+`origin/pendientes-c-y-banco` (`08870a2`), que trae **todo** el contenido nuevo —render,
+arranque, los cuatro juegos— y nada del trabajo de rendimiento: así el número aísla lo que
+aportó esta rama y no se le cuelan las mejoras de render.
+
+Crazy Taxi, 180 s emulados, en 3D en movimiento (1182 tiras por escena, picos de 1889):
+
+| | tiempo real | velocidad |
+| --- | --- | --- |
+| `pendientes-c-y-banco` | 400 458 ms | 0,45× |
+| **`rendimiento-hilos`** | **314 617 ms** | **0,57×** |
+
+**21,4 %, o sea 1,27×.** Dos vueltas alternadas en la misma tanda, y la rama nueva repite
+dentro del 0,04 % (314 500 y 314 617).
+
+La prueba de que las dos corridas hicieron el mismo trabajo es la más fuerte que ha dado
+este proyecto: **10 001 escenas rendidas en las dos**, y las tiras de las últimas doce
+coinciden número por número —`1692 1692 1692 1692 1680 1680 1680 1680 1680 1682 1682
+1682`—. No es "la misma cantidad de trabajo": es la misma ejecución, cuadro por cuadro.
+
+### El banco de pruebas: **sin `--bios`**
+
+Esta receta decía `--bios` y estaba mal. Con `--bios` el boot ROM arranca el disco pero
+Crazy Taxi se cuelga en `LOADING (31K)`: el hito D se alcanzó por los hooks de syscall, que
+es donde `GDROM_CHECK_DRIVE` contesta el tipo de disco que Katana espera (ver `CLAUDE.md`).
+Lo que se medía era el menú del propio ROM.
+
+**Cómo se descubrió, porque el método vale más que el error**: una sonda corrió el mismo
+banco con dos juegos distintos y dio `7111 escenas, 53 tiras/escena, máximo 178` en los
+dos, idénticos al dígito. Dos juegos no pueden dar el mismo número; lo que corría era el
+ROM, que es igual para cualquier disco. La captura confirmó el panel `Set Date/Clock`.
+
+Dos cosas más que salieron de ahí y valen para cualquier medición futura:
+
+- **El flash configurado es estado que se pierde al recopiar `bios/`.** Con un flash virgen
+  el ROM pide la fecha en cada arranque y no llega a ningún disco. La navegación automática
+  (`DCEMU_PULSAR_A`) corría **una sola vez**, entre los sondeos 300 y 560 —5 a 9 segundos
+  emulados—, mucho antes de que el ROM terminara su animación y pusiera el panel: las cinco
+  flechas se gastaban contra una pantalla que no existía. El comentario prometía que la
+  secuencia se repetía; el código no lo hacía. Ahora se repite cada 600 sondeos.
+- **Y 60 segundos no alcanzan, ni 120.** A los 120 la corrida está en `MODE SELECTION` —479
+  tiras por escena—, y recién pasados los 180 hay 3D en movimiento. Con 53, 479 y 1182
+  tiras por escena se miden tres cosas distintas.
+
+---
+
+## Resultado por fase, al 2026-08-02
 
 Todo lo de abajo es Debug, en el i9-13900, sobre Crazy Taxi **en juego** (~1000 tiras por
 escena) con `--salir-tras=60` y la secuencia de teclas que llega al gameplay. Las corridas
@@ -167,8 +216,11 @@ Lo que se busca es el reparto entre: despacho de opcodes, `memread`/`memwrite`,
 
 Un perfil sobre "juego a Crazy Taxi un rato" no se puede comparar contra el de la semana
 que viene. `--salir-tras=N` ya da corte determinista por tiempo **emulado**, así que
-`dcemu --bios --salir-tras=40 crazytaxi.cdi` llega siempre al mismo punto del atractivo 3D.
-Ese es el banco de pruebas; el resumen de `--perf` al salir es la medida.
+`dcemu --salir-tras=180 crazytaxi.cdi` llega siempre al mismo punto del juego. Ese es el
+banco de pruebas; el resumen de `--perf` al salir es la medida.
+
+(Decía `--bios --salir-tras=40` y las dos cosas estaban mal: con `--bios` el juego no
+arranca y 40 segundos no salen del menú. Ver arriba, "El banco de pruebas".)
 
 Conviene tener dos: la atracción de Crazy Taxi (carga de PVR alta) y una demo de KOS con
 poca geometría (carga de CPU pura), para poder distinguir qué mejoró.

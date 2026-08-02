@@ -266,3 +266,63 @@ La suite `decodificacion` —la que verifica que la expansión resuelve el handl
 necesitó adaptarse, porque comparaba entradas de la tabla como punteros. Se hizo con un
 `OP_HANDLER(tabla, instr)` en `opcodes.h`, que resuelve al puntero en las dos formas, de
 modo que la prueba se escribe una vez y vale para ambas.
+
+### El veredicto: **la tabla compacta pierde**
+
+Crazy Taxi en 3D en movimiento, 180 s emulados, tres vueltas alternadas en la misma tanda
+(`herramientas/despacho-ab.ps1`):
+
+| vuelta | expandida | compacta | |
+| --- | --- | --- | --- |
+| 1 | 319 427 ms | 326 517 ms | −2,2 % |
+| 2 | 318 417 ms | 326 275 ms | −2,5 % |
+| 3 | 321 015 ms | 325 008 ms | −1,2 % |
+
+Tres pares, tres veces el mismo signo, **ninguna inversión**. Y el control es el mejor que
+ha dado el proyecto: las seis corridas alternan entre exactamente dos cuentas de
+instrucciones —22 280 016 491 y 22 280 016 747— sobre 22 mil millones, con las mismas
+10 008 cuadros, 10 001 escenas y 1182 tiras por escena. Es la misma ejecución.
+
+**La hipótesis de la presión de caché queda refutada, y de la forma más fuerte posible: el
+resultado no depende del tamaño del conjunto activo.** La misma medida sobre el menú del
+boot ROM —53 tiras por escena, un lazo estrecho que toca pocas codificaciones— también dio
+−2,1 %. Si los 512 KB de tabla estuvieran fallando L1 en el juego y no en el menú, el signo
+o al menos la magnitud tendrían que haberse movido. No se movieron nada.
+
+La aritmética que explica por qué, y que hay que hacer *antes* la próxima vez:
+
+- La compacta agrega una carga **dependiente** —índice, después puntero— sobre `opfuncion[]`,
+  que son 1,9 KB y siempre está en L1: unos 4-5 ciclos que se suman al camino crítico de
+  **cada** instrucción, sin excepción.
+- Lo que ahorra sólo aparece cuando la tabla grande falla L1, y vale la diferencia entre L2
+  y L1, unos 10 ciclos.
+- O sea que necesita que **la mitad** de los despachos fallen L1 para empatar. Con el
+  predictor de saltos indirectos y el prefetcher del 13900 sobre una tabla de 8192 líneas,
+  no se acerca.
+
+**El costo por instrucción no es el despacho.** El dato que lo dice de frente: la misma
+tabla, el mismo binario, cuesta **8,4 ns por instrucción en los menús y 14,4 en el juego**
+—un 71 % más—. Si el despacho fuera el que manda, esa cifra sería plana; lo que la mueve es
+el conjunto de trabajo del *guest* y lo que el PVR y las texturas desalojan de la caché.
+Eso es presión de caché de verdad, pero no la de la tabla.
+
+Las dos formas quedan en el árbol. La compacta no es una mejora pendiente —es un resultado
+negativo medido—, pero se queda porque `initopcodes()` tiene ahora **un solo cuerpo** para
+las dos y la opción de CMake está cableada hasta las pruebas: es el vehículo para medir la
+próxima variante sin volver a escribir el andamiaje. Lo que la mató al `#ifdef` original
+fue estar fuera de toda compilación, no existir.
+
+### Lo que sigue
+
+Con A refutado y 0.1 esperando una consola elevada, el orden que queda es:
+
+| # | qué | estado |
+| --- | --- | --- |
+| 0.1 | perfil de muestreo | **lo único que puede decidir el resto**; necesita elevación |
+| B | cachear el puntero de búsqueda | el plan lo ataba a A, y A murió. Solo, la cuenta no cierra: `mem_zone[]` son 2 KB y está caliente, así que la carga que ahorra ya es un acierto de L1 |
+| D | el acumulador de ciclos | esperando 0.1 |
+| C | reorganizar `core` | **no**, hasta que haya perfil optimizado |
+
+Y una conclusión que este experimento deja sin haberla buscado: **120 MIPS en Debug con
+0,60 instrucciones por ciclo emulado** dice que el intérprete no está lejos de lo razonable.
+Lo que falta para 1,0× no está escondido en el despacho.

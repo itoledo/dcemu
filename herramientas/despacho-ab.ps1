@@ -13,10 +13,14 @@
 # Se corre desde la raiz del repo: bios/, font.png y roms/ resuelven contra el
 # directorio de trabajo.
 
-# 120 segundos y no menos: con la secuencia de teclas de abajo el juego recien
-# entra al atractivo 3D pasado el minuto. A los 60 la corrida termina en los
-# menus -- 55 tiras por escena contra 1016 -- y eso mide otra cosa. Ver
-# docs/hilos-plan.md, "Y en el juego, no en los menus".
+# **Sin --bios**, que es el camino de los hooks de syscall. Con --bios el ROM
+# arranca el disco pero Crazy Taxi se cuelga en LOADING (31K): el hito D se
+# alcanzo por los hooks, y es ahi donde GDROM_CHECK_DRIVE contesta el tipo de
+# disco que Katana espera (ver CLAUDE.md). Con --bios la corrida da 53 tiras por
+# escena y son las del menu del ROM -- identicas para cualquier disco, que es
+# como se descubrio: Crazy Taxi y Virtua Tennis daban el mismo numero al digito.
+#
+# Y 120 segundos no alcanzan: a los 120 la corrida esta en MODE SELECTION.
 param(
 	[int]    $Vueltas  = 3,
 	[int]    $Segundos = 120,
@@ -49,7 +53,7 @@ for ($v = 1; $v -le $Vueltas; $v++) {
 
 		Write-Host "vuelta $v : $nombre ..." -NoNewline
 
-		& $exe --bios --perf "--salir-tras=$Segundos" $Imagen | Out-Null
+		& $exe --perf "--salir-tras=$Segundos" $Imagen | Out-Null
 
 		if (-not (Test-Path $err)) {
 			Write-Host " sin stderr.txt"
