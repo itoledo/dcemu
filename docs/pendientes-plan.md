@@ -641,7 +641,23 @@ avanzada la corrida (ya anotado arriba, sospecha de desalojo del caché).
 un volumen cerrado (extruido); marcar cada triángulo enciende todo lo que sus caras cubren —
 media pantalla — y la segunda pasada oscurece eso. El arreglo real: plantilla por conteo
 (`GL_INCR` caras delanteras, `GL_DECR` traseras, dentro = cuenta > 0), re-marcando entre la
-tanda opaca y la translúcida para tener los 8 bits enteros por clase. Pendiente.
+tanda opaca y la translúcida para tener los 8 bits enteros por clase.
+
+**Hecho (2026-08-02): el conteo por caras contra la profundidad quedó implementado.** Los
+detalles que el plan de arriba no decía: la cuenta va con `GL_INCR_WRAP`/`GL_DECR_WRAP`
+(sin wrap, una cara trasera que rasteriza antes que su delantera clava el 0 y el par no se
+cancela), dentro = cuenta **≠ 0** (así el sentido de giro da igual: cerrado cancela de a
+pares, abierto queda ±1), y contar contra la profundidad obliga a marcar **después** de
+resolverla — `dibujar_escena()` quedó en fases: opaca+PT con juego 0, conteo de la lista 1
+y repintado de las afectadas solo dentro (`GL_EQUAL` contra su propia z; sin mezcla es
+seguro), re-marca de la lista 3, y la translúcida con sus afectadas partidas fuera/dentro
+como antes. Verificado: los seis demos de control (`fb_tex`, `rtt_sized`, `tunnel`,
+`libdream-ta`, `conio-basic`, `bumpmap`) **byte a byte idénticos** antes/después con
+`DCEMU_RTC_FIJO`; los tres demos de volumen plano idénticos (con el cuadrado delante de
+todo, unión y conteo coinciden); `pvr-modifier_volume_zclip` — el único con un volumen 3D
+cerrado de verdad, un cubo rotando — pasa del bloque recto en pantalla al oscurecido que
+abraza el piso y la pared que atraviesa. El flujo del guest, intacto (discriminador
+`11=6481248` idéntico).
 
 Y de la segunda sesión de juego en vivo salieron tres más, los tres del pipeline translúcido,
 resueltos el mismo día — el detalle está en `CLAUDE.md` ("Graphics pipeline"):

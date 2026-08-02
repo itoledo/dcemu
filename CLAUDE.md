@@ -1050,18 +1050,28 @@ parameter sets and set 1 applies inside; the **Shadow** bit means cheap shadow �
 intensity is scaled by `FPU_SHAD_SCALE` (`0x005F8074`, factor in bits 7-0, enable in bit 8).
 `cheap_shadow` asks for 0.5 and the blue inside comes out `0x7F`, which is how you know it works.
 
-**Each affected strip is drawn twice with the stencil test inverted** — outside with set 0, inside
-with set 1 — rather than drawing set 0 whole and overlaying set 1. That way every pixel is written
-once, which is what matters with alpha blending: overlaying would blend twice.
+**Inside is decided by counting faces against the scene's depth, like the chip does.** A pixel's
+surface is inside the volume when the volume faces nearer than it (depth test `GL_GREATER`) don't
+cancel out: front faces increment the stencil, back faces decrement (`GL_INCR_WRAP`/`GL_DECR_WRAP`
+— clamping would break a pair whose back face rasterizes first), and inside = count ≠ 0. Testing
+≠ 0 also makes the winding convention irrelevant: in a closed volume crossings cancel in pairs, in
+an open one (the flat square of the KOS demos) it leaves ±1. It used to be a **screen-space union
+of triangles** with no depth at all — enough for that flat square, but Crazy Taxi's extruded car
+shadows marked everything their faces covered: the taxi's roof darkened by its own shadow and a
+blanket over half the screen. `pvr-modifier_volume_zclip` — the one KOS demo with a genuinely
+closed 3D volume, a rotating cube — is what shows the difference: its darkening now hugs the
+ground and the wall it intersects. Instruction 2 ("close excluding") keeps the old approximation —
+zeroes what it covers, now only in front of the surface — because nothing we run exercises it.
 
-Two stencil bits, not one: the volume in list 1 affects the opaque list and the one in list 3 the
-translucent list, independently (`PLANTILLA_OPACO` / `PLANTILLA_TRANS`).
-
-**It is a union of triangles, not a real volume.** The chip resolves closed 3D volumes by counting
-front and back faces; `marcar_volumenes()` just turns each triangle's bit on (instruction 2, "close
-excluding", turns it off). That covers what the KOS demos do — a flat screen-space square — and a
-shadow projected onto a plane, which is the ordinary use; a closed convex volume seen from inside
-would come out wrong.
+Counting against depth forces the order: the depth must be resolved **before** marking, so
+`dibujar_escena()` runs in phases — opaque and punch-through strips first with set 0 (that writes
+z), then the list-1 volume is counted and the affected strips are **overlaid** with set 1 where
+the count says inside (`GL_EQUAL` against the depth the strip itself left; safe because those
+lists never blend), then the stencil is cleared and the list-3 volume re-counted for the
+translucent phase — one volume class owns the whole 8-bit stencil at a time. Translucent affected
+strips are still **drawn twice with the stencil test inverted** — outside with set 0, inside with
+set 1 — because with alpha blending every pixel must be written exactly once: overlaying would
+blend twice. The per-strip GL state lives in `tira_estado()` so the overlay pass can replay it.
 
 **When measuring those demos, note they place their geometry with `rand()`**, so the volume
 overlaps a polygon in one run and not the next. A two-colour BMP proves nothing; run them a few

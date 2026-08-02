@@ -1674,67 +1674,116 @@ int compare(const void *  f,const void * s)
 	entre los dos juegos de parametros del poligono. En OpenGL de funcion fija
 	eso es el buffer de plantilla.
 
-	Se usan dos bits, porque hay dos volumenes independientes: el de la lista 1
-	afecta a la lista opaca (0) y el de la lista 3 a la translucida (2).
+	**La cuenta es por caras contra la profundidad de la escena, como en el
+	chip.** Un pixel esta dentro del volumen si entre el ojo y su superficie
+	las caras del volumen que miran hacia aca y las que miran hacia alla no se
+	compensan: las que pasan la prueba de profundidad (GL_GREATER: mas cerca
+	que la superficie) suman en un sentido y restan en el otro, y dentro =
+	cuenta != 0. Probar contra != 0 vuelve ademas irrelevante cual de los dos
+	sentidos de giro es "la cara delantera": en un volumen cerrado los cruces
+	se cancelan de a pares y en uno abierto -- el cuadrado plano de las demos
+	de KOS -- queda +-1.
+
+	La version anterior era una union de triangulos en pantalla, sin mirar la
+	profundidad: alcanzaba para ese cuadrado plano, pero la sombra extruida del
+	taxi de Crazy Taxi marcaba todo lo que sus caras cubrieran -- el techo del
+	propio taxi oscurecido por su sombra y un manto sobre media pantalla.
+
+	Contar contra la profundidad obliga a marcar DESPUES de resolverla, no
+	antes de dibujar: ver el orden en dibujar_escena(). La plantilla entera es
+	de una sola lista de volumen a la vez -- se marca la 1 para la tanda opaca
+	y se re-marca la 3 para la translucida -- asi la cuenta tiene los 8 bits.
+
+	La instruccion 2 ("cerrar excluyendo") sigue siendo la aproximacion de
+	antes -- pone en cero lo que cubre, ahora tambien solo delante de la
+	superficie -- porque ninguna demo nuestra la ejercita.
 */
-#define PLANTILLA_OPACO		0x1
-#define PLANTILLA_TRANS		0x2
 
-/* Que bit le toca a una tira segun la lista en que vino. */
-static GLuint plantilla_bit(DWORD tipo_lista)
-{
-	return (tipo_lista == 2 || tipo_lista == 3) ? PLANTILLA_TRANS : PLANTILLA_OPACO;
-}
+/* Los WRAP son de GL 1.4 y el gl.h de MSVC es 1.1; todo driver los trae. Sin
+   wrap la cuenta se arruina cuando una cara trasera rasteriza antes que su
+   delantera: GL_DECR en 0 se queda en 0 y el par ya no se cancela. */
+#ifndef GL_INCR_WRAP
+#define GL_INCR_WRAP	0x8507
+#define GL_DECR_WRAP	0x8508
+#endif
 
-/*
-	Marca en la plantilla la region que cubren los triangulos de volumen.
-
-	**Es una union de triangulos, no un volumen de verdad.** El chip resuelve
-	volumenes cerrados en 3D contando caras delanteras y traseras; aca cada
-	triangulo prende su bit y se acabo. Alcanza para lo que hacen las demos de
-	KOS -- un cuadrado plano en coordenadas de pantalla, dos triangulos -- y
-	para cualquier sombra proyectada sobre el plano, que es el uso corriente.
-	Un volumen convexo cerrado visto desde dentro saldria mal.
-
-	La instruccion 2 ("cerrar excluyendo") apaga el bit en vez de prenderlo, que
-	es lo mas parecido a lo que hace el chip sin llevar la cuenta.
-*/
-static void marcar_volumenes(void)
+/* Hay triangulos de volumen de esta lista? (1 opaca, 3 translucida) */
+static int hay_volumen_de(DWORD lista)
 {
 	DWORD v;
 
-	if (vol_count == 0)
-		return;
+	for (v = 0; v < vol_count; v++)
+		if (VolumeBuffer[v].lista == lista)
+			return 1;
+
+	return 0;
+}
+
+/*
+	Cuenta en la plantilla el volumen de `lista` contra la profundidad que ya
+	quedo en el buffer. Deja cuenta != 0 en los pixeles cuya superficie esta
+	dentro del volumen.
+*/
+static void marcar_volumenes(DWORD lista)
+{
+	int paso;
+	DWORD v;
 
 	glEnable(GL_STENCIL_TEST);
+	glStencilMask(0xFF);
 	glClearStencil(0);
 	glClear(GL_STENCIL_BUFFER_BIT);
 
-	/* Solo la plantilla: ni color ni profundidad. El volumen no se ve. */
+	/* Solo la plantilla: ni color ni profundidad. El volumen no se ve, pero
+	   SI se compara: "delante de la superficie" es GL_GREATER, la misma
+	   convencion de las tiras (mas grande = mas cerca). */
 	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	glDepthMask(GL_FALSE);
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_CULL_FACE);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_GREATER);
 	glDisable(GL_TEXTURE_2D);
 	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glStencilFunc(GL_ALWAYS, 0, 0xFF);
 
-	glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
+	glEnable(GL_CULL_FACE);
+	glFrontFace(GL_CCW);
+
+	for (paso = 0; paso < 2; paso++)
+	{
+		glCullFace(paso ? GL_FRONT : GL_BACK);
+		glStencilOp(GL_KEEP, GL_KEEP, paso ? GL_DECR_WRAP : GL_INCR_WRAP);
+
+		glBegin(GL_TRIANGLES);
+
+		for (v = 0; v < vol_count; v++)
+		{
+			const VolTri * t = &VolumeBuffer[v];
+			int k;
+
+			if (t->lista != lista || t->instruccion == 2)
+				continue;
+
+			for (k = 0; k < 3; k++)
+				glVertex3f(t->x[k], t->y[k], t->z[k]);
+		}
+
+		glEnd();
+	}
+
+	/* La exclusion, si la hay, despues de la cuenta y sin culling. */
+	glDisable(GL_CULL_FACE);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
 
 	glBegin(GL_TRIANGLES);
 
 	for (v = 0; v < vol_count; v++)
 	{
 		const VolTri * t = &VolumeBuffer[v];
-		GLuint bit = plantilla_bit(t->lista);
 		int k;
 
-		/* glStencilMask limita la escritura al bit de esta lista, asi que los
-		   dos volumenes no se pisan. Va fuera de glBegin/glEnd. */
-		glEnd();
-		glStencilMask(bit);
-		glStencilOp(GL_KEEP, GL_KEEP,
-			(t->instruccion == 2) ? GL_ZERO : GL_REPLACE);
-		glBegin(GL_TRIANGLES);
+		if (t->lista != lista || t->instruccion != 2)
+			continue;
 
 		for (k = 0; k < 3; k++)
 			glVertex3f(t->x[k], t->y[k], t->z[k]);
@@ -1742,31 +1791,26 @@ static void marcar_volumenes(void)
 
 	glEnd();
 
-	glStencilMask(0xFF);
 	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glEnable(GL_DEPTH_TEST);
 }
 
 /*
 	Deja la prueba de plantilla como la necesita la tira `i`: `dentro` en 0
-	dibuja fuera del volumen y en 1 dentro. Una tira que ningun volumen afecta
-	se dibuja entera.
+	dibuja fuera del volumen (cuenta 0) y en 1 dentro (cuenta != 0). Una tira
+	que ningun volumen afecta se dibuja entera. `hay_volumen` es el de la
+	lista que rige la fase en curso: la plantilla vale para una a la vez.
 */
-static void plantilla_para(int i, int dentro)
+static void plantilla_para(int i, int dentro, int hay_volumen)
 {
-	GLuint bit;
-
-	if (!TriangleStrip[i].volumen || vol_count == 0)
+	if (!TriangleStrip[i].volumen || !hay_volumen)
 	{
 		glDisable(GL_STENCIL_TEST);
 		return;
 	}
 
-	bit = plantilla_bit(TriangleStrip[i].type);
-
 	glEnable(GL_STENCIL_TEST);
-	glStencilFunc(dentro ? GL_EQUAL : GL_NOTEQUAL, bit, bit);
+	glStencilFunc(dentro ? GL_NOTEQUAL : GL_EQUAL, 0, 0xFF);
 }
 
 /*
@@ -2201,39 +2245,14 @@ static void dibujar_niebla_tira(DWORD i)
 	juego_de_parametros(0);
 }
 
-static void dibujar_escena(void)
+/*
+	Programa todo el estado de GL que pide la tira `i` -- profundidad, culling,
+	escritura de z, mezcla, prueba de alfa y textura. Extraido del bucle de
+	dibujar_escena() para poder repetirlo en la segunda pasada de los
+	volumenes, que recorre las tiras afectadas fuera de ese bucle.
+*/
+static void tira_estado(DWORD i)
 {
-	DWORD i;
-
-	/* DCEMU_SIN_VOLUMEN: descarta los volumenes modificadores de la escena,
-	   como si ninguna tira los trajera. Diagnostico para A.5: si el mundo
-	   blanco de Crazy Taxi depende de esto, la culpa es de la segunda
-	   pasada o del marcado de la plantilla. */
-	if (getenv("DCEMU_SIN_VOLUMEN"))
-		vol_count = 0;
-
-	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
-	   decide, tira por tira, con que juego de parametros sale cada pixel. */
-	marcar_volumenes();
-
-	for(i=0; i < strip_count; i++)
-		{
-			/* Los encabezados de sombra de un juego dejan cientos de tiras
-			   vacias por escena (fin de tira sin vertices): no dibujan nada
-			   y pagaban igual todo el estado de GL de aca abajo. */
-			if (TriangleStrip[i].count == 0)
-				continue;
-
-			/*
-				Fuera del volumen. Si a esta tira la afecta uno, se dibuja solo
-				donde el bit correspondiente esta apagado y la segunda pasada
-				cubre el resto; asi cada pixel sale una sola vez, que es lo que
-				importa cuando hay mezcla alfa de por medio.
-			*/
-			plantilla_para(i, 0);
-
-			//printf(" Index %d count %d\n",TriangleStrip[i].index,TriangleStrip[i].count);
-
 			glDepthFunc(TriangleStrip[i].depthmode);
 
 			/* Iban indexadas con strip_count, que en este bucle ya es la
@@ -2393,26 +2412,109 @@ static void dibujar_escena(void)
 				glDisable(GL_TEXTURE_2D);
 			}
 
-			glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
+}
 
-			/*
-				Dentro del volumen: la misma geometria con el juego 1. Se
-				repite el dibujo en vez de hacer otra vuelta entera al final
-				porque asi hereda el estado que se acaba de programar --
-				blend, culling, profundidad y la textura ya ligada.
-			*/
-			if (TriangleStrip[i].volumen && vol_count > 0)
-			{
-				plantilla_para(i, 1);
-				juego_de_parametros(1);
+static void dibujar_escena(void)
+{
+	DWORD i;
+	int vol_opaca, vol_trans;
 
-				glDrawArrays(GL_TRIANGLE_STRIP,TriangleStrip[i].index,TriangleStrip[i].count);
+	/* DCEMU_SIN_VOLUMEN: descarta los volumenes modificadores de la escena,
+	   como si ninguna tira los trajera. Diagnostico para A.5: si el mundo
+	   blanco de Crazy Taxi depende de esto, la culpa es de la segunda
+	   pasada o del marcado de la plantilla. */
+	if (getenv("DCEMU_SIN_VOLUMEN"))
+		vol_count = 0;
 
-				juego_de_parametros(0);
-			}
+	vol_opaca = hay_volumen_de(1);
+	vol_trans = hay_volumen_de(3);
 
-			dibujar_niebla_tira(i);
+	/*
+		El orden viene de como resuelve el chip, que primero deja la
+		profundidad y recien despues decide que pixel cae dentro de que
+		volumen: (1) la tanda opaca y punch-through con el juego 0, que es la
+		que escribe z; (2) el conteo del volumen de la lista 1 contra esa z y
+		el repintado de las tiras afectadas donde la cuenta dio dentro; (3) el
+		volumen de la lista 3 re-marcado sobre la misma z; (4) la tanda
+		translucida. Marcar antes de dibujar -- lo que se hacia -- no tiene
+		contra que comparar: era la union en pantalla que oscurecia el techo
+		del taxi con su propia sombra.
+	*/
+
+	/* (1) Opaca y punch-through, enteras y con el juego 0. */
+	for (i = 0; i < strip_count; i++)
+	{
+		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2)
+			continue;
+
+		glDisable(GL_STENCIL_TEST);
+		tira_estado(i);
+		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+		dibujar_niebla_tira(i);
+	}
+
+	/* (2) Dentro del volumen opaco: la misma geometria con el juego 1 (en
+	   sombra barata, el 0 escalado por FPU_SHAD_SCALE). Estas listas no
+	   mezclan, asi que repintar solo los pixeles de dentro es seguro.
+	   GL_EQUAL contra la z que la propia tira dejo limita la pasada a donde
+	   esa tira sigue visible; si la tira no escribio z, repite su prueba. */
+	if (vol_opaca)
+	{
+		marcar_volumenes(1);
+
+		for (i = 0; i < strip_count; i++)
+		{
+			if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2
+			||  !TriangleStrip[i].volumen)
+				continue;
+
+			tira_estado(i);
+			glDepthFunc(TriangleStrip[i].zwrite ? TriangleStrip[i].depthmode
+											    : GL_EQUAL);
+			glDepthMask(GL_FALSE);
+			glEnable(GL_STENCIL_TEST);
+			glStencilFunc(GL_NOTEQUAL, 0, 0xFF);
+			juego_de_parametros(1);
+
+			glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,
+				TriangleStrip[i].count);
+
+			juego_de_parametros(0);
 		}
+	}
+
+	/* (3) y (4): la tanda translucida, con su volumen re-marcado contra la
+	   profundidad que dejo la opaca. */
+	if (vol_trans)
+		marcar_volumenes(3);
+
+	for (i = 0; i < strip_count; i++)
+	{
+		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type != 2)
+			continue;
+
+		/* Fuera del volumen, o entera si ninguno la afecta. Con mezcla de
+		   por medio cada pixel tiene que salir UNA sola vez, asi que la tira
+		   afectada se parte en fuera/dentro en vez de repintarse. */
+		plantilla_para(i, 0, vol_trans);
+		tira_estado(i);
+		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+
+		/* Dentro: la misma geometria con el juego 1, aqui mismo para que
+		   herede el estado recien programado -- blend, culling, profundidad
+		   y la textura ya ligada. */
+		if (TriangleStrip[i].volumen && vol_trans)
+		{
+			plantilla_para(i, 1, vol_trans);
+			juego_de_parametros(1);
+
+			glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+
+			juego_de_parametros(0);
+		}
+
+		dibujar_niebla_tira(i);
+	}
 
 	glDisable(GL_STENCIL_TEST);
 }
