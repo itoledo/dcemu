@@ -1006,6 +1006,42 @@ de CE-DC no lo usa, su bucle es idle normal. Qué API set espera `8cfa5000` y po
 servidor no arranca es la pregunta que sigue; el censo por (destino, llamador, proceso)
 del `DCEMU_TRAZA_EXC=2` es la herramienta con la que se retoma.
 
+**Afinado la misma noche, hasta ver morir al juego.** Lo de "su proceso duerme" era
+mejor de lo que parecía y peor a la vez: el proceso del juego **existió, corrió mucho, y
+salió solo**. La secuencia, medida con el censo y con trazas armadas desde los ganchos:
+
+- El proceso del juego corre en el **slot 5** (pilas `0A02xxxx`). En el segundo 0 hace
+  miles de llamadas: su DLL de audio importado se termina de paginar desde el CD, corre
+  el DllMain de ese DLL (la excepción 0x800 — primer uso de FPU con `SR.FD` — desde
+  `01d24bb2`, un bloque de DLL cargado del disco, no del XIP), y **escanea una tabla
+  propia de 256 entradas de 4 bytes buscando medias palabras distintas de `0xFFFF` — y
+  está toda vacía** (256 = 128+128: forma de banco de parches MIDI; el módulo 18 del XIP
+  se llama `default.fdf`). El escaneo termina, el init **sigue** — la tabla vacía no es
+  fatal por sí sola.
+- Poco después el proceso ejecuta una secuencia lineal de ~12 syscalls de coredll
+  (`01e690cc`..`01e69188`) que cierra asas y termina: **ExitProcess voluntario, sin
+  excepción fatal**. Para el segundo 1 el juego ya no existe (la tabla de secciones en
+  `8c1118a0` muestra solo nk, `8cfb9000`, `8cfa5000` y GWES; los slots 5+ apuntan al
+  centinela `8c012b0c`).
+- El que reintenta cada 5 s (`8cfa5000`, slot 3) es **quien lo lanzó** — y es el mismo
+  proceso cuyo hilo cargó maple.dll al principio: el lanzador de la plataforma. Su
+  espera de 5 s encaja con "esperar la señal del lanzado" (el patrón SignalStarted de
+  CE): el juego murió sin señalar y el lanzador espera para siempre.
+- De paso: maple.dll resultó ser **la capa entera de servicios Sega de CE** — todos los
+  PC que emiten los syscalls del GD (`01df29xx`, `01df2dxx`) viven en ella, además del
+  maple propiamente dicho.
+
+**El siguiente paso concreto**: la decisión de salida. Los últimos sitios de syscall del
+juego antes del desenlace están censados (consultas a la familia de registro
+`ffffd5xx`, una llamada al apiset 5 método 2 desde `01e23452`, `fffffd97`/`0001136c`) y
+la corrida es determinista: armar `traza_arrancar` sobre el primero de la secuencia de
+salida (`fffffd51`, PR=`01e690cc`) con una ventana hacia atrás — o sobre los candidatos
+de decisión uno a uno — nombra el chequeo exacto que devuelve el error. Sospechosos por
+forma: algo que el juego consulta del registro o del entorno (¿configuración de video?
+¿idioma? ¿un dispositivo de la tabla `0xFFFF`?) y que en dcemu contesta distinto que la
+consola. El histograma y el censo (`DCEMU_TRAZA_EXC`) más los ganchos temporales de esta
+sesión (documentados aquí) son el camino de vuelta.
+
 ---
 
 ## Vía B — El AICA (hito E)

@@ -115,10 +115,19 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 					case 0x0e0: cuenta[4]++; break;
 					case 0x1e0: cuenta[5]++; break;
 					case 0x820: cuenta[6]++; break;
-					default:    cuenta[7]++; break;
+					default:
+					cuenta[7]++;
+
+					/* Las "otras" son raras y suelen ser la fatal: nombrarlas. */
+					if (habilitado >= 2 && cuenta[7] <= 4)
+						fprintf(stderr, "traza: excepcion rara %03lx"
+							" (SPC=%08lx, PR=%08lx)\n",
+							(unsigned long) codigo,
+							(unsigned long) SPC, (unsigned long) PR);
+					break;
 				}
 
-				if (habilitado >= 2 && codigo == 0x0e0 && seg >= 2)
+				if (habilitado >= 2 && codigo == 0x0e0 && seg >= 1)
 				{
 					/* Una linea por (destino, llamador) distinto, pasado el
 					   arranque: el censo de sitios de syscall del regimen
@@ -152,6 +161,7 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 							(unsigned long) SPC, (unsigned long) PR,
 							(unsigned long) directorio);
 					}
+
 				}
 			}
 		}
