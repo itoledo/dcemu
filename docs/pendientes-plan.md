@@ -52,7 +52,9 @@ un juego". Crazy Taxi (los dos rips) muestra su pantalla de carga, el aviso de V
 al Start, pasa a su pantalla de título y corre el modo attract en 3D — el motor entero, a 528
 tiras por escena. **Virtua Tennis cayó el 2 de agosto** (aviso de VMU, título, Main Menu y
 attract en 3D a 2400 tiras por escena — la entrega por nivel del ASIC más la demora del CH2
-DMA, ver A.6); Capcom vs. SNK, re-medido con eso puesto, sigue parado: era otro bloqueo.
+DMA, ver A.6), **y Capcom vs. SNK el mismo día** (aviso de Memory Card y pantalla de título —
+era otro bloqueo: el hook del GD aceptaba toda petición al instante donde el driver de la
+BIOS acepta una por vez, ver A.7).
 
 ---
 
@@ -442,7 +444,7 @@ Lo que queda de la vía A, medido el mismo día con los dos arreglos puestos:
 | --- | --- |
 | Crazy Taxi (USA y DCRES) | **corre** — título y attract en 3D |
 | Virtua Tennis (los dos rips) | ~~0 escenas~~ → **corre desde el 2 de agosto**: aviso de VMU, título, Main Menu y attract en 3D — ver A.6 |
-| Capcom vs. SNK | re-medido tras A.6: **sigue igual** (2 escenas de 0 tiras) — compartía síntoma, no causa |
+| Capcom vs. SNK | ~~2 escenas~~ → **corre desde el 2 de agosto**: aviso de Memory Card y pantalla de título — ver A.7 |
 | mame4all | idéntico, byte a byte: 93650 colores |
 
 La lectura de `0x2d2d2d0a` quedó explicada por el lado que no acusaba: en Crazy Taxi ocurre
@@ -808,11 +810,37 @@ Crazy Taxi con su discriminador exacto (`11=6481248`, 60 s del reproductor, en j
 1671 tiras/escena) a 0,57x contra 0,53x de la base, mame4all en rango (93689 colores), el
 menú del boot ROM byte a byte idéntico, y las 21 suites en verde.
 
-Lo que queda de la vía A tras esto: **Capcom vs. SNK, medido el mismo día: sigue en 2
-escenas de 0 tiras** — compartía el síntoma con Virtua Tennis pero no la causa; su bloqueo
-es otro y hay que mapearlo desde cero con las mismas herramientas (empezando por el anillo
-de PC y `[8c45f9xx]`-equivalentes suyos). Y Virtua Tenis 2, que sondea el área externa del
-G2 (ver C.8).
+Lo que queda de la vía A tras esto: Capcom vs. SNK (caído el mismo día — ver A.7) y Virtua
+Tenis 2, que sondea el área externa del G2 (ver C.8).
+
+### A.7 — Capcom vs. SNK arranca: una petición viva por vez en el hook del GD (2 de agosto de 2026)
+
+Compartía el síntoma con Virtua Tennis (2 escenas de 0 tiras) pero no la causa. El anillo de
+PC lo mostró clavado en un bucle **del juego** (`8c0112e8`) que sondea el estado de un pedido
+de su capa de CRI (ADXF: 3 = READEND, 4 = ERROR) con timeout de 18M iteraciones, mientras su
+servidor de gdFs repite para siempre `SEND_COMMAND(34)` — **GETSCD, el subcódigo Q** — que el
+hook contestaba "sin implementar". Tres cosas salieron, en orden de descubrimiento:
+
+- **GETSCD (comando 34) está implementado**: parámetros `{formato, tamaño, destino}` como los
+  pasa el driver de la BIOS, respuesta con el encabezado del SPI — estado de audio 0x15 ("sin
+  información de audio"), y para el formato 1 la Q del track de datos parado. Contestar
+  COMPLETED sin escribir el búfer dejaba el estado en 0x00, que no es ningún código.
+- **El id de petición ya no es fijo** (`0x6969` para todo): crece de a uno por SEND. Con id
+  fijo, dos peticiones consecutivas se confunden en la contabilidad del guest.
+- **La de fondo, que era la causa**: el hook aceptaba toda petición al instante, y el driver
+  de la BIOS acepta **una por vez**. El log lo delató: el juego manda su lectura larga (29
+  sectores desde 237128, el archivo de CRI), y **sin consultarla todavía** manda el GETSCD —
+  en la consola ese segundo SEND rebota con 0 y Katana lo reintenta mientras consulta la
+  lectura pendiente; en dcemu se aceptaba, el "comando actual" de Katana pasaba al GETSCD y
+  la lectura quedaba huérfana: su CHECK_COMMAND no llegaba nunca, y la capa de CRI esperaba
+  para siempre el fin de una lectura ya hecha. Ahora `com_viva` modela el driver ocupado:
+  SEND con otra viva devuelve 0 sin ejecutar el trabajo, y CHECK_COMMAND la consume y libera.
+  De paso CHECK informa lo transferido en el tercer word de estado.
+
+Con eso el juego corre: aviso de Memory Card, y con dos Start la pantalla de título
+**CAPCOM VS. SNK Millennium Fight 2000** completa — el logo y la ciudad animada de fondo, a
+3035 tiras por escena. Regresión: Crazy Taxi y Virtua Tennis con sus perfiles exactos (386 y
+1148 escenas, mismas tiras), mame4all byte a byte idéntico, y las 21 suites en verde.
 
 ---
 

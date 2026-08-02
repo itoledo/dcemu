@@ -268,8 +268,10 @@ title screen, 3D attract mode. What unblocked it was the disc type answered by
 Tennis runs too** (2026-08-02): VMU warning, title, Main Menu and the 3D attract at 2400
 strips per scene — what unblocked it was the ASIC's level-triggered delivery plus the CH2
 DMA's end-of-transfer delay (see "Interrupts and timing" and `docs/pendientes-plan.md`,
-A.6). Capcom vs. SNK, re-measured with that in, still stops — it shared the symptom, not
-the cause.
+A.6). **And Capcom vs. SNK the same day**: Memory Card warning and the Millennium Fight
+2000 title screen — a different blocker: the GD hook accepted every request instantly where
+the BIOS driver takes one at a time, and the game's un-CHECKed long read was orphaned (see
+the hook notes below and A.7).
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -1485,7 +1487,17 @@ it writes at `HACK_BASE`. Three of those stubs are an illegal opcode in the dela
   MIL-CD layout: no selfboot ships that check patched). Fixing it is what took the game from
   its loading screen to the title and the 3D attract mode — hito D. The `--bios` path does
   not come through here and keeps seeing the CD the image really is, which its MIL-CD branch
-  needs.
+  needs. **The hook accepts one live request at a time, like the BIOS driver** (`com_viva`):
+  a `SEND_COMMAND` while another is un-CHECKed returns 0 without doing the work, and
+  `CHECK_COMMAND` consumes it. Accepting everything instantly seemed harmless until Capcom
+  vs. SNK: it sends its long CRI read and, before checking it, sends the periodic subcode
+  poll — on the console that second SEND bounces and Katana retries it while polling the
+  read; accepted, Katana's current-command slot moved on and the read was orphaned, its
+  completion never observed, and the CRI layer waited forever. Request ids grow one by one
+  (a fixed id conflates consecutive requests), `CHECK_COMMAND` reports the transferred byte
+  count in the third status word, and **`GETSCD` (command 34) is answered** with the SPI
+  header — audio status `0x15`, "no audio info" — and the data track's subQ; COMPLETED with
+  an unwritten buffer left status `0x00`, which is no code at all.
 - `hack_romfont()` services the ROM font syscall. **This one takes its function number in
   `R1`, not `R7`** (see KOS's `syscall_font.s`): 0 returns the font address, 1 takes the
   mutex, 2 releases it. The lock must answer **0** to mean granted.
