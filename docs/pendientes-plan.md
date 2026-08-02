@@ -523,6 +523,44 @@ reciben la sombra del taxi — que el attract no usa. Dos sondas deciden:
 2. El parseo del encabezado de dos volúmenes (POLY3/POLY4, TSP0/TCW0 en palabras 2-3 según
    §3.7.5.2) contra lo que llega: la traza nueva imprime el TCW crudo por tira.
 
+**Resuelto el misterio de la intermitencia (2026-08-01, madrugada) — es determinista y
+depende del gamepad.** Medido con el reproductor (5 corridas byte a byte idénticas en
+totales de VRAM y flujo de syscalls):
+
+- **El emulador es determinista**: b1≡b2≡c2≡c3 exactas. La corrida "limpia" difería en una
+  sola cosa: `mando: gamepad conectado` (el pad del usuario estaba encendido). Con pad, el
+  flujo de syscalls corre **una iteración de sondeo adelantado** (el par MAIN_LOOP +
+  CHECK_DRIVE aparece en la línea 30 en vez de la 1242) — bytes de entrada distintos mueven
+  el timing del guest — y esa fase decide una carrera **interna del juego**.
+- **La lectora queda absuelta**: las 487 lecturas (32 MB) son idénticas en corrida blanca y
+  limpia — los datos SÍ llegan a RAM. Lo que jamás ocurre en las blancas es la **subida
+  RAM→VRAM**: ~900 KB por CH2 DMA a `0x111A0000-0x113F0000` (las texturas de la ciudad,
+  ~600 transferencias) que la limpia hace durante la carga. A los 90 s la ventana 11 sigue
+  clavada en el mismo byte: la fase de subida no es lenta, **nunca arranca**.
+- Con las texturas ausentes el juego dibuja su mundo de respaldo: 2104 tiras/escena atadas
+  a la 8×8 de `0x00400000` moduladas por color de vértice gris — ESO es el blanco. El flujo
+  del TA es idéntico entre corridas blancas (volcados de escena byte a byte iguales), o sea
+  que no hay corrupción de parseo.
+- Niebla y volúmenes, absueltos de esto: `DCEMU_SIN_NIEBLA`/`DCEMU_SIN_VOLUMEN` no cambian
+  el resultado (la pasada de niebla además dibuja cero tiras en carrera: densidad `0x807F`
+  satura el índice a la ranura 127, cuya alfa es 0 — el juego la deja "apagada" así). Los
+  volúmenes causan el OTRO síntoma: el manto oscuro de media pantalla (ver abajo).
+
+**La sonda que sigue**: el disparador de la primera subida CH2. El juego tiene los datos en
+RAM y no programa `SB_C2DST` — espera algo del pipeline de eventos ASIC (la misma familia
+que la espera 5 de Virtua Tennis: reciclaje de buffers por render-done). Candidato #1: la
+demora del fin de DMA de **Maple** en `INTC_DEMORAS` — el pad entra por ahí y su fase es lo
+único que mueve la aguja; probar a variarla y ver si la carrera cae siempre del lado bueno,
+como en el hardware. Mientras: **con el gamepad conectado el juego carga bien** — es el
+workaround de juego en vivo.
+
+**El manto oscuro con volúmenes activos es la simplificación documentada de
+`marcar_volumenes()`**: unión de triángulos en vez de conteo de caras. La sombra del taxi es
+un volumen cerrado (extruido); marcar cada triángulo enciende todo lo que sus caras cubren —
+media pantalla — y la segunda pasada oscurece eso. El arreglo real: plantilla por conteo
+(`GL_INCR` caras delanteras, `GL_DECR` traseras, dentro = cuenta > 0), re-marcando entre la
+tanda opaca y la translúcida para tener los 8 bits enteros por clase. Pendiente.
+
 Y de la segunda sesión de juego en vivo salieron tres más, los tres del pipeline translúcido,
 resueltos el mismo día — el detalle está en `CLAUDE.md` ("Graphics pipeline"):
 

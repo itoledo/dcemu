@@ -2112,6 +2112,10 @@ static void dibujar_niebla_tira(DWORD i)
 	if (TriangleStrip[i].niebla != 0 && TriangleStrip[i].niebla != 3)
 		return;
 
+	/* Diagnostico: apaga la pasada de niebla sin tocar nada mas. */
+	if (getenv("DCEMU_SIN_NIEBLA"))
+		return;
+
 	memread_fisico(0xA05F80B8, &reg, 4);
 	memread_fisico(0xA05F80B0, &col, 4);
 
@@ -2160,6 +2164,21 @@ static void dibujar_niebla_tira(DWORD i)
 	if (!alguna)
 		return;
 
+	if (opciones.traza_mem)
+	{
+		static DWORD avisos = 0;
+
+		if (avisos < 8)
+		{
+			avisos++;
+			fprintf(stderr, "niebla: tira %lu (lista %lu, %lu vertices) "
+				"densidad %g alfa[0] %g\n",
+				(unsigned long) i, (unsigned long) TriangleStrip[i].type,
+				(unsigned long) TriangleStrip[i].count, densidad,
+				niebla_rgba[TriangleStrip[i].index][3]);
+		}
+	}
+
 	glDisable(GL_TEXTURE_2D);
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_STENCIL_TEST);
@@ -2179,6 +2198,13 @@ static void dibujar_niebla_tira(DWORD i)
 static void dibujar_escena(void)
 {
 	DWORD i;
+
+	/* DCEMU_SIN_VOLUMEN: descarta los volumenes modificadores de la escena,
+	   como si ninguna tira los trajera. Diagnostico para A.5: si el mundo
+	   blanco de Crazy Taxi depende de esto, la culpa es de la segunda
+	   pasada o del marcado de la plantilla. */
+	if (getenv("DCEMU_SIN_VOLUMEN"))
+		vol_count = 0;
 
 	/* Los volumenes se marcan antes de dibujar nada: la prueba de plantilla
 	   decide, tira por tira, con que juego de parametros sale cada pixel. */
