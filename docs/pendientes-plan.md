@@ -952,6 +952,60 @@ se repiten exactos, y `--traza-desde` con los PC anotados (`8c02447e` el que map
 `8c02587c` el que desmonta, `8c01bc68` el despachador de kcalls/excepciones) retoma donde
 esto quedó.
 
+#### Resuelto el mismo día: el init de maple.dll llamaba al ROM por su dirección fija
+
+Seguido el hilo hasta el final, el "teardown" resultó ser **FreeLibrary tras un init
+fallido** — la rutina de `8c02587c` no desmonta una sección: libera los bloques de 64 KB
+de un DLL cuyo contador dice que solo los usa este proceso, con la etiqueta del bloque en
+la media palabra +6 de cada tabla. El hilo zombi era el **worker que el propio DllMain de
+maple.dll creó** (`CreateThread` con threadproc `01df17c4` = maple.dll+0x7c4) antes de
+fallar: el DLL se descargó, el hilo arrancó a los 133.4 ms sobre código ya desmapeado.
+
+**Y el init fallaba por esto** (la traza lo muestra ejecutándose): al final de su
+secuencia, maple.dll hace `JSR` a **`8C0010F0` — una constante en su literal pool — con
+(r4,r5,r6,r7) = (0,0,0,3)**: la convención de syscall de Sega, función 3 = `GDROM_INIT`.
+`8C0010F0` es la **entrada fija del servicio del GD-ROM que el boot ROM instala en RAM**
+— un despachador de 16 funciones con tabla auto-relativa en `8C001180`, verificado
+desensamblándolo con `--bios` — y el word que el ROM real deja en **`8C0000C0`** (un
+quinto vector que los hooks nunca poblaron) apunta exactamente ahí. La plataforma CE de
+Sega la llama por la dirección, sin leer el vector. En el camino de hooks esa RAM estaba
+en cero: el guest ejecutaba NOIMP tras NOIMP deslizándose ~28 KB hasta caer en los bytes
+del IP.BIN, algo con forma de RTS lo devolvía con basura en R0, y maple.dll daba su init
+por fallido. La forma de siempre, en su variante más pura: una llamada que dcemu recibía
+sin tener nada instalado donde el guest sabe que la consola real tiene código.
+
+Tres arreglos salieron de ahí, y con los tres **la pila completa de CD de Windows CE
+funciona por los hooks**:
+
+- **El stub del GD-ROM se instala también en `8C0010F0`**, y el word de `8C0000C0` queda
+  apuntándolo (`SYSCALL_GDROM_FIJO` / `HACK_GDROM_FIJO` en mem.h). Mismo `hack_gdrom()`
+  por los dos caminos, como en el chip.
+- **`GDROM_INIT` (función 3) contesta `R0 = 0`** — dejaba R0 con lo que hubiera, y el
+  init de CE es quien lo mira.
+- **El destino de la lectura por DMA (función 17) es una dirección física** — el G1 DMA
+  de la consola no pasa por la MMU — y el hook la escribía con `memwrite`, que con la MMU
+  de CE encendida la traducía como virtual de otra ranura, sin mapear. Ahora la 17 escribe
+  con `memwrite_fisico` y la 16 (PIO, escritura por CPU del driver) sigue traducida:
+  el espejo exacto del hardware. Katana pasa P1 y no distingue los dos caminos.
+
+Con eso, medido con el censo de syscalls (`DCEMU_TRAZA_EXC=2`): CE monta el ISO9660 del
+disco por los syscalls del GD (PVD, directorio raíz, `DCDOOM.EXE` entero — 645 sectores
+de una vez — y módulos de `\WINCE` paginados **bajo demanda desde el CD** en trozos de
+16 KB), maple.dll inicializa completo (su IST re-habilita las máscaras: IML4 vuelve a
+`0x7000` con `InterruptDone`), el sondeo automático del mando corre a 60 Hz con
+`GetCondition`, y wdmlib/ddraw ciclan vivos en régimen estacionario.
+
+**La frontera nueva** (donde quedó el 2 de agosto por la noche): el sistema entra a un
+régimen de 284 syscalls/s — el latido del anfitrión de drivers (`8cf8c000`: maple, wdmlib
+y el bucle ocioso de ddraw a 6 Hz) — y ahí se queda. `DCDOOM.EXE` cargó y su proceso
+duerme sin hacer una sola llamada más; `DOOM.WAD` se tocó a lo sumo una vez; y un segundo
+proceso (`8cfa5000`) repite cada 5 segundos el patrón WaitForAPIReady — `ResetEvent` +
+`WaitForMultipleObjects(1, evt, 0, 5000)` desde `PR=0001aa54` — esperando un API set que
+nunca se registra. Nadie desenmascara jamás el vblank (bits 3/4/5 de las IML): el ddraw
+de CE-DC no lo usa, su bucle es idle normal. Qué API set espera `8cfa5000` y por qué su
+servidor no arranca es la pregunta que sigue; el censo por (destino, llamador, proceso)
+del `DCEMU_TRAZA_EXC=2` es la herramienta con la que se retoma.
+
 ---
 
 ## Vía B — El AICA (hito E)

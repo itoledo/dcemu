@@ -188,4 +188,17 @@ extern void WriteMemoryF(unsigned long direccion, float * valor);
 #define SYSCALL_GDROM		0x8C0000BC
 #define SYSCALL_UNKNOWN		0x8C0000E0
 
+/*
+	El quinto vector: el word que el ROM real deja en 8C0000C0 apunta a su
+	entrada fija del servicio del GD-ROM (8C0010F0 en el 1.01d, un
+	despachador de 16 funciones con la misma convencion del vector de
+	8C0000BC). La plataforma Windows CE de Sega llama esa direccion SIN leer
+	el vector -- la trae como constante en maple.dll --, asi que el stub
+	tiene que vivir exactamente ahi: con esa RAM en cero, DCDoom ejecutaba
+	NOIMP tras NOIMP hasta caer en el IP.BIN, volvia con basura y daba su
+	driver por roto. Medido contra el 1.01d con --bios y --volcar.
+*/
+#define SYSCALL_GDROM_FIJO	0x8C0000C0
+#define HACK_GDROM_FIJO		0x8C0010F0
+
 #endif // _MEM_H_

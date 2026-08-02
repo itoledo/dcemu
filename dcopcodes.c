@@ -387,7 +387,22 @@ void hack_gdrom()
 
 						fprintf(stderr, "\n");
 					}
-					memwrite(targetaddr, &targetmem[0], 2048 * secnum);
+
+					/*
+						El destino de la 17 es una direccion FISICA -- el G1 DMA
+						de la consola no pasa por la MMU -- y el de la 16 es la
+						escritura por CPU del driver, o sea virtual. La
+						diferencia se ve recien con la MMU encendida: Windows CE
+						pide la 17 con 0x0CF77000 fisico, y traducirlo como
+						virtual lo mandaba a la ranura 6 de otro proceso, sin
+						mapear. Los juegos de Katana pasan P1 (0x8C...), que
+						resuelve igual por los dos caminos.
+					*/
+					if (R(4) == 17)
+						memwrite_fisico(targetaddr, &targetmem[0], 2048 * secnum);
+					else
+						memwrite(targetaddr, &targetmem[0], 2048 * secnum);
+
 					free(targetmem);
 
 					/* Para que CHECK_COMMAND pueda informar lo transferido. */
@@ -568,6 +583,9 @@ void hack_gdrom()
 
 			case 3: // GDROM_INIT
 			logmsg("GDROM_INIT\r\n");
+			/* Sin exito explicito, R0 se lleva lo que hubiera: el init de
+			   maple.dll de Windows CE es quien mira este retorno. */
+			R(0) = 0;
 			break;
 
 			case 4: // GDROM_CHECK_DRIVE
@@ -630,6 +648,9 @@ OPCODE(BIOS_HACK)
     {
         case HACK_BASE + HACK_ROMFONT + 2:  hack_romfont(); break;
         case HACK_BASE + HACK_GDROM + 2:    hack_gdrom();   break;
+        /* La entrada fija que el word de 8C0000C0 apunta en el ROM real: el
+           mismo servicio del GD-ROM, llamado por direccion. Ver mem.h. */
+        case HACK_GDROM_FIJO + 2:           hack_gdrom();   break;
         case HACK_BASE + HACK_FLASHROM + 2: hack_flashrom(); break;
         case HACK_BASE + HACK_SYSINFO + 2:  hack_sysinfo();  break;
         case HACK_BASE + HACK_UNKNOWN + 2:  hack_mudo("UNKNOWN");   break;
