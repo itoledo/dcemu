@@ -20,7 +20,7 @@ No se inventó nada: cada punto viene anotado en un documento o en el código.
 
 ## El estado del que se parte
 
-Actualizado el 1 de agosto de 2026.
+Actualizado el 2 de agosto de 2026.
 
 | | |
 | --- | --- |
@@ -31,7 +31,7 @@ Actualizado el 1 de agosto de 2026.
 | El núcleo contra SingleStepTests/sh4 | **116.500 casos, 0 fallos** |
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
 | mame4all | arranca desde el `.iso` y dibuja su menú |
-| **Crazy Taxi** | **corre**: título y modo attract en 3D, responde al mando (A.3) |
+| **Los cuatro juegos comerciales** | **corren**: Crazy Taxi (A.3), Virtua Tennis (A.6), Capcom vs. SNK (A.7) y Virtua Tenis 2 (A.8) — todos con título y attract/menú |
 
 Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
 no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
@@ -43,7 +43,7 @@ juego del disco"):
 
 | hito | qué se ve | vía | estado |
 | --- | --- | --- | --- |
-| **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026: Crazy Taxi corre** — ver A.3 |
+| **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026 (Crazy Taxi, A.3) y por cuadruplicado el 2 (VT A.6, CvS A.7, VT2 A.8)** |
 | **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026: suenan cuatro** |
 | **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | pendiente |
 
@@ -60,7 +60,7 @@ imágenes comerciales que se parsean corren.**
 
 ---
 
-## Vía A — El juego arranca y no dibuja (hito D)
+## Vía A — El juego arranca y no dibuja (hito D) — **cerrada el 2 de agosto de 2026: los cuatro juegos corren**
 
 Lo que está anotado: tras el salto el ejecutable corre —el PC recorre `0x0C14xxxx`-`0x0C17xxxx`—
 y termina leyendo por punteros que no apuntan a nada, `0x10000011` en adelante y de a `0x2C`.
@@ -80,7 +80,7 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | Virtua Tennis (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja — **corre desde el 2 de agosto, ver A.8** |
-| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** |
+| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** — resuelto: es Windows CE, ver A.9 |
 | mame4all (`.iso`) | carpeta empaquetada | 0 (no usa el TA) | 0 / 235315200 | ninguna | 105 | **su propio menú** |
 
 Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
@@ -119,6 +119,8 @@ lista `CLAUDE.md` —LBA 0, 302 sectores de audio y LBA 11702, 18487 de datos—
 sin problema desde el lsn 19136. Lo que falla es el recorrido del ISO9660 del cargador
 directo, que es otro código que el del ROM: la tabla de `CLAUDE.md` dice que **el ROM sí**
 encuentra su `1ST_READ.BIN`. Así que es anterior a este trabajo y está acotado a un camino.
+**Resuelto el 2 de agosto: no había tal archivo — el binario de arranque se llama
+`0WINCEOS.BIN` y el nombre lo declara el IP.BIN. Es un juego de Windows CE; ver A.9.**
 
 Nota sobre mame4all: la fila decía "el menú de la BIOS" porque se había corrido el
 `1st_read.bin` **suelto**, que no es la configuración que funciona. **Vuelto a medir el 1 de
@@ -296,7 +298,7 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   Tennis pasa su espera 3 **sin el experimento**: STARTRENDER dispara y quedó en la espera
   4. Los demos de volúmenes, dentro de su varianza de `rand()` (medida en el mismo binario);
   el resto del subconjunto, byte a byte.
-- **Espera 4** (donde está hoy): es `while ((obj = cola_pop()) == NULL) yield;` — la rutina
+- **Espera 4** (donde quedó ese día; su resolución es A.6): es `while ((obj = cola_pop()) == NULL) yield;` — la rutina
   `8c1f9960` entrega búferes de comando que el pipeline de cuadro recicla, y el reciclador es
   la **cadena enlazada de callbacks** que recorre el handler del render-done (entrada 2,
   `8c1e84c0`: `for (n = [8c1e8598]; n; n = n->sig) n->fn(n->arg)`). El juego encadena un nodo
@@ -329,7 +331,8 @@ arranque de Virtua Tennis quedó leído capa por capa. Lo firme:
   Lo que falta: que el pipeline de cuadro del juego gire — su cadena de render-done tiene
   que correr una vez POR render con el nodo ya puesto, y el juego consume además los eventos
   por el estado de `SB_ISTNRM` (los acks). Es trabajo del modelo de eventos del ASIC, no un
-  registro suelto.
+  registro suelto. **Resuelto en A.6**: era exactamente eso — la entrega por nivel más la
+  demora del fin del CH2 DMA.
 
 Y de esa persecución salieron dos mejoras estructurales que ya quedaron:
 
@@ -873,6 +876,82 @@ incoherente — por eso nunca se vio.
 Con el latch el juego sigue de largo: pasa el logo y entra a su secuencia de intro. **Con
 esto, las cuatro imágenes comerciales que se parsean corren.**
 
+### A.9 — DCDoom carga y resulta ser Windows CE: el kernel arranca, el arranque se queda a medias (2 de agosto de 2026)
+
+El "no carga por este camino" de A.0 tenía una causa de una línea y un mundo entero
+detrás. La causa: el cargador directo buscaba `1st_read.bin` **con el nombre cableado**, y
+el directorio raíz de DCDoom no tiene tal archivo — tiene `0WINCEOS.BIN`, `DCDOOM.EXE`,
+`DOOM.WAD`, `AUTORUN.REG` y un directorio `WINCE`. **DCDoom es un juego de Windows CE.**
+El nombre del binario de arranque lo declara el IP.BIN en su cabecera (offset `0x60`, 16
+bytes rellenos con espacios) y es el mismo campo que usa el boot ROM — el puntero que deja
+en `GBR+0x9C`; la tabla de `bios-boot-plan.md` ya decía que el ROM "encuentra
+1ST_READ.BIN" en FAD 11895, que es exactamente donde vive `0WINCEOS.BIN`. `main.c` toma el
+nombre de ahí ahora, con `1st_read.bin` de valor por omisión.
+
+Con eso el binario carga, se descifra y corre — y pide todo lo que ningún juego de Katana
+pidió jamás. **Lo que se le dio, en orden de aparición:**
+
+- **La fase 7 de la MMU** (la búsqueda de instrucciones por la TLB) y **el avance de
+  `MMUCR.URC`** — ver `mmu-plan.md`, que documenta ambos. CE ejecuta sus procesos de
+  usuario en P0 traducido, recarga la TLB por software con el manejador en `VBR+0x400`, y
+  su manejador cuenta con que cada `LDTLB` caiga en una entrada distinta.
+- **La zona `0xBF`** en `mem_hash_read/write`: el área 7 física (`0x1F000000`) vista por
+  P2. El HAL de CE arranca el tick del sistema escribiendo `TSTR` en `0xBFD80004`; dcemu
+  solo tenía enlazadas `0x1F` y `0xFF`, la escritura caía al vacío sin aviso y el
+  planificador quedaba ocioso para siempre. La forma de siempre: algo que el guest pide,
+  contestado sin querer decirlo.
+- **El disparo por hardware del Maple** (`maple_vblank()` en mem.c): con `SB_MDTSEL=1` y
+  `SB_MDEN=1` el chip camina la lista de comandos solo, en cada vblank. CE no escribe
+  `SB_MDST` jamás — arma el disparo y espera los fines de DMA. Se reusa el caso de
+  `SB_MDST` de `pvr_write()` escribiendo el registro como lo haría el guest, así el
+  recorrido es idéntico por los dos caminos. El boot ROM y los juegos de Katana usan el
+  arranque por software — por eso nunca se vio.
+
+**Dónde queda DCDoom con todo eso** (medido con `--traza-mem` y el histograma de
+excepciones por segundo): el kernel de CE arranca entero — MMU encendida, recargas de TLB
+a miles por segundo, syscalls por salto a `0xFFFFFxxx` (error de dirección en la búsqueda,
+que la fase 7 levanta y CE atrapa: así implementa CE sus llamadas al sistema), contexto
+perezoso de FPU por `SR.FD` con los códigos 0x800/0x820, tick del TMU cada 25 ms acusado
+por su ISR, el mando enumerado por el sondeo automático del Maple, el ARM del AICA
+corriendo el firmware que CE le sube (63 M de instrucciones, cero indefinidas) y el driver
+de pantalla pintando su primer cuadro por la ventana de 32 bits. Del segundo 2 en
+adelante el sistema queda **ocioso en el despachador del kernel**: todos los hilos
+esperan, y la lectora no recibe ni un comando ATA en 25 segundos — `DCDOOM.EXE` nunca se
+llega a cargar del disco.
+
+**La frontera está mapeada al hilo y al ciclo.** El bloqueo de fondo: a los 118.8 ms el
+loader de CE construye el mapeo de la sección de código de `maple.dll` (PTE `8cfcb42c` en
+la tabla del proceso, PC `8c02447e`); a los 119.4 ms **la misma corrida lo desmonta** — la
+rutina de teardown de secciones (`8c02587c`) barre la tabla entera, patrón de creación de
+proceso deshecha —; a los 133.4 ms un hilo de coredll salta a `01df17c4` (maple.dll+0x7c4,
+su punto de entrada: la sección va de `03df1000` a `03df5d73` según la o32 del XIP, sin
+comprimir, con los bytes en RAM en `8c0ac000`), la búsqueda falla en la TLB, el recorrido
+por software del propio CE confirma PTE=0, y la paginación por demanda **nunca lo
+repone** (el PTE sigue en 0 a los 20 segundos, medido con watchpoint). El hilo sobrevive
+—reaparece a los 146 ms en un bucle `ResetEvent` + `WaitForMultipleObjects(1, evt, 0,
+5000)` que reintenta para siempre— y el resto del arranque queda serializado detrás:
+`wsegacd.dll` (el driver de CD) registró su interrupción (IML4 bit 14) y no llegó a tocar
+el drive.
+
+Lo descartado con medición, para no volver a recorrerlo: el ack de `SB_ISTNRM` nunca llega
+del guest porque su ISR real sí corre (el enmascaramiento de IML4 `0x7000→0x4000` es el
+patrón normal de CE: la fuente se re-habilita en `InterruptDone`, que nunca ocurre porque
+el IST de maple queda detrás del mismo bloqueo); el evento que ese hilo espera no está en
+la tabla de eventos por interrupción (`8c1119a0`: [10]/[11] maple, [12] GD-DMA — espera a
+otro hilo, no a una interrupción); CE no usa las store queues con la MMU activa (la fase 6
+no es esto); y el firmware ARM que CE sube corre sano. La imagen XIP se parseó entera
+desde la RAM emulada (ROMHDR en `8c10c478`, 19 módulos listados en la sección A.9 del
+histórico de esta corrida): `nk.exe`, `coredll.dll`, `filesys.exe`, `gwes.exe`,
+`wsegacd.dll`, `maple.dll`, `sndcore.dll`, `dinputx.dll`, etc.
+
+**El siguiente paso concreto**: entender por qué el teardown de los 119.4 ms deja un hilo
+vivo apuntando a una sección desmontada — si la creación del proceso falló por algo que
+dcemu contesta mal en esos 0.55 ms, o si el desmontaje es normal y lo roto es que la
+paginación posterior no repone la sección. La corrida es determinista: los ciclos de arriba
+se repiten exactos, y `--traza-desde` con los PC anotados (`8c02447e` el que mapea,
+`8c02587c` el que desmonta, `8c01bc68` el despachador de kcalls/excepciones) retoma donde
+esto quedó.
+
 ---
 
 ## Vía B — El AICA (hito E)
@@ -994,7 +1073,8 @@ escritura sin emular en 00000000 (4 bytes) desde PC 8c29a444
 ```
 
 Las cuatro de `0xA10004xx`-`0xA10018xx` son un dispositivo del bus G2, sondeado desde un mismo
-PC: es la cuarta sospecha de A.2, y aquí sale sola. Sin veredicto por el serial.
+PC: es la cuarta sospecha de A.2, y aquí sale sola. Sin veredicto por el serial. **Cerrado en
+A.8**: era la detección de la Broadband Adapter, es benigna, y el juego corre.
 
 ### C.2 — El README quedó de antes de todo esto — **resuelto**
 
@@ -1327,9 +1407,11 @@ la variante x64. Ninguna bloquea nada.
    candidatos de A.2 (ninguno era la causa: los stubs mudos no llegan a llamarse en Crazy
    Taxi), arreglaron una imagen y dejaron de mentir en la portada. De paso salió la lectura
    de `0x2d2d2d0a` que está anotada en la vía A.
-2. **Vía A.0** — media sesión. La tabla de dónde se para cada imagen hoy. Sin esto se puede
-   estar persiguiendo un fantasma de hace una semana.
-3. **Vía A.1 y A.2** — el hito D. Es donde está el valor.
+2. ~~**Vía A.0**~~ — hecha, y rehecha el 1 de agosto (A.0b).
+3. ~~**Vía A.1 y A.2**~~ — **hecho: el hito D cayó por cuadruplicado** (Crazy Taxi el 1 de
+   agosto, A.3; Virtua Tennis, Capcom vs. SNK y Virtua Tenis 2 el 2, A.6-A.8). La vía A
+   queda cerrada; lo que sigue de los juegos es jugarlos y anotar residuos, que es C.5 con
+   otro parque.
 4. ~~**Vía D.1**~~ — **hecho el 1 de agosto de 2026**, y no costó una llamada: la pasada de
    SingleStepTests trajo RM y DN y otros nueve arreglos del núcleo. Queda **D.2**, las dos
    filas de `SGR`, que sigue siendo lo más barato de la lista.
@@ -1355,8 +1437,10 @@ Lo de siempre en este árbol, y por escrito porque cada punto ya costó tiempo u
 
 ## El riesgo real
 
-- **Que la vía A no sea una cosa sola.** Es lo más probable y es lo que pasó con la lectora
-  (cinco fallos, cada uno tapando al siguiente). Se mitiga con A.0: cinco imágenes, no una.
+- ~~**Que la vía A no sea una cosa sola.**~~ No lo era, y el pronóstico acertó: cuatro
+  causas, cada una tapando a la siguiente (el banco de registros, el modelo de eventos del
+  ASIC, el hook de la lectora, la lista en curso del TA). A.0 fue lo que permitió verlas
+  por separado.
 - **Que la vía B se coma el proyecto.** Un ARM7DI más 64 canales más ADPCM es comparable a lo
   que ya hay escrito del PVR. Si se entra, se entra por fases con veredicto en cada una, y la
   primera es "la aserción de `snd_iface.c:84` deja de saltar".
@@ -1372,13 +1456,13 @@ Muy gruesa, en sesiones de trabajo:
 | --- | --- | --- |
 | C.1-C.4 (residuos que alimentan A) | 1 | hecho el 31 de julio |
 | A.0 (la tabla) | 0,5 | hecha, y rehecha el 1 de agosto — ver A.0b |
-| A.1-A.2 (el hito D) | 2 a 8, sin piso claro | **pendiente, y es lo que importa** |
+| A.1-A.2 (el hito D) | 2 a 8, sin piso claro | **hecho: 1-2 de agosto, los cuatro juegos (A.3, A.6-A.8)** |
 | D.1 (RM, DN) | 1 | hecho el 1 de agosto |
 | D.2 (las dos filas de `SGR`) | 0,5 | pendiente, lo más barato de todo |
 | B (el AICA completo) | 8 a 15 | hasta la fase 4; quedan CDDA y el DSP |
 | C.5 (revisar las 33) | 1 | pendiente |
 | D.3-D.5, E | 3 | pendiente |
 
-El rango de A es honesto: puede ser un registro sin caso —como fueron el `REVISION` del PVR y
-el `SB_G1SYSM`, media hora cada uno una vez encontrados— o puede ser una función del juego que
-depende de algo que no está. Lo que acota el rango es A.0.
+El rango de A resultó honesto en las dos puntas: cada causa una vez encontrada fue barata
+(un syscall, una demora, un latch), y encontrarlas costó lo que costó — cuatro causas
+distintas en dos días, ninguna repetida.

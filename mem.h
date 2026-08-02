@@ -41,6 +41,10 @@ extern mem_access_write_t * mem_hash_write[0x100];
 */
 extern unsigned char mem_zona_directa[0x100];
 
+/* El disparo por hardware del Maple (SB_MDTSEL=1): main_loop() lo llama en
+   cada vblank. Ver mem.c. */
+void maple_vblank(void);
+
 /* Contadores de escrituras a RAM de video, solo con --traza-mem. */
 extern DWORD traza_video_escrituras;
 extern DWORD traza_video_bytes;

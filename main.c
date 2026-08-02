@@ -14,12 +14,14 @@
 #include "BFont.h"
 #endif
 #include <time.h>
+#include <ctype.h>
 // #include <unistd.h>
 // #include "SDL_gfxPrimitives.h"
 // #include "SDL_console.h"
 #include "branch.h"
 #include "opcodes.h"
 #include "mem.h"
+#include "mmu.h"
 #include "excepciones.h"
 #include "intc.h"
 #include "debug.h"
@@ -447,7 +449,14 @@ void main_loop(void)
 				// cero, que es la unica razon por la que run() mira algo.
 				// Ver docs/rendimiento-plan.md, fase 2.1.
 				{
-					WORD instr = *(WORD *) get_memory_pointer(PC);
+					/* Por MMU_FETCH_PUNTERO y no por get_memory_pointer, aunque
+					   aqui la MMU este siempre apagada: !excepcion_vigilar
+					   implica !mmu_activa, y con la MMU apagada la macro **es**
+					   get_memory_pointer, asi que no se paga nada. Lo que se
+					   gana es que el invariante deje de ser implicito: si
+					   alguien cambia lo que mira excepcion_vigilar, este camino
+					   no se saltea la traduccion en silencio. */
+					WORD instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
 
 					oplist[instr](instr);
 				}
@@ -463,7 +472,7 @@ void main_loop(void)
 				excepcion_instantanea_tomar();
 
 				excepcion_salto_armado = 1;
-				core.execute(*(WORD *) get_memory_pointer(PC));
+				core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));
 				excepcion_salto_armado = 0;
 			}
 			else
@@ -614,6 +623,9 @@ void main_loop(void)
 
 		logxmsg(LOG_PVR, "llamando VBLINT\n");
 		intc_add(ASIC_EVT_PVR_VBLINT, 0);
+
+		// El disparo por hardware del Maple va con el vblank, como en el chip.
+		maple_vblank();
 
 		// XInput no manda eventos: hay que preguntarle. Una vez por cuadro es
 		// mas seguido de lo que el guest sondea el Maple, asi que alcanza.
@@ -1344,11 +1356,35 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		// busquemos el ejecutable
-		if ((tam = cargar_archivo_iso("1st_read.bin", true, get_memory_pointer(mem_base + mem_offset))) <= 0)
+		/*
+			Busquemos el ejecutable. El nombre no es siempre 1ST_READ.BIN: lo
+			declara el IP.BIN en su cabecera (offset 0x60, 16 bytes rellenos
+			con espacios), y es el mismo campo que usa el boot ROM -- deja el
+			puntero en GBR+0x9C. Un juego de Windows CE arranca 0WINCEOS.BIN,
+			y con el nombre cableado DCDoom no cargaba por este camino.
+		*/
 		{
-			fprintf(stderr, "No se pudo abrir %s.\n", ejecutable);
-			return 1;
+			const unsigned char *	ip = get_memory_pointer(mem_base + ip_offset);
+			char					nombre_boot[17];
+			int						i;
+
+			memcpy(nombre_boot, &ip[0x60], 16);
+			nombre_boot[16] = '\0';
+
+			/* A minusculas y sin el relleno, que es lo que compara
+			   min_iso_stat_root() tras min_iso_name_translate(). */
+			for (i = 0; nombre_boot[i] != '\0' && nombre_boot[i] != ' '; i++)
+				nombre_boot[i] = (char) tolower((unsigned char) nombre_boot[i]);
+			nombre_boot[i] = '\0';
+
+			if (nombre_boot[0] == '\0')
+				strcpy(nombre_boot, "1st_read.bin");
+
+			if ((tam = cargar_archivo_iso(nombre_boot, true, get_memory_pointer(mem_base + mem_offset))) <= 0)
+			{
+				fprintf(stderr, "No se pudo abrir %s.\n", nombre_boot);
+				return 1;
+			}
 		}
 		
 		fprintf(stderr, "leidos %ld bytes\n", tam);

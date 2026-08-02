@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include "sh4emu.h"
 #include "excepciones.h"
+#include "mmu.h"		/* MMU_FETCH_PUNTERO: la busqueda de la ranura del RTE */
 #include "graficos.h"
 #include "ta.h"			/* ta_procesar_bloque(): la FIFO de poligonos */
 #include "traza.h"		/* traza_trapa(): la trampa del guest */
@@ -526,6 +527,15 @@ OPCODE(rte143) // RTE (00000000 00101011)
 {
 	extern bool inside_int;
 
+	/*
+		La ranura se busca ANTES de escribir SR: el manual manda que el acceso
+		a instruccion de la ranura del RTE use el SR previo, y sus accesos a
+		datos el nuevo. Con la MMU activa la diferencia se ve: el RTE del
+		kernel hacia modo usuario tiene su ranura en una pagina privilegiada,
+		y buscarla ya en modo usuario la rechazaria.
+	*/
+	WORD ranura = *(WORD *) MMU_FETCH_PUNTERO(PC + 2);
+
 //	SR = SSR;
 	UpdateSR(SSR);
 /*	delayslot = SPC;
@@ -535,7 +545,7 @@ OPCODE(rte143) // RTE (00000000 00101011)
 	/* RTE tambien tiene ranura de retardo. Igual que en branch.c: la bandera
 	   solo la mira run(), para 0x800 contra 0x820. */
 	en_ranura_retardo = 1;
-	core.execute(*(WORD *) get_memory_pointer(PC));
+	core.execute(ranura);
 	en_ranura_retardo = 0;
 
 	PC = SPC;

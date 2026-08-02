@@ -144,6 +144,41 @@ DWORD mmu_traducir(DWORD direccion, int escritura);
 void mmu_ldtlb(DWORD pteh, DWORD ptel, DWORD ptea, int urc);
 
 /* ------------------------------------------------------------------------ */
+/* Busqueda de instrucciones (fase 7)                                       */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Cache de la pagina de instrucciones vigente. main_loop() y las ranuras de
+	retardo buscan cada instruccion por MMU_FETCH_PUNTERO(): con la MMU
+	apagada es el get_memory_pointer() de siempre; encendida, el acierto es
+	una comparacion de pagina y otra de modo, y el fallo repuebla via
+	mmu_fetch_resolver(), que traduce por la UTLB y puede no volver (fallo de
+	TLB en la busqueda: EXPEVT 0x040 por el vector 0x400).
+
+	SR.MD participa del acierto porque la proteccion depende de el: cambiar
+	de modo no invalida nada, simplemente deja de acertar. Lo que si invalida:
+	LDTLB, las escrituras a los arreglos de la UTLB por P4, MMUCR, y PTEH
+	porque lleva el ASID (regmap_write). La macro se expande en los
+	llamadores porque necesita get_memory_pointer (mem.h) y SR_MD (sh4emu.h),
+	que esta cabecera no arrastra a proposito.
+*/
+extern DWORD           mmu_fetch_vpn;
+extern DWORD           mmu_fetch_mascara;
+extern DWORD           mmu_fetch_md;
+extern unsigned char * mmu_fetch_base;
+
+unsigned char * mmu_fetch_resolver(DWORD pc);
+void mmu_fetch_invalidar(void);
+
+#define MMU_FETCH_PUNTERO(pc)											\
+	(!mmu_activa														\
+	 ? (unsigned char *) get_memory_pointer(pc)							\
+	 : ((((pc) & ~mmu_fetch_mascara) == mmu_fetch_vpn					\
+	     && (DWORD) SR_MD == mmu_fetch_md)								\
+	    ? mmu_fetch_base + ((pc) & mmu_fetch_mascara)					\
+	    : mmu_fetch_resolver(pc)))
+
+/* ------------------------------------------------------------------------ */
 /* Excepciones                                                              */
 /* ------------------------------------------------------------------------ */
 

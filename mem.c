@@ -446,6 +446,12 @@ void mem_hash_setup(void)
 	mem_hash_read[0xA7] = video_read;
 	mem_hash_read[0x0C] = ram_read;
  	mem_hash_read[0x1F] = regmap_read;
+	/* El area 7 fisica (0x1F000000) vista por la ventana P2: 0xBF000000. Es
+	   por donde el HAL de Windows CE toca los registros on-chip -- arranca el
+	   tick del sistema escribiendo TSTR en 0xBFD80004 -- y sin este enlace la
+	   escritura se perdia en silencio y su planificador quedaba ocioso para
+	   siempre, con la carga del juego detras. */
+	mem_hash_read[0xBF] = regmap_read;
  	mem_hash_read[0x70] = bios_read;
  	mem_hash_read[0x7E] = ram_read;
 	mem_hash_read[0x80] = bios_read;
@@ -471,6 +477,7 @@ void mem_hash_setup(void)
 	mem_hash_write[0x11] = video_write;
 	mem_hash_write[0x13] = video_write;
  	mem_hash_write[0x1F] = regmap_write;
+	mem_hash_write[0xBF] = regmap_write;	/* area 7 por P2, ver arriba */
  	mem_hash_write[0x7E] = ram_write;
  	mem_hash_write[0x8C] = ram_write;
  	mem_hash_write[0xA0] = pvr_write;
@@ -1264,6 +1271,25 @@ static void ch2_dma_ejecutar(void)
 		ciclo de CPU con un piso que cubre el camino de retorno del driver.
 	*/
 	intc_add(ASIC_EVT_PVR_DMA, (int) (largo / 200) + 10);
+}
+
+/*
+	El disparo por hardware del Maple: con SB_MDTSEL en 1 y SB_MDEN en 1 el
+	chip arranca el DMA solo, en cada vblank -- asi sondea Windows CE el
+	mando, sin escribir SB_MDST jamas. Se reusa el caso de SB_MDST de
+	pvr_write() escribiendo el registro como lo haria el guest: el recorrido
+	de la lista es identico por los dos caminos, igual que en el chip.
+
+	main_loop() lo llama junto al evento de vblank. Sin esto, la enumeracion
+	de dispositivos de CE espera un fin de DMA que nunca llega, y el arranque
+	entero -- driver de CD incluido -- se queda detras de ella.
+*/
+void maple_vblank(void)
+{
+	DWORD uno = 1;
+
+	if ((MAPLE_ENABLE & 1) && (MAPLE_RESET2 & 1))
+		pvr_write(0xa05f6c18, &uno, sizeof(DWORD));
 }
 
 void pvr_write(unsigned long direccion, void * p, size_t size)
@@ -2348,6 +2374,12 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 
 	switch(direccion & 0x00FFFFFF)
 	{
+		case 0x000000: // PTEH: el ASID cambia que traduccion vale
+		{
+			mmu_fetch_invalidar();
+		}
+		break;
+
 		case 0x000010: // MMUCR, MMU Control Register
 		{
 			mmu_mmucr_escrito(*MMUCR);

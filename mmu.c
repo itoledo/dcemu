@@ -13,6 +13,7 @@
 #include "mmu.h"
 #include "log.h"
 #include "sh4emu.h"
+#include "mem.h"		/* get_memory_pointer, para el cache de pagina del fetch */
 
 int mmu_activa = 0;
 
@@ -42,6 +43,7 @@ void mmu_reset(void)
 	mmu_activa = 0;
 	excepcion_salto_armado = 0;
 	excepcion_actualizar_vigilancia();
+	mmu_fetch_invalidar();
 
 	memset(mmu_itlb_dir,  0, sizeof(mmu_itlb_dir));
 	memset(mmu_itlb_dat1, 0, sizeof(mmu_itlb_dat1));
@@ -218,6 +220,8 @@ void mmu_p4_write(unsigned long direccion, void * p, size_t size)
 		break;
 
 		case MMU_P4_UTLB_DIR:
+		mmu_fetch_invalidar();
+
 		if (direccion & MMU_BIT_A_TLB)
 			utlb_escritura_asociativa(valor);
 		else
@@ -236,6 +240,8 @@ void mmu_p4_write(unsigned long direccion, void * p, size_t size)
 		break;
 
 		case MMU_P4_UTLB_DAT:
+		mmu_fetch_invalidar();
+
 		if (direccion & MMU_BIT_DATOS2)
 			mmu_utlb_dat2[MMU_UTLB_INDICE(direccion)] = valor;
 		else
@@ -262,6 +268,8 @@ void mmu_p4_write(unsigned long direccion, void * p, size_t size)
 void mmu_ldtlb(DWORD pteh, DWORD ptel, DWORD ptea, int urc)
 {
 	int e = urc & (MMU_UTLB_ENTRADAS - 1);
+
+	mmu_fetch_invalidar();
 
 	/* PTEH: VPN en 31-10, ASID en 7-0. Los bits 9-8 son reservados. */
 	mmu_utlb_dir[e] = (pteh & 0xFFFFFC00) | (pteh & 0x000000FF)
@@ -315,11 +323,75 @@ static DWORD fallar(DWORD codigo, DWORD vector, DWORD direccion)
 	return direccion;
 }
 
+/*
+	Busca la entrada de la UTLB que cubre una direccion: V puesto, VPN igual
+	bajo la mascara de la pagina, y el ASID de PTEH salvo pagina compartida o
+	modo espacio unico privilegiado. Deja la mascara en *mascara_out y
+	devuelve el indice, o -1 sin coincidencia.
+
+	Es el unico recorrido de la UTLB: lo comparten los datos y la busqueda de
+	instrucciones, para que la regla de coincidencia no pueda divergir entre
+	las dos caras.
+
+	Recorrido lineal de las 64 entradas, desempaquetando al vuelo. Es lo
+	mas lento que se puede hacer y esta bien asi por ahora: con AT en cero
+	no se ejecuta nunca, y cuando se ejecuta lo que importa es que este
+	bien. Si llega a molestar, el paso siguiente es un arreglo decodificado
+	en paralelo, actualizado en los cuatro sitios que mutan la TLB.
+*/
+static int utlb_encontrar(DWORD direccion, int usuario, int sv, DWORD * mascara_out)
+{
+	int i;
+
+	/*
+		URC avanza con cada acceso a la UTLB -- acierte o falle -- y con
+		URB > 0 vuelve a cero al alcanzarlo; es el contador con el que LDTLB
+		elige su entrada. El manejador de recarga de Windows CE no escribe
+		URC jamas: cuenta con este avance. Sin el, cada LDTLB cae en la misma
+		entrada, la recarga de la pagina de codigo desaloja a la de datos y
+		la instruccion que falla por las dos queda en ping-pong infinito.
+	*/
+	{
+		DWORD urc = (MMUCR_URC(*MMUCR) + 1) & 0x3F;
+
+		if (MMUCR_URB(*MMUCR) && urc == MMUCR_URB(*MMUCR))
+			urc = 0;
+
+		*MMUCR = (*MMUCR & ~0x0000FC00ul) | (urc << 10);
+	}
+
+	for (i = 0; i < MMU_UTLB_ENTRADAS; i++)
+	{
+		DWORD dir = mmu_utlb_dir[i];
+		DWORD mascara;
+
+		if (!(dir & BIT_V))
+			continue;
+
+		mascara = mascara_de_pagina(mmu_utlb_dat1[i]);
+
+		if ((dir & ~mascara) != (direccion & ~mascara))
+			continue;
+
+		/* El ASID se ignora en paginas compartidas, y tambien en modo espacio
+		   unico (MMUCR.SV) cuando corremos en modo privilegiado. */
+		if (!(mmu_utlb_dat1[i] & BIT_SH) && !(sv && !usuario)
+			&& ASID_DE(dir) != ASID_DE(*PTEH))
+			continue;
+
+		*mascara_out = mascara;
+		return i;
+	}
+
+	return -1;
+}
+
 DWORD mmu_traducir(DWORD direccion, int escritura)
 {
 	int usuario = (SR_MD == 0);
 	int sv      = (*MMUCR & MMUCR_SV) != 0;
-	int i;
+	DWORD mascara, d1, fisica;
+	int i, pr;
 
 	/*
 		P1 y P2 no pasan por la TLB nunca, y se devuelven SIN tocar. Convertirlas
@@ -353,58 +425,121 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 		return fallar(escritura ? MMU_EXC_DIR_W : MMU_EXC_DIR_R,
 					  MMU_VEC_GENERAL, direccion);
 
-	/*
-		Recorrido lineal de las 64 entradas, desempaquetando al vuelo. Es lo
-		mas lento que se puede hacer y esta bien asi por ahora: con AT en cero
-		no se ejecuta nunca, y cuando se ejecuta lo que importa es que este
-		bien. Si llega a molestar, el paso siguiente es un arreglo decodificado
-		en paralelo, actualizado en los cuatro sitios que mutan la TLB.
-	*/
-	for (i = 0; i < MMU_UTLB_ENTRADAS; i++)
+	i = utlb_encontrar(direccion, usuario, sv, &mascara);
+
+	if (i < 0)
+		return fallar(escritura ? MMU_EXC_FALLO_W : MMU_EXC_FALLO_R,
+					  MMU_VEC_FALLO, direccion);
+
+	d1 = mmu_utlb_dat1[i];
+
+	/* PR: 00 privilegiado solo lectura, 01 privilegiado lectura/escritura,
+	   10 todos solo lectura, 11 todos lectura/escritura. */
+	pr = (d1 >> 5) & 3;
+
+	if (usuario && pr < 2)
+		return fallar(escritura ? MMU_EXC_PROT_W : MMU_EXC_PROT_R,
+					  MMU_VEC_GENERAL, direccion);
+
+	if (escritura && !(pr & 1))
+		return fallar(MMU_EXC_PROT_W, MMU_VEC_GENERAL, direccion);
+
+	/* Escribir en una pagina limpia no es violacion de proteccion sino
+	   "primera escritura": el manejador marca la pagina y reejecuta. */
+	if (escritura && !(mmu_utlb_dir[i] & BIT_D_DIR))
+		return fallar(MMU_EXC_PRIMERA_W, MMU_VEC_GENERAL, direccion);
+
+	/* PPN en los bits 28-10 del arreglo de datos 1. */
+	fisica = ((d1 & 0x1FFFFC00ul) & ~mascara) | (direccion & mascara);
+
+	return fisica | 0xA0000000ul;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Busqueda de instrucciones (fase 7)                                       */
+/* ------------------------------------------------------------------------ */
+
+DWORD           mmu_fetch_vpn     = 0xFFFFFFFFul;
+DWORD           mmu_fetch_mascara = 0;
+DWORD           mmu_fetch_md      = 0xFFFFFFFFul;
+unsigned char * mmu_fetch_base    = NULL;
+
+void mmu_fetch_invalidar(void)
+{
+	/* vpn imposible: ningun PC es 0xFFFFFFFF (seria impar). */
+	mmu_fetch_vpn     = 0xFFFFFFFFul;
+	mmu_fetch_mascara = 0;
+	mmu_fetch_md      = 0xFFFFFFFFul;
+	mmu_fetch_base    = NULL;
+}
+
+/*
+	Traduce la direccion de una instruccion. Mismos codigos que una lectura de
+	datos -- fallo 0x040 por el vector 0x400, proteccion 0x0A0, error de
+	direccion 0x0E0 --, sin las caras de escritura. La ITLB real es un cache
+	de la UTLB que el chip rellena solo en el fallo, asi que aqui se busca
+	directo en la UTLB; lo unico que se pierde es una escritura directa al
+	arreglo de la ITLB por P4, que ningun sistema usa para mapear codigo.
+
+	P1 y P2 salen sin traducir, como en los datos, con la zona entera de
+	16 MB como "pagina": mem_zone[] resuelve por el byte alto, asi que el
+	puntero base vale para toda la zona. Ejecutar desde P4 o desde las store
+	queues es error de direccion.
+*/
+static DWORD traducir_busqueda(DWORD pc, DWORD * mascara_out)
+{
+	int usuario = (SR_MD == 0);
+	int sv      = (*MMUCR & MMUCR_SV) != 0;
+	DWORD d1;
+	int i, pr;
+
+	if (pc >= 0x80000000ul && pc < 0xC0000000ul)
 	{
-		DWORD dir = mmu_utlb_dir[i];
-		DWORD d1  = mmu_utlb_dat1[i];
-		DWORD mascara, fisica;
-		int pr;
+		if (usuario)
+			return fallar(MMU_EXC_DIR_R, MMU_VEC_GENERAL, pc);
 
-		if (!(dir & BIT_V))
-			continue;
-
-		mascara = mascara_de_pagina(d1);
-
-		if ((dir & ~mascara) != (direccion & ~mascara))
-			continue;
-
-		/* El ASID se ignora en paginas compartidas, y tambien en modo espacio
-		   unico (MMUCR.SV) cuando corremos en modo privilegiado. */
-		if (!(d1 & BIT_SH) && !(sv && !usuario)
-			&& ASID_DE(dir) != ASID_DE(*PTEH))
-			continue;
-
-		/* PR: 00 privilegiado solo lectura, 01 privilegiado lectura/escritura,
-		   10 todos solo lectura, 11 todos lectura/escritura. */
-		pr = (d1 >> 5) & 3;
-
-		if (usuario && pr < 2)
-			return fallar(escritura ? MMU_EXC_PROT_W : MMU_EXC_PROT_R,
-						  MMU_VEC_GENERAL, direccion);
-
-		if (escritura && !(pr & 1))
-			return fallar(MMU_EXC_PROT_W, MMU_VEC_GENERAL, direccion);
-
-		/* Escribir en una pagina limpia no es violacion de proteccion sino
-		   "primera escritura": el manejador marca la pagina y reejecuta. */
-		if (escritura && !(dir & BIT_D_DIR))
-			return fallar(MMU_EXC_PRIMERA_W, MMU_VEC_GENERAL, direccion);
-
-		/* PPN en los bits 28-10 del arreglo de datos 1. */
-		fisica = ((d1 & 0x1FFFFC00ul) & ~mascara) | (direccion & mascara);
-
-		return fisica | 0xA0000000ul;
+		*mascara_out = 0x00FFFFFFul;
+		return pc;
 	}
 
-	return fallar(escritura ? MMU_EXC_FALLO_W : MMU_EXC_FALLO_R,
-				  MMU_VEC_FALLO, direccion);
+	if (pc >= 0xE0000000ul)
+		return fallar(MMU_EXC_DIR_R, MMU_VEC_GENERAL, pc);
+
+	if (pc >= 0xC0000000ul && usuario)
+		return fallar(MMU_EXC_DIR_R, MMU_VEC_GENERAL, pc);
+
+	i = utlb_encontrar(pc, usuario, sv, mascara_out);
+
+	if (i < 0)
+		return fallar(MMU_EXC_FALLO_R, MMU_VEC_FALLO, pc);
+
+	d1 = mmu_utlb_dat1[i];
+	pr = (d1 >> 5) & 3;
+
+	if (usuario && pr < 2)
+		return fallar(MMU_EXC_PROT_R, MMU_VEC_GENERAL, pc);
+
+	return (((d1 & 0x1FFFFC00ul) & ~*mascara_out) | (pc & *mascara_out))
+		 | 0xA0000000ul;
+}
+
+/*
+	El camino lento del fetch: traduce, repuebla el cache de pagina y devuelve
+	el puntero host. Si la traduccion falla no vuelve -- fallar() sale por
+	excepcion_abortar() y main_loop() entra a la excepcion --, y por eso el
+	cache se escribe recien con la traduccion resuelta.
+*/
+unsigned char * mmu_fetch_resolver(DWORD pc)
+{
+	DWORD mascara = 0;
+	DWORD fisica  = traducir_busqueda(pc, &mascara);
+
+	mmu_fetch_vpn     = pc & ~mascara;
+	mmu_fetch_mascara = mascara;
+	mmu_fetch_md      = (DWORD) SR_MD;
+	mmu_fetch_base    = (unsigned char *) get_memory_pointer(fisica & ~mascara);
+
+	return mmu_fetch_base + (pc & mascara);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -415,6 +550,8 @@ int mmu_mmucr_escrito(DWORD valor)
 {
 	static int ya_aviso = 0;
 	int i;
+
+	mmu_fetch_invalidar();
 
 	/* TI invalida la TLB entera: baja el bit V de todas las entradas. Es un
 	   bit de un solo disparo, no queda puesto. */
@@ -449,9 +586,9 @@ int mmu_mmucr_escrito(DWORD valor)
 	if (!ya_aviso)
 	{
 		fprintf(stderr,
-			"mmu: MMUCR.AT=1 -- traduccion encendida.\n"
-			"     Sin traducir todavia: las store queues (fase 6) y la busqueda\n"
-			"     de instrucciones (fase 7). Ver docs/mmu-plan.md.\n");
+			"mmu: MMUCR.AT=1 -- traduccion encendida, datos e instrucciones.\n"
+			"     Sin traducir todavia: las store queues (fase 6). Ver\n"
+			"     docs/mmu-plan.md.\n");
 
 		ya_aviso = 1;
 	}
