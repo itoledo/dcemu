@@ -156,6 +156,22 @@ unsigned long long aica_muestras_hechas(void);
 */
 extern volatile int aica_linea_asic;
 
+/*
+	Y cuantas veces la subio y la bajo. Son las que decide la entrega, no el
+	nivel, y la diferencia costo una regresion: `intc_add_ext()` **deduplica
+	sola** contra la cola de eventos, asi que el codigo original la llamaba en
+	cada peticion y eso volvia a encolar el evento cada vez que el guest lo
+	consumia. Entregar por flanco del nivel pierde todas las peticiones
+	posteriores a la primera mientras la linea sigue alta -- y con eso KOS se
+	quedaba esperando en un bucle de tres instrucciones a los 26 ms de arrancar,
+	en cualquier demo.
+
+	Contadores monotonos: un escritor cada uno, un lector, y el lector lleva su
+	propia marca. Misma disciplina que el anillo aica_salida[].
+*/
+extern volatile unsigned aica_asic_subidas;
+extern volatile unsigned aica_asic_bajadas;
+
 /* 1 mientras el ARM esta en reset (ARMRST bit 0). */
 int aica_arm_en_reset(void);
 

@@ -58,6 +58,37 @@
 */
 extern unsigned long long reloj_total;
 
+/*
+	Cada cuantos ciclos de CPU main_loop() atiende a los perifericos.
+
+	**Era 50**, una constante de 2004 sin fundamento -- el comentario que la
+	acompanaba habla de otra cosa --, y con ella el bloque entra unos 160
+	millones de veces en 40 segundos emulados. Medido con --perf sobre Crazy
+	Taxi: un 21 % del tiempo real se iba en descubrir que no habia nada que
+	hacer, entre timer_check(), wdt_tick(), intc_revisar_sh4() y dma_check().
+
+	**Subirla no pierde ninguna cuenta.** tmu_tick() y wdt_tick() reciben la
+	cantidad de ciclos y llevan su propio resto contra su propio divisor, asi
+	que la trayectoria de TCNT y el instante exacto de cada subdesborde son los
+	mismos con cualquier grano; el AICA no recibe ciclos, compara contra su
+	propia marca de reloj_total. Lo unico que se mueve es **cuando se observa**
+	lo que ya paso: una bandera puede quedar hasta RELOJ_GRANO ciclos sin mirar,
+	y la interrupcion que deriva de ella entregarse igual de tarde.
+
+	400 ciclos son 2 us, y los tres relojes que el guest puede notar quedan muy
+	por encima: la muestra del AICA son 22,7 us, la linea de barrido 31,8 us y
+	el latido del planificador de KOS 1 ms. Es ademas donde esta la rodilla:
+	baja el costo del bloque a un octavo, y subirlo mas rinde poco porque a esa
+	altura ya no pesa.
+
+	Lo que si queda cuantizado a este grano es **el valor de TCNT que ve un
+	guest que lo sondea**. La salida definitiva seria calcularlo al leerlo y
+	hacer el bloque dirigido por vencimientos en vez de por un grano fijo -- lo
+	que ademas ahorraria otro 2 % --, pero no hace falta para el 19 % que hay
+	aqui. Ver docs/rendimiento-plan.md, fase 2.5.
+*/
+#define RELOJ_GRANO		400
+
 /* Microsegundos de tiempo emulado. */
 unsigned long long reloj_us(void);
 

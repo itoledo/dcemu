@@ -32,7 +32,9 @@ unsigned long long	aica_muestras;
 	En el camino de un solo hilo no cambia nada: main_loop() la cobra en el
 	mismo bloque periodico, dos lineas despues de aica_tick().
 */
-volatile int	aica_linea_asic = 0;
+volatile int		aica_linea_asic = 0;
+volatile unsigned	aica_asic_subidas = 0;
+volatile unsigned	aica_asic_bajadas = 0;
 
 /*
 	La relacion exacta entre el reloj de la CPU y el de muestreo. DC_CPU_HZ es
@@ -126,7 +128,7 @@ static void pedir_int(DWORD fuente)
 	poner16(AICA_MCIPD, reg16(AICA_MCIPD) | fuente);
 
 	if (reg16(AICA_MCIEB) & fuente)
-		aica_linea_asic = 1;
+		{ aica_linea_asic = 1; aica_asic_subidas++; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -855,7 +857,7 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 			poner16(off, reg16(off) | AICA_INT_CPU);
 
 			if (off == AICA_MCIPD && (reg16(AICA_MCIEB) & AICA_INT_CPU))
-				aica_linea_asic = 1;
+				{ aica_linea_asic = 1; aica_asic_subidas++; }
 		}
 		return;
 
@@ -868,7 +870,7 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 
 		/* Reconocer del todo baja la linea hacia el SH-4. */
 		if (!(reg16(AICA_MCIPD) & reg16(AICA_MCIEB) & AICA_INT_TODAS))
-			aica_linea_asic = 0;
+			{ aica_linea_asic = 0; aica_asic_bajadas++; }
 		return;
 
 	case AICA_ARMRST:

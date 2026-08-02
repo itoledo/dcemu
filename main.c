@@ -470,10 +470,14 @@ void main_loop(void)
 
 //			(*PC_func) ();
 
-			// de acuerdo a KOS 1.3, el timer recorre (50000000 / 64) ticks/segundo.
-			// por lo que en un segundo tenemos 781250 ticks.
-			// cada 1 ms -> 781,25 ticks.
-			if (core.context.cycles >= 50)
+			// Cada cuantos ciclos se atiende a los perifericos. El numero y su
+			// derivacion viven en tmu.h, junto al reloj: era 50 y con eso este
+			// bloque se llevaba un 21 % del tiempo real preguntando si habia
+			// algo que hacer.
+			//
+			// (El comentario que estaba aqui hablaba de los ticks por segundo
+			// del timer de KOS, que no es lo que decide este numero.)
+			if (core.context.cycles >= RELOJ_GRANO)
 			{
 				// Consumir el acumulado entero y pasarlo al contador monotono.
 				// Los consumidores periodicos comparan contra su propia marca:
@@ -504,18 +508,26 @@ void main_loop(void)
 				// baja (aica_linea_asic); la entrega va aqui, que es el hilo
 				// donde vive el controlador de interrupciones. Sin hilos esto
 				// corre dos lineas despues del tick y no cambia nada.
+				//
+				// Se entrega **una vez por peticion**, no por flanco del
+				// nivel: intc_add_ext() deduplica sola contra la cola, asi que
+				// el codigo original la llamaba cada vez que el chip pedia y
+				// eso volvia a encolar el evento despues de que el guest lo
+				// consumiera. Por flanco se perdian todas las peticiones menos
+				// la primera. Ver aica.h.
 				{
-					static int ultima = 0;
-					int ahora = aica_linea_asic;
+					static unsigned vistas_sub = 0, vistas_baj = 0;
 
-					if (ahora != ultima)
+					while (vistas_sub != aica_asic_subidas)
 					{
-						ultima = ahora;
+						vistas_sub++;
+						intc_add_ext(ASIC_EVT_EXT_AICA);
+					}
 
-						if (ahora)
-							intc_add_ext(ASIC_EVT_EXT_AICA);
-						else
-							intc_remove_ext(ASIC_EVT_EXT_AICA);
+					while (vistas_baj != aica_asic_bajadas)
+					{
+						vistas_baj++;
+						intc_remove_ext(ASIC_EVT_EXT_AICA);
 					}
 				}
 
