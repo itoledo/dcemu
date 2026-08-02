@@ -1,8 +1,8 @@
 # Plan: el intérprete del SH-4
 
-Estado: **propuesto**. Escrito el 2026-08-02 sobre la rama `rendimiento-hilos`, después de
+Estado: **en curso**. Escrito el 2026-08-02 sobre la rama `rendimiento-hilos`, después de
 que [`rendimiento-plan.md`](rendimiento-plan.md) dejara al intérprete como lo único que
-queda pesando.
+queda pesando. Lo hecho está al final, en "Lo que se midió".
 
 ## Dónde estamos
 
@@ -189,3 +189,80 @@ Las barandas siguen siendo las de siempre: `ctest`, `dcemu_sh4json` bit a bit �
 importa más que nunca, porque tocar el despacho toca **todas** las instrucciones— y el
 barrido de las 150 demos con `herramientas/barrido.ps1` y `comparar.ps1`, con su corrida de
 control.
+
+---
+
+# Lo que se midió
+
+## 0.2 — Instrucciones por segundo: hecho
+
+`--perf` cuenta instrucciones ahora y reporta **ns por instrucción**, MIPS y instrucciones
+por ciclo emulado. Se cuenta en los dos lugares que despachan: el camino rápido de
+`main_loop()` y `run()`, que es por donde pasan las ranuras de retardo. Dejarlas fuera
+sesgaría la cifra hacia abajo del orden del 10 %.
+
+La primera lectura, sobre el arranque de Crazy Taxi:
+
+```
+perf: 626877587 instrucciones, 8.3 ns cada una (120.4 MIPS, 0.62 por ciclo emulado)
+```
+
+**120 MIPS en Debug** es más de lo que este plan asumía. El SH-4 de la consola retira del
+orden de una instrucción por ciclo a 200 MHz, así que el intérprete solo —sin AICA, sin
+PVR— corre a poco más de la mitad del ritmo de la máquina real. Eso reordena el problema:
+lo que falta no es un factor de diez.
+
+Y **0,60 instrucciones por ciclo emulado** es un dato que no teníamos: el CPI medio del
+código que corre es 1,67, así que "ciclos por segundo" y "instrucciones por segundo" se
+separan bastante. Era la razón de agregar el contador.
+
+## 0.1 — El perfil de muestreo: pendiente, y por qué
+
+**Necesita una consola elevada** y por eso no se hizo desde acá. El logger del kernel de
+ETW es lo que toma las muestras y Windows no lo habilita sin privilegios: `wpr` contesta
+`Failed to enable the policy to profile system performance` y no graba nada.
+
+No hace falta instalar nada —`wpr.exe` viene con Windows y `xperf.exe` con el Windows
+Performance Toolkit del SDK, que ya está en esta máquina—, así que quedó armado en
+[`herramientas/perfil.ps1`](../herramientas/perfil.ps1): graba, corre el banco de pruebas,
+resuelve los símbolos contra el PDB de Debug y deja un CSV. Se corre desde una consola de
+administrador y nada más.
+
+## A — La tabla de despacho: implementada y verificada
+
+Lo primero que apareció al ir a buscar la alternativa que el plan daba por escrita:
+**nunca compiló**. `opcodes.h` la guardaba con `#ifdef old_oplist` y `opcodes.c` con
+`#ifdef oplist_old` —dos nombres distintos, invertidos—, así que definir cualquiera de los
+dos dejaba `initopcodes()` escribiendo punteros a función en un arreglo de `short`. Estuvo
+así desde 2004. O sea que el candidato "las dos implementaciones ya existen, es una bandera
+de compilación" era falso; había que escribirlo.
+
+Se escribió la tercera variante, que es la que el plan señalaba como probablemente mejor y
+la única que no estaba: **índice de 16 bits a un arreglo plano de punteros**. La tabla baja
+de 512 KB a 128 KB, y el arreglo son 240 × 8 = 1,9 KB, que sí viven en L1d. La variante
+vieja —`opcodes[oplist[arg]].funcion`— se descartó sin medirla: `st_cmd` son 48 bytes, así
+que indexar la estructura entera son 11,5 KB en vez de 1,9 y trae a la caché seis campos
+que el despacho no mira.
+
+Se eligen al compilar, con `-DDCEMU_DESPACHO_COMPACTO=ON`, y no con un `#define` en
+`options.h`, precisamente porque lo que decide es correr los dos binarios en la misma
+tanda: para eso tienen que poder existir a la vez.
+
+`initopcodes()` quedó en **un solo cuerpo** para las dos formas, con un macro que decide
+qué se guarda en la tabla. Tener dos cuerpos es exactamente lo que dejó divergir al
+original.
+
+### Las barandas, antes de mirar el reloj
+
+| | expandida | compacta |
+| --- | --- | --- |
+| `ctest` | 21/21 | 21/21 |
+| `dcemu_sh4json` | 113 191 ok, **0 fallan** | 113 191 ok, **0 fallan** |
+
+Idénticos, incluidas las 3306 divergencias deliberadas contra Reicast y los 3 casos
+descartados. Es la baraja que importa acá: cambiar el despacho toca las 233 codificaciones.
+
+La suite `decodificacion` —la que verifica que la expansión resuelve el handler correcto—
+necesitó adaptarse, porque comparaba entradas de la tabla como punteros. Se hizo con un
+`OP_HANDLER(tabla, instr)` en `opcodes.h`, que resuelve al puntero en las dos formas, de
+modo que la prueba se escribe una vez y vale para ambas.

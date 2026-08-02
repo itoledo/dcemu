@@ -458,7 +458,8 @@ void main_loop(void)
 					   no se saltea la traduccion en silencio. */
 					WORD instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
 
-					oplist[instr](instr);
+					PERF_CONTAR(perf_instrucciones);
+					OP_DESPACHAR(instr);
 				}
 			}
 			else if (setjmp(excepcion_salto) == 0)

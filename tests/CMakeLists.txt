@@ -85,6 +85,10 @@ target_compile_definitions(dcemu_tests PRIVATE
 	WIN32
 	_CRT_SECURE_NO_WARNINGS
 	X86_OPT
+	# La forma de despachar tiene que llegar tambien aca: cambiarla toca
+	# **todas** las instrucciones, asi que la suite es la baranda que dice si
+	# la variante compacta resuelve el mismo handler que la expandida.
+	$<$<BOOL:${DCEMU_DESPACHO_COMPACTO}>:DESPACHO_COMPACTO>
 )
 
 target_compile_options(dcemu_tests PRIVATE
@@ -139,6 +143,7 @@ target_compile_definitions(dcemu_sh4json PRIVATE
 	WIN32
 	_CRT_SECURE_NO_WARNINGS
 	X86_OPT
+	$<$<BOOL:${DCEMU_DESPACHO_COMPACTO}>:DESPACHO_COMPACTO>
 )
 
 target_compile_options(dcemu_sh4json PRIVATE

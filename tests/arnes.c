@@ -133,7 +133,7 @@ void ejecutar(WORD instr)
 {
 	poner_instr(PC, instr);
 
-	anotar_handler(oplist[instr]);
+	anotar_handler(OP_HANDLER(oplist, instr));
 
 	/* Igual que main_loop(): el despacho lee la palabra desde memoria. */
 	core.execute(*(WORD *) get_memory_pointer(PC));
@@ -143,7 +143,7 @@ int ejecutar_vigilado(WORD instr)
 {
 	poner_instr(PC, instr);
 
-	anotar_handler(oplist[instr]);
+	anotar_handler(OP_HANDLER(oplist, instr));
 
 	/* El mismo ciclo que main_loop() cuando excepcion_vigilar esta puesto:
 	   instantanea, salto armado, y si la instruccion aborta se restaura y se

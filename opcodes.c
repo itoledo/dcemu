@@ -17,18 +17,16 @@
 #define REQ_PR_0_SZ_1	3
 #define REQ_PR_1_SZ_0	4
 
-#ifdef old_oplist
-short * oplist;
-short oplist_pr0_sz0[65536]; 
-short oplist_pr0_sz1[65536]; 
-short oplist_pr1_sz0[65536];
-short oplist_pr1_sz1[65536];
-#else
-opcode_f ** oplist;
-opcode_f * oplist_pr0_sz0[65536]; 
-opcode_f  *oplist_pr0_sz1[65536]; 
-opcode_f  *oplist_pr1_sz0[65536];
-opcode_f  * oplist_pr1_sz1[65536];
+oplist_t * oplist;
+oplist_t oplist_pr0_sz0[65536];
+oplist_t oplist_pr0_sz1[65536];
+oplist_t oplist_pr1_sz0[65536];
+oplist_t oplist_pr1_sz1[65536];
+
+#ifdef DESPACHO_COMPACTO
+/* Los punteros solos, sin el resto de st_cmd. Se llena en initopcodes() a
+   partir de opcodes[], asi que no hay una segunda lista que mantener. */
+opcode_f * opfuncion[OPCODES_MAX];
 #endif
 struct st_cmd opcodes[] =
 {
@@ -414,61 +412,18 @@ int findopcode(DWORD op, DWORD mask)
 	fprintf(stderr, "findopcode: opcode 0x%x / mask 0x%x no encontrado!\n", op, mask);
 	return -1;
 }
-#ifdef oplist_old
-void initopcodes()
-{
-	int i; int i2;
-	// a armar las 4 listas
-
-	idx_NOIMP		= findopcode(0x0000, 0xFFFF);
-
-	for (i2 = 0; i2<65536; i2++)
-	{
-		oplist_pr0_sz0[i2] = idx_NOIMP;
-		oplist_pr0_sz1[i2] = idx_NOIMP;
-		oplist_pr1_sz0[i2] = idx_NOIMP;
-		oplist_pr1_sz1[i2] = idx_NOIMP;
-	}
-
-	for (i = 0; opcodes[i].opdesc; i++)
-	{
-		for (i2 = 0; i2<65536; i2++)
-		{
-			if ((i2 & opcodes[i].mask) == opcodes[i].op)
-			{
-				switch(opcodes[i].restriccion)
-				{
-					case REQ_PR_0:
-						oplist_pr0_sz0[i2] = i;
-						oplist_pr0_sz1[i2] = i;
-						break;
-						
-					case REQ_SZ_0:
-						oplist_pr0_sz0[i2] = i;
-						oplist_pr1_sz0[i2] = i;
-						break;
-						
-					case REQ_PR_0_SZ_1:
-						oplist_pr0_sz1[i2] = i;
-						break;
-					
-					case REQ_PR_1_SZ_0:
-						oplist_pr1_sz0[i2] = i;
-						break;
-					
-					default:
-						oplist_pr0_sz0[i2] = i;
-						oplist_pr0_sz1[i2] = i;
-						oplist_pr1_sz0[i2] = i;
-						oplist_pr1_sz1[i2] = i;
-						break;
-				}
-			}
-		}
-	}
-	oplist = oplist_pr0_sz0;
-}
+/*
+	Una sola expansion para las dos formas de despacho. Lo unico que cambia es
+	**que se guarda** en la tabla -- el puntero o el indice --, asi que un solo
+	macro lo resuelve y no hay dos cuerpos que puedan divergir. Ya divergieron:
+	ver el comentario de opcodes.h sobre el #ifdef que nunca compilo.
+*/
+#ifdef DESPACHO_COMPACTO
+#define OPLIST_VALOR(i)		((unsigned short) (i))
 #else
+#define OPLIST_VALOR(i)		(opcodes[i].funcion)
+#endif
+
 void initopcodes()
 {
 	int i; int i2;
@@ -478,14 +433,25 @@ void initopcodes()
 
 	for (i2 = 0; i2<65536; i2++)
 	{
-		oplist_pr0_sz0[i2] = opcodes[idx_NOIMP].funcion;
-		oplist_pr0_sz1[i2] = opcodes[idx_NOIMP].funcion;
-		oplist_pr1_sz0[i2] = opcodes[idx_NOIMP].funcion;
-		oplist_pr1_sz1[i2] = opcodes[idx_NOIMP].funcion;
+		oplist_pr0_sz0[i2] = OPLIST_VALOR(idx_NOIMP);
+		oplist_pr0_sz1[i2] = OPLIST_VALOR(idx_NOIMP);
+		oplist_pr1_sz0[i2] = OPLIST_VALOR(idx_NOIMP);
+		oplist_pr1_sz1[i2] = OPLIST_VALOR(idx_NOIMP);
 	}
 
 	for (i = 0; opcodes[i].opdesc; i++)
 	{
+#ifdef DESPACHO_COMPACTO
+		if (i >= OPCODES_MAX)
+		{
+			fprintf(stderr, "initopcodes: opcodes[] paso de %d filas\n",
+				OPCODES_MAX);
+			exit(1);
+		}
+
+		opfuncion[i] = opcodes[i].funcion;
+#endif
+
 		for (i2 = 0; i2<65536; i2++)
 		{
 			if ((i2 & opcodes[i].mask) == opcodes[i].op)
@@ -493,28 +459,28 @@ void initopcodes()
 				switch(opcodes[i].restriccion)
 				{
 					case REQ_PR_0:
-						oplist_pr0_sz0[i2] = opcodes[i].funcion;
-						oplist_pr0_sz1[i2] = opcodes[i].funcion;
+						oplist_pr0_sz0[i2] = OPLIST_VALOR(i);
+						oplist_pr0_sz1[i2] = OPLIST_VALOR(i);
 						break;
-						
+
 					case REQ_SZ_0:
-						oplist_pr0_sz0[i2] = opcodes[i].funcion;
-						oplist_pr1_sz0[i2] = opcodes[i].funcion;
+						oplist_pr0_sz0[i2] = OPLIST_VALOR(i);
+						oplist_pr1_sz0[i2] = OPLIST_VALOR(i);
 						break;
-						
+
 					case REQ_PR_0_SZ_1:
-						oplist_pr0_sz1[i2] = opcodes[i].funcion;
+						oplist_pr0_sz1[i2] = OPLIST_VALOR(i);
 						break;
-					
+
 					case REQ_PR_1_SZ_0:
-						oplist_pr1_sz0[i2] = opcodes[i].funcion;
+						oplist_pr1_sz0[i2] = OPLIST_VALOR(i);
 						break;
-					
+
 					default:
-						oplist_pr0_sz0[i2] = opcodes[i].funcion;
-						oplist_pr0_sz1[i2] = opcodes[i].funcion;
-						oplist_pr1_sz0[i2] = opcodes[i].funcion;
-						oplist_pr1_sz1[i2] = opcodes[i].funcion;
+						oplist_pr0_sz0[i2] = OPLIST_VALOR(i);
+						oplist_pr0_sz1[i2] = OPLIST_VALOR(i);
+						oplist_pr1_sz0[i2] = OPLIST_VALOR(i);
+						oplist_pr1_sz1[i2] = OPLIST_VALOR(i);
 						break;
 				}
 			}
@@ -522,5 +488,3 @@ void initopcodes()
 	}
 	oplist = oplist_pr0_sz0;
 }
-
-#endif

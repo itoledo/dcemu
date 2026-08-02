@@ -41,7 +41,7 @@
 #define BIT_SZ	0x00100000u
 #define BIT_PR	0x00080000u
 
-static opcode_f ** tabla(int pr, int sz)
+static oplist_t * tabla(int pr, int sz)
 {
 	if (pr)
 		return sz ? oplist_pr1_sz1 : oplist_pr1_sz0;
@@ -75,10 +75,10 @@ static void ninguna_entrada_queda_en_null(void)
 	for (pr = 0; pr < 2; pr++)
 		for (sz = 0; sz < 2; sz++)
 		{
-			opcode_f ** t = tabla(pr, sz);
+			oplist_t * t = tabla(pr, sz);
 
 			for (i = 0; i < 65536; i++)
-				if (t[i] == NULL)
+				if (OP_HANDLER(t, i) == NULL)
 					huecos++;
 		}
 
@@ -132,7 +132,7 @@ static void toda_fila_es_alcanzable(void)
 				if (!fila_aplica(opcodes[f].restriccion, pr, sz))
 					continue;
 
-				if (tabla(pr, sz)[opcodes[f].op] != opcodes[f].funcion)
+				if (OP_HANDLER(tabla(pr, sz), opcodes[f].op) != opcodes[f].funcion)
 				{
 					if (tapadas < 5)
 						dc_anotar(__FILE__, __LINE__,
@@ -165,11 +165,11 @@ static void los_campos_n_y_m_no_cambian_el_handler(void)
 
 	for (b = 0; b < (int) (sizeof(bases) / sizeof(bases[0])); b++)
 	{
-		opcode_f * esperado = oplist_pr0_sz0[bases[b]];
+		opcode_f * esperado = OP_HANDLER(oplist_pr0_sz0, bases[b]);
 
 		for (n = 0; n < 16; n++)
 			for (m = 0; m < 16; m++)
-				if (oplist_pr0_sz0[instr_nm(bases[b], n, m)] != esperado)
+				if (OP_HANDLER(oplist_pr0_sz0, instr_nm(bases[b], n, m)) != esperado)
 					distintos++;
 	}
 
@@ -180,12 +180,12 @@ static void el_inmediato_no_cambia_el_handler(void)
 {
 	int i;
 	int distintos = 0;
-	opcode_f * esperado = oplist_pr0_sz0[0xE000];	/* MOV #imm, Rn */
+	opcode_f * esperado = OP_HANDLER(oplist_pr0_sz0, 0xE000);	/* MOV #imm, Rn */
 
 	arnes_reset();
 
 	for (i = 0; i < 256; i++)
-		if (oplist_pr0_sz0[instr_ni(0xE000, 5, i)] != esperado)
+		if (OP_HANDLER(oplist_pr0_sz0, instr_ni(0xE000, 5, i)) != esperado)
 			distintos++;
 
 	ESPERAR_U32(distintos, 0);
@@ -198,14 +198,14 @@ static void pr_y_sz_cambian_el_significado_de_un_patron(void)
 	arnes_reset();
 
 	/* 0xF00C es FMOV FRm,FRn con SZ=0 y FMOV DRm,DRn con SZ=1. */
-	ESPERAR(oplist_pr0_sz0[0xF00C] != oplist_pr0_sz1[0xF00C]);
+	ESPERAR(OP_HANDLER(oplist_pr0_sz0, 0xF00C) != OP_HANDLER(oplist_pr0_sz1, 0xF00C));
 
 	/* 0xF000 es FADD simple con PR=0 y FADD doble con PR=1. */
-	ESPERAR(oplist_pr0_sz0[0xF000] != oplist_pr1_sz0[0xF000]);
+	ESPERAR(OP_HANDLER(oplist_pr0_sz0, 0xF000) != OP_HANDLER(oplist_pr1_sz0, 0xF000));
 
 	/* Los enteros no dependen del modo. */
-	ESPERAR(oplist_pr0_sz0[0x300C] == oplist_pr1_sz1[0x300C]);
-	ESPERAR(oplist_pr0_sz0[0x300C] == oplist_pr0_sz1[0x300C]);
+	ESPERAR(OP_HANDLER(oplist_pr0_sz0, 0x300C) == OP_HANDLER(oplist_pr1_sz1, 0x300C));
+	ESPERAR(OP_HANDLER(oplist_pr0_sz0, 0x300C) == OP_HANDLER(oplist_pr0_sz1, 0x300C));
 }
 
 static void updatefpscr_apunta_a_la_tabla_correcta(void)
@@ -232,10 +232,10 @@ static void las_instrucciones_dobles_solo_existen_con_pr1(void)
 	arnes_reset();
 
 	/* FSQRT DR0 (0xF06D) con PR=1 no es el mismo handler que FSQRT FR0. */
-	ESPERAR(oplist_pr1_sz0[0xF06D] != oplist_pr0_sz0[0xF06D]);
+	ESPERAR(OP_HANDLER(oplist_pr1_sz0, 0xF06D) != OP_HANDLER(oplist_pr0_sz0, 0xF06D));
 
 	/* FTRC DRm,FPUL con PR=1 tampoco. */
-	ESPERAR(oplist_pr1_sz0[0xF03D] != oplist_pr0_sz0[0xF03D]);
+	ESPERAR(OP_HANDLER(oplist_pr1_sz0, 0xF03D) != OP_HANDLER(oplist_pr0_sz0, 0xF03D));
 }
 
 /* ------------------------------------------------------------------ NOIMP */
@@ -285,7 +285,7 @@ static void los_encodings_invalidos_caen_en_noimp(void)
 	arnes_reset();
 
 	for (i = 0; i < (int) (sizeof(invalidos) / sizeof(invalidos[0])); i++)
-		if (oplist_pr0_sz0[invalidos[i]] != NOIMP)
+		if (OP_HANDLER(oplist_pr0_sz0, invalidos[i]) != NOIMP)
 			dc_anotar(__FILE__, __LINE__, "0x%04X deberia caer en NOIMP",
 					  (unsigned int) invalidos[i]);
 }

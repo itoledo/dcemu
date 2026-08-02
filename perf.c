@@ -70,6 +70,7 @@ unsigned long long perf_onda_lect		= 0;
 unsigned long long perf_onda_escr		= 0;
 
 unsigned long long perf_cuadros			= 0;
+unsigned long long perf_instrucciones	= 0;
 
 static unsigned long long arranque = 0;
 
@@ -140,6 +141,21 @@ void perf_resumen(void)
 	if (perf_cuadros)
 		fprintf(stderr, "perf: %llu cuadros presentados (%.1f por segundo real)\n",
 			perf_cuadros, (double) perf_cuadros * 1e9 / (double) real);
+
+	/*
+		La unidad con la que se compara una optimizacion del despacho contra
+		otra. Los ciclos emulados no sirven para eso -- ver perf.h --, y los
+		MIPS solos tampoco dicen nada sin el ritmo al que la consola los pedia.
+		El SH-4 de la Dreamcast retira del orden de una instruccion por ciclo a
+		200 MHz, asi que 200 MIPS es aproximadamente el tiempo real.
+	*/
+	if (perf_instrucciones)
+		fprintf(stderr, "perf: %llu instrucciones, %.1f ns cada una"
+			" (%.1f MIPS, %.2f por ciclo emulado)\n",
+			perf_instrucciones,
+			(double) real / (double) perf_instrucciones,
+			(double) perf_instrucciones * 1e3 / (double) real,
+			reloj_total ? (double) perf_instrucciones / (double) reloj_total : 0.0);
 
 	fprintf(stderr, "perf: reparto del tiempo real\n");
 

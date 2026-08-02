@@ -111,6 +111,21 @@ extern unsigned long long perf_onda_escr;
 /* Cuadros presentados, para poder dar fps sin depender del titulo de ventana. */
 extern unsigned long long perf_cuadros;
 
+/*
+	Instrucciones despachadas. No es lo mismo que ciclos emulados y esa es
+	justamente la razon de existir: el CPI del SH-4 va de 1 a 5 segun la
+	instruccion, asi que "ciclos por segundo real" no compara dos versiones del
+	despacho -- una mezcla distinta de instrucciones mueve la cifra sin que el
+	interprete haya cambiado. **Nanosegundos por instruccion** si compara.
+
+	Se cuenta en los dos lugares que despachan: el camino rapido de main_loop()
+	y run(), que es por donde pasan las ranuras de retardo (branch.c y rte143()
+	las ejecutan con un core.execute() anidado) y el camino con excepciones. Una
+	ranura es una instruccion tan real como cualquier otra y en codigo del SH-4
+	son del orden del 10 %: dejarlas fuera sesga la cifra hacia abajo.
+*/
+extern unsigned long long perf_instrucciones;
+
 void perf_inicio(void);
 void perf_resumen(void);
 

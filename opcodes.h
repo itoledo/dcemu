@@ -8,18 +8,66 @@ void initopcodes();
 
 // extern int oplist[65536];
 // extern int opcode_primer_restriccion;
-#ifdef old_oplist
-extern short * oplist;
-extern short oplist_pr0_sz0[65536];
-extern short oplist_pr0_sz1[65536];
-extern short oplist_pr1_sz0[65536];
-extern short oplist_pr1_sz1[65536];
+
+/*
+	Hay dos formas de despachar y cual gana lo decide la medida, no el
+	razonamiento. Se elige al compilar con DESPACHO_COMPACTO para que los dos
+	binarios existan a la vez y se puedan correr en la misma tanda, que es la
+	unica comparacion valida (ver docs/interprete-plan.md).
+
+	**Expandida** (por omision): una tabla de punteros a funcion indexada por la
+	palabra de instruccion cruda. Un salto indirecto y una sola carga. Pero en
+	x64 son 65536 x 8 = **512 KB por tabla**, y hay cuatro -- una por
+	combinacion de PR/SZ de FPSCR --, de las que una esta activa. Un P-core
+	tiene 48 KB de L1d y 2 MB de L2, asi que una palabra de instruccion que
+	salta por todo el rango falla L1 casi siempre.
+
+	**Compacta**: la tabla guarda un indice de 16 bits -- sobra, opcodes[] tiene
+	240 filas -- y ese indice se resuelve contra un arreglo plano de punteros.
+	La tabla baja a **128 KB** a cambio de una indireccion mas, sobre 1,9 KB que
+	si viven en L1d.
+
+	El arreglo es plano y no opcodes[i].funcion a proposito: st_cmd son 48
+	bytes, asi que indexar la estructura entera serian 11,5 KB en vez de 1,9 y
+	traeria a la cache seis campos que el despacho no mira. Esa variante --
+	`opcodes[oplist[arg]].funcion` -- estuvo en el arbol detras de un #ifdef
+	desde 2004 y **nunca compilo**: opcodes.h la guardaba con `old_oplist` y
+	opcodes.c con `oplist_old`, asi que definir cualquiera de los dos dejaba
+	initopcodes() escribiendo punteros en un arreglo de short.
+*/
+/* Cota de filas de opcodes[]. Hoy son 240; initopcodes() aborta si alguna vez
+   pasa de aca, que es mas barato que un desborde silencioso. */
+#define OPCODES_MAX		512
+
+/*
+	`oplist_t` es lo que la tabla guarda y OP_HANDLER lo resuelve al puntero.
+	Existen para que todo lo que **mira** la tabla en vez de despachar --
+	tests/, que es donde se verifica que la expansion resuelve el handler
+	correcto -- se escriba una sola vez y valga para las dos formas.
+*/
+#ifdef DESPACHO_COMPACTO
+typedef unsigned short oplist_t;
+
+extern oplist_t * oplist;
+extern oplist_t oplist_pr0_sz0[65536];
+extern oplist_t oplist_pr0_sz1[65536];
+extern oplist_t oplist_pr1_sz0[65536];
+extern oplist_t oplist_pr1_sz1[65536];
+extern opcode_f * opfuncion[];
+
+#define OP_DESPACHAR(instr)			opfuncion[oplist[instr]](instr)
+#define OP_HANDLER(tabla, instr)	(opfuncion[(tabla)[instr]])
 #else
-extern opcode_f ** oplist;
-extern opcode_f * oplist_pr0_sz0[65536];
-extern opcode_f * oplist_pr0_sz1[65536];
-extern opcode_f * oplist_pr1_sz0[65536];
-extern opcode_f * oplist_pr1_sz1[65536];
+typedef opcode_f * oplist_t;
+
+extern oplist_t * oplist;
+extern oplist_t oplist_pr0_sz0[65536];
+extern oplist_t oplist_pr0_sz1[65536];
+extern oplist_t oplist_pr1_sz0[65536];
+extern oplist_t oplist_pr1_sz1[65536];
+
+#define OP_DESPACHAR(instr)			oplist[instr](instr)
+#define OP_HANDLER(tabla, instr)	((tabla)[instr])
 #endif
 extern int idx_NOIMP;
 

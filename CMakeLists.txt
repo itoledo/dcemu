@@ -26,6 +26,13 @@ option(DCEMU_USE_LIBCDIO "Compilar el backend libcdio (bin/cue, lectora fisica)"
 option(DCEMU_CONSOLE "Dejar la consola abierta para ver los mensajes a stderr" ON)
 option(DCEMU_BUILD_TESTS "Compilar las pruebas unitarias de opcodes (tests/)" ON)
 
+# Las dos formas de despachar del interprete. Ver opcodes.h: la expandida
+# indexa 512 KB de punteros con la palabra de instruccion cruda, la compacta
+# 128 KB de indices de 16 bits mas un arreglo de 240 punteros. Es una opcion y
+# no un #define en options.h porque lo que decide es correr los dos binarios en
+# la misma tanda, y para eso tienen que poder existir a la vez.
+option(DCEMU_DESPACHO_COMPACTO "Despachar por indice de 16 bits en vez de por puntero" OFF)
+
 # ---------------------------------------------------------------------------
 # SDL 1.2, via sdl12-compat
 #
@@ -146,6 +153,10 @@ endif()
 
 if(DCEMU_USE_LIBCDIO)
 	target_compile_definitions(dcemu PRIVATE USE_LIBCDIO)
+endif()
+
+if(DCEMU_DESPACHO_COMPACTO)
+	target_compile_definitions(dcemu PRIVATE DESPACHO_COMPACTO)
 endif()
 
 # glu32 y winmm estan en los makefiles pero no se usan: la unica llamada a GLU

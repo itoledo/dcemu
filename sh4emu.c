@@ -6,6 +6,7 @@
 #include "excepciones.h"
 #include "floatsimple.h"
 #include "intc.h"
+#include "perf.h"
 
 /*
 	El modo de redondeo de la FPU. RM = 01 -- truncar hacia cero -- es el valor
@@ -223,21 +224,18 @@ void run(WORD arg)
 		excepcion_abortar(en_ranura_retardo ? EXC_FPU_RANURA : EXC_FPU_GENERAL,
 						  EXC_VEC_GENERAL);
 
-#ifdef old_oplist
-	(opcodes[oplist[arg]].funcion) (arg);
-#else
-	oplist[arg]  (arg);
-#endif
+	/* El camino rapido de main_loop() no pasa por aca, asi que lo que esto
+	   cuenta son las ranuras de retardo y el camino con excepciones. Ver
+	   perf.h: una ranura es una instruccion, y son del orden del 10 %. */
+	PERF_CONTAR(perf_instrucciones);
+
+	OP_DESPACHAR(arg);
 }
 
 #ifdef _fast_interpreter_
 void runCache (WORD arg)
 {
-#ifdef old_oplist
-	(opcodes[oplist[arg]].funcion) (arg);
-#else
-	oplist[arg]  (arg);
-#endif
+	OP_DESPACHAR(arg);
 }
 #endif
 
