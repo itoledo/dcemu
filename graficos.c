@@ -2119,7 +2119,13 @@ static void dibujar_niebla_tira(DWORD i)
 	memread_fisico(0xA05F80B8, &reg, 4);
 	memread_fisico(0xA05F80B0, &col, 4);
 
-	densidad = ldexpf(1.0f + (float) ((reg >> 8) & 0x7F) / 128.0f,
+	/* El formato del registro (System Architecture, FOG_DENSITY): mantisa de
+	   8 bits donde el bit 15 ES el bit "1.0" -- 0xFF vale 255/128, sin 1
+	   implicito -- y exponente en complemento a dos. KOS lo confirma por el
+	   camino raro: float16() arma signo|mantisa7|exponente y "niega" la
+	   densidad, con lo que el bit de signo cae exactamente donde el chip
+	   espera el bit 1.0. */
+	densidad = ldexpf((float) ((reg >> 8) & 0xFF) / 128.0f,
 		(int) (signed char) (reg & 0xFF));
 	fr = (float) ((col >> 16) & 0xFF) / 255.0f;
 	fg = (float) ((col >> 8) & 0xFF) / 255.0f;
