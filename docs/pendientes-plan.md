@@ -523,9 +523,9 @@ reciben la sombra del taxi — que el attract no usa. Dos sondas deciden:
 2. El parseo del encabezado de dos volúmenes (POLY3/POLY4, TSP0/TCW0 en palabras 2-3 según
    §3.7.5.2) contra lo que llega: la traza nueva imprime el TCW crudo por tira.
 
-**Resuelto el misterio de la intermitencia (2026-08-01, madrugada) — es determinista y
-depende del gamepad.** Medido con el reproductor (5 corridas byte a byte idénticas en
-totales de VRAM y flujo de syscalls):
+**Resuelto el misterio de la intermitencia (2026-08-01, madrugada) — es determinista, y el
+blanco es el resultado normal; lo raro es la corrida limpia.** Medido con el reproductor
+(5 corridas byte a byte idénticas en totales de VRAM y flujo de syscalls):
 
 - **El emulador es determinista**: b1≡b2≡c2≡c3 exactas. La corrida "limpia" difería en una
   sola cosa: `mando: gamepad conectado` (el pad del usuario estaba encendido). Con pad, el
@@ -546,13 +546,49 @@ totales de VRAM y flujo de syscalls):
   satura el índice a la ranura 127, cuya alfa es 0 — el juego la deja "apagada" así). Los
   volúmenes causan el OTRO síntoma: el manto oscuro de media pantalla (ver abajo).
 
-**La sonda que sigue**: el disparador de la primera subida CH2. El juego tiene los datos en
-RAM y no programa `SB_C2DST` — espera algo del pipeline de eventos ASIC (la misma familia
-que la espera 5 de Virtua Tennis: reciclaje de buffers por render-done). Candidato #1: la
-demora del fin de DMA de **Maple** en `INTC_DEMORAS` — el pad entra por ahí y su fase es lo
-único que mueve la aguja; probar a variarla y ver si la carrera cae siempre del lado bueno,
-como en el hardware. Mientras: **con el gamepad conectado el juego carga bien** — es el
-workaround de juego en vivo.
+**El gamepad NO es workaround** (probado en vivo la misma noche: pad conectado y jugando,
+sigue blanco). Lo que la corrida limpia demuestra es otra cosa: la fase de subida EXISTE en
+el juego y una perturbación de timing de entrada la destrabó UNA vez — la carrera interna
+cae del lado malo en casi todas las líneas de tiempo de dcemu, y en la consola real caía
+del bueno. Hay que encontrar qué espera el cargador, no perturbarlo.
+
+**Los datos duros para retomar** (todos medidos, reproducibles con el reproductor de
+arriba + `--traza-mem`, 60 s):
+
+- Discriminador instantáneo al salir: `bytes a RAM de video por ventana:` — **blanca:
+  `11=5565728`; limpia: `11=6481248`**. Equivalente: en la limpia hay `CH2 DMA ... ->
+  111a0000-113fxxxx` (~600 transferencias, las texturas de ciudad); en la blanca los
+  destinos saltan de `1140xxxx` para arriba. Los autos, taxi y HUD son del lote base y
+  se ven bien siempre — lo que falta es solo el lote de ciudad.
+- El flujo de syscalls GD (`hack:` en stderr) es el MISMO multiconjunto en ambas (8654
+  llamadas, 487 lecturas, 32 MB): los datos llegan a RAM. La única diferencia es de fase:
+  un par MAIN_LOOP (r7=2) + CHECK_DRIVE (r7=4) corrido de la línea 30 a la 1242.
+- En la limpia, las subidas CH2 aparecen intercaladas entre tandas de lecturas durante la
+  carga; en la blanca las lecturas corren seguidas y la fase de subida no llega nunca.
+  A los 90 s la ventana 11 sigue en el mismo byte: **no es lenta, no arranca**.
+- Los PR de los sitios de llamada del cargador del juego (para `--traza-desde`):
+  SEND=`0c15d42a`, CHECK=`0c15d4e8`, CHECK_DRIVE=`0c15d5f4`, MAIN_LOOP=`0c15d6ce`
+  (PC siempre `8c000202`, el stub).
+
+**Las sondas que siguen, en orden de costo:**
+
+1. **`CHECK_DRIVE` contesta STANDBY (2) siempre**, porque en el camino de syscalls nadie
+   mueve `gdrom.unidad`. En la consola el drive queda en **PAUSE (1)** al terminar una
+   lectura y el cargador de Katana puede estar esperando esa transición para procesar el
+   lote y disparar las subidas. Experimento de una línea en `hack_gdrom()` (vector r7=4):
+   contestar 1 tras una lectura completada (o probar 1 fijo) y mirar el discriminador.
+2. **`--watchpoint=5F6808:4` (SB_C2DST)** en el reproductor: da el PC/PR del código que SÍ
+   programa las subidas del lote base en la corrida blanca. Con ese PC, `--traza-desde`
+   sobre la rutina muestra la decisión que salta el lote de ciudad — qué variable mira.
+3. **Variar la demora del fin de DMA de Maple en `INTC_DEMORAS`** (la fase de entrada es
+   lo único que movió la aguja): si una demora más realista hace caer la carrera siempre
+   del lado bueno, es la señal de que el modelo de eventos es el que manda aquí — la misma
+   familia que la espera 5 de Virtua Tennis (reciclaje de buffers por render-done).
+
+Residuos menores reportados en vivo, para después: el borde de los neumáticos sin
+transparencia (alfa del punch-through en texturas chicas, probablemente el piso del
+umbral), y texturas de autos que se rompieron pasados ~80 s de una corrida larga
+(¿desalojo del caché con el juego avanzado? medir con `DCEMU_SIN_CACHE_TEX`).
 
 **El manto oscuro con volúmenes activos es la simplificación documentada de
 `marcar_volumenes()`**: unión de triángulos en vez de conteo de caras. La sombra del taxi es
