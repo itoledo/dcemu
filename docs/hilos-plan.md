@@ -198,17 +198,50 @@ corrida "sale" 40 % mas rapida y es un espejismo completo. El desglose interno d
 existe justamente porque comparar dos corridas es fragil; aqui lo demostro por una razon
 distinta de la prevista (no fue el vsync, fue la divergencia del guest).
 
+### Y en el juego, no en los menus
+
+La primera tanda media la advertencia de VMU y el menu de modos, las dos 2D, asi que el
+punto 1 quedaba sin demostrar donde importa. Se repitio llegando al juego con
+`DCEMU_PULSAR_START=300,1100 DCEMU_PULSAR_A=1 DCEMU_SOLO_A=1` y `--salir-tras=120`:
+**1016 tiras por escena en promedio y 1889 la mayor**, sobre 6570 escenas — geometria 3D
+de verdad, del orden que `CLAUDE.md` reporta para el atractivo.
+
+| | menus (40 s) | **juego (120 s)** |
+| --- | --- | --- |
+| velocidad | 0,50× | **0,45×** |
+| tiras por escena | — | **1016 (max 1889)** |
+| `dibujar_escena()` | 0,8 % | **2,1 %** |
+| de eso texturas | 0,2 % | 0,3 % |
+| presentar | 0,2 % | 0,1 % |
+| bloque periodico | 36,7 % | **33,6 %** |
+| AICA (casi todo ARM7) | 15,9 % | **14,5 %** |
+| resto (interprete) | 61,9 % | **63,2 %** |
+
+**El reparto casi no se mueve.** Con mil tiras por escena el PVR se triplica y sigue
+costando 2,1 %: 5,5 de 261 segundos. Las 40 000 llamadas a GL por cuadro que estimaba
+`rendimiento-plan.md` no existen — con 1016 tiras son unas 15 000, y no se notan. La
+conclusion 1 queda demostrada donde hacia falta.
+
+Dos cosas que salieron de paso y valen para cualquier medicion futura:
+
+- **`--captura-gl` cuesta 42,7 % de la corrida** (un `glReadPixels` de pantalla completa
+  por cuadro). Sin cronometrarlo aparte, ese 42,7 % se habria repartido dentro de "resto
+  (interprete)" y el desglose entero habria estado mal. Ahora se descuenta solo.
+- **`--captura-gl` no perturba la emulacion**, solo el reloj: la corrida con captura y la
+  limpia dieron los mismos 6577 cuadros, las mismas 6570 escenas, los mismos 1 448 670 936
+  pasos del ARM y los mismos 5 146 966 accesos al AICA. Y el desglose limpio coincidio con
+  el estimado por resta dentro del 0,5 %.
+
 ### Lo que falta medir
 
-- **Una escena 3D de verdad.** Las capturas confirman que a los 40 s emulados el juego esta
-  en la advertencia de VMU y a los 95 s en el menu de modos: las dos son 2D. La conclusion
-  1 vale para lo medido y **no** esta demostrada para el atractivo ni para el juego, que es
-  donde `CLAUDE.md` reporta ~2600 tiras por escena. Hasta entonces las fases 2 y 3 de este
-  plan siguen sin justificacion medida.
 - **Release.** Todo esto es Debug. El interprete y el ARM7 se aceleran los dos, asi que el
   reparto probablemente aguante, pero las llamadas a GL no se aceleran nada y su fraccion
   crecera.
-- **Rafagas contra accesos** en el punto 5.
+- **Rafagas contra accesos** en el punto 5, que en el juego se volvio la pregunta que
+  decide la fase entera: 5 146 966 accesos en 120 segundos emulados son **0,97 por muestra
+  de audio**. Si cada uno fuera un alcance, el hilo del AICA se detendria una vez por
+  muestra y no quedaria ventana para correr en paralelo. La fase 1 depende por completo de
+  que vengan en rafagas dentro del mismo instante emulado.
 
 ### Que cambia en el plan
 
@@ -216,6 +249,83 @@ El orden de `rendimiento-plan.md` estaba bien pero por las razones equivocadas. 
 medido, lo barato y grande esta todo **fuera** de los hilos: el bloque periodico (19,5 %
 verificado, una linea) y despues el interprete, que es el 62 % restante. La fase 1 de este
 documento sigue en pie y vale 1,19×, pero **deja de ser lo primero**.
+
+## Resultado de la fase 1
+
+**Implementada, correcta, y no gana tiempo: pierde entre un 4 y un 5 %.** Queda en el
+arbol detras de `--hilos`, **apagada por omision**. Medido el 2026-08-01, Debug,
+i9-13900, Crazy Taxi en juego, `--salir-tras=60` (3070 cuadros, corte por tiempo emulado
+y por lo tanto la misma ejecucion en las dos corridas).
+
+| | sin hilos | con hilos |
+| --- | --- | --- |
+| tiempo real | **214 886 ms** | 222 617 ms |
+| velocidad | **0,27×** | 0,26× |
+| AICA total | 31 544 ms (14,6 %) | **45 993 ms (20,6 %)** |
+| bloque periodico | 72 791 ms | 53 792 ms |
+| resto (interprete) | **134 236 ms** | 160 892 ms |
+| esperando al AICA | — | 928 ms (0,4 %) |
+
+### Lo que funciono
+
+- **El protocolo es correcto y el determinismo se sostiene.** El `.wav` sale **bit a bit
+  identico** al del camino sin hilos sobre **2 646 565 muestras**. Es la prueba de
+  aceptacion de la fase y la pasa.
+- **La sincronizacion es barata**: el SH-4 pasa **0,4 %** del tiempo bloqueado. La medida
+  del paso 0 acerto — las escrituras vienen en rafagas, 0,21 alcances por acceso — y el
+  diseno de "alcance a pedido" hace lo que promete.
+- **El reparto se movio como debia**: el bloque periodico bajo 19 s, que es
+  aproximadamente el AICA que ya no corre ahi.
+
+### Por que igual pierde
+
+El trabajo se fue del hilo principal, pero **se encarecio en los dos lados**:
+
+- El mismo AICA cuesta **46 % mas** en el segundo hilo (31,5 s → 46,0 s).
+- Y el interprete del hilo principal, haciendo exactamente el mismo trabajo, se frena un
+  **20 %** (134,2 s → 160,9 s).
+
+Ninguna de las dos es sincronizacion — eso son 0,9 s. Es contencion de memoria entre los
+dos hilos (el ARM7 y el mezclador barren 2 MB de RAM de onda mientras el interprete barre
+16 MB de RAM del sistema) y, con toda probabilidad, **colocacion de hilos**: en un
+i9-13900 hay ocho nucleos de rendimiento y dieciseis de eficiencia, y nada le dice al
+planificador que este hilo no va en uno de eficiencia. Un factor cercano a 1,5 es
+exactamente lo que costaria esa diferencia.
+
+**Release no lo rescata**: encoge el trabajo del emulador y deja igual el costo del
+sistema operativo, o sea que empeora la relacion.
+
+### Lo que se probo para arreglarlo, y la trampa que aparecio
+
+Dos afinaciones del protocolo, las dos correctas y las dos insuficientes:
+
+- **No avisar a la condicion cuando nadie espera** (un contador `esperando`). Quita 44 100
+  llamadas al sistema por segundo emulado. Se queda.
+- **Avanzar de a cuatro muestras** en vez de una, para dividir por cuatro el costo de
+  sincronizar. Bajo la perdida de 4,9 % a 3,6 %... **y rompio el determinismo**: el `.wav`
+  divergia a los 15,6 segundos con un corrimiento de dos cuadros.
+
+Lo segundo es el hallazgo que importa, porque no es un error de implementacion sino el
+**unico punto del diseno donde el determinismo no estaba garantizado por construccion**, y
+estaba anotado como tal desde el principio: la entrega de la interrupcion del AICA al ASIC.
+El chip levanta `aica_linea_asic` en un instante emulado y `main_loop()` la cobra en el
+bloque periodico en que se entere, que depende del reloj real. Cuanto mas desacoplados van
+los dos hilos, mas se corre esa entrega, y el ISR del guest escribe el AICA en otro momento.
+
+Hacerlo exacto exigiria que el SH-4 no pase de un instante emulado sin que el AICA lo haya
+procesado, o sea **lockstep**, o sea ningun paralelismo. Asi que el paso se deja en 1, que
+es donde el `.wav` sale identico.
+
+### Que hacer con esto
+
+- **Queda en el arbol, detras de `--hilos`, apagado.** El codigo es correcto, esta medido y
+  documentado, y `hilo.c`/`hilo.h` sirven igual para cualquier otra fase.
+- **Vale la pena volver si** alguien mide con afinidad de hilo forzada a un nucleo de
+  rendimiento — es la hipotesis mas probable y no se probo, porque fijar afinidad es
+  especifico de cada plataforma y va contra el objetivo de portabilidad de esta rama.
+- **Pero no es donde esta el tiempo.** El paso 0 ya lo habia dicho y la fase 1 lo confirma
+  desde el otro lado: el 63 % esta en el interprete y el 33 % en el bloque periodico, del
+  que ya hay un 19,5 % verificado con **una linea**. Eso es lo que sigue.
 
 ## Fase 1 — El AICA y el ARM7 en su propio hilo
 

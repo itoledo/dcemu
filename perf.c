@@ -32,6 +32,36 @@ unsigned long long perf_ns_ta		= 0;
 unsigned long long perf_arm_pasos	= 0;
 unsigned long long perf_arm_ocioso	= 0;
 
+unsigned long long perf_ns_captura	= 0;
+
+unsigned long long perf_escenas		= 0;
+unsigned long long perf_tiras		= 0;
+unsigned long      perf_tiras_max	= 0;
+
+unsigned long long perf_sync_instantes = 0;
+unsigned long long perf_ns_espera	= 0;
+
+/*
+	Un acceso al estado del AICA. Solo cuenta si el reloj emulado avanzo desde
+	el anterior: si no avanzo, el hilo del AICA ya estaba al dia y no habria
+	espera. Ver perf.h.
+
+	reloj_total avanza en el bloque periodico de main_loop(), o sea cada 50
+	ciclos, que es exactamente la resolucion con la que el hilo del AICA
+	recibiria su objetivo. Asi que la deduplicacion es la correcta, no una
+	aproximacion.
+*/
+void perf_marcar_sync(void)
+{
+	static unsigned long long ultimo = (unsigned long long) -1;
+
+	if (reloj_total == ultimo)
+		return;
+
+	ultimo = reloj_total;
+	perf_sync_instantes++;
+}
+
 unsigned long long perf_aica_reg_vivo	= 0;
 unsigned long long perf_aica_reg_plano	= 0;
 unsigned long long perf_aica_reg_escr	= 0;
@@ -123,16 +153,29 @@ void perf_resumen(void)
 	linea("bloque periodico",	perf_ns_servicio,	real);
 	linea("TA (store queue)",	perf_ns_ta,			real);
 
+	if (perf_ns_captura)
+		linea("--captura-gl",	perf_ns_captura,	real);
+
+	if (perf_ns_espera)
+		linea("esperando al AICA",	perf_ns_espera,	real);
+
 	/* Lo que queda es el interprete del SH-4 y el andamiaje de main_loop().
 	   El bloque periodico y el AICA estan anidados, asi que no se restan dos
 	   veces: perf_ns_servicio ya incluye a aica_total. */
 	{
 		unsigned long long medido = perf_ns_servicio + perf_ns_escena
-		                          + perf_ns_presentar + perf_ns_ta;
+		                          + perf_ns_presentar + perf_ns_ta
+		                          + perf_ns_captura;
 
 		linea("resto (interprete)",
 			real > medido ? real - medido : 0, real);
 	}
+
+	if (perf_escenas)
+		fprintf(stderr, "perf: %llu escenas, %.0f tiras por escena en promedio,"
+			" %lu la mayor\n",
+			perf_escenas, (double) perf_tiras / (double) perf_escenas,
+			perf_tiras_max);
 
 	if (perf_arm_pasos)
 		fprintf(stderr, "perf: ARM7: %llu pasos, %llu ociosos (%.1f %%)\n",
@@ -173,7 +216,17 @@ void perf_resumen(void)
 			perf_onda_lect,      seg ? perf_onda_lect / seg : 0.0);
 		fprintf(stderr, "perf:   RAM de onda escrita  %10llu  (%.0f/s)\n",
 			perf_onda_escr,      seg ? perf_onda_escr / seg : 0.0);
-		fprintf(stderr, "perf:   ---- alcances forzados %8llu  (%.0f/s)\n",
-			sync, seg ? sync / seg : 0.0);
+		fprintf(stderr, "perf:   ---- accesos en total  %10llu\n", sync);
+
+		/*
+			Y lo que de verdad costaria: instantes emulados distintos. Un
+			acceso mas dentro del mismo instante no espera a nadie.
+		*/
+		fprintf(stderr, "perf:   ---- alcances forzados %10llu"
+			" (%.2f por acceso, %.3f por muestra de audio)\n",
+			perf_sync_instantes,
+			sync ? (double) perf_sync_instantes / (double) sync : 0.0,
+			emulado ? (double) perf_sync_instantes
+			          / ((double) emulado * 44.1) : 0.0);
 	}
 }

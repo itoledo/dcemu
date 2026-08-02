@@ -2452,6 +2452,11 @@ static void terminar_escena(void)
 	   animacion entera -- la del boot ROM, por ejemplo -- cuadro a cuadro. */
 	if (opciones.captura_gl != NULL && strip_count > 0)
 	{
+		/* Se cronometra aparte porque es un glReadPixels de pantalla completa
+		   por cuadro: sin descontarlo, una corrida con --captura-gl se lee como
+		   si el interprete se hubiera puesto lento. */
+		PERF_MARCA(t_cap);
+
 		if (getenv("DCEMU_CAPTURA_TODAS"))
 		{
 			static int nf = 0;
@@ -2462,6 +2467,17 @@ static void terminar_escena(void)
 		}
 		else
 			volcar_gl(opciones.captura_gl);
+
+		PERF_SUMAR(t_cap, perf_ns_captura);
+	}
+
+	if (perf_activa)
+	{
+		perf_escenas++;
+		perf_tiras += strip_count;
+
+		if (strip_count > perf_tiras_max)
+			perf_tiras_max = strip_count;
 	}
 
 	strip_count = 0;

@@ -20,6 +20,21 @@ unsigned char		aica_reg[AICA_REG_SIZE];
 unsigned long long	aica_muestras;
 
 /*
+	La linea del AICA hacia el ASIC (SB_ISTEXT, G2AICINT). El chip solo la sube
+	y la baja; **la entrega no se hace aqui**, la cobra quien atienda el ASIC.
+
+	Antes se llamaba a intc_add_ext()/intc_remove_ext() en el acto. Con el AICA
+	en su propio hilo (hilo_aica.c) esas llamadas ocurririan fuera del hilo que
+	atiende las interrupciones, y tocan tanto intc_queuemask_ext como el
+	registro ASIC_ACK_B. Dejar una linea de nivel -- un escritor, un lector, una
+	palabra -- es la misma disciplina que ya usa el anillo aica_salida[].
+
+	En el camino de un solo hilo no cambia nada: main_loop() la cobra en el
+	mismo bloque periodico, dos lineas despues de aica_tick().
+*/
+volatile int	aica_linea_asic = 0;
+
+/*
 	La relacion exacta entre el reloj de la CPU y el de muestreo. DC_CPU_HZ es
 	199499520 y gcd(44100, DC_CPU_HZ) = 60, asi que salen 735 muestras cada
 	3324992 ciclos sin resto. Sin deriva y con enteros: la leccion de
@@ -111,7 +126,7 @@ static void pedir_int(DWORD fuente)
 	poner16(AICA_MCIPD, reg16(AICA_MCIPD) | fuente);
 
 	if (reg16(AICA_MCIEB) & fuente)
-		intc_add_ext(ASIC_EVT_EXT_AICA);
+		aica_linea_asic = 1;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -840,7 +855,7 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 			poner16(off, reg16(off) | AICA_INT_CPU);
 
 			if (off == AICA_MCIPD && (reg16(AICA_MCIEB) & AICA_INT_CPU))
-				intc_add_ext(ASIC_EVT_EXT_AICA);
+				aica_linea_asic = 1;
 		}
 		return;
 
@@ -853,7 +868,7 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 
 		/* Reconocer del todo baja la linea hacia el SH-4. */
 		if (!(reg16(AICA_MCIPD) & reg16(AICA_MCIEB) & AICA_INT_TODAS))
-			intc_remove_ext(ASIC_EVT_EXT_AICA);
+			aica_linea_asic = 0;
 		return;
 
 	case AICA_ARMRST:
@@ -949,7 +964,10 @@ static DWORD leer_registro(unsigned long off, int del_arm)
 	if (!del_arm && perf_activa)
 	{
 		if (registro_vivo(off))
+		{
 			perf_aica_reg_vivo++;
+			perf_marcar_sync();
+		}
 		else
 			perf_aica_reg_plano++;
 	}
@@ -1110,39 +1128,64 @@ void aica_arm_escribir(unsigned long offset, int tam, DWORD valor)
 	desbordaria un entero de 64 bits, aunque recien a los cuatro anos de tiempo
 	emulado.
 */
-static unsigned long long muestras_hasta_ahora(void)
+static unsigned long long muestras_hasta(unsigned long long reloj)
 {
-	return reloj_total / AICA_CICLOS_POR_TRAMO * AICA_MUESTRAS_POR_TRAMO
-	     + (reloj_total % AICA_CICLOS_POR_TRAMO) * AICA_MUESTRAS_POR_TRAMO
+	return reloj / AICA_CICLOS_POR_TRAMO * AICA_MUESTRAS_POR_TRAMO
+	     + (reloj % AICA_CICLOS_POR_TRAMO) * AICA_MUESTRAS_POR_TRAMO
 	       / AICA_CICLOS_POR_TRAMO;
 }
 
-void aica_tick(void)
+static unsigned long long muestras_hasta_ahora(void)
 {
-	unsigned long long objetivo = muestras_hasta_ahora();
+	return muestras_hasta(reloj_total);
+}
+
+/* La inversa: en que ciclo cae la muestra numero m. La necesita el hilo del
+   AICA para decir hasta donde llego cuando avanza de a una. */
+unsigned long long aica_reloj_de_muestra(unsigned long long m)
+{
+	return m / AICA_MUESTRAS_POR_TRAMO * AICA_CICLOS_POR_TRAMO
+	     + (m % AICA_MUESTRAS_POR_TRAMO) * AICA_CICLOS_POR_TRAMO
+	       / AICA_MUESTRAS_POR_TRAMO;
+}
+
+unsigned long long aica_muestras_hechas(void)
+{
+	return aica_muestras;
+}
+
+/*
+	El cuerpo, contra un reloj cualquiera y con un tope de muestras por vuelta.
+
+	El reloj es parametro porque el hilo del AICA no avanza hasta reloj_total
+	sino hasta el objetivo que le fijaron, que nunca va adelante de reloj_total.
+	Y el tope es parametro porque ese hilo avanza de a una muestra: asi el SH-4
+	nunca espera mas que una muestra cuando pide un alcance.
+
+	A diferencia de aica_tick(), **no descarta nada**: avanza la marca solo por
+	lo que efectivamente hizo. Descartar es lo correcto cuando el emulador
+	estuvo detenido, no cuando alguien pide de a poco.
+*/
+unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope)
+{
+	unsigned long long objetivo = muestras_hasta(reloj);
 	unsigned long long faltan;
 
-	/* --sin-aica: ni el ARM, ni los canales, ni los temporizadores. Existe
-	   porque a partir de la fase 3 el ARM corre en **todas** las demos, no
-	   solo en las de sonido, y hace falta poder aislar una regresion. */
 	if (opciones.sin_aica)
 	{
 		aica_muestras = objetivo;
-		return;
+		return reloj;
 	}
 
 	if (objetivo <= aica_muestras)
-		return;
+		return reloj;
 
 	faltan = objetivo - aica_muestras;
 
-	/* La marca salta hasta el objetivo pase lo que pase: si se acumulara deuda
-	   el chip se quedaria atras para siempre. Lo que se acota es cuanto se
-	   simula de una vez, por si el emulador estuvo detenido mucho rato. */
-	aica_muestras = objetivo;
+	if (faltan > tope)
+		faltan = tope;
 
-	if (faltan > AICA_MUESTRAS_MAX)
-		faltan = AICA_MUESTRAS_MAX;
+	aica_muestras += faltan;
 
 	timers_avanzar((unsigned) faltan);
 
@@ -1167,6 +1210,31 @@ void aica_tick(void)
 
 		PERF_SUMAR(t1, perf_ns_arm);
 	}
+
+	return aica_reloj_de_muestra(aica_muestras);
+}
+
+/*
+	El camino de siempre, de un solo hilo: avanzar hasta reloj_total.
+
+	Conserva la semantica que tenia: si quedo muy atras --el emulador estuvo
+	detenido en el depurador-- se descarta lo que no se va a simular en vez de
+	acumular deuda, porque si no el chip se queda atras para siempre. Descartar
+	primero y despues avanzar es exactamente lo que hacia poner la marca en el
+	objetivo antes de acotar `faltan`.
+*/
+void aica_tick(void)
+{
+	if (!opciones.sin_aica)
+	{
+		unsigned long long objetivo = muestras_hasta_ahora();
+
+		if (objetivo > aica_muestras
+		 && objetivo - aica_muestras > AICA_MUESTRAS_MAX)
+			aica_muestras = objetivo - AICA_MUESTRAS_MAX;
+	}
+
+	aica_tick_hasta(reloj_total, AICA_MUESTRAS_MAX);
 }
 
 int aica_arm_en_reset(void)

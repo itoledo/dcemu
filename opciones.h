@@ -72,6 +72,16 @@ struct opciones_t
 	int				sin_audio;		/* 1: no abrir la tarjeta de sonido */
 	int				sin_aica;		/* 1: no emular el AICA en absoluto */
 
+	/* 1: sacar el AICA y el ARM7 a su propio hilo (hilo_aica.c).
+
+	   **Apagado por omision, y no por precaucion sino por medicion**: cuesta
+	   entre un 4 y un 5 % de tiempo real en vez de ganarlo. La salida sale bit
+	   a bit identica, el protocolo funciona y el SH-4 solo pasa un 0,4 % del
+	   tiempo esperando; lo que no cierra es que el mismo trabajo del AICA sale
+	   un 46 % mas caro en el segundo hilo y el interprete del primero se
+	   frena un 20 %. Ver docs/hilos-plan.md, "Resultado de la fase 1". */
+	int				hilos;
+
 	/* Watchpoint de escritura: direccion (0 = apagado) y tamano en bytes.
 	   Ver options.h. */
 	unsigned long	watchpoint;

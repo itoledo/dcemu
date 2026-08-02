@@ -48,6 +48,42 @@ extern unsigned long long perf_ns_ta;			/* ta_procesar_bloque() por store queue 
 extern unsigned long long perf_arm_pasos;
 extern unsigned long long perf_arm_ocioso;
 
+/* El glReadPixels de --captura-gl, para poder descontarlo. */
+extern unsigned long long perf_ns_captura;
+
+/*
+	Cuanta geometria trajo cada escena. Es el dato que dice si lo que se esta
+	midiendo es una pantalla de menu o el juego: CLAUDE.md reporta ~2600 tiras
+	por escena en el atractivo de Crazy Taxi, y un menu trae dos ordenes de
+	magnitud menos. Sin esto, un desglose donde el PVR no pesa no se puede
+	interpretar.
+*/
+extern unsigned long long perf_escenas;
+extern unsigned long long perf_tiras;
+extern unsigned long      perf_tiras_max;
+
+/*
+	Los alcances de verdad, que no son los accesos.
+
+	En el diseno de la fase 1 de docs/hilos-plan.md el hilo principal espera al
+	del AICA solo si este quedo atras, y su objetivo se fija con reloj_total. O
+	sea que varios accesos dentro del **mismo instante emulado** -- una rafaga
+	de DMA, un memcpy a la RAM de onda -- cuestan una sola espera: a partir de
+	la segunda, el AICA ya esta al dia.
+
+	Contar accesos, entonces, sobreestima. Lo que decide si la fase sirve es
+	cuantos instantes distintos hay, y esa es la unica cifra honesta.
+*/
+extern unsigned long long perf_sync_instantes;
+
+/* Tiempo real que el SH-4 paso bloqueado esperando al hilo del AICA. Es el
+   precio de la fase 1 y hay que poder verlo al lado de su beneficio. */
+extern unsigned long long perf_ns_espera;
+
+void perf_marcar_sync(void);
+
+#define PERF_SYNC()		do { if (perf_activa) perf_marcar_sync(); } while (0)
+
 /*
 	Los accesos del SH-4 al estado del AICA. En el diseno de la fase 1 de
 	docs/hilos-plan.md cada uno de estos obliga al hilo del AICA a ponerse al
@@ -86,11 +122,15 @@ void perf_resumen(void);
 	El sesgo del muestreo es despreciable con 160 mil muestras; el de medirlo
 	todo, no.
 */
-#define PERF_MUESTREO		1024
+/* Primo a proposito. Con 1024 y un publicador que actuaba una de cada 64
+   entradas, **toda** entrada muestreada caia sobre una que publicaba: el
+   bloque periodico llego a informar 281 % del tiempo real. Un periodo que no
+   comparta factores con nada del bucle no se puede sincronizar con el. */
+#define PERF_MUESTREO		1021
 
 #define PERF_MARCA_MUESTRA(v, n)										\
 	static unsigned long n = 0;											\
-	int v##_va = perf_activa && ((++n & (PERF_MUESTREO - 1)) == 0);		\
+	int v##_va = perf_activa && ((++n % PERF_MUESTREO) == 0);			\
 	unsigned long long v = v##_va ? perf_ahora() : 0
 
 #define PERF_SUMAR_MUESTRA(v, ac)										\

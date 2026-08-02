@@ -101,6 +101,8 @@ set(DCEMU_SOURCES
 	opciones.c
 	opcodes.c
 	perf.c
+	hilo.c
+	hilo_aica.c
 	reg.c
 	scramble.c
 	sh4emu.c

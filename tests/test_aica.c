@@ -275,24 +275,32 @@ static void una_fuente_sin_mascara_sigue_pendiente(void)
 
 static void la_interrupcion_al_sh4_sale_por_el_asic(void)
 {
-	/* G2AICINT es el bit 1 del registro externo, junto al fin de comando de la
-	   lectora (ASIC_EVT_SPU_IRQ = 0x0101 en asic.h de KOS). */
-	int antes;
+	/*
+		G2AICINT es el bit 1 del registro externo, junto al fin de comando de la
+		lectora (ASIC_EVT_SPU_IRQ = 0x0101 en asic.h de KOS).
 
+		**El chip levanta una linea de nivel; no entrega la interrupcion.** Antes
+		llamaba a intc_add_ext() en el acto y esta prueba contaba esas llamadas.
+		Con el AICA en su propio hilo (hilo_aica.c) esa llamada ocurriria fuera
+		del hilo que atiende el ASIC, y toca tanto intc_queuemask_ext como el
+		registro ASIC_ACK_B; ahora el chip deja aica_linea_asic y la cobra
+		main_loop(), que es donde vive el controlador. Lo que se prueba aqui es
+		la linea, que es lo que el chip hace.
+	*/
 	reiniciar();
 
 	escribir_g2(AICA_MCIEB, AICA_INT_TIMER_A);
 	escribir_g2(AICA_TIMER_A, 0xFF);
 
-	antes = dobles_int_ext;
+	ESPERAR_I32(aica_linea_asic, 0);
+
 	avanzar_muestras(1);
 
-	ESPERAR_I32(dobles_int_ext, antes + 1);
-	ESPERAR_U32(dobles_ultima_int_ext, ASIC_EVT_EXT_AICA);
+	ESPERAR_I32(aica_linea_asic, 1);
 
 	/* Y reconocer con MCIRE la baja. */
 	escribir_g2(AICA_MCIRE, AICA_INT_TODAS);
-	ESPERAR_U32(intc_queuemask_ext & ASIC_EVT_EXT_AICA, 0);
+	ESPERAR_I32(aica_linea_asic, 0);
 }
 
 /* ------------------------------------------------------------------------ */

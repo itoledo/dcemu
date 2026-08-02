@@ -13,6 +13,7 @@
 #include "sistema.h"
 #include "traza.h"
 #include "perf.h"
+#include "hilo_aica.h"
 #include "mmu.h"
 #include "wdt.h"
 #include "tmu.h"
@@ -1002,17 +1003,26 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 			}
 
 			// RAM de sonido: 2 MB en 0x00800000. Estaba reservada y sin mapear.
+			/* La RAM de onda y los registros del AICA los comparte el hilo del
+			   AICA (hilo_aica.c). entrar() espera a que ese hilo llegue a este
+			   mismo reloj_total y lo deja detenido mientras dura el acceso, de
+			   modo que lo que se lee es lo que habria en un solo hilo. Sin el
+			   hilo, los dos son nada. */
 			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
 			{
-				PERF_CONTAR(perf_onda_lect);
+				PERF_CONTAR(perf_onda_lect); PERF_SYNC();
+				hilo_aica_entrar();
 				memcpy(p, &sound_mem[fisica - SOUND_BASE], size);
+				hilo_aica_salir();
 				break;
 			}
 
 			// Registros del AICA. Ver aica.h.
 			if (AICA_ES_REGISTRO(fisica))
 			{
+				hilo_aica_entrar();
 				aica_leer(direccion, p, size);
+				hilo_aica_salir();
 				break;
 			}
 
@@ -2071,16 +2081,20 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			// era un parche que tapaba justo esto.
 			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
 			{
-				PERF_CONTAR(perf_onda_escr);
+				PERF_CONTAR(perf_onda_escr); PERF_SYNC();
+				hilo_aica_entrar();
 				memcpy(&sound_mem[fisica - SOUND_BASE], p, size);
+				hilo_aica_salir();
 				SET_BIT(G2_FIFO, AICA_FIFO);
 				break;
 			}
 
 			if (AICA_ES_REGISTRO(fisica))
 			{
-				PERF_CONTAR(perf_aica_reg_escr);
+				PERF_CONTAR(perf_aica_reg_escr); PERF_SYNC();
+				hilo_aica_entrar();
 				aica_escribir(direccion, p, size);
+				hilo_aica_salir();
 				break;
 			}
 

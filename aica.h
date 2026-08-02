@@ -133,6 +133,29 @@ void  aica_arm_escribir(unsigned long offset, int tam, DWORD valor);
 */
 void aica_tick(void);
 
+/*
+	Lo mismo pero contra un reloj cualquiera y con un tope de muestras por
+	vuelta. Es lo que usa el hilo del AICA (hilo_aica.c), que avanza hasta el
+	objetivo que le fijaron -- nunca adelante de reloj_total -- y de a una
+	muestra, para que el SH-4 nunca espere mas que eso cuando pide un alcance.
+
+	No descarta nada: avanza la marca solo por lo que hizo. Devuelve el ciclo
+	hasta el que efectivamente llego.
+*/
+unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope);
+
+/* En que ciclo cae la muestra numero m, y cuantas lleva hechas el chip. */
+unsigned long long aica_reloj_de_muestra(unsigned long long m);
+unsigned long long aica_muestras_hechas(void);
+
+/*
+	La linea del AICA hacia el ASIC (G2AICINT, bit 1 de SB_ISTEXT). El chip la
+	sube y la baja; **la entrega la hace quien atienda el ASIC**, no aqui, para
+	que el hilo del AICA no toque ni intc_queuemask_ext ni ASIC_ACK_B. Un
+	escritor y un lector, como el anillo aica_salida[].
+*/
+extern volatile int aica_linea_asic;
+
 /* 1 mientras el ARM esta en reset (ARMRST bit 0). */
 int aica_arm_en_reset(void);
 

@@ -31,6 +31,7 @@ struct opciones_t opciones =
 	NULL,				/* captura_audio */
 	0,					/* sin_audio */
 	0,					/* sin_aica */
+	0,					/* hilos: apagado por omision, ver opciones.h */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
 	0,					/* watchpoint_lect: apagado */
@@ -67,6 +68,8 @@ void opciones_ayuda(const char * programa)
 		"                        emula, y --captura-audio sigue funcionando.\n"
 		"  --sin-aica            no emular el AICA: ni el ARM, ni los canales, ni\n"
 		"                        los temporizadores. Para aislar una regresion.\n"
+		"  --hilos               sacar el AICA y el ARM7 a su propio hilo. Hoy es\n"
+		"                        mas lento; ver docs/hilos-plan.md.\n"
 		"  --perf                al salir, desglosa en que se fue el tiempo real y\n"
 		"                        cuantas veces el SH-4 toco el estado del AICA.\n"
 		"  --traza-desde=PC[:N[:K]]\n"
@@ -231,6 +234,11 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-aica") == 0)
 		{
 			opciones.sin_aica = 1;
+		}
+		else
+		if (strcmp(arg, "--hilos") == 0)
+		{
+			opciones.hilos = 1;
 		}
 		else
 		if (strcmp(arg, "--perf") == 0)

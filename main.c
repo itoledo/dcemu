@@ -32,6 +32,7 @@
 #include "sistema.h"
 #include "traza.h"
 #include "perf.h"
+#include "hilo_aica.h"
 #include "ubc.h"
 #include "wdt.h"
 #include "tmu.h"
@@ -493,7 +494,30 @@ void main_loop(void)
 				// El AICA no recibe ciclos: compara contra su propia marca de
 				// reloj_total, porque su reloj es otro -- 44100 Hz de muestreo
 				// y 22,5792 MHz de bloque de audio. Ver aica.h.
-				aica_tick();
+				//
+				// Con el hilo del AICA esto solo adelanta su objetivo y no
+				// espera a nadie; sin el, es el aica_tick() de siempre. Ver
+				// docs/hilos-plan.md, fase 1.
+				hilo_aica_publicar();
+
+				// Y la linea del AICA hacia el ASIC. El chip solo la sube y la
+				// baja (aica_linea_asic); la entrega va aqui, que es el hilo
+				// donde vive el controlador de interrupciones. Sin hilos esto
+				// corre dos lineas despues del tick y no cambia nada.
+				{
+					static int ultima = 0;
+					int ahora = aica_linea_asic;
+
+					if (ahora != ultima)
+					{
+						ultima = ahora;
+
+						if (ahora)
+							intc_add_ext(ASIC_EVT_EXT_AICA);
+						else
+							intc_remove_ext(ASIC_EVT_EXT_AICA);
+					}
+				}
 
 				// Y aca se entrega la que corresponda, si SR lo permite. Si no
 				// se puede, la bandera sigue puesta y se reintenta en la vuelta
@@ -1477,7 +1501,14 @@ int main(int argc, char *argv[])
 
 	perf_inicio();
 
+	/* El AICA y el ARM7 a su propio hilo. Va justo antes del bucle: hasta aqui
+	   el arranque escribe RAM de onda y registros del AICA sin competencia. */
+	hilo_aica_iniciar();
+
 	main_loop();
+
+	/* Y se para antes de guardar nada: el hilo toca RAM de onda. */
+	hilo_aica_terminar();
 
 	/* Lo que el guest escribio en la flash -- la fecha, el idioma, los ajustes
 	   de juegos -- vuelve al archivo. Sin esto la BIOS pide la hora en cada
