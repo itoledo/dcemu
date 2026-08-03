@@ -1620,6 +1620,7 @@ int main(int argc, char *argv[])
 	#endif
 
 	perf_inicio();
+	arm7_perfil_inicio();
 
 	/* El AICA y el ARM7 a su propio hilo. Va justo antes del bucle: hasta aqui
 	   el arranque escribe RAM de onda y registros del AICA sin competencia. */
@@ -1639,6 +1640,7 @@ int main(int argc, char *argv[])
 
 	traza_resumen();
 	perf_resumen();
+	arm7_perfil_resumen();
 
 //	SDL_RemoveTimer(timer_id);
 //	SDL_RemoveTimer(vblank_id);

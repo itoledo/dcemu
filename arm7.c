@@ -16,6 +16,7 @@
 *****************************************************************************/
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "main.h"			/* solo por los tipos; no se enlaza nada de SDL */
@@ -45,6 +46,76 @@ struct arm7_estado arm7;
 */
 #define ARM7_BUS	0x00FFFFFFu
 
+/*
+	La palabra alineada, de una sola vez.
+
+	Esto se armaba byte a byte --cuatro cargas, tres desplazamientos y tres
+	OR-- por independencia del orden de bytes del anfitrion, y se paga en CADA
+	instruccion: la busqueda pasa por aqui, y son dos mil millones de pasos en
+	una corrida de tres minutos (medido: 18 141 ms, el 15,2 % del tiempo real).
+
+	El ARM es little-endian y los anfitriones de este arbol tambien --x86 y
+	ARM64--; el resto del arbol ya depende de eso en varios lugares (mem.c,
+	los decodificadores de textura de graficos.c). Va por memcpy y no por un
+	puntero convertido: MSVC y GCC lo compilan a un solo mov y no apoya nada en
+	las reglas de aliasing que /O2 si usa, que es exactamente la salida limpia
+	que pide docs/msvc-build-plan.md para el type-punning del arbol.
+*/
+/*
+	DCEMU_ARM_POR_BYTES=1 vuelve al armado byte a byte. Es una sonda de
+	medicion, no una opcion: existe para poder alternar las dos formas en el
+	MISMO binario y en la misma tanda, que es la unica comparacion que resiste
+	el ruido de esta maquina --perf_ns_arm varia un 10 % entre corridas
+	identicas, asi que una corrida contra otra de otro binario no decide nada--.
+
+	Los dos caminos pagan la misma rama, o sea que la diferencia medida
+	subestima la ganancia real en lo que cueste esa rama. Mejor eso que un A/B
+	entre binarios que uno no puede demostrar que sean distintos.
+*/
+static int arm7_por_bytes = 0;		/* el camino rapido es el de por omision */
+
+static void arm7_forma_de_acceso(void)
+{
+	const char * e = getenv("DCEMU_ARM_POR_BYTES");
+
+	arm7_por_bytes = (e != NULL && atoi(e) != 0);
+}
+
+static DWORD onda_leer32(DWORD a)
+{
+	a &= ~3u;
+
+	if (arm7_por_bytes)
+		return (DWORD) (sound_mem[a]
+		              | (sound_mem[a + 1] << 8)
+		              | (sound_mem[a + 2] << 16)
+		              | ((DWORD) sound_mem[a + 3] << 24));
+
+	{
+		DWORD v;
+
+		memcpy(&v, sound_mem + a, sizeof(v));
+
+		return v;
+	}
+}
+
+static DWORD onda_leer16(DWORD a)
+{
+	a &= ~1u;
+
+	if (arm7_por_bytes)
+		return (DWORD) (sound_mem[a] | (sound_mem[a + 1] << 8));
+
+	{
+		Uint16 v;
+
+		memcpy(&v, sound_mem + a, sizeof(v));
+
+		return v;
+	}
+}
+
 DWORD arm7_leer(DWORD direccion, int tam)
 {
 	direccion &= ARM7_BUS;
@@ -58,14 +129,8 @@ DWORD arm7_leer(DWORD direccion, int tam)
 		switch (tam)
 		{
 		case 1:		return sound_mem[a];
-		case 2:		return (DWORD) (sound_mem[a & ~1u]
-					              | (sound_mem[(a & ~1u) + 1] << 8));
-		default:
-			a &= ~3u;
-			return (DWORD) (sound_mem[a]
-			              | (sound_mem[a + 1] << 8)
-			              | (sound_mem[a + 2] << 16)
-			              | ((DWORD) sound_mem[a + 3] << 24));
+		case 2:		return onda_leer16(a);
+		default:	return onda_leer32(a);
 		}
 	}
 }
@@ -91,16 +156,32 @@ void arm7_escribir(DWORD direccion, int tam, DWORD valor)
 
 		case 2:
 			a &= ~1u;
-			sound_mem[a]     = (unsigned char) valor;
-			sound_mem[a + 1] = (unsigned char) (valor >> 8);
+
+			if (arm7_por_bytes)
+			{
+				sound_mem[a]     = (unsigned char) valor;
+				sound_mem[a + 1] = (unsigned char) (valor >> 8);
+			}
+			else
+			{
+				Uint16 v = (Uint16) valor;
+
+				memcpy(sound_mem + a, &v, sizeof(v));
+			}
 			break;
 
 		default:
 			a &= ~3u;
-			sound_mem[a]     = (unsigned char) valor;
-			sound_mem[a + 1] = (unsigned char) (valor >> 8);
-			sound_mem[a + 2] = (unsigned char) (valor >> 16);
-			sound_mem[a + 3] = (unsigned char) (valor >> 24);
+
+			if (arm7_por_bytes)
+			{
+				sound_mem[a]     = (unsigned char) valor;
+				sound_mem[a + 1] = (unsigned char) (valor >> 8);
+				sound_mem[a + 2] = (unsigned char) (valor >> 16);
+				sound_mem[a + 3] = (unsigned char) (valor >> 24);
+			}
+			else
+				memcpy(sound_mem + a, &valor, sizeof(valor));
 			break;
 		}
 	}
@@ -875,6 +956,118 @@ int arm7_fila_usada(int i)				{ return arm7_usada[i]; }
 const char * arm7_fila_nombre(int i)	{ return filas[i].nombre; }
 
 /* ------------------------------------------------------------------------ */
+/* Perfil (ver arm7.h)                                                       */
+/* ------------------------------------------------------------------------ */
+
+int arm7_perfil = 0;
+
+/* Una cuenta por palabra de los 2 MB de RAM de onda. Es donde vive el codigo
+   del ARM; lo que caiga en la ventana de registros --que no es codigo-- se
+   pliega sobre el mismo arreglo y se ve como tal en el volcado. */
+#define ARM7_PERFIL_PCS		(AICA_ONDA_SIZE / 4)
+
+static unsigned int *		arm7_perfil_pc;
+static unsigned long long	arm7_perfil_fila[ARM7_FILAS < 64 ? 64 : ARM7_FILAS];
+static unsigned long long	arm7_perfil_pasos;
+
+void arm7_perfil_inicio(void)
+{
+	const char * e = getenv("DCEMU_PERFIL_ARM");
+
+	/* De paso, la otra sonda: se lee una vez, en el mismo lugar. */
+	arm7_forma_de_acceso();
+
+	if (e == NULL || atoi(e) == 0)
+		return;
+
+	arm7_perfil_pc = (unsigned int *)
+		calloc(ARM7_PERFIL_PCS, sizeof(unsigned int));
+
+	/* Sin el arreglo no se enciende: mejor no medir que medir a medias. */
+	arm7_perfil = (arm7_perfil_pc != NULL);
+}
+
+void arm7_perfil_resumen(void)
+{
+	int i, j;
+
+	if (!arm7_perfil || arm7_perfil_pasos == 0)
+		return;
+
+	fprintf(stderr, "\narm7: %llu pasos con perfil\n", arm7_perfil_pasos);
+
+	fprintf(stderr, "arm7: por fila de la tabla de despacho\n");
+
+	for (i = 0; i < ARM7_FILAS; i++)
+		if (arm7_perfil_fila[i])
+			fprintf(stderr, "arm7:   %-14s %12llu  %5.1f %%\n",
+				filas[i].nombre, arm7_perfil_fila[i],
+				100.0 * (double) arm7_perfil_fila[i]
+				      / (double) arm7_perfil_pasos);
+
+	/*
+		Las veinte direcciones mas ejecutadas. Es la cifra que decide el rumbo:
+		si unas pocas se llevan casi todo, el ARM esta en un lazo y lo que hay
+		que hacer es no ejecutarlo; si el peso esta repartido, hay que acelerar
+		el interprete.
+	*/
+	fprintf(stderr, "arm7: las 20 direcciones mas ejecutadas\n");
+
+	for (j = 0; j < 20; j++)
+	{
+		unsigned int	mejor = 0;
+		int				donde = -1;
+
+		for (i = 0; i < ARM7_PERFIL_PCS; i++)
+			if (arm7_perfil_pc[i] > mejor)
+			{
+				mejor = arm7_perfil_pc[i];
+				donde = i;
+			}
+
+		if (donde < 0)
+			break;
+
+		{
+			DWORD dir = (DWORD) donde * 4;
+			DWORD op  = arm7_leer(dir, 4);
+			int   fil = arm7_opfila[ARM7_INDICE(op)];
+
+			fprintf(stderr, "arm7:   %06lx  %10u  %5.1f %%  %08lx  %s\n",
+				(unsigned long) dir, mejor,
+				100.0 * (double) mejor / (double) arm7_perfil_pasos,
+				(unsigned long) op,
+				(fil >= 0) ? filas[fil].nombre : "?");
+		}
+
+		arm7_perfil_pc[donde] = 0;		/* para que la vuelta siguiente vea otra */
+	}
+
+	/*
+		Cuantas direcciones distintas concentran la mitad de los pasos. Una
+		cifra sola que separa "lazo" de "programa": con el histograma ya
+		gastado por el volcado de arriba no se puede, asi que se cuenta antes
+		de imprimir nada... y por eso se recorre aqui sobre lo que quedo, que
+		sigue sirviendo para la cola.
+	*/
+	{
+		unsigned long long resto = 0;
+		int distintas = 0;
+
+		for (i = 0; i < ARM7_PERFIL_PCS; i++)
+			if (arm7_perfil_pc[i])
+			{
+				resto += arm7_perfil_pc[i];
+				distintas++;
+			}
+
+		fprintf(stderr, "arm7: %d direcciones distintas fuera de las 20, "
+			"%llu pasos (%.1f %%)\n", distintas, resto,
+			100.0 * (double) resto / (double) arm7_perfil_pasos);
+	}
+}
+
+/* ------------------------------------------------------------------------ */
 /* Ejecucion                                                                */
 /* ------------------------------------------------------------------------ */
 
@@ -909,6 +1102,24 @@ int arm7_paso(void)
 
 	op = arm7_leer(arm7.r[15], 4);
 	arm7.instrucciones++;
+
+	if (arm7_perfil)
+	{
+		DWORD p = (arm7.r[15] & ARM7_BUS) >> 2;
+
+		arm7_perfil_pc[p % ARM7_PERFIL_PCS]++;
+		arm7_perfil_pasos++;
+
+		{
+			int f = arm7_opfila[ARM7_INDICE(op)];
+
+			/* Se cuenta la fila de lo que se FUE a ejecutar, aunque la
+			   condicion despues lo descarte: una instruccion que no se cumple
+			   igual se busco y se decodifico. */
+			if (f >= 0)
+				arm7_perfil_fila[f]++;
+		}
+	}
 
 	/*
 		AL --el campo de condicion en 0xE, "siempre"-- se atiende aqui y no en
@@ -952,14 +1163,24 @@ void arm7_ejecutar(long ciclos)
 
 	arm7.ciclos += ciclos;
 
-	while (arm7.ciclos > 0)
+	/*
+		Los dos lazos estan separados a proposito: la prueba de perf_activa
+		estaba ADENTRO, o sea una rama por cada uno de los dos mil millones de
+		pasos, por un instrumento que en una corrida normal esta apagado.
+	*/
+	if (perf_activa)
 	{
-		if (perf_activa)
+		while (arm7.ciclos > 0)
 		{
 			/* Un salto a si mismo deja el PC donde estaba: es la forma que
 			   tiene el ARM de esperar, y la que spu_init() de KOS deja puesta
-			   en la direccion 0. Si domina, lo que hay que hacer no es mover
-			   el ARM de hilo sino no ejecutarlo. */
+			   en la direccion 0.
+
+			   **Cero aqui no significa que el ARM trabaje**, y eso ya
+			   confundio una vez: contra un juego da 0,0 % mientras la mitad de
+			   los pasos se van en dos lazos de sondeo de cuatro y seis
+			   instrucciones, que no mueven esta cifra y son igual de
+			   salteables. Para eso esta DCEMU_PERFIL_ARM; ver arm7.h. */
 			DWORD antes = arm7.r[15];
 
 			arm7.ciclos -= arm7_paso();
@@ -968,10 +1189,11 @@ void arm7_ejecutar(long ciclos)
 
 			if (arm7.r[15] == antes)
 				perf_arm_ocioso++;
-
-			continue;
 		}
 
-		arm7.ciclos -= arm7_paso();
+		return;
 	}
+
+	while (arm7.ciclos > 0)
+		arm7.ciclos -= arm7_paso();
 }

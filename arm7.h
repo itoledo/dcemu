@@ -91,6 +91,30 @@ struct arm7_estado
 
 extern struct arm7_estado arm7;
 
+/*
+	El perfil del propio ARM, con DCEMU_PERFIL_ARM=1 en el ambiente.
+
+	Existe porque la unica cifra que habia --perf_arm_ocioso-- contesta una
+	pregunta demasiado estrecha: detecta el salto a si mismo, que es como espera
+	el firmware de KOS, y da cero contra un juego. Cero ahi no significa "esta
+	trabajando": significa "no espera de ESA forma". Un lazo de tres
+	instrucciones sondeando un registro tampoco mueve esa cifra y es igual de
+	saltable.
+
+	Lo que hace falta para decidir entre acelerar el interprete y no ejecutarlo
+	es saber **donde** esta el PC y **que** ejecuta. Dos histogramas: uno por
+	direccion (que dice si unas pocas concentran todo, o sea un lazo) y otro por
+	fila de la tabla de despacho (que dice si el peso esta en el acceso a
+	memoria, en la ALU o en los saltos).
+
+	Apagado no cuesta nada: una comparacion contra cero por paso, la misma clase
+	que el resto de los instrumentos del arbol.
+*/
+extern int arm7_perfil;
+
+void arm7_perfil_inicio(void);
+void arm7_perfil_resumen(void);
+
 /* Construye la tabla de despacho. Se llama una vez, como initopcodes(). */
 void arm7_init(void);
 

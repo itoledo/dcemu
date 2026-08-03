@@ -1700,6 +1700,24 @@ out the further from the base note, and they don't. No KOS demo gives that check
 of them plays a chord. Eight samples out of 1.4 million touch the rail, so the mixer is not
 saturating either.
 
+**The ARM7 is the biggest single cost in the emulator after the SH-4 interpreter — 14-15% of
+a run — and roughly half of it is the guest polling.** Measured on Crazy Taxi in motion:
+2 161 263 641 ARM steps in ~18 000 ms, i.e. 8.3 ns each. **`perf_arm_ocioso`'s 0.0% is a
+blind spot, not good news**: it only detects the branch-to-itself that KOS's `spu_init()`
+leaves at address 0, and a game's driver waits a different way. **`DCEMU_PERFIL_ARM=1`**
+(`arm7.h`) adds the two histograms that answer it — by address and by dispatch-table row.
+Against Crazy Taxi the top 20 addresses take **51.8%** of all steps and they are *three
+loops*: a scan over 48-byte records at `0x6294` whose body never once executes in a whole
+run (26%), a 64-entry scan testing bit 7 at `0x0a04` that finds work 4.5% of the time (20%),
+and a third at `0x09d4` (3%). A quarter of all instructions are branches; `MRS` and `MSR`
+come out with the *same* count, which is a critical section entered 36 million times.
+**LTCG (`-DDCEMU_LTCG=ON`, off by default) is worth 10.0% of the ARM and 1.4% of the run** —
+almost all of it in the ARM, because `arm7.c` calls `aica_fiq_pendiente()` in `aica.c` on
+every instruction; the SH-4 interpreter barely moves, which contradicts what
+`rendimiento-plan.md` expected of it. Validated: 20/20 suites, SingleStepTests 113 191 ok /
+0 fail **identical to the non-LTCG build**, same capture hash. Not validated: the 150-demo
+sweep. `docs/arm7-plan.md` has the numbers and the three routes.
+
 **What is not emulated**: CDDA, the audio DSP, the LFO, the FEG filter (the paper says how to
 leave it pass-through: `Q = 4`, `FLV = 0x1FF8`, and KOS's firmware simply turns it off) and the
 sample-interval interrupt. `docs/aica-plan.md`, "Lo que sigue faltando", has the detail —

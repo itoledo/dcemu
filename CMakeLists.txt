@@ -33,6 +33,19 @@ option(DCEMU_BUILD_TESTS "Compilar las pruebas unitarias de opcodes (tests/)" ON
 # la misma tanda, y para eso tienen que poder existir a la vez.
 option(DCEMU_DESPACHO_COMPACTO "Despachar por indice de 16 bits en vez de por puntero" OFF)
 
+# Optimizacion de todo el programa (/GL al compilar, /LTCG al enlazar). Es la
+# fase 1.2 de docs/rendimiento-plan.md y aqui importa mas de lo normal: este
+# arbol tiene los bucles calientes en una unidad de traduccion y las funciones
+# que llaman en otra --arm7.c llama a aica_fiq_pendiente() de aica.c en CADA
+# instruccion del ARM, y main.c despacha a los manejadores de mov.c, arith.c,
+# logic.c...--, asi que sin esto el compilador no puede inlinear ninguna.
+#
+# Es una opcion y no un flag fijo por la misma razon que el despacho compacto:
+# lo que decide es alternar los dos binarios en la misma tanda, y para eso
+# tienen que poder existir a la vez. Las barandas para validarlo son las de
+# siempre --las 21 suites, SingleStepTests bit a bit, el barrido de 150 demos--.
+option(DCEMU_LTCG "Optimizacion de todo el programa (/GL + /LTCG) en Release" OFF)
+
 # ---------------------------------------------------------------------------
 # SDL 1.2, via sdl12-compat
 #
@@ -169,6 +182,11 @@ endif()
 # tiene que ser el mismo que se mide.
 target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/Zi>)
 target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+
+if(DCEMU_LTCG)
+	target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/GL>)
+	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
 
 # glu32 y winmm estan en los makefiles pero no se usan: la unica llamada a GLU
 # esta comentada (graficos.c) y no hay ninguna a winmm.
