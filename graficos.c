@@ -1902,6 +1902,11 @@ static void juego_de_parametros(int juego)
 static int traza_rendidas = 0;
 static int traza_ultimas[TRAZA_ULTIMAS];
 
+/* Los TA_LIST_INIT que no presentaron por no traer nada registrado. Es la
+   medida del parpadeo: si sube parejo con las escenas, el guest inicializa el
+   TA dos veces por cuadro (Katana) y antes eso era un cuadro negro cada dos. */
+static long traza_inits_vacios = 0;
+
 void traza_ta_resumen(void)
 {
 	int i, desde, n;
@@ -1919,6 +1924,9 @@ void traza_ta_resumen(void)
 		fprintf(stderr, " %d", traza_ultimas[(desde + i) % TRAZA_ULTIMAS]);
 
 	fprintf(stderr, "\n");
+
+	fprintf(stderr, "traza: %ld TA_LIST_INIT sin nada registrado (no presentan)\n",
+		traza_inits_vacios);
 
 	/* Y por que ventana entro cada byte a la RAM de video. En el resumen y no
 	   solo en la traza de framebuffer, que una demo del PVR no dibuja por ahi
@@ -1950,6 +1958,52 @@ static void volcar_escena_a_framebuffer(void);
 
 void cb_tastart(DWORD addr, void * p, size_t size)
 {
+	/*
+		Un TA_LIST_INIT que llega sin nada registrado desde el anterior no
+		presenta nada.
+
+		En el chip TA_LIST_INIT no dibuja: solo deja al TA listo para recibir
+		un juego de listas nuevo, y el que dibuja es STARTRENDER. dcemu usa la
+		inicializacion como frontera de cuadro --las tiras acumuladas se
+		dibujan y se presentan ahi-- y eso funciona mientras haya un
+		TA_LIST_INIT por cuadro, que es lo que hace KOS. **Katana escribe
+		dos**, seguidos y sin geometria en medio: el primero presenta la
+		escena buena y el segundo limpiaba la pantalla y hacia swap con cero
+		tiras, o sea un cuadro negro. Medido en Capcom vs. SNK: 607
+		STARTRENDER contra 1216 TA_LIST_INIT en 12 s, y el conteo de tiras de
+		las escenas alternando 208, 0, 208, 0. La mitad de lo que se veia era
+		negro, y de ahi el parpadeo.
+
+		Inicializar un TA que no tiene nada registrado es una operacion nula
+		en el chip, asi que aca tambien lo es. El discriminante es
+		pvr_listdone --las listas terminadas desde la ultima
+		inicializacion-- y no strip_count: una escena deliberadamente vacia
+		igual abre y cierra su lista (abrir una y no mandar nada es un error
+		de hardware, por eso pvr_list_finish() de KOS manda siempre un
+		encabezado en blanco), asi que esa sigue presentandose y sigue
+		saliendo negra, que es lo que el guest pidio.
+
+		El boot ROM es justamente el que manda escenas vacias de verdad --sus
+		tiras salen 0 0 0 ... 21 0 con las listas abiertas y cerradas-- y esas
+		se siguen presentando: la comprobacion las deja pasar.
+
+		De lo que hace la inicializacion se conserva lo que le toca al TA: el
+		medio parametro de 64 bytes que haya quedado colgando y el puntero de
+		escritura del area ISP/TSP. Lo demas --limpiar, dibujar, presentar-- es
+		lo que no corresponde.
+	*/
+	if (pvr_listdone == 0 && strip_count == 0 && vol_count == 0)
+	{
+		DWORD base;
+
+		traza_inits_vacios++;		/* sale en el resumen, no por evento */
+		ta_reiniciar();
+
+		memread_fisico(0xa05f8128, &base, sizeof(DWORD));	/* TA_ISP_BASE */
+		memwrite_fisico(0xa05f8138, &base, sizeof(DWORD));	/* TA_ITP_CURRENT */
+		return;
+	}
+
 	if (traza_activa)
 	{
 		traza_ultimas[traza_rendidas % TRAZA_ULTIMAS] = (int) strip_count;
@@ -2840,6 +2894,32 @@ static int render_a_textura(void)
 	return 1;
 }
 
+/*
+	El nombre numerado de DCEMU_CAPTURA_TODAS.
+
+	El numero va delante del **nombre del archivo**, no delante de la ruta
+	entera: con "f%04d-%s" sobre una ruta absoluta sale "f0000-C:/tmp/f.bmp",
+	que no es una ruta de nada, y la captura falla en silencio salvo por una
+	linea en stderr.txt -- que es donde se pierde, porque nadie la mira cuando
+	lo que se esperaba era mirar los BMP. Costo una corrida entera de 480
+	cuadros que no se escribio.
+*/
+static void nombre_numerado(char * dst, size_t tam, const char * ruta, int nf)
+{
+	const char *	barra = strrchr(ruta, '/');
+	const char *	contra = strrchr(ruta, '\\');
+	const char *	base = ruta;
+
+	if (contra != NULL && (barra == NULL || contra > barra))
+		barra = contra;
+
+	if (barra != NULL)
+		base = barra + 1;
+
+	snprintf(dst, tam, "%.*sf%04d-%s",
+		(int) (base - ruta), ruta, nf, base);
+}
+
 /* La segunda mitad de cb_tastart(): presentar y dejar todo listo para la
    escena siguiente. */
 static void terminar_escena(void)
@@ -2860,9 +2940,9 @@ static void terminar_escena(void)
 		if (getenv("DCEMU_CAPTURA_TODAS"))
 		{
 			static int nf = 0;
-			char nom[128];
+			char nom[512];
 
-			snprintf(nom, sizeof(nom), "f%04d-%s", nf++, opciones.captura_gl);
+			nombre_numerado(nom, sizeof(nom), opciones.captura_gl, nf++);
 			volcar_gl(nom);
 		}
 		else
@@ -4559,9 +4639,9 @@ void capturar_gl_framebuffer(void)
 	if (getenv("DCEMU_CAPTURA_TODAS"))
 	{
 		static int	nf = 0;
-		char		nom[128];
+		char		nom[512];
 
-		snprintf(nom, sizeof(nom), "f%04d-%s", nf++, opciones.captura_gl);
+		nombre_numerado(nom, sizeof(nom), opciones.captura_gl, nf++);
 		volcar_gl(nom);
 	}
 	else

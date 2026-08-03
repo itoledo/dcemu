@@ -467,8 +467,12 @@ in `graficos.c`), so it shows what the guest drew rather than what GL rasterized
 `--captura-gl=ARCHIVO` does the same automatically before every swap, so the file holds the
 last frame when the emulator exits — pair it with `--salir-tras` and a sweep needs no window
 at all. With `DCEMU_CAPTURA_TODAS=1` in the environment every frame goes to its own
-numbered file (`f0000-ARCHIVO`, ...) instead of overwriting — it is how you inspect an
-animation frame by frame, and what let the boot ROM's intro be diagnosed.
+numbered file (`DIR/f0000-ARCHIVO`, ...) instead of overwriting — it is how you inspect an
+animation frame by frame, and what let the boot ROM's intro be diagnosed. **The number goes
+in front of the file name, not in front of the path**: it used to be `"f%04d-%s"` over the
+whole argument, so `--captura-gl=C:/tmp/f.bmp` produced `f0000-C:/tmp/f.bmp`, which is not a
+path to anything — 480 frames silently not written, with the only complaint in `stderr.txt`,
+which is precisely where nobody looks when what they were going to look at is the BMPs.
 
 **It reads the window, which is 800×600, not the emulated 640×480 — and getting that wrong
 invalidated a whole sweep.** `screeninit()` stretches the guest's 640×480 over the entire window
@@ -924,6 +928,23 @@ own STARTRENDER and the event arrived either way — the GL draw still happens a
 `TA_LIST_INIT`, which presents the accumulated scene) but Windows CE's ddraw does: it got a
 "render finished" it never asked for, before its first vertex, and its interrupt state
 machine derailed. Only the EVENT timing moved; the render pipeline is unchanged.
+
+**A `TA_LIST_INIT` that arrives with nothing registered since the last one does not present.**
+dcemu uses list init as the frame boundary — the accumulated strips are drawn and swapped
+there — and that holds while there is one per frame, which is what KOS does. **Katana writes
+two**, back to back with no geometry in between, so the second one cleared the screen and
+swapped with zero strips: **every other frame was black, and that is the flicker**. Measured
+in Capcom vs. SNK: 607 STARTRENDER against 1216 `TA_LIST_INIT` in 12 s, with the per-scene
+strip counts alternating 208, 0, 208, 0. Virtua Tennis and Virtua Tenis 2 had it too — their
+documented 1148 and 1110 scenes are exactly today's 573 + 575 and 554 + 556 — and Crazy Taxi
+does not (7 empty inits in a whole run), so the same SDK reaches the chip both ways. The
+discriminator is `pvr_listdone`, **not** `strip_count`: a deliberately empty scene still opens
+and closes its list (opening one and submitting nothing is a hardware error, which is why
+KOS's `pvr_list_finish()` always sends a blank header), so it still presents and still comes
+out black — the boot ROM sends exactly those. Initializing a TA with nothing registered is a
+no-op on the chip, so it is one here. The skip keeps what belongs to the TA (the dangling half
+of a 64-byte parameter and the ISP/TSP write pointer) and drops only the clear/draw/present.
+`--traza-mem` counts them in the exit summary. The whole ten-demo control set stays byte-identical.
 
 **`FB_R_SOF1` reads back what was written** (`pvr_fb_r_sof1`, since `PVR_WRITE_CB_1`
 consumes the write before the `control_mem` backing store). A `0x00100203` hardcoded in
