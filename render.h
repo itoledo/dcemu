@@ -181,6 +181,12 @@ typedef struct TriangleStripInfo
 	   en los cuatro modos). */
 	DWORD usa_offset;
 
+	/* La palabra TSP tal como llego. Como el tcw_crudo de la textura: cuando un
+	   parametro parece mal leido, esto es lo que deja mirar los bits sin
+	   intermediarios -- y hay campos que dcemu todavia no usa (bit 21 Color
+	   Clamp, bit 19 Ignore Texture Alpha). */
+	DWORD tsp_crudo;
+
 	DWORD zwrite;
 	DWORD culling;
 	DWORD type;

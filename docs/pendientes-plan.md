@@ -1536,12 +1536,41 @@ ecuación del propio documento da
 DST_rgb' = SRC_rgb·(1−DST_rgb) + DST_rgb·(1−SRC_rgb) = 0 + DST_rgb·1 = DST_rgb
 ```
 
-es decir **no toca nada**, y no hay color de origen negro que pueda oscurecer por esa vía. Así
-que el oscurecimiento no está en esas tiras tal como dcemu las decodifica. Queda una hipótesis
-sola, y es la que hay que atacar: que las palabras ISP/TSP de esos encabezados no se estén
-leyendo de donde corresponde —el resto del pipeline ya está descartado— o que la sombra la
-dibuje algo que en esta escena del attract no aparece. El instrumental para contestarlo ya
-está puesto: el volcado imprime `sel=`, `off=` y el offset por vértice.
+es decir **no toca nada**, y no hay color de origen negro que pueda oscurecer por esa vía.
+
+**Y la palabra TSP cruda cierra la duda de si se está leyendo bien.** El volcado la imprime
+entera ahora (`tsp=`), y las 27 dan todas el mismo valor, `0x6C1804C0`, que contra la tabla de
+bits de §3.7.9.2 decodifica:
+
+| campo | bits | valor |
+| --- | --- | --- |
+| SRC Alpha Instr | 31-29 | **3** (Inverse Other Color) |
+| DST Alpha Instr | 28-26 | **3** (Inverse Other Color) |
+| SRC / DST Select | 25, 24 | 0, 0 — sin búfer secundario |
+| Fog Control | 23-22 | 0 (tabla) |
+| Color Clamp | 21 | 0 |
+| Use Alpha | 20 | 1 |
+| Ignore Tex. Alpha | 19 | 1 |
+| Texture/Shading | 7-6 | 3 (Modulate Alpha) |
+
+O sea que dcemu lee cada campo donde el documento lo pone. Las 8 tiras de la pasada `ONE/ONE`
+dan `0x24080440` y son **el único sitio de la escena con Color Clamp puesto** — pero los dos
+registros del recorte están en la identidad (`FOG_CLAMP_MIN=00000000`, `MAX=ffffffff`), así
+que tampoco es eso. Y `FPU_SHAD_SCALE=00000001`, con el bit 8 de habilitación en cero: el modo
+de intensidad ni siquiera está encendido.
+
+**Con eso queda agotado el pipeline entre el vértice y el framebuffer**, etapa por etapa y
+cada una medida, no leída: volumen modificador, búfer de acumulación secundario, alfa del
+destino (el contexto entrega 8 bits reales, comprobado con `GL_ALPHA_BITS`), color de offset,
+recorte de color, ignorar el alfa de la textura. **Ninguna es.**
+
+Lo que eso significa hay que decirlo derecho: **esas 27 tiras no dibujan la sombra, ni acá ni
+en la consola.** Son una operación nula por la ecuación del propio documento. El
+oscurecimiento tiene que venir de otra geometría, y esa geometría no está llegando al
+renderizador — que es un problema distinto del que se venía persiguiendo y hay que atacarlo
+por ahí: buscar en la escena qué otra cosa cubre esa silueta, o si hay tiras que se están
+descartando antes de dibujar. El instrumental ya está puesto: el volcado imprime `sel=`,
+`off=`, el color de offset por vértice y la palabra TSP entera.
 
 ---
 
