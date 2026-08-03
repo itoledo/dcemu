@@ -1738,6 +1738,10 @@ static void color_de_fondo(float * r, float * g, float * b)
 	ultimo[2] = *b;
 }
 
+/* La sombra del estado de GL vive mucho mas abajo, junto a tira_estado(); esto
+   la adelanta para las funciones que tocan el estado a mano y estan antes. */
+static void gl_estado_olvidar(void);
+
 void limpiar_pantalla()
 {
 	float r, g, b;
@@ -1750,6 +1754,7 @@ void limpiar_pantalla()
 		profundidades de la anterior y descarta lo que caiga detras de ellas.
 	*/
 	glDepthMask(GL_TRUE);
+	gl_estado_olvidar();
 
 	/* El alfa queda en 0: el blend por DSTALPHA de pvr-fb_tex cuenta con que
 	   las zonas sin dibujar arranquen transparentes. */
@@ -2302,6 +2307,7 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 	glEnable(GL_DEPTH_TEST);
 	glDepthMask(GL_TRUE);
+	gl_estado_olvidar();
 
 	DWORD dw;
 	
@@ -3003,9 +3009,15 @@ static void dibujar_escena(void)
 				continue;
 
 			tira_estado(i);
-			glDepthFunc(TriangleStrip[i].zwrite ? TriangleStrip[i].depthmode
-											    : GL_EQUAL);
-			glDepthMask(GL_FALSE);
+
+			/* Por la sombra, no directo: esto corre DENTRO del bucle por
+			   tira, asi que un glDepthFunc suelto deja a gl_e mintiendo y la
+			   tira siguiente se salta el suyo por "ya estaba puesto". Era
+			   16234 pixeles de diferencia en el cielo y las palmeras lejanas
+			   de Crazy Taxi contra la rama sin la sombra. */
+			gl_depth_func(TriangleStrip[i].zwrite ? TriangleStrip[i].depthmode
+												  : GL_EQUAL);
+			gl_depth_mask(0);
 			glEnable(GL_STENCIL_TEST);
 			glStencilFunc(GL_NOTEQUAL, 0, 0xFF);
 			juego_de_parametros(1);
@@ -3273,6 +3285,7 @@ static int render_a_textura(void)
 	   Ver limpiar_pantalla(). */
 	glEnable(GL_DEPTH_TEST);
 	glDepthMask(GL_TRUE);
+	gl_estado_olvidar();
 
 	/* El render a textura tambien arranca del plano de fondo. */
 	{
