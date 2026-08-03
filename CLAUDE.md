@@ -210,7 +210,9 @@ a stray pointer walks millions of *distinct* ones, so there is a cap of 4096 rep
 it the log went to gigabytes and the window stopped responding.
 
 **`--watchpoint=DIR[:TAM]` is the other tool**: a write watchpoint that reports every
-write touching a given address, with the PC and PR that did it. The hook is in
+write touching a given address, with **the value written** and the value the address reads
+back afterwards (they differ on any register with acknowledge semantics — `SB_ISTNRM`, the
+flash — and confusing the two has cost a false lead), plus the PC and PR that did it. The hook is in
 `memwrite_fisico()` (`mem.h`) — the one place *every* write goes through, guest and
 internal alike — and the implementation is in `traza.c`. It costs a compare against zero
 per write when off. It is what answers "who writes this variable", which is the question the
@@ -312,11 +314,14 @@ jumps to `0xFFFFFxxx` (address-error traps), lazy FPU context over `SR.FD`, tick
 pad polled at 60 Hz through the Maple auto-poll, the AICA's ARM running the firmware CE
 uploads — and **CE mounts the disc's ISO9660 through the GD syscalls**: volume descriptor,
 root directory, all of `DCDOOM.EXE` in one 645-sector read, and `\WINCE` modules
-demand-paged from the CD in 16 KB pieces. Where it stands: the driver host idles at a
-steady 284 syscalls/s heartbeat (maple/wdmlib/ddraw alive), the game's process loaded and
-sleeps without drawing, and a second process retries a WaitForAPIReady pattern every 5 s
-for an API set that never registers. `docs/pendientes-plan.md`, A.9, has the whole story
-and the tools to resume.
+demand-paged from the CD in 16 KB pieces. **DCDoom runs and is visible**: DOOM completes
+its whole startup, prints it through `DCEMU_TRAZA_DEPURACION` and plays the E1M1 attract
+demo — walls, sprites, the nukage pool, the weapon and the full status bar, 868 scenes in
+32 emulated seconds. What it took, beyond the CE work above: the **Sort-DMA** (how CE's
+ddraw feeds the TA), `FB_R_SOF1` reading back what was written, the SQ flush target coming
+from the UTLB with the MMU on, the whole **PIO stream protocol** and — last — handing out
+its COMPLETED one query late, which is what makes the caller's `read()` return the byte
+count instead of zero. `docs/pendientes-plan.md`, A.9, has the whole story and the tools.
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -416,6 +421,18 @@ all: everything goes through the syscall hooks. Both paths now reach the same pl
 
 `--traza-mem` prints the PC and PR of every SPI packet, what each `REQ_SES` answered, and
 the disc format the drive settled on.
+
+**`0x005F6810-0x005F6820` is the Sort-DMA, the *other* way to feed the TA** — and the one
+Windows CE's ddraw uses for all its geometry. Sega's DevBox §2.6.5.3 and figures 2-10 to
+2-13: the guest builds the display list in RAM as linked chains (a Start Link Address table
+of 16- or 32-bit entries per `SB_SDWLT`, and inside each Global Parameter the seventh word
+holds the current size in 32-byte units and the eighth the next link, with 1 = end of list
+and 2 = end of DMA), then writes 1 to `SB_SDST`. `sort_dma_ejecutar()` in `mem.c` walks the
+chains into `ta_procesar_bloque()`; the end raises `SB_ISTNRM` bit 20 (DTDESINT) with the
+usual proportional delay. All six registers had backing store in `control_mem` and no
+reader — the same disease as everything else here — and the symptom was DCDoom's ddraw HAL
+stuck in its state 7 printing "Timeout for Tile Accelerator" 13 times a second, having
+submitted a header and four vertices that never arrived.
 
 **`0x005F6800-0x005F6808` is the CH2 DMA, and it is how the guest feeds the TA.** The Holly
 drives it, not the DMAC: the SH-4 only puts the source in `SAR2` and arms `CHCR2` for
@@ -815,6 +832,22 @@ the first `SPG_WIDTH.vswidth` lines of the frame and blanking runs from
 dcemu tracks no horizontal position and no interlacing. Finding this also turned up that
 **`SPG_VBLANK` and `SPG_WIDTH` had read cases but no write cases**, so `pvr_spg_vblank` and
 `pvr_spg_width` kept `reg.c`'s defaults no matter what the guest programmed.
+
+**`DCEMU_TRAZA_DEPURACION=1` prints what the guest sends to its own debug output.**
+Windows CE throws it away — its OAL writes to neither the SCI nor the SCIF (measured with a
+watchpoint on both TDRs) — so hundreds of lines in which the guest narrates what it is doing
+went nowhere. dcemu intercepts `OutputDebugStringW` and `NKvDbgPrintfW` (apiset 0, methods
+14 and 23 — CE's numbering, not this image's) on the way into the exception, *before* the
+bank switch takes the guest's R4, and reads the string with `mmu_traducir_mirar()`: a
+translation that looks without faulting and without advancing URC, because a `longjmp` from
+inside `excepcion_entrar()` would leave the emulator half-way into an exception. DCDoom's
+whole DOOM startup log comes out this way, and it named its own blocker in one line —
+`W_ReadLump: only read 0 of 17544 on lump 1968`.
+
+**A register read with no case of its own reports itself under `--traza-mem`** — one line
+per distinct address, with what the `control_mem` backing store answered. `REVISION`,
+`SB_G1SYSM`, `SB_SBREV` and `FB_R_SOF1` were each found the hard way, one hang apiece; this
+lists them in a single pass.
 
 SH-4 on-chip registers (TMU, DMA, SCIF, INTC, ports) are plain pointers into the `regmem`
 block, bound once in `regmem_setup()` (`mem.c`) and declared `extern` in `sh4emu.h`. So
@@ -1601,6 +1634,25 @@ own page directory — CE halted with "Halting system" by nested exception).
   count in the third status word, and **`GETSCD` (command 34) is answered** with the SPI
   header — audio status `0x15`, "no audio info" — and the data track's subQ; COMPLETED with
   an unwritten buffer left status `0x00`, which is no code at all.
+  **`CHECK_COMMAND` hands out the COMPLETED of a PIO stream one query late, on purpose.**
+  `gdGdcGetCmdStat` reports it *once* — disassembled out of RAM at `8C003072` with `--bios`:
+  it writes the transferred count into `status[2]`, returns 2 and zeroes the block's state,
+  so the next query matches the id, finds state 0 and answers NO_ACTIVE with all four words
+  at zero (it clears them before looking at anything; and an id that is not the current
+  request answers −1 with `status[0] = 5`, not 0). At the end of a PIO stream there are
+  **two** queries: the wsegacd pump's, which has already torn down its callback, and the
+  caller's from another CE slot — and it is the caller that needs the count. Charging the
+  COMPLETED to the first gave the caller "no such request" and **`read()` returned 0** with
+  the bytes already in its buffer. That was DCDoom's `W_ReadLump: only read 0 of 17544`.
+  So the query that *discovers* the stream empty answers CONTINUE and marks; the next one
+  charges the COMPLETED. Three things about it are easy to get backwards, each measured:
+  the deferral is **PIO only** (a DMA stream ends its command when the last piece
+  transfers — its signal is the end-of-DMA interrupt — and deferring there left Windows CE
+  unable to load a single DLL); the deferred answer must be **CONTINUE (3), not PROCESSING
+  (1)**, or the pump spins `MAINLOOP`+`CHECK` forever; and only one read in the whole boot
+  showed it, because the data always arrived — a short read goes through command 17 and
+  never touches the stream, and the WAD directory does go through it but `W_AddFile` never
+  checks the count.
   **The same stub is also installed at `8C0010F0`, the ROM's fixed GD service entry, and
   the word at `8C0000C0` — a fifth vector the hooks never filled — points there**
   (`SYSCALL_GDROM_FIJO`/`HACK_GDROM_FIJO`). Measured against the real 1.01d with `--bios`:

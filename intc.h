@@ -66,6 +66,9 @@ extern DWORD	intc_queuemask_ext;
 #define ASIC_EVT_PVR_TRANSMODDONE       (1 << 0x000a)
 #define ASIC_EVT_PVR_DMA                (1 << 0x0013)
 #define ASIC_EVT_PVR_PTDONE             (1 << 0x0015)
+/* Fin del Sort-DMA (DTDESINT): la via de subida al TA por cadenas enlazadas
+   en RAM. Ver sort_dma_ejecutar() en mem.c. */
+#define ASIC_EVT_PVR_SORTDMA            (1 << 0x0014)
 #define ASIC_EVT_MAPLE_DMA              (1 << 0x000c)
 #define ASIC_EVT_MAPLE_ERROR            (1 << 0x000d)
 #define ASIC_EVT_GDROM_DMA              (1 << 0x000e)

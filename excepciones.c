@@ -36,8 +36,92 @@ int		en_ranura_retardo = 0;
 	con BL puesto son causa de reset en el chip, y aca se registra y se entra
 	igual, que es mas util para depurar que reiniciar en silencio.
 */
+/*
+	Lo que el guest manda a la salida de depuracion, impreso por dcemu.
+
+	Windows CE la tira: su OAL de esta consola no escribe ni al SCI ni al SCIF
+	(medido con watchpoint sobre los dos TDR), asi que OutputDebugStringW y
+	NKvDbgPrintfW no dejan rastro por ningun lado -- y son cientos de lineas
+	en las que el guest cuenta su propio arranque. DCDoom imprime ahi todo el
+	log de DOOM, y su driver de video el "Timeout for Tile Accelerator" que
+	nombro el bloqueo del TA.
+
+	Va ANTES de tocar SR porque el argumento esta en el R4 del guest, y la
+	entrada a la excepcion cambia de banco. La direccion del salto -- que en
+	este punto todavia es PC -- decodifica como
+	`0xFFFFFE01 - dest = (apiset << 9) | (metodo << 1)`; el apiset 0 es el
+	kernel, y sus metodos 14 y 23 son las dos salidas de depuracion. La
+	numeracion es de CE, no de esta imagen.
+
+	La lectura es "para mirar" (mmu_traducir_mirar): sin fallar, sin
+	excepciones y sin mover URC. Un longjmp desde adentro de excepcion_entrar()
+	dejaria al emulador a medio entrar en una excepcion.
+*/
+static void traza_depuracion_guest(void)
+{
+	DWORD	v = (0xFFFFFE01ul - PC) & 0xFFFFFFFFul;
+	DWORD	apiset = v >> 9;
+	DWORD	metodo = (v & 0x1FF) >> 1;
+	DWORD	dir = R(4);
+	int		ancho;			/* 2 = UTF-16 (OutputDebugStringW), 1 = ASCII */
+	int		i;
+
+	if (apiset != 0)
+		return;
+
+	if (metodo == 14)
+		ancho = 2;			/* OutputDebugStringW */
+	else if (metodo == 23)
+		ancho = 2;			/* NKvDbgPrintfW: el formato, sin los argumentos */
+	else
+		return;
+
+	if (dir == 0)
+		return;
+
+	fprintf(stderr, "guest: ");
+
+	for (i = 0; i < 512; i++)
+	{
+		DWORD	fisica = mmu_traducir_mirar(dir + (DWORD) (i * ancho));
+		WORD	c = 0;
+
+		if (fisica == 0)
+			break;
+
+		memread_fisico(fisica, &c, (size_t) ancho);
+
+		if (c == 0)
+			break;
+
+		/* Los saltos de linea del guest ya cierran la linea; el resto se
+		   imprime tal cual si es legible. */
+		if (c == '\n')
+			break;
+
+		fputc((c >= 0x20 && c < 0x7F) ? (int) c : '.', stderr);
+	}
+
+	fputc('\n', stderr);
+}
+
 void excepcion_entrar(DWORD codigo, DWORD vector)
 {
+	if (traza_activa && codigo == 0x0e0)
+	{
+		static int habilitado = -1;
+
+		if (habilitado == -1)
+		{
+			const char * v = getenv("DCEMU_TRAZA_DEPURACION");
+
+			habilitado = (v != NULL && v[0] == '1');
+		}
+
+		if (habilitado)
+			traza_depuracion_guest();
+	}
+
 	SSR = SR;
 	SPC = PC;
 	SGR = R(15);
@@ -170,8 +254,19 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 				{
 					/* El flujo que el censo resume: cada syscall en orden con
 					   su instante. El tope avisa al cortar -- un corte callado
-					   ya costo una conclusion falsa con el watchpoint. */
-					static long	quedan = 50000;
+					   ya costo una conclusion falsa con el watchpoint -- y
+					   DCEMU_TRAZA_SC_MAX lo mueve: el tope fijo dejaba el
+					   flujo en el primer medio segundo, y la pregunta suele
+					   estar mas adelante (la ventana de DCDoom muere a los
+					   1800 ms). */
+					static long	quedan = -1;
+
+					if (quedan < 0)
+					{
+						const char * m = getenv("DCEMU_TRAZA_SC_MAX");
+
+						quedan = (m != NULL) ? atol(m) : 50000;
+					}
 
 					if (quedan > 0)
 					{

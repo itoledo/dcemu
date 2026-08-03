@@ -17,6 +17,11 @@ DWORD com=0;
 static DWORD com_lectura = 0;
 static DWORD com_lectura_bytes = 0;
 
+/* Lo que movio la ULTIMA peticion, y sobrevive a que se la consuma: es lo que
+   CHECK_COMMAND informa en su tercera word, incluida la consulta final que el
+   driver hace ya sin peticion viva. Ver el caso 1. */
+static DWORD com_transferido = 0;
+
 /* La peticion aceptada y todavia no consultada. El driver de la BIOS acepta
    UNA por vez: un SEND_COMMAND con otra viva se rechaza con 0, y el guest
    reintenta. Aceptarlo todo al instante parecia inofensivo hasta Capcom vs.
@@ -44,6 +49,25 @@ static DWORD multi_total = 0;
 static DWORD multi_callback = 0;	/* lo registra G1_DMA_END (r7=5) o
 									   SET_PIO_CALLBACK (r7=11) */
 static DWORD multi_callback_arg = 0;
+static int   multi_es_pio = 0;		/* el flujo vino del 39 y no del 38 */
+
+/* El flujo ya se vacio y una consulta lo vio, pero el COMPLETED todavia no se
+   cobro. Existe porque el driver de la BIOS entrega el COMPLETED UNA SOLA VEZ
+   --su gdGdcGetCmdStat pone el estado del bloque en cero al informarlo, y la
+   consulta siguiente contesta NO_ACTIVE con las cuatro words en cero (medido
+   desensamblando 8c003072 del ROM real)--, y en este flujo hay DOS consultas
+   al final: la de la bomba del driver, que ya soltó su callback, y la del
+   llamador, que es quien necesita el conteo. Cobrandolo en la primera, el
+   llamador recibia "esa peticion no existe" y leia cero bytes con sus 18432
+   ya en el buffer: eso era el "W_ReadLump: only read 0 of 17544" de DCDoom,
+   que solo se ve en una lectura que pase por el flujo Y cuyo conteo alguien
+   mire (el directorio del WAD lo ignora, por eso cargaba igual). El HLE de
+   flycast difiere igual ("Fixes NBA 2K"). */
+static int   multi_completo = 0;
+
+/* El id del ultimo flujo, para que la traza siga viendo la consulta final --
+   la que llega ya sin peticion viva, que es justamente la interesante. */
+static DWORD com_multi_ultima = 0;
 
 /* El pedazo PIO pedido (r7=12) se LATCHEA y nada mas: la copia y el aviso al
    callback ocurren en el proximo MAINLOOP (r7=2), que la bomba de wsegacd
@@ -466,6 +490,7 @@ void hack_gdrom()
 
 					/* Para que CHECK_COMMAND pueda informar lo transferido. */
 					com_lectura = com;
+					com_transferido = 2048 * (DWORD) secnum;
 					com_lectura_bytes = 2048 * (DWORD) secnum;
 				}
 				break;
@@ -503,6 +528,7 @@ void hack_gdrom()
 				multi_restante = 0;
 				multi_callback = 0;
 				pio_pedido     = 0;
+				multi_completo = 0;
 				break;
 
 				case 40: // GET_VERS: la version del driver del GD-ROM
@@ -606,6 +632,10 @@ void hack_gdrom()
 					multi_desplaz  = 0;
 					multi_restante = 2048 * (DWORD) secnum;
 					multi_total    = multi_restante;
+					multi_es_pio   = (R(4) == 39);
+					multi_completo = 0;
+					com_multi_ultima = com;
+					com_transferido = 0;
 
 					if (traza_activa)
 						fprintf(stderr, "hack: MULTI_%sREAD %d sectores desde %d"
@@ -703,27 +733,59 @@ void hack_gdrom()
 				Los codigos son los del driver de la BIOS: 0 NO_ACTIVE,
 				1 PROCESSING, 2 COMPLETED, 3 STREAMING, 4 BUSY.
 			*/
+			/*
+				Las cuatro words de estado se escriben SIEMPRE, antes de mirar
+				si la peticion sigue viva -- como el HLE de flycast, cuyo
+				`result[]` persiste entre consultas. El driver de la BIOS hace
+				una consulta final DESPUES de haber cobrado el COMPLETED, y es
+				de esa de donde saca el conteo que le devuelve a su llamador:
+				no escribir nada ahi le entregaba un cero, y el guest lo cree.
+				DCDoom lo dijo con todas las letras -- "W_ReadLump: only read
+				0 of 17544 on lump 1968" -- con los 18432 bytes ya copiados a
+				su buffer. Sin error que informar las otras tres van en cero;
+				dejarlas sin tocar le entrega al guest lo que hubiera.
+			*/
+			if (R(5))
+			{
+				DWORD	cero = 0;
+				DWORD	transferido = com_transferido;
+				int		i;
+
+				for (i = 0; i < 4; i++)
+					WriteMemoryL(R(5) + i * 4, &cero);
+
+				WriteMemoryL(R(5) + 2 * 4, &transferido);
+			}
+
+			/*
+				El estado con el que se contesta cada consulta DE UN FLUJO. Es
+				la vista que faltaba: quien consulta (el buffer dice de que
+				proceso viene), que queda por entregar y cuanto se lleva
+				transferido. Con ella se ve de una que al final hay DOS
+				consultas y que la primera es de la bomba del driver -- lo que
+				explica el conteo en cero del llamador. Solo el flujo: una
+				lectura corriente se resuelve en el acto y no tiene estado que
+				mirar.
+			*/
+			if (traza_activa && (multi_id != 0 || R(4) == com_multi_ultima)
+				&& R(4) != 0)
+			{
+				static int vistos_chk = 0;
+
+				if (vistos_chk < 24)
+				{
+					vistos_chk++;
+					fprintf(stderr, "hack:   CHECK id=%lx buf=%08lx viva=%lx"
+						" multi=%lx resta=%lu pio=%d transf=%lu\n",
+						(unsigned long) R(4), (unsigned long) R(5),
+						(unsigned long) com_viva, (unsigned long) multi_id,
+						(unsigned long) multi_restante, pio_pedido,
+						(unsigned long) com_transferido);
+				}
+			}
+
 		    if (R(4) != 0 && R(4) == com_viva)
 			{
-				/* Cuatro words de estado. Sin error que informar van en cero
-				   --dejarlos sin tocar le entregaba al guest lo que hubiera--,
-				   y el tercero es lo transferido: la capa de CRI de Capcom
-				   vs. SNK contabiliza su lectura por aca. */
-				if (R(5))
-				{
-					DWORD	cero = 0;
-					DWORD	transferido = (R(4) == com_lectura)
-										? com_lectura_bytes : 0;
-					int		i;
-
-					if (R(4) == multi_id)
-						transferido = multi_total - multi_restante;
-
-					for (i = 0; i < 4; i++)
-						WriteMemoryL(R(5) + i * 4, &cero);
-
-					WriteMemoryL(R(5) + 2 * 4, &transferido);
-				}
 
 				/* Un pedazo PIO latcheado y todavia no copiado es PROCESSING
 				   (1), no CONTINUE: con 3 la bomba de wsegacd entiende "datos
@@ -749,16 +811,53 @@ void hack_gdrom()
 					break;
 				}
 
+				/* El flujo PIO vacio: la consulta que LO DESCUBRE no cobra el
+				   COMPLETED, lo cobra la siguiente. Ver multi_completo. Solo
+				   el PIO: el flujo por DMA termina el comando al transferir su
+				   ultima pieza --su aviso es la interrupcion de fin de DMA--,
+				   y diferirlo ahi deja al driver esperando un evento que ya
+				   paso (Windows CE se queda sin cargar sus DLL: medido). */
+				if (R(4) == multi_id && multi_es_pio && !multi_completo)
+				{
+					multi_completo = 1;
+					R(0) = 3;			// CONTINUE: sigue viva, no consumida
+					break;
+				}
+
 				/* Consultada: el driver queda libre para la proxima. */
 				com_viva = 0;
 
 				if (R(4) == multi_id)
+				{
 					multi_id = 0;
+					multi_completo = 0;
+				}
 
 				R(0) = 2;			// COMPLETED
 			}
 		    else
+			{
 				R(0) = 0;			// NO_ACTIVE: no hay tal peticion
+
+				/* DIAGNOSTICO: DCEMU_TRAZA_GDFIN=N desensambla las N
+				   instrucciones que siguen a la consulta final, que es donde el
+				   guest cobra el resultado de la lectura. */
+				if (traza_activa && R(4) != 0)
+				{
+					static int leido = 0;
+					static long cuantas = 0;
+
+					if (!leido)
+					{
+						const char * e = getenv("DCEMU_TRAZA_GDFIN");
+						leido = 1;
+						cuantas = e ? atol(e) : 0;
+					}
+
+					if (cuantas > 0)
+						traza_arrancar(cuantas);
+				}
+			}
 		    break;
 
 		    case 2: // GDROM_MAIN_LOOP
@@ -850,13 +949,14 @@ void hack_gdrom()
 					}
 
 					multi_restante -= tam;
+					com_transferido = multi_total - multi_restante;
 				}
 
 				if (traza_activa)
 				{
 					static int vistos = 0;
 
-					if (vistos < 8)
+					if (vistos < 24)
 					{
 						vistos++;
 						fprintf(stderr, "hack: REQ_DMA_TRANS %lu bytes a %08lx,"
@@ -885,12 +985,18 @@ void hack_gdrom()
 
 			case 7: // GDROM_CHECK_DMA_TRANS: cuanto queda del flujo
 			{
+				/* Mientras la peticion multi siga viva la respuesta es OK, con
+				   el resto informado -- aunque ya sea cero. Lo que cierra el
+				   flujo es el COMPLETED del CHECK_COMMAND, no vaciarlo: en el
+				   HLE de flycast el estado sigue en CONTINUE hasta esa
+				   consulta. Contestar error o BUSY en la ultima vuelta le dice
+				   al driver que la transferencia fallo. */
 				DWORD	restante = multi_restante;
 
 				if (R(5))
 					WriteMemoryL(R(5), &restante);
 
-				R(0) = (multi_id != 0 && multi_restante > 0) ? 0 : 1;
+				R(0) = (multi_id != 0) ? 0 : 1;
 			}
 			break;
 
@@ -935,7 +1041,7 @@ void hack_gdrom()
 				{
 					static int vistos = 0;
 
-					if (vistos < 8)
+					if (vistos < 24)
 					{
 						vistos++;
 						fprintf(stderr, "hack: REQ_PIO_TRANS %lu bytes a %08lx"
@@ -951,12 +1057,16 @@ void hack_gdrom()
 
 			case 13: // GDROM_CHECK_PIO_TRANS: cuanto queda del flujo por CPU
 			{
-				/* A diferencia del 7, el restante solo se informa con el
-				   flujo vivo, y sin flujo la respuesta es error -- la
-				   asimetria es del propio driver (flycast la reproduce). */
+				/* Igual que el 7 en cuanto a cuando vale, y con la asimetria
+				   del driver: sin peticion viva no informa nada y contesta
+				   error. Vaciar el flujo NO la mata -- eso lo hace el
+				   COMPLETED del CHECK_COMMAND --, y contestar error en la
+				   ultima vuelta le decia al driver que la lectura fallo:
+				   DCDoom recibia sus 18432 bytes y su W_ReadLump informaba
+				   "only read 0 of 17544". */
 				DWORD	restante = multi_restante;
 
-				if (multi_id != 0 && multi_restante > 0)
+				if (multi_id != 0)
 				{
 					if (R(5))
 						WriteMemoryL(R(5), &restante);
@@ -976,6 +1086,7 @@ void hack_gdrom()
 					multi_id       = 0;
 					multi_restante = 0;
 					pio_pedido     = 0;
+					multi_completo = 0;
 				}
 
 				com_viva = 0;
@@ -1013,7 +1124,7 @@ void hack_gdrom()
 			{
 				static int vistos = 0;
 
-				if (vistos < 8)
+				if (vistos < 24)
 				{
 					vistos++;
 					fprintf(stderr, "hack: funcion r7=%lu del vector GD-ROM"
@@ -1050,6 +1161,33 @@ void hack_gdrom()
 		DWORD	sect     = multi_sector;
 		DWORD	desplaz  = multi_desplaz;
 
+		/*
+			Tocar el destino ANTES de mover nada. El buffer del llamador es
+			una direccion virtual de otra ranura de CE y su pagina puede no
+			estar en la TLB: la escritura fallaria a mitad de la copia,
+			abortaria la instruccion y el guest reejecutaria este stub -- con
+			la bomba del driver ya a mitad de camino, que es lo que le hacia
+			informar "only read 0 of 17544" con los bytes ya en su buffer.
+			Leyendo primero, el fallo ocurre aca, con el estado del flujo
+			todavia intacto: CE recarga la TLB, reejecuta el stub y la copia
+			entera pasa de una.
+		*/
+		{
+			DWORD p;
+
+			for (p = 0; p < pio_tam; p += 0x400)
+			{
+				BYTE b;
+				memread(pio_destino + p, &b, 1);
+			}
+
+			if (pio_tam > 0)
+			{
+				BYTE b;
+				memread(pio_destino + pio_tam - 1, &b, 1);
+			}
+		}
+
 		while (hecho < pio_tam)
 		{
 			DWORD trozo = 2048 - desplaz;
@@ -1073,6 +1211,7 @@ void hack_gdrom()
 		multi_sector    = sect;
 		multi_desplaz   = desplaz;
 		multi_restante -= pio_tam;
+		com_transferido = multi_total - multi_restante;
 		pio_pedido      = 0;
 
 		/* El fin de COMANDO, cuando el flujo se vacia, es la interrupcion
@@ -1085,7 +1224,7 @@ void hack_gdrom()
 		{
 			static int vistos = 0;
 
-			if (vistos < 8)
+			if (vistos < 24)
 			{
 				vistos++;
 				fprintf(stderr, "hack: MAINLOOP copia %lu bytes a %08lx"

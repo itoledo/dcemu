@@ -80,7 +80,7 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | Virtua Tennis (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja — **corre desde el 2 de agosto, ver A.8** |
-| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** — resuelto: es Windows CE, ver A.9 |
+| DCDoom | 2, LBA 11702 | — | — | — | — | **corre y es jugable desde el 2 de agosto** — es Windows CE, ver A.9 |
 | mame4all (`.iso`) | carpeta empaquetada | 0 (no usa el TA) | 0 / 235315200 | ninguna | 105 | **su propio menú** |
 
 Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
@@ -1174,7 +1174,151 @@ una tapando la siguiente**:
    saliendo del próximo LIST_INIT), pero el ddraw de CE recibía un "render terminado" que
    nunca pidió, antes de su primer vértice. Movido a `cb_renderstart()`.
 
-**Dónde queda DCDoom** (commit de esta sesión): CE arranca entero, CreateProcess funciona,
+#### El Sort-DMA: el TA gira, DCDoom rinde cuadros, y ahora sale por la puerta de adelante
+
+La espera del estado 7 era **el Sort-DMA, que dcemu no implementaba**. El ddraw de CE no
+alimenta al TA por las store queues —eso es solo su blit de píxeles— sino por la vía de
+cadenas enlazadas que documenta el DevBox en 2.6.5.3 y las figuras 2-10 a 2-13: el guest
+arma la lista de despliegue en RAM (una tabla de Start Link Addresses de 16 o 32 bits
+según `SB_SDWLT`, y dentro de cada Global Parameter el séptimo word con el tamaño en
+unidades de 32 bytes y el octavo con el próximo enlace, más los códigos 1 = fin de lista y
+2 = fin del DMA), y escribe 1 en `SB_SDST`. Los seis registros del bloque
+(`0x005F6810`-`0x6820` más `SB_SDDIV`) caían en `control_mem` sin lector: la forma de
+siempre, y la que el diagnóstico nuevo —"registro leído sin caso propio"— saca de una
+pasada. `sort_dma_ejecutar()` en mem.c recorre los enlaces y entrega a
+`ta_procesar_bloque()`.
+
+Con eso el pipeline gira entero: dos Sort-DMA por cuadro (uno de 640 bytes y 5 entradas de
+tabla, otro de 320 y 3), las **cinco listas cierran** (`hechas=1f`), STARTRENDER dispara,
+y **el "Timeout for Tile Accelerator" desaparece por completo** (de 13/s a cero). DCDoom
+rinde 42 cuadros.
+
+**Y a los 9.4 s sale por la puerta de adelante**: su WinMain **retorna 0** y el epílogo del
+CRT hace lo que corresponde —recorre su tabla de atexit liberando (`free`), llama dos
+rutinas de platutil.dll y termina en `TerminateProcess(handle, 0)` desde `0x3bf5c`—. No es
+una excepción ni un error: el juego decidió terminar. Antes de eso corre su bucle de
+mensajes (`PeekMessageW`), carga recursos (`FindResource`/`LoadResource`/`SizeofResource`,
+todos con éxito) y consulta `GetTickCount` en caliente. **Por qué su main loop se acaba es
+la pregunta nueva** y es la primera vez que la frontera está dentro de la lógica del juego
+y no en algo que dcemu contesta mal. Para retomar: la cadena de retorno es
+`0x39676` (fin del main) → `0x3be9a` → `0x3bef0` (exit) → `0x3bf5c`; hay que subir desde
+`0x395xx` hacia el bucle. `DCEMU_TRAZA_SYSCALL=ffffdb3d:395d0:400000` cubre desde el
+`PeekMessageW` hasta la salida en una sola traza.
+
+#### El guest cuenta su propio arranque: DOOM entero, y lo que faltaba dicho en una línea
+
+**Windows CE tira su salida de depuración.** Su OAL no escribe ni al SCI ni al SCIF
+(medido con watchpoint sobre los dos TDR), así que los cientos de líneas en las que el
+guest narra lo que hace no salían por ningún lado. **`DCEMU_TRAZA_DEPURACION=1` las
+imprime**: intercepta `OutputDebugStringW` y `NKvDbgPrintfW` (apiset 0, métodos 14 y 23 —
+numeración de CE, no de esta imagen) al entrar a la excepción, **antes** de que el cambio
+de banco se lleve el R4 del guest, y lee la cadena con `mmu_traducir_mirar()`, una
+traducción nueva que mira sin fallar: no entra a ninguna excepción y no mueve URC, porque
+un `longjmp` desde adentro de `excepcion_entrar()` dejaría al emulador a medio entrar.
+
+Con eso DCDoom dijo en una línea lo que costaba días:
+
+```
+Error:
+W_ReadLump: only read 0 of 17544 on lump 1968
+Exiting windoom...
+```
+
+**La causa**: el destino de un pedazo del flujo PIO es una dirección virtual de otra
+ranura de CE (el buffer del llamador, en la ranura 6; el de rebote del propio driver, en
+la 0) y su página puede no estar en la TLB. La escritura fallaba a mitad de la copia,
+abortaba la instrucción, y el guest reejecutaba el stub con la bomba del driver ya a
+mitad de camino — los bytes llegaban a su buffer y el conteo volvía en cero. Ahora se
+**toca el destino antes de mover nada**: el fallo ocurre con el estado del flujo intacto,
+CE recarga la TLB, reejecuta el stub y la copia entera pasa de una. Dos correcciones más
+del mismo protocolo, las dos como el HLE de flycast: `CHECK_COMMAND` escribe sus cuatro
+words **siempre** (el driver hace una consulta final ya sin petición viva, y de ahí saca
+el conteo que devuelve a su llamador), y `CHECK_DMA_TRANS`/`CHECK_PIO_TRANS` no matan el
+flujo al vaciarlo — eso lo hace el COMPLETED.
+
+Dos medidas de esta sesión que parecían resolverlo y no: escribir el destino del PIO como
+**físico** hace que el conteo salga bien (no falla, luego no aborta) pero manda los datos
+a otra página, y el juego muere después con `W_GetNumForName: PNAMES not found!`; y
+partir la regla por rango de dirección tampoco, porque **las dos son virtuales** — 0x00160000
+es la ranura 0 y 0x0c2d6afc la 6, no RAM física. La regla correcta es traducir siempre,
+y lo que había que arreglar era el momento del fallo.
+
+**DOOM arranca entero ahora** y lo dice él mismo: `W_Init` con `\CD-ROM\doom.wad`,
+"Ultimate Doom WAD - fourth episode enabled", la pantalla de startup v1.9, `M_Init`,
+`R_Init` (las texturas, que es donde moría), `I_Init`, `D_CheckNetGame` ("player 1 of 1"),
+`S_Init`, `HU_Init`, `ST_Init`, `CO_Init` — pero **el `W_ReadLump: only read 0 of 17544`
+seguía ahí**, en medio del log y no al final, y eso fue una lectura mía apurada: la cola
+del log terminaba en `CO_Init` y leí "arranca entero" donde el error estaba veinte líneas
+más arriba. DOOM no muere en él —su `I_Error` imprime, corre el `atexit` de DirectDraw y
+la ejecución sigue—, así que el resto del arranque salía igual, de un juego ya zombi. La
+lección de medición: **en un log largo, buscar el error, no leer el final**.
+
+#### El COMPLETED se cobra una sola vez, y al final del flujo hay dos consultas: DCDoom se ve (2 de agosto, sexta sesión)
+
+`gdGdcGetCmdStat` entrega el COMPLETED **una sola vez**. Está medido, no supuesto:
+`--bios --desensamblar=8c003072` saca de la RAM el `gdGdcGetCmdStat` del ROM real, y su
+rama de "estado 3" escribe el conteo transferido en `status[2]`, devuelve 2 y **pone el
+estado del bloque en cero**; la consulta siguiente encuentra el id igual pero el estado en
+cero, contesta 0 (NO_ACTIVE) y deja las cuatro words en cero, porque las limpia antes de
+mirar nada. También se aprendió ahí que un id que no es el de la petición en curso se
+contesta con −1 y `status[0] = 5`, no con 0.
+
+Y al final de un flujo PIO hay **dos** consultas: la de la bomba de wsegacd —que ya soltó
+su callback y solo quiere el estado— y la del llamador, en otra ranura de CE (buffer
+`0809fe5c` contra `0c2df694`), que es quien necesita el conteo. dcemu cobraba el COMPLETED
+en la primera, así que el llamador recibía "esa petición no existe" y le devolvía **cero
+bytes a `read()`** con los 18432 ya en su buffer. Ahora la consulta que descubre el flujo
+vacío contesta CONTINUE y marca; la siguiente cobra el COMPLETED con el conteo. Es lo que
+hace el HLE de flycast, cuyo comentario dice "Fixes NBA 2K".
+
+Tres detalles del arreglo, cada uno medido porque el primer intento los erró:
+
+- **Solo el flujo PIO se difiere.** El de DMA termina el comando al transferir su última
+  pieza —su aviso es la interrupción de fin de DMA— y diferirlo ahí deja al driver
+  esperando un evento ya pasado: Windows CE se quedó sin cargar ninguna DLL.
+- **La respuesta del diferimiento es CONTINUE (3), no PROCESSING (1).** Con 1 la bomba
+  entiende "sigo trabajando" y gira `MAINLOOP`+`CHECK` para siempre; lo mismo pasa si se
+  contesta 1 mientras el flujo todavía tiene datos. La bomba decide que terminó por el
+  `CHECK_PIO_TRANS`, no por esto.
+- **Por qué solo lo mostró un lump.** El dato siempre llegaba bien; lo que salía mal era el
+  código de retorno. Una lectura corta va por el comando 17 (DMA de 8 sectores) y no toca
+  el flujo, y el directorio del WAD sí va por el flujo pero `W_AddFile` **no mira el
+  conteo**. El lump 1968 —17544 bytes— es la primera lectura que cumple las dos
+  condiciones. Por eso "cargaba el WAD" y moría igual.
+
+**DCDoom se ve.** Corre la demo de atracción de E1M1: paredes, sprites, el enemigo, la
+piscina de nukage, el arma y la barra de estado entera, y el log del guest cierra con
+`-playdemo: demo1`. 868 escenas en 32 s de tiempo emulado (frente a 42), la captura con
+5661 colores distintos y ningún píxel negro. Un detalle que parece un error y no lo es: una
+captura salió entera rojiza — es el destello de paleta de DOOM al recoger un ítem
+("PICKED UP THE ARMOR"), y la siguiente sale con los grises y marrones correctos.
+
+**Y es jugable.** Medido en la misma corrida: `DCEMU_PULSAR_START=1500` abre el menú
+principal de DOOM sobre la demo —o sea que la cadena entera de entrada llega: XInput o
+teclado, `entrada_leer()`, el Maple disparado por hardware en cada vblank, el driver de CE
+y el juego—, y con `DCEMU_PULSAR_A=1` más `DCEMU_SOLO_A=1` (una pulsación cada 200 sondeos)
+se recorren "New Game" → "Which Episode?" → dificultad y **empieza E1M1 con 100% de salud**.
+El sonido también sale: `--captura-audio` da 2,16 millones de muestras no nulas de 2,9,
+silencio hasta el segundo 7 (CE arrancando), un tramo fuerte entre el 8 y el 12 y actividad
+desde el 21, con 1785 muestras al riel (0,06%). El ritmo es de ~27 escenas por segundo
+emulado, que para un renderizador por software a 320×200 subido por DirectDraw es lo
+esperable.
+
+Lo que queda son detalles y ninguno bloquea. La corrida reporta nueve registros "leídos sin
+caso propio" —`FB_W_SOF1`, `FB_W_LINESTRIDE`, `PT_ALPHA_REF`, `ISP_FEED_CFG`…—, y **eso por
+sí solo no es sospechoso**: el respaldo de `control_mem` se escribe arriba de todo, antes
+del `switch`, así que devuelven exactamente lo que el guest escribió. El diagnóstico sirve
+para el otro caso, el que ya costó tres cuelgues: un registro cuyo valor **no** viene de una
+escritura del guest (`REVISION`, `SB_G1SYSM`, `SB_SBREV`). Queda además una única dirección
+sin emular en toda la corrida (`01d91b40`, dentro de ddhal, leída una vez por el kernel).
+
+Lo que hizo legible todo esto fue subir de 8 a 24 el tope de las trazas del flujo
+(`REQ_PIO_TRANS`, la copia del `MAINLOOP`) —con 8 no entra una sola transacción completa— y
+una línea nueva por consulta de flujo con quién pregunta, qué queda y qué se lleva
+transferido. `DCEMU_TRAZA_GDFIN=N` desensambla las N instrucciones que siguen a la consulta
+final, que es donde el guest cobra el resultado.
+
+**Dónde quedó DCDoom antes de este arreglo**: CE arranca entero, CreateProcess funciona,
 el juego abre DOOM.WAD por `CreateFileW`/`ReadFile` — el montaje ISO9660 de CE sirviendo
 por los dos flujos —, lee sus lumps (paleta, colormaps, flats: sectores 15024-15033,
 17735+, el flujo de 18041), crea su ventana (las seis DefWindowProcW), su IST de vblank
