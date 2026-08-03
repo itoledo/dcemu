@@ -1373,6 +1373,57 @@ esta sesión pagó: `--salir-tras` va en DECIMAL (`5a` son 5 segundos), y una se
 `stderr.txt` con dos corridas mezcladas inventó un "bucle de retardo en el ROM" que no
 existe.
 
+### A.11 — La mitad de los cuadros era negra: Katana inicializa el TA dos veces por cuadro (3 de agosto de 2026)
+
+Reportado mirando Capcom vs. SNK en vivo: parpadea. El resumen del TA lo dijo en una línea —
+`607 escenas rendidas; tiras de las últimas 12: 190 0 208 0 208 0 208 0 208 0 208 0` —, y el
+estado de la máquina de listas dio la forma exacta:
+
+```
+[geometría: abre y cierra las listas 0..4]
+STARTRENDER: hechas=1f habilitadas=1f
+TA_ALLOC_CTRL=00121313
+TA_LIST_INIT: hechas=1f  <- presenta la escena buena (208 tiras)
+TA_ALLOC_CTRL=00121313
+TA_LIST_INIT: hechas=00  <- limpiaba, dibujaba cero tiras y hacía swap: NEGRO
+[geometría del cuadro siguiente]
+```
+
+**607 STARTRENDER contra 1216 TA_LIST_INIT en 12 segundos**: exactamente dos
+inicializaciones por cuadro, y dcemu presentaba en cada una. El juego corre a ~50 cuadros por
+segundo emulado y se veían 101, uno de cada dos vacío.
+
+En el chip `TA_LIST_INIT` no dibuja —deja al TA listo para recibir un juego de listas nuevo, y
+el que dibuja es `STARTRENDER`—; dcemu la usa como frontera de cuadro, y eso vale mientras haya
+una por cuadro, que es lo que hace KOS. Ahora **una inicialización que llega sin nada registrado
+desde la anterior no presenta**: inicializar un TA vacío es una operación nula en el chip, así
+que lo es aquí. Conserva lo que le toca al TA (el medio parámetro de 64 bytes colgando y el
+puntero de escritura del área ISP/TSP) y se salta limpiar, dibujar y presentar.
+
+**El discriminante es `pvr_listdone`, no `strip_count`**, y la diferencia importa: una escena
+deliberadamente vacía igual abre y cierra su lista —abrir una y no mandar nada es un error de
+hardware, por eso `pvr_list_finish()` de KOS manda siempre un encabezado en blanco—, así que
+esa se sigue presentando y se sigue viendo negra, que es lo que el guest pidió. **El boot ROM
+manda justamente esas** (sus tiras salen `0 0 0 ... 21 0`, con las listas abiertas y cerradas) y
+no cambió nada para él.
+
+**No es de Capcom: es de Katana.** Virtua Tennis y Virtua Tenis 2 tenían lo mismo, y el conteo
+lo confirma sin ambigüedad — sus cifras documentadas de 1148 y 1110 escenas son exactamente las
+de hoy sumadas con las inicializaciones vacías salteadas (573 + 575 y 554 + 556). Crazy Taxi no
+lo tiene (7 vacías en toda una corrida), así que el mismo SDK llega al chip de las dos maneras.
+
+Regresión, con el método fuerte de `docs/demos-kos.md` (RTC fijo y comparación byte a byte
+contra el binario de antes del cambio): **los diez demos del juego de control idénticos byte a
+byte**, las 21 suites en verde, Crazy Taxi en sus 524 tiras exactas, DCDoom en sus 867 escenas,
+el menú del boot ROM en 18572 colores, y en los demos de KOS **una sola** inicialización vacía
+por corrida —la primera—, que es la confirmación de que KOS manda una por cuadro. La pantalla de
+título de Capcom sale con 76911 colores y ninguna escena vacía.
+
+De paso, una trampa del instrumental: **`DCEMU_CAPTURA_TODAS` ponía el número delante de la
+ruta entera** (`f0000-C:/tmp/f.bmp`), así que con una ruta absoluta no escribía nada y la única
+queja iba a `stderr.txt` — que es justo donde nadie mira cuando lo que se iba a mirar eran los
+BMP. Costó una corrida de 480 cuadros. Ahora el número va delante del nombre del archivo.
+
 ---
 
 ## Vía B — El AICA (hito E)
