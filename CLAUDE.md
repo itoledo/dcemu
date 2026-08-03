@@ -1634,6 +1634,27 @@ Three things about the ARM7DI cost a test case each, and all three are in the su
 - **The envelope advances before the sample is used, not after.** The other way round, every
   channel's first sample comes out at rest attenuation, i.e. muted.
 
+**A channel that reaches LEA without a loop clears its own KYONB, and that is what made sound
+effects repeat by themselves.** KYONEX is a *global* trigger — "all slots are made KEY_ON or OFF
+when 1 is written" — so every key-on the driver issues for one voice walks all 64 slots and keys
+on whichever still have KYONB set. A one-shot sample that simply ran out left `activo` at 0 with
+KYONB at 1, so the *next* KYONEX from **any other channel** restarted it, and the next, and the
+next. Measured in Crazy Taxi: one 1.19 s sample (SA `10db60`, LEA `665e`, no loop) played six
+extra times, each one hooked to another voice's key-on or key-off, with its registers untouched
+in between. In Virtua Tennis the three short one-shots the game asks for **4** times over two
+minutes were played **69**. That is the tennis ball hit and the coin sound repeating. The paper
+does not say the bit self-clears — it only calls KYONB the bit that "registers KEY_ON or OFF" —
+but without it there is no way for a finished slot to stop being eligible, and it is what flycast
+does (it clears KYONB whenever the AEG enters release). Nothing that was already right moves:
+`sound-sfx`, `sound-sfxbuf` and the `--bios` boot are byte-identical `.wav`s before and after.
+
+The neighbouring rule had the symmetric error: **a key-on for a channel in release must restart
+it.** The guard was `!activo`, and a channel stays active while it fades, so a voice the guest
+keyed off and immediately asked for again was silently dropped. It is `!activo || eg == RELEASE`
+now, which is flycast's condition. Suites `una_muestra_terminada_limpia_su_kyonb` and
+`un_canal_en_release_vuelve_a_arrancar`. `--traza-mem` prints each key-off and each end of
+sample next to the key-ons, which is how both were found.
+
 The ADPCM follows §8.1.1.2 literally and is done in integers — the eight factors of table 8-4
 are exact in 256ths — so it is **deterministic**: two runs give a bit-identical `.wav`. Note the
 paper has a typo: entry 31 of the decay column reads `90.` between `920.` and `690.`; the

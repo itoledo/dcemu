@@ -574,7 +574,13 @@ static void canal_apagar(int canal)
 	struct aica_canal * c = &aica_canales[canal];
 
 	if (c->activo && c->eg_estado != AICA_EG_RELEASE)
+	{
+		if (traza_activa)
+			fprintf(stderr, "traza: AICA key off canal %2d: pos %lu eg %d\n",
+				canal, (unsigned long) c->pos, c->eg_estado);
+
 		c->eg_estado = AICA_EG_RELEASE;
+	}
 }
 
 /*
@@ -591,7 +597,16 @@ static void aplicar_key_on(void)
 	{
 		int quiere = (CAN(i, 0x00) & 0x4000) != 0;	/* KYONB */
 
-		if (quiere && !aica_canales[i].activo)
+		/*
+			Un canal que ya esta sonando no vuelve a arrancar --el disparo es
+			global y le llega a todos, asi que sin esto cada KEY_ON de un canal
+			reiniciaria a los demas--, pero uno que **esta en release** si:
+			ahi el guest lo apago y lo esta volviendo a pedir, y el chip lo
+			reengancha desde el ataque. Mirar solo `activo` deja caer ese
+			rearranque, porque el canal sigue activo mientras se apaga.
+		*/
+		if (quiere && (!aica_canales[i].activo
+		            || aica_canales[i].eg_estado == AICA_EG_RELEASE))
 			canal_encender(i);
 		else
 		if (!quiere)
@@ -740,6 +755,27 @@ static int canal_muestrear(int canal, int * izq, int * der)
 			   ya se leyo arriba y es valida: el canal termina **despues** de
 			   entregarla, no en vez de entregarla. */
 			c->activo = 0;
+
+			/*
+				Y al terminar, el canal **se desregistra solo**: KYONB se
+				limpia. El papel no lo dice --describe KYONB como el bit que
+				"registra KEY_ON u OFF" y KYONEX como el disparo que atiende a
+				todos los slots-- pero sin esto un canal que acabo su muestra
+				queda registrado como encendido para siempre, y el proximo
+				KYONEX, que es el de **cualquier otro** canal, lo vuelve a
+				arrancar: el sonido se repite solo. Medido en Crazy Taxi: una
+				muestra de 1,19 s sonando seis veces sin que el guest la pidiera
+				una sola vez de nuevo. Es lo que hace flycast, que lo limpia al
+				entrar el AEG en release, y ese es el unico camino a release
+				aqui que no venia ya con KYONB en cero.
+			*/
+			poner16((unsigned long) canal * AICA_CANAL_PASO,
+				CAN(canal, 0x00) & ~0x4000u);
+
+			if (traza_activa)
+				fprintf(stderr, "traza: AICA fin de muestra canal %2d:"
+					" pos %lu LEA %04lx\n",
+					canal, (unsigned long) c->pos, (unsigned long) lea);
 		}
 	}
 

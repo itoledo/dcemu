@@ -705,6 +705,32 @@ idéntico bit a bit.
 Y una tercera, más chica: la muestra de `LEA` es válida. El canal termina **después** de
 entregarla, no en vez de entregarla.
 
+**Un cuarto, encontrado mucho después y solo por un juego: los efectos se repetían solos.**
+`KYONEX` es un disparo **global** —"all slots are made KEY_ON or OFF when 1 is written"—, así que
+cada arranque de una voz recorre los 64 canales y enciende todos los que tengan `KYONB` puesto.
+Una muestra sin bucle que se acababa dejaba `activo` en 0 con `KYONB` todavía en 1, o sea
+registrada como encendida para siempre: el siguiente `KYONEX`, que es el de **cualquier otro**
+canal, la volvía a arrancar. Medido en Crazy Taxi con `--traza-mem`, que ahora imprime cada
+`key off` y cada fin de muestra al lado de los `key on`: una muestra de 1,19 s (SA `10db60`,
+LEA `665e`, sin bucle) sonando seis veces de más, cada una enganchada al `KEY_ON` o al `KEY_OFF`
+de otra voz y con sus registros sin tocar en el medio. En Virtua Tennis, los tres efectos cortos
+que el juego pide **4** veces en dos minutos sonaban **69**. Eso es el sonido de la pelota y el
+de las monedas repitiéndose.
+
+El papel no dice que el bit se limpie solo —a `KYONB` lo describe apenas como el bit que
+"registra KEY_ON u OFF"—, pero sin eso no hay manera de que un canal terminado deje de ser
+elegible, y es lo que hace flycast: limpia `KYONB` al entrar el AEG en release. Aquí el único
+camino a release que no venía ya con `KYONB` en cero era justamente el fin de la muestra.
+
+La regla vecina tenía el error simétrico: **un `KEY_ON` sobre un canal en release tiene que
+reengancharlo**. La condición era `!activo`, y un canal sigue activo mientras se apaga, así que
+una voz que el guest apagaba y volvía a pedir enseguida se perdía callada. Ahora es
+`!activo || eg == RELEASE`, que es la condición de flycast.
+
+Nada de lo que ya estaba bien se mueve: `sound-sfx`, `sound-sfxbuf` y el arranque con `--bios`
+dan `.wav` idénticos byte a byte antes y después. Suites `una_muestra_terminada_limpia_su_kyonb`
+y `un_canal_en_release_vuelve_a_arrancar`.
+
 Una errata del papel, corregida y anotada: la entrada 31 de la columna de decaimiento de la
 tabla 8-5 figura como `90.` entre `920.` y `690.`. La progresión es geométrica y el término que
 corresponde es 790.

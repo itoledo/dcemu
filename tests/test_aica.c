@@ -793,6 +793,76 @@ static void kyonex_dispara_todos_los_canales(void)
 	ESPERAR_I32(aica_canales[2].activo, 1);
 }
 
+static void una_muestra_terminada_limpia_su_kyonb(void)
+{
+	/*
+		Un canal que llego a LEA sin bucle **se desregistra solo**: KYONB se
+		limpia. El papel no lo dice, pero sin eso el canal queda registrado como
+		encendido para siempre y el proximo KYONEX --que es el de *cualquier*
+		otro canal, porque el disparo es global-- lo vuelve a arrancar. El
+		sonido se repite solo, sin que el guest lo pida.
+
+		Medido en Crazy Taxi: una muestra de 1,19 s (SA 10db60, LEA 665e, sin
+		bucle) sonando seis veces de mas, cada una enganchada al KEY_ON o al
+		KEY_OFF de otra voz. Es lo que hace flycast, que limpia KYONB al entrar
+		el AEG en release.
+	*/
+	int i;
+
+	reiniciar();
+
+	for (i = 0; i <= 0xA; i++)
+	{
+		sound_mem[0x2000 + i * 2]     = 0;
+		sound_mem[0x2000 + i * 2 + 1] = (unsigned char) (i + 1);
+	}
+
+	armar_canal(0, 0x2000, AICA_PCM16, 5, 0xA, 0);
+
+	producir(16, NULL);
+
+	ESPERAR_I32(aica_canales[0].activo, 0);
+	ESPERAR_U32(leer_g2(0 * AICA_CANAL_PASO + 0x00) & 0x4000, 0);
+
+	/* Y ahora otro canal dispara KYONEX: el 0 tiene que quedarse quieto. */
+	armar_canal(1, 0x2000, AICA_PCM16, 5, 0xA, 0);
+
+	ESPERAR_I32(aica_canales[1].activo, 1);
+	ESPERAR_I32(aica_canales[0].activo, 0);
+}
+
+static void un_canal_en_release_vuelve_a_arrancar(void)
+{
+	/*
+		KEY_OFF no corta: pasa a release, y el canal sigue sonando mientras se
+		apaga. Si el guest lo vuelve a pedir en ese rato, el chip lo reengancha
+		desde el ataque. Mirar solo si el canal esta "activo" deja caer ese
+		rearranque, porque en release todavia lo esta.
+	*/
+	reiniciar();
+
+	sound_mem[0x2000] = 0x00;
+	sound_mem[0x2001] = 0x40;
+
+	armar_canal(0, 0x2000, AICA_PCM16, 0, 0xFFFF, 1);
+	producir(50, NULL);
+
+	ESPERAR_U32(aica_canales[0].pos, 50);
+
+	/* KEY_OFF: sigue activo, pero ya en release. */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x00, 0x8000);
+
+	ESPERAR_I32(aica_canales[0].activo, 1);
+	ESPERAR_I32(aica_canales[0].eg_estado, AICA_EG_RELEASE);
+
+	/* Y el guest lo vuelve a pedir: arranca de cero, no sigue donde iba. */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x00, 0xC000);
+
+	ESPERAR_I32(aica_canales[0].activo, 1);
+	ESPERAR_I32(aica_canales[0].eg_estado, AICA_EG_ATAQUE);
+	ESPERAR_U32(aica_canales[0].pos, 0);
+}
+
 static void el_monitor_informa_el_canal_elegido(void)
 {
 	/*
@@ -863,6 +933,8 @@ static const dc_caso casos[] =
 	CASO(las_tres_tablas_de_volumen),
 	CASO(el_paneo_manda_a_un_lado),
 	CASO(kyonex_dispara_todos_los_canales),
+	CASO(una_muestra_terminada_limpia_su_kyonb),
+	CASO(un_canal_en_release_vuelve_a_arrancar),
 	CASO(el_monitor_informa_el_canal_elegido),
 	CASO(el_pcm_de_8_bits_se_extiende_con_signo),
 };
