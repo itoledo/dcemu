@@ -20,8 +20,13 @@
 #   - lo que quede de memread/memwrite tras el camino directo,
 #   - pref142 y el TA.
 
+# **Sin --bios y con 180 segundos**, que es el banco donde el juego esta en 3D en
+# movimiento: 1182 tiras por escena. Con --bios lo que corre es el menu del boot
+# ROM -- 53 tiras por escena, identicas para cualquier disco -- y a los 120 la
+# corrida todavia esta en MODE SELECTION. Ver docs/rendimiento-plan.md, "El
+# banco de pruebas".
 param(
-	[int]    $Segundos = 60,
+	[int]    $Segundos = 180,
 	[string] $Imagen   = "roms\Crazy Taxi (USA).cdi",
 	[string] $Exe      = "build-x64\Debug\dcemu.exe",
 	[string] $Salida   = "perfil.csv"
@@ -50,8 +55,11 @@ $env:DCEMU_SOLO_A       = "1"
 Write-Host "grabando ..."
 wpr -start CPU -filemode
 try {
-	& $Exe --bios --perf "--salir-tras=$Segundos" $Imagen | Out-Null
+	& $Exe --perf "--salir-tras=$Segundos" $Imagen | Out-Null
 } finally {
+	# En finally para que una caida del emulador no deje el logger del kernel
+	# grabando: si queda prendido, el proximo -start falla y el .etl crece sin
+	# techo hasta llenar el disco.
 	wpr -stop $etl
 }
 
