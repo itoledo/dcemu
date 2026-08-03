@@ -314,11 +314,14 @@ jumps to `0xFFFFFxxx` (address-error traps), lazy FPU context over `SR.FD`, tick
 pad polled at 60 Hz through the Maple auto-poll, the AICA's ARM running the firmware CE
 uploads — and **CE mounts the disc's ISO9660 through the GD syscalls**: volume descriptor,
 root directory, all of `DCDOOM.EXE` in one 645-sector read, and `\WINCE` modules
-demand-paged from the CD in 16 KB pieces. Where it stands: the driver host idles at a
-steady 284 syscalls/s heartbeat (maple/wdmlib/ddraw alive), the game's process loaded and
-sleeps without drawing, and a second process retries a WaitForAPIReady pattern every 5 s
-for an API set that never registers. `docs/pendientes-plan.md`, A.9, has the whole story
-and the tools to resume.
+demand-paged from the CD in 16 KB pieces. **DCDoom runs and is visible**: DOOM completes
+its whole startup, prints it through `DCEMU_TRAZA_DEPURACION` and plays the E1M1 attract
+demo — walls, sprites, the nukage pool, the weapon and the full status bar, 868 scenes in
+32 emulated seconds. What it took, beyond the CE work above: the **Sort-DMA** (how CE's
+ddraw feeds the TA), `FB_R_SOF1` reading back what was written, the SQ flush target coming
+from the UTLB with the MMU on, the whole **PIO stream protocol** and — last — handing out
+its COMPLETED one query late, which is what makes the caller's `read()` return the byte
+count instead of zero. `docs/pendientes-plan.md`, A.9, has the whole story and the tools.
 
 Two things had to be right before the drive fixes below mattered:
 
@@ -1631,6 +1634,25 @@ own page directory — CE halted with "Halting system" by nested exception).
   count in the third status word, and **`GETSCD` (command 34) is answered** with the SPI
   header — audio status `0x15`, "no audio info" — and the data track's subQ; COMPLETED with
   an unwritten buffer left status `0x00`, which is no code at all.
+  **`CHECK_COMMAND` hands out the COMPLETED of a PIO stream one query late, on purpose.**
+  `gdGdcGetCmdStat` reports it *once* — disassembled out of RAM at `8C003072` with `--bios`:
+  it writes the transferred count into `status[2]`, returns 2 and zeroes the block's state,
+  so the next query matches the id, finds state 0 and answers NO_ACTIVE with all four words
+  at zero (it clears them before looking at anything; and an id that is not the current
+  request answers −1 with `status[0] = 5`, not 0). At the end of a PIO stream there are
+  **two** queries: the wsegacd pump's, which has already torn down its callback, and the
+  caller's from another CE slot — and it is the caller that needs the count. Charging the
+  COMPLETED to the first gave the caller "no such request" and **`read()` returned 0** with
+  the bytes already in its buffer. That was DCDoom's `W_ReadLump: only read 0 of 17544`.
+  So the query that *discovers* the stream empty answers CONTINUE and marks; the next one
+  charges the COMPLETED. Three things about it are easy to get backwards, each measured:
+  the deferral is **PIO only** (a DMA stream ends its command when the last piece
+  transfers — its signal is the end-of-DMA interrupt — and deferring there left Windows CE
+  unable to load a single DLL); the deferred answer must be **CONTINUE (3), not PROCESSING
+  (1)**, or the pump spins `MAINLOOP`+`CHECK` forever; and only one read in the whole boot
+  showed it, because the data always arrived — a short read goes through command 17 and
+  never touches the stream, and the WAD directory does go through it but `W_AddFile` never
+  checks the count.
   **The same stub is also installed at `8C0010F0`, the ROM's fixed GD service entry, and
   the word at `8C0000C0` — a fifth vector the hooks never filled — points there**
   (`SYSCALL_GDROM_FIJO`/`HACK_GDROM_FIJO`). Measured against the real 1.01d with `--bios`:

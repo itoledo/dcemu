@@ -1246,10 +1246,58 @@ y lo que había que arreglar era el momento del fallo.
 **DOOM arranca entero ahora** y lo dice él mismo: `W_Init` con `\CD-ROM\doom.wad`,
 "Ultimate Doom WAD - fourth episode enabled", la pantalla de startup v1.9, `M_Init`,
 `R_Init` (las texturas, que es donde moría), `I_Init`, `D_CheckNetGame` ("player 1 of 1"),
-`S_Init`, `HU_Init`, `ST_Init`, `CO_Init`. **Lo que falta es que presente**: sigue en 42
-escenas de una tira y la captura en negro, así que la frontera es el blit de DirectDraw —
-DOOM dibuja en su framebuffer de 320×200 y ddhal lo lleva a la pantalla. El log del guest
-es ahora la primera herramienta a mirar.
+`S_Init`, `HU_Init`, `ST_Init`, `CO_Init` — pero **el `W_ReadLump: only read 0 of 17544`
+seguía ahí**, en medio del log y no al final, y eso fue una lectura mía apurada: la cola
+del log terminaba en `CO_Init` y leí "arranca entero" donde el error estaba veinte líneas
+más arriba. DOOM no muere en él —su `I_Error` imprime, corre el `atexit` de DirectDraw y
+la ejecución sigue—, así que el resto del arranque salía igual, de un juego ya zombi. La
+lección de medición: **en un log largo, buscar el error, no leer el final**.
+
+#### El COMPLETED se cobra una sola vez, y al final del flujo hay dos consultas: DCDoom se ve (2 de agosto, sexta sesión)
+
+`gdGdcGetCmdStat` entrega el COMPLETED **una sola vez**. Está medido, no supuesto:
+`--bios --desensamblar=8c003072` saca de la RAM el `gdGdcGetCmdStat` del ROM real, y su
+rama de "estado 3" escribe el conteo transferido en `status[2]`, devuelve 2 y **pone el
+estado del bloque en cero**; la consulta siguiente encuentra el id igual pero el estado en
+cero, contesta 0 (NO_ACTIVE) y deja las cuatro words en cero, porque las limpia antes de
+mirar nada. También se aprendió ahí que un id que no es el de la petición en curso se
+contesta con −1 y `status[0] = 5`, no con 0.
+
+Y al final de un flujo PIO hay **dos** consultas: la de la bomba de wsegacd —que ya soltó
+su callback y solo quiere el estado— y la del llamador, en otra ranura de CE (buffer
+`0809fe5c` contra `0c2df694`), que es quien necesita el conteo. dcemu cobraba el COMPLETED
+en la primera, así que el llamador recibía "esa petición no existe" y le devolvía **cero
+bytes a `read()`** con los 18432 ya en su buffer. Ahora la consulta que descubre el flujo
+vacío contesta CONTINUE y marca; la siguiente cobra el COMPLETED con el conteo. Es lo que
+hace el HLE de flycast, cuyo comentario dice "Fixes NBA 2K".
+
+Tres detalles del arreglo, cada uno medido porque el primer intento los erró:
+
+- **Solo el flujo PIO se difiere.** El de DMA termina el comando al transferir su última
+  pieza —su aviso es la interrupción de fin de DMA— y diferirlo ahí deja al driver
+  esperando un evento ya pasado: Windows CE se quedó sin cargar ninguna DLL.
+- **La respuesta del diferimiento es CONTINUE (3), no PROCESSING (1).** Con 1 la bomba
+  entiende "sigo trabajando" y gira `MAINLOOP`+`CHECK` para siempre; lo mismo pasa si se
+  contesta 1 mientras el flujo todavía tiene datos. La bomba decide que terminó por el
+  `CHECK_PIO_TRANS`, no por esto.
+- **Por qué solo lo mostró un lump.** El dato siempre llegaba bien; lo que salía mal era el
+  código de retorno. Una lectura corta va por el comando 17 (DMA de 8 sectores) y no toca
+  el flujo, y el directorio del WAD sí va por el flujo pero `W_AddFile` **no mira el
+  conteo**. El lump 1968 —17544 bytes— es la primera lectura que cumple las dos
+  condiciones. Por eso "cargaba el WAD" y moría igual.
+
+**DCDoom se ve.** Corre la demo de atracción de E1M1: paredes, sprites, el enemigo, la
+piscina de nukage, el arma y la barra de estado entera, y el log del guest cierra con
+`-playdemo: demo1`. 868 escenas en 32 s de tiempo emulado (frente a 42), la captura con
+5661 colores distintos y ningún píxel negro. Un detalle que parece un error y no lo es: una
+captura salió entera rojiza — es el destello de paleta de DOOM al recoger un ítem
+("PICKED UP THE ARMOR"), y la siguiente sale con los grises y marrones correctos.
+
+Lo que hizo legible todo esto fue subir de 8 a 24 el tope de las trazas del flujo
+(`REQ_PIO_TRANS`, la copia del `MAINLOOP`) —con 8 no entra una sola transacción completa— y
+una línea nueva por consulta de flujo con quién pregunta, qué queda y qué se lleva
+transferido. `DCEMU_TRAZA_GDFIN=N` desensambla las N instrucciones que siguen a la consulta
+final, que es donde el guest cobra el resultado.
 
 **Dónde quedó DCDoom antes de este arreglo**: CE arranca entero, CreateProcess funciona,
 el juego abre DOOM.WAD por `CreateFileW`/`ReadFile` — el montaje ISO9660 de CE sirviendo

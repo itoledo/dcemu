@@ -49,6 +49,25 @@ static DWORD multi_total = 0;
 static DWORD multi_callback = 0;	/* lo registra G1_DMA_END (r7=5) o
 									   SET_PIO_CALLBACK (r7=11) */
 static DWORD multi_callback_arg = 0;
+static int   multi_es_pio = 0;		/* el flujo vino del 39 y no del 38 */
+
+/* El flujo ya se vacio y una consulta lo vio, pero el COMPLETED todavia no se
+   cobro. Existe porque el driver de la BIOS entrega el COMPLETED UNA SOLA VEZ
+   --su gdGdcGetCmdStat pone el estado del bloque en cero al informarlo, y la
+   consulta siguiente contesta NO_ACTIVE con las cuatro words en cero (medido
+   desensamblando 8c003072 del ROM real)--, y en este flujo hay DOS consultas
+   al final: la de la bomba del driver, que ya soltó su callback, y la del
+   llamador, que es quien necesita el conteo. Cobrandolo en la primera, el
+   llamador recibia "esa peticion no existe" y leia cero bytes con sus 18432
+   ya en el buffer: eso era el "W_ReadLump: only read 0 of 17544" de DCDoom,
+   que solo se ve en una lectura que pase por el flujo Y cuyo conteo alguien
+   mire (el directorio del WAD lo ignora, por eso cargaba igual). El HLE de
+   flycast difiere igual ("Fixes NBA 2K"). */
+static int   multi_completo = 0;
+
+/* El id del ultimo flujo, para que la traza siga viendo la consulta final --
+   la que llega ya sin peticion viva, que es justamente la interesante. */
+static DWORD com_multi_ultima = 0;
 
 /* El pedazo PIO pedido (r7=12) se LATCHEA y nada mas: la copia y el aviso al
    callback ocurren en el proximo MAINLOOP (r7=2), que la bomba de wsegacd
@@ -509,6 +528,7 @@ void hack_gdrom()
 				multi_restante = 0;
 				multi_callback = 0;
 				pio_pedido     = 0;
+				multi_completo = 0;
 				break;
 
 				case 40: // GET_VERS: la version del driver del GD-ROM
@@ -612,6 +632,9 @@ void hack_gdrom()
 					multi_desplaz  = 0;
 					multi_restante = 2048 * (DWORD) secnum;
 					multi_total    = multi_restante;
+					multi_es_pio   = (R(4) == 39);
+					multi_completo = 0;
+					com_multi_ultima = com;
 					com_transferido = 0;
 
 					if (traza_activa)
@@ -734,6 +757,33 @@ void hack_gdrom()
 				WriteMemoryL(R(5) + 2 * 4, &transferido);
 			}
 
+			/*
+				El estado con el que se contesta cada consulta DE UN FLUJO. Es
+				la vista que faltaba: quien consulta (el buffer dice de que
+				proceso viene), que queda por entregar y cuanto se lleva
+				transferido. Con ella se ve de una que al final hay DOS
+				consultas y que la primera es de la bomba del driver -- lo que
+				explica el conteo en cero del llamador. Solo el flujo: una
+				lectura corriente se resuelve en el acto y no tiene estado que
+				mirar.
+			*/
+			if (traza_activa && (multi_id != 0 || R(4) == com_multi_ultima)
+				&& R(4) != 0)
+			{
+				static int vistos_chk = 0;
+
+				if (vistos_chk < 24)
+				{
+					vistos_chk++;
+					fprintf(stderr, "hack:   CHECK id=%lx buf=%08lx viva=%lx"
+						" multi=%lx resta=%lu pio=%d transf=%lu\n",
+						(unsigned long) R(4), (unsigned long) R(5),
+						(unsigned long) com_viva, (unsigned long) multi_id,
+						(unsigned long) multi_restante, pio_pedido,
+						(unsigned long) com_transferido);
+				}
+			}
+
 		    if (R(4) != 0 && R(4) == com_viva)
 			{
 
@@ -761,16 +811,53 @@ void hack_gdrom()
 					break;
 				}
 
+				/* El flujo PIO vacio: la consulta que LO DESCUBRE no cobra el
+				   COMPLETED, lo cobra la siguiente. Ver multi_completo. Solo
+				   el PIO: el flujo por DMA termina el comando al transferir su
+				   ultima pieza --su aviso es la interrupcion de fin de DMA--,
+				   y diferirlo ahi deja al driver esperando un evento que ya
+				   paso (Windows CE se queda sin cargar sus DLL: medido). */
+				if (R(4) == multi_id && multi_es_pio && !multi_completo)
+				{
+					multi_completo = 1;
+					R(0) = 3;			// CONTINUE: sigue viva, no consumida
+					break;
+				}
+
 				/* Consultada: el driver queda libre para la proxima. */
 				com_viva = 0;
 
 				if (R(4) == multi_id)
+				{
 					multi_id = 0;
+					multi_completo = 0;
+				}
 
 				R(0) = 2;			// COMPLETED
 			}
 		    else
+			{
 				R(0) = 0;			// NO_ACTIVE: no hay tal peticion
+
+				/* DIAGNOSTICO: DCEMU_TRAZA_GDFIN=N desensambla las N
+				   instrucciones que siguen a la consulta final, que es donde el
+				   guest cobra el resultado de la lectura. */
+				if (traza_activa && R(4) != 0)
+				{
+					static int leido = 0;
+					static long cuantas = 0;
+
+					if (!leido)
+					{
+						const char * e = getenv("DCEMU_TRAZA_GDFIN");
+						leido = 1;
+						cuantas = e ? atol(e) : 0;
+					}
+
+					if (cuantas > 0)
+						traza_arrancar(cuantas);
+				}
+			}
 		    break;
 
 		    case 2: // GDROM_MAIN_LOOP
@@ -869,7 +956,7 @@ void hack_gdrom()
 				{
 					static int vistos = 0;
 
-					if (vistos < 8)
+					if (vistos < 24)
 					{
 						vistos++;
 						fprintf(stderr, "hack: REQ_DMA_TRANS %lu bytes a %08lx,"
@@ -954,7 +1041,7 @@ void hack_gdrom()
 				{
 					static int vistos = 0;
 
-					if (vistos < 8)
+					if (vistos < 24)
 					{
 						vistos++;
 						fprintf(stderr, "hack: REQ_PIO_TRANS %lu bytes a %08lx"
@@ -999,6 +1086,7 @@ void hack_gdrom()
 					multi_id       = 0;
 					multi_restante = 0;
 					pio_pedido     = 0;
+					multi_completo = 0;
 				}
 
 				com_viva = 0;
@@ -1036,7 +1124,7 @@ void hack_gdrom()
 			{
 				static int vistos = 0;
 
-				if (vistos < 8)
+				if (vistos < 24)
 				{
 					vistos++;
 					fprintf(stderr, "hack: funcion r7=%lu del vector GD-ROM"
@@ -1136,7 +1224,7 @@ void hack_gdrom()
 		{
 			static int vistos = 0;
 
-			if (vistos < 8)
+			if (vistos < 24)
 			{
 				vistos++;
 				fprintf(stderr, "hack: MAINLOOP copia %lu bytes a %08lx"
