@@ -98,13 +98,55 @@ static struct mando_estado_t mando;
 	reposo, con prioridad para el mando: si el stick esta movido manda el
 	stick, y si no, las teclas.
 */
+/*
+	Un boton apretado en los sondeos que diga una lista.
+
+	`lista` son numeros de sondeo separados por comas, y cada uno vale por una
+	pulsacion de 20 sondeos (~60 sondeos por segundo emulado). Devuelve 1 si el
+	sondeo `t` cae dentro de alguna, y traza el primero de cada una.
+
+	La lista, y no uno o dos numeros sueltos, porque entrar a una partida son
+	varias confirmaciones seguidas --modo, jugador, cancha-- y despues hay que
+	DEJAR de apretar: seguir mandando A durante el juego abre la pausa y se sale
+	del partido. Apretar cada 200 sondeos llegaba a la partida y despues la
+	abandonaba, que es como se perdieron dos corridas de siete minutos.
+*/
+static int pulsacion_en(const char * lista, int t, const char * nombre)
+{
+	const char *	p = lista;
+	int				dentro = 0;
+
+	while (*p != '\0')
+	{
+		int n = atoi(p);
+
+		if (n > 0 && t >= n && t < n + 20)
+		{
+			if (traza_activa && t == n)
+				fprintf(stderr, "traza: pulsando %s en el sondeo %d, "
+					"a los %lu ms de tiempo emulado.\n",
+					nombre, t, (unsigned long) reloj_ms());
+
+			dentro = 1;
+		}
+
+		p = strchr(p, ',');
+
+		if (p == NULL)
+			break;
+
+		p++;
+	}
+
+	return dentro;
+}
+
 void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 {
 	*botones = (WORD) (joystick & mando.botones);
 
-	/* DCEMU_PULSAR_START=N: apretar Start durante 20 sondeos a partir del
-	   sondeo N (~60 por segundo emulado). Repetible con N2 separado por coma
-	   para una segunda pulsacion. Existe porque inyectar teclado desde afuera
+	/* DCEMU_PULSAR_START=N[,N2,...]: apretar Start durante 20 sondeos a partir
+	   de cada sondeo de la lista. Existe porque inyectar teclado desde afuera
 	   depende del foco de la ventana y Windows lo niega cuando otra ventana
 	   lo retiene: esto navega los menus de un juego de forma determinista,
 	   con la misma filosofia que DCEMU_PULSAR_A y --salir-tras. */
@@ -114,23 +156,11 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 		if (e != NULL)
 		{
 			static int t = 0;
-			int n1 = atoi(e), n2 = 0;
-			const char * coma = strchr(e, ',');
-
-			if (coma != NULL)
-				n2 = atoi(coma + 1);
 
 			t++;
 
-			if ((t >= n1 && t < n1 + 20) || (n2 > 0 && t >= n2 && t < n2 + 20))
-			{
-				if (traza_activa && (t == n1 || t == n2))
-					fprintf(stderr, "traza: pulsando Start en el sondeo %d, "
-						"a los %lu ms de tiempo emulado.\n",
-						t, (unsigned long) reloj_ms());
-
+			if (pulsacion_en(e, t, "Start"))
 				REMOVE_BIT(*botones, CONT_START);
-			}
 		}
 	}
 
@@ -147,23 +177,17 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 		if (getenv("DCEMU_SOLO_A"))
 		{
 			/* Ya en el menu: solo el boton, con el cursor donde este.
-			   Con un numero mayor que 1 se pulsa UNA sola vez, en ese
-			   sondeo: repetir el boton mientras el ROM ya esta arrancando
-			   el juego lo cancela, y entonces no se distingue "aborto" de
-			   "lo cancele yo". */
-			int una = atoi(getenv("DCEMU_SOLO_A"));
+			   Con una lista de sondeos (N[,N2,...], cualquiera mayor que 1)
+			   se pulsa una vez en cada uno: repetir el boton mientras el ROM
+			   ya esta arrancando el juego lo cancela, y entonces no se
+			   distingue "aborto" de "lo cancele yo". El 1 solo, en cambio,
+			   pulsa cada 200 sondeos para siempre. */
+			const char * lista = getenv("DCEMU_SOLO_A");
 
-			if (una > 1)
+			if (atoi(lista) > 1)
 			{
-				if (t >= una && t < una + 20)
-				{
-					if (traza_activa && t == una)
-						fprintf(stderr, "traza: pulsando A en el sondeo %d, "
-							"a los %lu ms de tiempo emulado.\n",
-							t, (unsigned long) reloj_ms());
-
+				if (pulsacion_en(lista, t, "A"))
 					REMOVE_BIT(*botones, CONT_A);
-				}
 			}
 			else
 			if ((t % 200) < 20)

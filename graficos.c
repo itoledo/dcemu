@@ -273,7 +273,26 @@ static float sombra_escala(void)
 	return (float) (reg & 0xFF) / 256.0f;
 }
 
+/*
+	Los ocho factores de mezcla del TSP, y son DOS tablas y no una.
+
+	Los codigos son: 0 Zero, 1 One, 2 "Other Color", 3 Inverse "Other Color",
+	4 SRC Alpha, 5 Inverse SRC Alpha, 6 DST Alpha, 7 Inverse DST Alpha. Los
+	cuatro ultimos nombran su operando de forma absoluta, asi que valen igual
+	de los dos lados; los codigos 2 y 3 no: "el otro color" es el del DESTINO
+	cuando es el factor del origen, y el del ORIGEN cuando es el del destino.
+
+	Habia una sola tabla para los dos, asi que el factor de destino recibia
+	GL_DST_COLOR donde correspondia GL_SRC_COLOR. Eso convierte la receta
+	clasica de sombra modulativa --origen Zero, destino "otro color", o sea
+	destino x color de la sombra-- en destino x destino, que oscurece TODO el
+	poligono por igual y con forma de cuadrilatero en vez de la de la sombra.
+	Es lo que dejaba las sombras de Virtua Tenis 2 como trapecios opacos sobre
+	la cancha.
+*/
 static int blend_modes [ ] = {GL_ZERO,GL_ONE,GL_DST_COLOR,GL_ONE_MINUS_DST_COLOR,GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,GL_DST_ALPHA,GL_ONE_MINUS_DST_ALPHA};
+
+static int blend_modes_dst [ ] = {GL_ZERO,GL_ONE,GL_SRC_COLOR,GL_ONE_MINUS_SRC_COLOR,GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,GL_DST_ALPHA,GL_ONE_MINUS_DST_ALPHA};
 
 static int depth_modes [ ] = {GL_NEVER,GL_LESS,GL_EQUAL,GL_LEQUAL,GL_GREATER,GL_NOTEQUAL,GL_GEQUAL,GL_ALWAYS };
 // ta control stuff  
@@ -2201,11 +2220,20 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	   --la cuenta de traza_rendidas, la misma del resumen--, y esas van
 	   completas, no cortadas a 8 tiras: es como se le pregunta a UNA escena de
 	   un juego que estado llevaba cada quad. Con DCEMU_CAPTURA_TODAS al lado,
-	   el numero de cuadro capturado corre casi parejo con el de escena. */
+	   el numero de cuadro capturado corre casi parejo con el de escena.
+
+	   Con **+K** en vez de N se piden las M primeras escenas de mas de K tiras,
+	   que es como se elige una escena de JUEGO sin saber su numero: el indice no
+	   sobrevive de una corrida a otra --basta que un menu dure un cuadro mas--
+	   mientras que el peso si separa el partido (miles de tiras) de los menus
+	   (unas pocas). Perseguir el indice ya costo dos corridas de siete minutos
+	   que cayeron en una pantalla de transicion. */
 	if (traza_activa && strip_count > 0)
 	{
 		static int volcadas = 0;
 		static int obj_desde = -2, obj_hasta = -2;		/* -2: sin leer */
+		static int obj_tiras = 0;			/* +K: por peso, no por indice */
+		static int obj_quedan = 0;
 		int escena = traza_rendidas - 1;
 		int pedida;
 
@@ -2216,15 +2244,31 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 			if (e != NULL)
 			{
 				const char * p = strchr(e, ':');
+				int cuantas = (p != NULL) ? atoi(p + 1) : 1;
 
-				obj_desde = atoi(e);
-				obj_hasta = obj_desde + ((p != NULL) ? atoi(p + 1) : 1) - 1;
+				if (e[0] == '+')
+				{
+					obj_tiras = atoi(e + 1);
+					obj_quedan = cuantas;
+					obj_desde = obj_hasta = -1;
+				}
+				else
+				{
+					obj_desde = atoi(e);
+					obj_hasta = obj_desde + cuantas - 1;
+				}
 			}
 			else
 				obj_desde = obj_hasta = -1;				/* no pedida */
 		}
 
 		pedida = (escena >= obj_desde && escena <= obj_hasta);
+
+		if (obj_tiras > 0 && obj_quedan > 0 && (int) strip_count > obj_tiras)
+		{
+			pedida = 1;
+			obj_quedan--;
+		}
 
 		if (volcadas < 2 || pedida)
 		{
@@ -3041,6 +3085,42 @@ static void nombre_numerado(char * dst, size_t tam, const char * ruta, int nf)
 		(int) (base - ruta), ruta, nf, base);
 }
 
+/*
+	Un cuadro de cada N con DCEMU_CAPTURA_TODAS=N (1 o vacio: todos).
+
+	Una sesion larga son miles de cuadros de 1,4 MB cada uno --dos minutos de
+	juego pasan de 7 GB-- y para saber POR DONDE va un juego no hace falta cada
+	cuadro sino una pelicula: uno cada treinta alcanza para ver en que instante
+	aparece cada menu, que es lo que hay que saber para programar las
+	pulsaciones de DCEMU_PULSAR_START y DCEMU_SOLO_A.
+
+	Con --traza-mem cada cuadro guardado deja su numero y el instante emulado en
+	ms, que es lo que permite convertir "el menu sale en tal imagen" en un numero
+	de sondeo: la traza de las pulsaciones informa las dos cosas a la vez.
+*/
+static int captura_toca(int nf)
+{
+	const char *	e = getenv("DCEMU_CAPTURA_TODAS");
+	int				cada;
+
+	if (e == NULL)
+		return 0;
+
+	cada = atoi(e);
+
+	if (cada < 1)
+		cada = 1;
+
+	return (nf % cada) == 0;
+}
+
+static void captura_informar(int nf, const char * nom)
+{
+	if (traza_activa)
+		fprintf(stderr, "traza: captura %d -> %s, a los %lu ms de tiempo emulado.\n",
+			nf, nom, (unsigned long) reloj_ms());
+}
+
 /* La segunda mitad de cb_tastart(): presentar y dejar todo listo para la
    escena siguiente. */
 static void terminar_escena(void)
@@ -3066,10 +3146,17 @@ static void terminar_escena(void)
 		if (getenv("DCEMU_CAPTURA_TODAS"))
 		{
 			static int nf = 0;
-			char nom[512];
 
-			nombre_numerado(nom, sizeof(nom), opciones.captura_gl, nf++);
-			volcar_gl(nom);
+			if (captura_toca(nf))
+			{
+				char nom[512];
+
+				nombre_numerado(nom, sizeof(nom), opciones.captura_gl, nf);
+				volcar_gl(nom);
+				captura_informar(nf, nom);
+			}
+
+			nf++;
 		}
 		else
 			volcar_gl(opciones.captura_gl);
@@ -3601,10 +3688,13 @@ void taPolyModifier()
 	   Las dos lineas asignaban a pvr_srcblend, asi que pvr_dstblend nunca se
 	   escribia y glBlendFunc() recibia basura -- con un enum invalido la llamada
 	   se ignora y queda el blend anterior. Por eso el panel translucido del
-	   demo tunnel salia negro opaco. */
+	   demo tunnel salia negro opaco.
+
+	   Cada uno con su tabla: los codigos 2 y 3 se leen contra el otro operando
+	   y ese "otro" no es el mismo de los dos lados. Ver blend_modes_dst. */
 	TriangleStrip[strip_count].pvr_srcblend = blend_modes[(ta_address_pointer[2] >> 29) & 0x7];
 
-	TriangleStrip[strip_count].pvr_dstblend = blend_modes[(ta_address_pointer[2] >> 26) & 0x7];
+	TriangleStrip[strip_count].pvr_dstblend = blend_modes_dst[(ta_address_pointer[2] >> 26) & 0x7];
 	
 	pvr_srcblendmode = (ta_address_pointer[2] >> 25) & 0x1;
 	pvr_dstblendmode = (ta_address_pointer[2] >> 24) & 0x1;
@@ -4845,10 +4935,17 @@ void capturar_gl_framebuffer(void)
 	if (getenv("DCEMU_CAPTURA_TODAS"))
 	{
 		static int	nf = 0;
-		char		nom[512];
 
-		nombre_numerado(nom, sizeof(nom), opciones.captura_gl, nf++);
-		volcar_gl(nom);
+		if (captura_toca(nf))
+		{
+			char nom[512];
+
+			nombre_numerado(nom, sizeof(nom), opciones.captura_gl, nf);
+			volcar_gl(nom);
+			captura_informar(nf, nom);
+		}
+
+		nf++;
 	}
 	else
 		volcar_gl(opciones.captura_gl);
