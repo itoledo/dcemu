@@ -63,21 +63,30 @@ con el mismo código; comparar contra los números de un `resumen.txt` viejo no 
 Los resultados quedan en `build/Release/barrido-2026-08-01/` (capturas y serial), al lado de
 los del 31 de julio.
 
-## El 3 de agosto de 2026: cuatro cambios del PVR y el juego de control intacto
+## El 3 de agosto de 2026: cinco cambios del PVR y el juego de control intacto
 
-Los cuatro se validaron con el método fuerte —RTC fijo y comparación byte a byte contra el
+Los cinco se validaron con el método fuerte —RTC fijo y comparación byte a byte contra el
 binario anterior al cambio— y **los diez del juego de control salieron idénticos byte a byte
-en los cuatro**: el `TA_LIST_INIT` vacío que no presenta (A.11), la tabla del factor de
-destino de la mezcla (A.12), el color de offset (A.13) y el volcado ampliado de escena. Los
-cuatro juegos comerciales conservaron sus perfiles exactos y DCDoom sus 867 escenas.
+en los cinco**: el `TA_LIST_INIT` vacío que no presenta (A.11), la tabla del factor de
+destino de la mezcla (A.12), el color de offset (A.13), el alfa de salida del entorno de
+textura (A.14) y el volcado ampliado de escena. Los cuatro juegos comerciales conservaron sus
+perfiles exactos y DCDoom sus 867 escenas.
 
-**Y eso es el dato, no el trámite.** Tres de esos cuatro cambios arreglan cosas que se ven en
+**El quinto es el que mejor muestra por qué hay que medir los juegos.** El alfa de salida de
+los modos 1 y 2 del entorno de textura estaba mal, y el 2 —*decal alpha*, donde el alfa del
+texel se gasta en la mezcla del RGB y la opacidad la pone el vértice— dejaba translúcido a
+cualquier polígono cuyo atlas tuviera alfa parcial. En Crazy Taxi eso era **la carrocería de
+todos los vehículos del tráfico**: se veían las ruedas del lado lejano a través del auto. Los
+diez demos, los otros tres juegos y DCDoom salen byte a byte iguales; de 61 cuadros capturados
+de Crazy Taxi cambian 34, todos de juego y ninguno de menú.
+
+**Y eso es el dato, no el trámite.** Cuatro de esos cinco cambios arreglan cosas que se ven en
 un juego y en ningún demo: los códigos 2 y 3 de los factores de mezcla, el color de offset (con
-el bit puesto en 3022 de las 3029 tiras de una escena de Virtua Tenis 2) y la doble
-inicialización del TA por cuadro que hace Katana. Se suman a la lista que ya venía —el bit de
-mipmap, Flip y Clamp de las UV, el alfa del decal—: **el parque de demos no puede cazar una
-regresión en ninguna de esas rutas, porque no las ejerce.** Para esas, la línea base son los
-juegos, y por eso conviene medirlos junto con los demos.
+el bit puesto en 3022 de las 3029 tiras de una escena de Virtua Tenis 2), la doble
+inicialización del TA por cuadro que hace Katana y el alfa del *decal alpha*. Se suman a la
+lista que ya venía —el bit de mipmap, Flip y Clamp de las UV—: **el parque de demos no puede
+cazar una regresión en ninguna de esas rutas, porque no las ejerce.** Para esas, la línea base
+son los juegos, y por eso conviene medirlos junto con los demos.
 
 ## Cómo se mide
 

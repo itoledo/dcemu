@@ -1580,6 +1580,62 @@ descartando antes de dibujar. El instrumental ya está puesto: el volcado imprim
 
 ---
 
+### A.14 — Los autos semitransparentes de Crazy Taxi: el alfa de salida del entorno de textura (3 de agosto de 2026)
+
+**El síntoma**, reportado jugando: los autos del tráfico se ven a través de sí mismos — las
+ruedas del lado lejano aparecen dibujadas encima de la carrocería — y la pintura sale lavada
+hacia el gris del asfalto. No todos por igual: los furgones se notaban menos.
+
+**Lo que no era**, y cada uno costó una corrida medida:
+
+- **No es la tabla del factor de destino de A.12.** Se compiló `4dd379b` —el commit anterior a
+  ese cambio— en un árbol de trabajo aparte y el mismo auto en el mismo cuadro sale
+  *idénticamente* transparente. El recuerdo de "empezó después de lo de Virtua Tennis" apuntaba
+  a la fecha equivocada.
+- **No es el volumen modificador**, aunque las tiras del auto lo traigan puesto:
+  `DCEMU_SIN_VOLUMEN=1` deja la escena igual.
+- **No es la sombra del estado de GL** (`02a06e9`, arreglada el mismo día): el síntoma sigue.
+- **No es el mapeo de formatos**: `fmt=8366` **es** ARGB1555 (`GL_UNSIGNED_SHORT_1_5_5_5_REV`).
+  Ese lo leí mal yo primero.
+
+**Cómo se acorraló.** El auto se persiguió por el volcado de escena, y ahí hubo que arreglar el
+instrumento antes que el emulador: el volcado cortaba en cuatro vértices por tira, así que la
+caja de una tira de 22 salía en otro lado y la búsqueda por posición apuntó dos veces a una reja
+del fondo. Con todos los vértices (commit `e6db570`), y con la rejilla de coordenadas del guest
+dibujada encima del BMP para no equivocar el mapeo 640×480 → 800×600, el auto blanco de la escena
+3480 resultó ser **26 tiras, todas de la lista translúcida**, con dos texturas de carrocería en
+`env=2` y las ruedas en `env=1`.
+
+**Lo que era.** La tabla *Texture/Shading Instruction* del DevBox (página 210) da **tres reglas
+distintas** para el alfa de salida, y dcemu emitía una sola:
+
+| modo | RGB | alfa | lo que hacía dcemu |
+| --- | --- | --- | --- |
+| 0 decal | `TEX` | `TEXA` | `GL_REPLACE` — bien |
+| 1 modulate | `COL×TEX` | `TEXA` | `GL_MODULATE` → `TEXA×COLA` — **mal** |
+| 2 decal alpha | `TEX×TEXA + COL×(1−TEXA)` | **`COLA`** | `COMBINE` con `TEXA×COLA` — **mal** |
+| 3 modulate alpha | `COL×TEX` | `COLA×TEXA` | `GL_MODULATE` — bien |
+
+El caro es el 2: **ahí el alfa del texel se gasta como factor de mezcla del RGB y no vuelve a
+aparecer**, la opacidad la pone el vértice. Volver a usarlo como opacidad deja translúcida
+cualquier superficie cuyo atlas tenga alfa parcial — que es exactamente cómo se pinta la
+carrocería de un vehículo del tráfico. Con la carrocería a medio alfa y `SRC_ALPHA/1−SRC_ALPHA`,
+las ruedas del lado lejano —dibujadas antes, porque el orden de la lista translúcida va de lejos
+a cerca— se veían a través. El modo 1 tiene el error simétrico y está mejor escondido: su alfa es
+el del texel a secas, y el del vértice sólo se aparta de 1.0 con Use Alpha encendido.
+
+GL no tiene una sola palabra para esto: el 0 es `GL_REPLACE` y el 3 es `GL_MODULATE`, pero el 1 y
+el 2 necesitan `GL_COMBINE` para poder decir el RGB y el alfa por separado.
+
+**Medido.** Los diez del juego de control, Virtua Tennis, Virtua Tenis 2, Capcom vs. SNK y DCDoom
+salen **idénticos byte a byte**; las 21 suites pasan. De 61 cuadros capturados de Crazy Taxi
+cambian 34 —todos de juego, ninguno de menú— entre 349 y 9693 píxeles de 480000: sólo los
+vehículos. El auto de la escena 3480 pasa de blanco lavado con cuatro ruedas flotando a beige
+sólido con dos; el furgón del cuadro 2700, que "se veía bien", pasa de gris lavado a marrón con
+sus ventanas. **Otra ruta que ningún demo ejerce** — se suma a la lista de A.12/A.13.
+
+---
+
 ## Vía B — El AICA (hito E)
 
 > **Esta vía tiene su propio plan desarrollado: [aica-plan.md](aica-plan.md)**, escrito contra el

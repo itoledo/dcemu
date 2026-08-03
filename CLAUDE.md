@@ -534,19 +534,30 @@ unused word between `Dy` and the UVs, so the three texture words are 13, 14 and 
 one early leaves `u` at zero for all four corners and the texture is sampled along a line.
 
 **The texture environment was never emulated**, so everything got GL's default `GL_MODULATE`. The
-chip has four modes in TSP bits 7-6: 0 replace, 1 modulate, **2 decal**, 3 modulate-alpha. Decal is
-2, not 0 — mixing them up sends a surface whose vertex colour is black through modulate and it comes
-out black, which is what kept `pvr-bumpmap` blank.
+chip has four modes in TSP bits 7-6: 0 decal, 1 modulate, **2 decal alpha**, 3 modulate alpha. Decal
+alpha is 2, not 0 — mixing them up sends a surface whose vertex colour is black through modulate and
+it comes out black, which is what kept `pvr-bumpmap` blank.
 
-**And decal cannot be `GL_DECAL`, because of the alpha.** GL's decal outputs the vertex alpha
+**And decal alpha cannot be `GL_DECAL`, because of the alpha.** GL's decal outputs the vertex alpha
 untouched; the game relies on the **texture's** alpha reaching the blender. Crazy Taxi draws each
 traffic car's whole side as one quad over an ARGB4444 atlas (body, windows and wheels together, an
-alpha-0 ring around the silhouette) in decal on the translucent list: on hardware that ring
-vanishes against the road, under `GL_DECAL` it came out as opaque vertex-coloured pixels — a grey
-patch glued to every wheel. Decal is `GL_COMBINE` now: RGB interpolates texture/vertex by the
-texel's alpha (the decal mix) and alpha is texture × vertex, which with vertex alpha at 1.0 is the
-texel's. `pvr-bumpmap` — the one demo on this path — stays byte-identical, so once again only a
-game exercises the difference.
+alpha-0 ring around the silhouette): on hardware that ring vanishes against the road, under
+`GL_DECAL` it came out as opaque vertex-coloured pixels — a grey patch glued to every wheel. It is
+`GL_COMBINE` now, with RGB interpolating texture/vertex by the texel's alpha (the decal mix).
+
+**The output alpha is a different rule in each of the four modes, and that is where the second bug
+was.** The DevBox's own table (p. 210) reads `PIXA = TEXA` for 0 and 1, `PIXA = COLA` for 2 and
+`PIXA = COLA × TEXA` for 3 — three rules, not one — and dcemu emitted `TEXA × COLA` for both 1 and
+2. **Mode 2 is the expensive one**: there the texel's alpha is *spent* as the RGB mix factor and
+does not reach the blender at all, so reusing it as opacity leaves translucent anything whose atlas
+has partial alpha. That is exactly how a Crazy Taxi traffic vehicle is painted, and the symptom was
+seeing the far-side wheels **through** the car body, with the paint washed out toward the road
+behind it. Mode 1 has the symmetric error and is better hidden: its alpha is the texel's alone, and
+the vertex alpha only differs from 1.0 when Use Alpha is on. GL has no single token for this — 0 is
+`GL_REPLACE` and 3 is `GL_MODULATE`, but 1 and 2 need `GL_COMBINE` to state RGB and alpha
+separately. Measured: the ten control demos, Virtua Tennis, Virtua Tenis 2, Capcom vs. SNK and
+DCDoom all stay **byte-identical**; only Crazy Taxi's traffic changes, gameplay frames only. Once
+again a path no demo exercises.
 
 **Punch-through had `GL_LEQUAL` hardcoded.** The depth buffer is cleared to 0.0 and a scene's z
 values land around 0.5, so "less or equal" fails against any untouched pixel — the list could

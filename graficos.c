@@ -2888,26 +2888,36 @@ static void tira_estado(DWORD i)
 				gl_textura(1);
 
 				/*
-					Los cuatro modos del chip, con su equivalente en GL:
+					Los cuatro modos del chip, tal como los define la tabla
+					"Texture/Shading Instruction" del DevBox (pagina 210).
+					**El alfa de salida no es el mismo en los cuatro, y ahi
+					estaba el error**: son tres reglas distintas, no una.
 
-					  0 replace  px = ARGB(tex)                        -> REPLACE
-					  1 modulate px = A(tex) + RGB(col)*RGB(tex)       -> MODULATE
-					  2 decal    px = RGB(tex)*A(tex) + RGB(col)*(1-A) -> COMBINE
-					  3 modulate alpha  px = ARGB(col)*ARGB(tex)       -> MODULATE
+					  0 decal            PIXRGB = TEX           PIXA = TEXA
+					  1 modulate         PIXRGB = COL*TEX       PIXA = TEXA
+					  2 decal alpha      PIXRGB = TEX*TEXA
+					                            + COL*(1-TEXA)  PIXA = COLA
+					  3 modulate alpha   PIXRGB = COL*TEX       PIXA = COLA*TEXA
 
 					Decal es el 2, no el 0: confundirlos manda a modulate una
 					superficie cuyo color de vertice es negro y sale toda negra.
 
-					Y el ALFA del decal no puede ser GL_DECAL: ese deja el del
-					vertice a secas, y el juego cuenta con que el de la textura
-					pase a la mezcla. Los costados de los autos del trafico de
-					Crazy Taxi son UN quad con el atlas ARGB4444 del auto entero
-					en decal sobre la lista translucida: el anillo con alfa 0
-					alrededor del neumatico debe desaparecer contra el fondo, y
-					con GL_DECAL salia como color de vertice opaco -- el parche
-					gris pegado a las ruedas. GL_COMBINE arma el RGB del decal
-					(interpolar textura/vertice por el alfa del texel) con alfa
-					= textura x vertice, que con vertice 1.0 es el del texel.
+					En el 2 el alfa del texel **se gasta como factor de mezcla
+					del RGB** y no vuelve a aparecer: la opacidad la pone el
+					vertice. Emitir TEXA*COLA -- que es lo que hace GL_MODULATE,
+					y lo que este switch hacia -- deja translucida cualquier
+					superficie cuyo atlas tenga alfa parcial, que es justo como
+					se pinta la carroceria de los autos del trafico de Crazy
+					Taxi: se veian las ruedas del lado lejano a traves del auto.
+
+					El 1 tiene el problema simetrico y mas escondido: su alfa es
+					el del texel a secas, no multiplicado por el del vertice.
+					Solo se nota con Use Alpha encendido, porque si no el
+					constructor del vertice ya deja COLA en 1.0.
+
+					GL no tiene una sola palabra para esto: el 0 es REPLACE y el
+					3 es MODULATE, pero el 1 y el 2 necesitan COMBINE para poder
+					decir el RGB y el alfa por separado.
 				*/
 					if (gl_e.tex_env != (GLint) TriangleStrip[i].texture.pvr_texture_env)
 				{
@@ -2919,6 +2929,18 @@ static void tira_estado(DWORD i)
 					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 					break;
 
+					case 1:
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_MODULATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
+					/* PIXA = TEXA: el alfa del vertice no entra. */
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_TEXTURE);
+					break;
+
 					case 2:
 					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
 					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
@@ -2928,9 +2950,9 @@ static void tira_estado(DWORD i)
 					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
 					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_TEXTURE);
 					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_ALPHA);
-					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_MODULATE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_TEXTURE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_ALPHA, GL_PRIMARY_COLOR);
+					/* PIXA = COLA: el del texel ya se gasto en el RGB. */
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_PRIMARY_COLOR);
 					break;
 
 					default:
