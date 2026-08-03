@@ -150,6 +150,14 @@ DWORD mmu_traducir(DWORD direccion, int escritura);
 */
 DWORD mmu_traducir_sq(DWORD direccion);
 
+/*
+	Traduccion para MIRAR: la fisica cruda, o 0 si no se resuelve. No falla,
+	no entra a ninguna excepcion y no mueve URC. Es lo que usan los
+	diagnosticos que leen memoria del guest desde un punto donde fallar seria
+	peor que no ver -- las cadenas de depuracion de Windows CE.
+*/
+DWORD mmu_traducir_mirar(DWORD direccion);
+
 /* Carga UTLB[URC] desde PTEH/PTEL/PTEA. La llama el opcode LDTLB. */
 void mmu_ldtlb(DWORD pteh, DWORD ptel, DWORD ptea, int urc);
 

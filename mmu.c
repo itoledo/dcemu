@@ -339,7 +339,8 @@ static DWORD fallar(DWORD codigo, DWORD vector, DWORD direccion)
 	bien. Si llega a molestar, el paso siguiente es un arreglo decodificado
 	en paralelo, actualizado en los cuatro sitios que mutan la TLB.
 */
-static int utlb_encontrar(DWORD direccion, int usuario, int sv, DWORD * mascara_out)
+static int utlb_encontrar_ex(DWORD direccion, int usuario, int sv,
+							 DWORD * mascara_out, int avanzar_urc)
 {
 	int i;
 
@@ -351,6 +352,7 @@ static int utlb_encontrar(DWORD direccion, int usuario, int sv, DWORD * mascara_
 		entrada, la recarga de la pagina de codigo desaloja a la de datos y
 		la instruccion que falla por las dos queda en ping-pong infinito.
 	*/
+	if (avanzar_urc)
 	{
 		DWORD urc = (MMUCR_URC(*MMUCR) + 1) & 0x3F;
 
@@ -384,6 +386,12 @@ static int utlb_encontrar(DWORD direccion, int usuario, int sv, DWORD * mascara_
 	}
 
 	return -1;
+}
+
+/* El recorrido de siempre: avanza URC, como el chip en cada acceso a la UTLB. */
+static int utlb_encontrar(DWORD direccion, int usuario, int sv, DWORD * mascara_out)
+{
+	return utlb_encontrar_ex(direccion, usuario, sv, mascara_out, 1);
 }
 
 DWORD mmu_traducir(DWORD direccion, int escritura)
@@ -502,6 +510,38 @@ DWORD mmu_traducir_sq(DWORD direccion)
 		return fallar(MMU_EXC_PRIMERA_W, MMU_VEC_GENERAL, direccion);
 
 	return ((d1 & 0x1FFFFC00ul) & ~mascara) | (direccion & mascara);
+}
+
+/*
+	Traduccion para MIRAR, no para ejecutar: devuelve la fisica cruda o 0 si no
+	se puede resolver, y **no falla, no entra a ninguna excepcion y no toca
+	nada del guest** -- ni siquiera URC, que el recorrido normal avanza.
+
+	Es para los diagnosticos que quieren leer memoria del guest en un punto
+	donde fallar seria peor que no ver: el volcado de las cadenas de
+	depuracion de Windows CE se hace desde dentro de excepcion_entrar(), y
+	ahi un longjmp a medias dejaria al emulador en un estado imposible.
+*/
+DWORD mmu_traducir_mirar(DWORD direccion)
+{
+	int usuario = (SR_MD == 0);
+	int sv      = (*MMUCR & MMUCR_SV) != 0;
+	DWORD mascara;
+	int i;
+
+	if (!mmu_activa)
+		return direccion;
+
+	/* P1/P2/P4 no pasan por la TLB. */
+	if (direccion >= 0x80000000ul)
+		return direccion;
+
+	i = utlb_encontrar_ex(direccion, usuario, sv, &mascara, 0);
+
+	if (i < 0)
+		return 0;
+
+	return ((mmu_utlb_dat1[i] & 0x1FFFFC00ul) & ~mascara) | (direccion & mascara);
 }
 
 /* ------------------------------------------------------------------------ */
