@@ -233,6 +233,11 @@ static float profundidad_ta(float z)
 */
 static float color_cara[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 
+/* El color de cara de OFFSET del encabezado, para los vertices de intensidad:
+   su segunda intensidad multiplica este y no el de arriba. Solo lo trae el
+   encabezado de tipo 2 (POLY2), en sus palabras 12-15. */
+static float color_cara_offset[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
 /* "Use Alpha" del encabezado vigente (TSP bit 20): con 0, el alfa de vertice
    sale 1.0. Lo escribe taPolyModifier() y lo aplican los constructores de
    color de vertice. */
@@ -2017,6 +2022,87 @@ static void plantilla_para(int i, int dentro, int hay_volumen)
 	Apunta los arreglos de color y de coordenadas de textura al juego 0 o al 1.
 	Las posiciones no cambian: es la misma geometria.
 */
+/*
+	El COLOR DE OFFSET del PVR, que en GL es el color secundario.
+
+	La instruccion de textura/sombreado lo suma al color del pixel DESPUES de
+	combinar el texel con el color base: PIXRGB = COLRGB x TEXRGB + OFFSETRGB
+	en los cuatro modos (DevBox, tabla de Texture/Shading Instruction). Eso es
+	exactamente lo que hace GL_COLOR_SUM con glSecondaryColorPointer, y no hay
+	forma de plegarlo en el color del vertice: (COL+OFF) x TEX no es
+	COL x TEX + OFF salvo que la textura sea blanca.
+
+	La entrada es de GL 1.4, asi que en Windows hay que pedirla por
+	SDL_GL_GetProcAddress: opengl32.dll solo exporta 1.1 y el resto lo sirve el
+	ICD del driver. Si no esta, el offset simplemente no se aplica y se dice una
+	vez -- que es lo que pasaba hasta ahora, solo que en silencio.
+
+	Sin esto, un poligono cuyo color base es negro sale NEGRO aunque todo su
+	color este en el offset. Es lo que dejaba sin sombra a Virtua Tenis 2: sus
+	27 tiras de sombra tienen COLRGB = 0 y `off=1`.
+*/
+typedef void (APIENTRY * PTR_SECONDARY_COLOR_POINTER)(GLint, GLenum, GLsizei, const GLvoid *);
+
+static PTR_SECONDARY_COLOR_POINTER p_glSecondaryColorPointer = NULL;
+static int offset_disponible = 0;
+
+/* Que juego de parametros apunta el color secundario. Hace falta guardarlo
+   porque el array se enciende por tira y el puntero se programa por juego: si
+   se enciende GL_SECONDARY_COLOR_ARRAY sin haber programado nunca el puntero,
+   GL lee de NULL y el proceso se cae en el primer glDrawArrays. */
+static int offset_juego = 0;
+
+static void offset_puntero(int juego);
+
+static void offset_iniciar(void)
+{
+	p_glSecondaryColorPointer = (PTR_SECONDARY_COLOR_POINTER)
+		SDL_GL_GetProcAddress("glSecondaryColorPointer");
+
+	if (p_glSecondaryColorPointer == NULL)
+		p_glSecondaryColorPointer = (PTR_SECONDARY_COLOR_POINTER)
+			SDL_GL_GetProcAddress("glSecondaryColorPointerEXT");
+
+	offset_disponible = (p_glSecondaryColorPointer != NULL);
+
+	offset_puntero(0);
+
+	if (traza_activa)
+		fprintf(stderr, "traza: color de offset (GL_COLOR_SUM): %s\n",
+			offset_disponible ? "disponible" : "NO disponible, no se aplica");
+}
+
+/* El puntero del color secundario para el juego de parametros que toque. */
+static void offset_puntero(int juego)
+{
+	if (!offset_disponible)
+		return;
+
+	offset_juego = juego;
+
+	p_glSecondaryColorPointer(3, GL_FLOAT, sizeof(vertex),
+		juego ? &VertexBuffer[0].ro1 : &VertexBuffer[0].ro);
+}
+
+/* Encendido por tira: solo las que traen el bit Offset de la palabra ISP. */
+static void offset_estado(int encendido)
+{
+	if (!offset_disponible)
+		return;
+
+	if (encendido)
+	{
+		offset_puntero(offset_juego);	/* nunca encender sin puntero */
+		glEnableClientState(GL_SECONDARY_COLOR_ARRAY);
+		glEnable(GL_COLOR_SUM);
+	}
+	else
+	{
+		glDisableClientState(GL_SECONDARY_COLOR_ARRAY);
+		glDisable(GL_COLOR_SUM);
+	}
+}
+
 static void juego_de_parametros(int juego)
 {
 	if (juego)
@@ -2029,6 +2115,8 @@ static void juego_de_parametros(int juego)
 		glColorPointer   (4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r);
 		glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].t1);
 	}
+
+	offset_puntero(juego);
 }
 
 /* Las tiras que trajo cada una de las ultimas escenas, y cuantas hubo. */
@@ -2285,22 +2373,36 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 			if (pedida)
 			{
-				DWORD ref = 0;
+				DWORD ref = 0, cmin = 0, cmax = 0, shad = 0;
 
 				memread_fisico(0xA05F811C, &ref, 4);
-				fprintf(stderr, "traza: escena %d: %d tiras, PT_ALPHA_REF=%02lx\n",
-					escena, (int) strip_count, (unsigned long) (ref & 0xFF));
+					
+					/* El recorte de color (bit 21 del TSP) y la escala de la sombra
+					   barata: dos cosas que el chip aplica y dcemu no, y que hay que
+					   poder ver al lado de las tiras. */
+					memread_fisico(0xA05F80C0, &cmin, 4);
+					memread_fisico(0xA05F80BC, &cmax, 4);
+					memread_fisico(0xA05F8074, &shad, 4);
+					
+					fprintf(stderr, "traza: escena %d: %d tiras, PT_ALPHA_REF=%02lx"
+						" FOG_CLAMP_MIN=%08lx MAX=%08lx FPU_SHAD_SCALE=%08lx\n",
+						escena, (int) strip_count, (unsigned long) (ref & 0xFF),
+						(unsigned long) cmin, (unsigned long) cmax,
+						(unsigned long) shad);
 			}
 
 			for (t = 0; t < strip_count && t < tope; t++)
 			{
 				fprintf(stderr, "traza:   tira %d: tipo=%d idx=%d n=%d alpha=%d "
-					"blend=%04x/%04x zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d mip=%d fmt=%04x "
-					"bpp=%d stride=%d env=%d vol=%d tcw=%08lx\n",
+					"blend=%04x/%04x sel=%d/%d off=%d zfunc=%04x zwrite=%d cull=%d tex=%08x %dx%d tw=%d vq=%d mip=%d fmt=%04x "
+					"bpp=%d stride=%d env=%d vol=%d tcw=%08lx tsp=%08lx\n",
 					t, (int) TriangleStrip[t].type, (int) TriangleStrip[t].index,
 					(int) TriangleStrip[t].count, (int) TriangleStrip[t].alpha,
 					(unsigned) TriangleStrip[t].pvr_srcblend,
 					(unsigned) TriangleStrip[t].pvr_dstblend,
+					(int) TriangleStrip[t].srcselect,
+					(int) TriangleStrip[t].dstselect,
+					(int) TriangleStrip[t].usa_offset,
 					(unsigned) TriangleStrip[t].depthmode,
 					(int) TriangleStrip[t].zwrite, (int) TriangleStrip[t].culling,
 					(unsigned) TriangleStrip[t].texture.surface,
@@ -2314,7 +2416,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 					(int) TriangleStrip[t].texture.pvr_texture_stride,
 					(int) TriangleStrip[t].texture.pvr_texture_env,
 					(int) TriangleStrip[t].volumen,
-					(unsigned long) TriangleStrip[t].texture.tcw_crudo);
+					(unsigned long) TriangleStrip[t].texture.tcw_crudo,
+					(unsigned long) TriangleStrip[t].tsp_crudo);
 
 				/* Las esquinas y con que coordenadas de textura se muestrean.
 				   Los cuatro vertices y no solo el primero: un cuadrilatero mal
@@ -2326,12 +2429,15 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 					{
 						DWORD ix = TriangleStrip[t].index + k;
 
-						fprintf(stderr, "traza:     v%d=(%.1f,%.1f,%g) uv=(%.3f,%.3f) rgba=(%.2f,%.2f,%.2f,%.2f)\n",
+						fprintf(stderr, "traza:     v%d=(%.1f,%.1f,%g) uv=(%.3f,%.3f)"
+							" rgba=(%.2f,%.2f,%.2f,%.2f) off=(%.2f,%.2f,%.2f)\n",
 							(int) k,
 							VertexBuffer[ix].x, VertexBuffer[ix].y, VertexBuffer[ix].z,
 							VertexBuffer[ix].t1, VertexBuffer[ix].t2,
 							VertexBuffer[ix].r, VertexBuffer[ix].g,
-							VertexBuffer[ix].b, VertexBuffer[ix].a);
+							VertexBuffer[ix].b, VertexBuffer[ix].a,
+							VertexBuffer[ix].ro, VertexBuffer[ix].go,
+							VertexBuffer[ix].bo);
 					}
 				}
 			}
@@ -2507,6 +2613,10 @@ static void dibujar_niebla_tira(DWORD i)
 
 	if (!TriangleStrip[i].zwrite)
 		glDepthFunc(GL_EQUAL);
+
+	/* Sin color de offset: esta pasada dibuja el color de la niebla y nada
+	   mas, y el secundario le sumaria el offset de la tira original. */
+	offset_estado(0);
 
 	glColorPointer(4, GL_FLOAT, 0, niebla_rgba);
 	glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
@@ -2697,6 +2807,11 @@ static void tira_estado(DWORD i)
 			*/
 			gl_blend(TriangleStrip[i].type == 2 || TriangleStrip[i].type == 1);
 			gl_blend_func(TriangleStrip[i].pvr_srcblend, TriangleStrip[i].pvr_dstblend);
+
+			/* El color de offset solo en las tiras cuyo encabezado trae el bit
+			   Offset de la palabra ISP; el resto ni siquiera lo lleva en el
+			   vertice. */
+			offset_estado(TriangleStrip[i].usa_offset != 0);
 
 			/*
 				Lo que distingue al punch-through en el chip es que descarta el
@@ -3729,6 +3844,11 @@ void taPolyModifier()
 	if (global_parameter == TA_GLOBAL_POLY2 || global_parameter == TA_GLOBAL_POLY4)
 		memcpy(&color_cara[0], &ta_address_pointer[8], sizeof(float) * 4);
 
+	/* El POLY2 trae ademas el color de cara de OFFSET en 12-15; el POLY4 pone
+	   ahi el color de cara del otro volumen, que es otra cosa. */
+	if (global_parameter == TA_GLOBAL_POLY2)
+		memcpy(&color_cara_offset[0], &ta_address_pointer[12], sizeof(float) * 4);
+
 	/*
 		Un encabezado de volumen modificador solo trae la palabra ISP/TSP: no
 		hay TSP instruction word, ni control de textura, ni blend. Leer sus
@@ -3799,6 +3919,7 @@ void taPolyModifier()
 		TriangleStrip[strip_count].culling = RendCtrl.registers.cullingmode;
 		
 		TriangleStrip[strip_count].zwrite = RendCtrl.registers.zwrite;
+		TriangleStrip[strip_count].usa_offset = RendCtrl.registers.offset;
 	}
 	
 	/* En la palabra TSP: bits 31-29 el factor de origen y 28-26 el de destino.
@@ -3809,13 +3930,18 @@ void taPolyModifier()
 
 	   Cada uno con su tabla: los codigos 2 y 3 se leen contra el otro operando
 	   y ese "otro" no es el mismo de los dos lados. Ver blend_modes_dst. */
+	TriangleStrip[strip_count].tsp_crudo = ta_address_pointer[2];
+
 	TriangleStrip[strip_count].pvr_srcblend = blend_modes[(ta_address_pointer[2] >> 29) & 0x7];
 
 	TriangleStrip[strip_count].pvr_dstblend = blend_modes_dst[(ta_address_pointer[2] >> 26) & 0x7];
 	
 	pvr_srcblendmode = (ta_address_pointer[2] >> 25) & 0x1;
 	pvr_dstblendmode = (ta_address_pointer[2] >> 24) & 0x1;
-	
+
+	TriangleStrip[strip_count].srcselect = pvr_srcblendmode;
+	TriangleStrip[strip_count].dstselect = pvr_dstblendmode;
+
 	if (pvr_srcblendmode)
 		logxmsg(LOG_PVR, "srcblend: src select\n");
 	if (pvr_dstblendmode)
@@ -4063,6 +4189,11 @@ static vertex * vertice_nuevo(void)
 	v->t1 = 0.0f;
 	v->t2 = 0.0f;
 
+	/* Y sin color de offset: el tipo de vertice que lo traiga lo pisa. Sin
+	   esto queda el del vertice anterior, que es peor que no tenerlo. */
+	v->ro = v->go = v->bo = 0.0f;
+	v->ro1 = v->go1 = v->bo1 = 0.0f;
+
 	return v;
 }
 
@@ -4120,6 +4251,61 @@ static void juego1_color(vertex * v, DWORD argb)
 	v->r1 = ((argb >> 16) & 0xFF) / 255.0;
 	v->g1 = ((argb >> 8)  & 0xFF) / 255.0;
 	v->b1 = ((argb >> 0)  & 0xFF) / 255.0;
+}
+
+/*
+	El color de offset del vertice, empaquetado ARGB. El alfa no entra: en el
+	chip solo sirve como coeficiente de niebla por vertice, que es otra cosa.
+*/
+static void vertice_offset(vertex * v, DWORD argb)
+{
+	v->ro = ((argb >> 16) & 0xFF) / 255.0f;
+	v->go = ((argb >> 8)  & 0xFF) / 255.0f;
+	v->bo = ((argb >> 0)  & 0xFF) / 255.0f;
+}
+
+static void juego1_offset(vertex * v, DWORD argb)
+{
+	v->ro1 = ((argb >> 16) & 0xFF) / 255.0f;
+	v->go1 = ((argb >> 8)  & 0xFF) / 255.0f;
+	v->bo1 = ((argb >> 0)  & 0xFF) / 255.0f;
+}
+
+/* El de punto flotante: A, R, G, B consecutivos desde la palabra `desde`. */
+static void vertice_offset_flotante(vertex * v, int desde)
+{
+	float * f = (float *) &ta_address_pointer[desde];
+
+	v->ro = f[1];
+	v->go = f[2];
+	v->bo = f[3];
+}
+
+/*
+	En modo intensidad el vertice trae DOS intensidades: una multiplica el
+	color de cara del encabezado y la otra su color de cara de offset. El
+	segundo lo latchea taPolyModifier() en color_cara_offset[].
+*/
+static void vertice_offset_intensidad(vertex * v, DWORD palabra)
+{
+	float i;
+
+	memcpy(&i, &palabra, sizeof(float));
+
+	v->ro = color_cara_offset[1] * i;
+	v->go = color_cara_offset[2] * i;
+	v->bo = color_cara_offset[3] * i;
+}
+
+static void juego1_offset_intensidad(vertex * v, DWORD palabra)
+{
+	float i;
+
+	memcpy(&i, &palabra, sizeof(float));
+
+	v->ro1 = color_cara_offset[1] * i;
+	v->go1 = color_cara_offset[2] * i;
+	v->bo1 = color_cara_offset[3] * i;
 }
 
 static void juego1_intensidad(vertex * v, DWORD palabra)
@@ -4349,6 +4535,7 @@ void taVertexHandler()
 			   tomando el alpha del mismo campo que el rojo, asi que la
 			   geometria texturada quedaba con alpha = rojo. */
 			vertice_color(v, ta_address_pointer[6]);
+			vertice_offset(v, ta_address_pointer[7]);
 		}
 		break;
 
@@ -4358,6 +4545,7 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_color(v, ta_address_pointer[6]);
+			vertice_offset(v, ta_address_pointer[7]);
 		}
 		break;
 
@@ -4367,6 +4555,7 @@ void taVertexHandler()
 
 			vertice_uv(v, 4);
 			vertice_color_flotante(v, 8);
+			vertice_offset_flotante(v, 12);
 		}
 		break;
 
@@ -4376,6 +4565,7 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_color_flotante(v, 8);
+			vertice_offset_flotante(v, 12);
 		}
 		break;
 
@@ -4385,6 +4575,7 @@ void taVertexHandler()
 
 			vertice_uv(v, 4);
 			vertice_intensidad(v, ta_address_pointer[6]);
+			vertice_offset_intensidad(v, ta_address_pointer[7]);
 		}
 		break;
 
@@ -4394,6 +4585,7 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_intensidad(v, ta_address_pointer[6]);
+			vertice_offset_intensidad(v, ta_address_pointer[7]);
 		}
 		break;
 
@@ -4427,8 +4619,10 @@ void taVertexHandler()
 
 			vertice_uv(v, 4);
 			vertice_color(v, ta_address_pointer[6]);
+			vertice_offset(v, ta_address_pointer[7]);
 			juego1_uv(v, 8);
 			juego1_color(v, ta_address_pointer[10]);
+			juego1_offset(v, ta_address_pointer[11]);
 		}
 		break;
 
@@ -4438,8 +4632,10 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_color(v, ta_address_pointer[6]);
+			vertice_offset(v, ta_address_pointer[7]);
 			juego1_uv16(v, ta_address_pointer[8]);
 			juego1_color(v, ta_address_pointer[10]);
+			juego1_offset(v, ta_address_pointer[11]);
 		}
 		break;
 
@@ -4449,8 +4645,10 @@ void taVertexHandler()
 
 			vertice_uv(v, 4);
 			vertice_intensidad(v, ta_address_pointer[6]);
+			vertice_offset_intensidad(v, ta_address_pointer[7]);
 			juego1_uv(v, 8);
 			juego1_intensidad(v, ta_address_pointer[10]);
+			juego1_offset_intensidad(v, ta_address_pointer[11]);
 		}
 		break;
 
@@ -4460,8 +4658,10 @@ void taVertexHandler()
 
 			vertice_uv16(v, ta_address_pointer[4]);
 			vertice_intensidad(v, ta_address_pointer[6]);
+			vertice_offset_intensidad(v, ta_address_pointer[7]);
 			juego1_uv16(v, ta_address_pointer[8]);
 			juego1_intensidad(v, ta_address_pointer[10]);
+			juego1_offset_intensidad(v, ta_address_pointer[11]);
 		}
 		break;
 
@@ -5116,13 +5316,23 @@ int glinit(void)
 	*/
 	if (traza_activa)
 	{
-		int prof = 0, stencil = 0;
+		int prof = 0, stencil = 0, alfa = 0;
+		GLint alfa_real = 0;
 
 		SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &prof);
 		SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &stencil);
+		SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE, &alfa);
 
-		fprintf(stderr, "traza: contexto GL: profundidad %d bits, plantilla %d\n",
-			prof, stencil);
+		/* Y lo que el contexto entrego de verdad, que no es lo que se pidio:
+		   pedir SDL_GL_ALPHA_SIZE no garantiza bits de alfa en el buffer por
+		   omision, y sin ellos GL devuelve 1.0 para GL_DST_ALPHA y descarta lo
+		   que se escriba. El PVR SI tiene ese canal en su bufer de acumulacion
+		   y los juegos lo usan como mascara. */
+		glGetIntegerv(GL_ALPHA_BITS, &alfa_real);
+
+		fprintf(stderr, "traza: contexto GL: profundidad %d bits, plantilla %d, "
+			"alfa pedido %d / real %d\n",
+			prof, stencil, alfa, (int) alfa_real);
 	}
 
     SDL_WM_SetCaption(titulo_ventana, NULL);
@@ -5183,6 +5393,8 @@ int glinit(void)
 	glVertexPointer			(3, GL_FLOAT,		   sizeof(vertex), &VertexBuffer);
 	glColorPointer			(4, GL_FLOAT,  sizeof(vertex), &VertexBuffer[0].r);
 	glTexCoordPointer		(4, GL_FLOAT,		   sizeof(vertex), &VertexBuffer->t1);
+
+	offset_iniciar();
 
 	return 0;
 }

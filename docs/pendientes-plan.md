@@ -32,6 +32,8 @@ Actualizado el 2 de agosto de 2026.
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
 | mame4all | arranca desde el `.iso` y dibuja su menú |
 | **Los cuatro juegos comerciales** | **corren**: Crazy Taxi (A.3), Virtua Tennis (A.6), Capcom vs. SNK (A.7) y Virtua Tenis 2 (A.8) — todos con título y attract/menú |
+| Parpadeo de los juegos de Katana | **resuelto** (A.11): inicializaban el TA dos veces por cuadro y la mitad de los cuadros salía negra |
+| Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12, la tabla del factor de destino); la sombra en sí **sigue sin dibujarse** y el pipeline ya está agotado etapa por etapa (A.13) |
 
 Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
 no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
@@ -451,6 +453,10 @@ Lo que queda de la vía A, medido el mismo día con los dos arreglos puestos:
 | Virtua Tennis (los dos rips) | ~~0 escenas~~ → **corre desde el 2 de agosto**: aviso de VMU, título, Main Menu y attract en 3D — ver A.6 |
 | Capcom vs. SNK | ~~2 escenas~~ → **corre desde el 2 de agosto**: aviso de Memory Card y pantalla de título — ver A.7 |
 | mame4all | idéntico, byte a byte: 93650 colores |
+
+Los tres de Katana —Capcom y las dos Virtua Tennis— presentaban además **un cuadro negro de
+cada dos** hasta el 3 de agosto, y sus cifras de escenas de arriba lo llevan dentro: las de
+hoy son la mitad. Ver A.11.
 
 La lectura de `0x2d2d2d0a` quedó explicada por el lado que no acusaba: en Crazy Taxi ocurre
 **una sola vez** y el juego sigue; era consecuencia del estado a medio cargar, no la causa. En
@@ -1488,6 +1494,89 @@ delante costó cinco corridas de siete minutos:
 no llegó sola — la navegó el usuario con el mando mientras miraba. **XInput se lee global y
 sin foco de ventana**, así que las pulsaciones de quien esté jugando entran a la medición. Ya
 estaba anotado para el sonido; vale igual para la navegación.
+
+### A.13 — El color de offset, contra la especificación; y por qué la sombra de VT2 sigue sin salir (3 de agosto de 2026)
+
+Perseguido con el volcado de escena, ampliado para informar tres campos nuevos: los bits 25 y
+24 del TSP (`sel=`), el bit Offset de la palabra ISP (`off=`) y el color de offset por vértice.
+Lo que dio la escena 1600 del attract, de 3029 tiras:
+
+| combinación de mezcla | tiras | qué es |
+| --- | --- | --- |
+| `0001/0000` (SRC=1, DST=0) | 2457 | opacas — y el documento **exige** justo eso para una opaca |
+| `0001/0304` | 275 | |
+| `0302/0303` (SRC=4, DST=5) | 258 | lo que el documento **exige** para punch-through |
+| **`0307/0301` (SRC=3, DST=3)** | **27** | **las sombras** |
+| `0001/0001` | 8 | segunda pasada de las sombras |
+| `0000/0000` | 4 | degeneradas, fuera de pantalla |
+
+Las dos filas en negrita del documento —opaca = (1,0), punch-through = (4,5)— confirman de
+paso, y de forma independiente, que dcemu lee los campos en el orden correcto: bits 31-29 el
+origen y 28-26 el destino.
+
+**Tres mecanismos quedaron descartados por medición, no por lectura:**
+
+- **volumen modificador**: con `DCEMU_SIN_VOLUMEN=1` la escena sale byte a byte idéntica;
+- **búfer de acumulación secundario** (§3.4.6.1, bits 25 y 24 del TSP): `sel=0/0` en las 3029;
+- **alfa del destino**: limpiar el búfer con alfa 1 en vez de 0 no cambia un solo píxel.
+
+**Lo que sí faltaba y ahora está: el color de offset.** La tabla de la instrucción de
+textura/sombreado lo suma DESPUÉS de combinar el texel con el color base —`PIXRGB = COLRGB ×
+TEXRGB + OFFSETRGB` en los cuatro modos— y dcemu no lo leía en ninguna parte, con `off=1` en
+3022 de las 3029 tiras. En GL eso es el **color secundario** con `GL_COLOR_SUM`, que suma
+exactamente donde corresponde; plegarlo en el color del vértice no sirve, porque
+`(COL+OFF) × TEX` no es `COL × TEX + OFF` salvo con textura blanca. La entrada es de GL 1.4,
+así que se pide por `SDL_GL_GetProcAddress`. Se analiza en todos los tipos de vértice
+texturados, incluidos los de dos volúmenes y los de intensidad —estos traen una **segunda**
+intensidad que multiplica el *color de cara de offset* del encabezado, que solo trae el
+encabezado de tipo 2, en sus palabras 12-15—. Regresión: los diez del juego de control byte a
+byte, los cuatro juegos con sus perfiles exactos, DCDoom en sus 867 escenas, 21 suites en
+verde. Efecto visible: en Virtua Tenis 2 le devuelve los brillos a la piel de los jugadores.
+
+**Y aun así la sombra no sale, y ahora se puede decir por qué con precisión.** Las 27 tiras
+traen, medido: color base **negro**, color de offset **cero**, y una textura RGB565 de 8×8
+—sin canal alfa—, o sea `PIXRGB = 0 × TEX + 0 = 0`. Con el origen en negro y códigos (3,3) la
+ecuación del propio documento da
+
+```
+DST_rgb' = SRC_rgb·(1−DST_rgb) + DST_rgb·(1−SRC_rgb) = 0 + DST_rgb·1 = DST_rgb
+```
+
+es decir **no toca nada**, y no hay color de origen negro que pueda oscurecer por esa vía.
+
+**Y la palabra TSP cruda cierra la duda de si se está leyendo bien.** El volcado la imprime
+entera ahora (`tsp=`), y las 27 dan todas el mismo valor, `0x6C1804C0`, que contra la tabla de
+bits de §3.7.9.2 decodifica:
+
+| campo | bits | valor |
+| --- | --- | --- |
+| SRC Alpha Instr | 31-29 | **3** (Inverse Other Color) |
+| DST Alpha Instr | 28-26 | **3** (Inverse Other Color) |
+| SRC / DST Select | 25, 24 | 0, 0 — sin búfer secundario |
+| Fog Control | 23-22 | 0 (tabla) |
+| Color Clamp | 21 | 0 |
+| Use Alpha | 20 | 1 |
+| Ignore Tex. Alpha | 19 | 1 |
+| Texture/Shading | 7-6 | 3 (Modulate Alpha) |
+
+O sea que dcemu lee cada campo donde el documento lo pone. Las 8 tiras de la pasada `ONE/ONE`
+dan `0x24080440` y son **el único sitio de la escena con Color Clamp puesto** — pero los dos
+registros del recorte están en la identidad (`FOG_CLAMP_MIN=00000000`, `MAX=ffffffff`), así
+que tampoco es eso. Y `FPU_SHAD_SCALE=00000001`, con el bit 8 de habilitación en cero: el modo
+de intensidad ni siquiera está encendido.
+
+**Con eso queda agotado el pipeline entre el vértice y el framebuffer**, etapa por etapa y
+cada una medida, no leída: volumen modificador, búfer de acumulación secundario, alfa del
+destino (el contexto entrega 8 bits reales, comprobado con `GL_ALPHA_BITS`), color de offset,
+recorte de color, ignorar el alfa de la textura. **Ninguna es.**
+
+Lo que eso significa hay que decirlo derecho: **esas 27 tiras no dibujan la sombra, ni acá ni
+en la consola.** Son una operación nula por la ecuación del propio documento. El
+oscurecimiento tiene que venir de otra geometría, y esa geometría no está llegando al
+renderizador — que es un problema distinto del que se venía persiguiendo y hay que atacarlo
+por ahí: buscar en la escena qué otra cosa cubre esa silueta, o si hay tiras que se están
+descartando antes de dibujar. El instrumental ya está puesto: el volcado imprime `sel=`,
+`off=`, el color de offset por vértice y la palabra TSP entera.
 
 ---
 

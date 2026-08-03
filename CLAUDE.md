@@ -938,6 +938,21 @@ that buffer instead of the framebuffer as the blend operand and which dcemu only
 face colour of an intensity-mode vertex, since those strips arrive pure black with only the
 per-vertex alpha varying (0.00, 0.11, 0.15).
 
+**The Offset Color is emulated now, and it is GL's secondary color.** The Texture/Shading
+Instruction adds it *after* the texel is combined with the base color — `PIXRGB = COLRGB ×
+TEXRGB + OFFSETRGB` in all four modes (DevBox, the Texture/Shading Instruction table) — which
+is exactly `GL_COLOR_SUM` with `glSecondaryColorPointer`, and there is no way to fold it into
+the vertex color: `(COL+OFF) × TEX` is not `COL × TEX + OFF` unless the texture is white. The
+entry point is GL 1.4, so on Windows it comes from `SDL_GL_GetProcAddress` (opengl32.dll only
+exports 1.1 and the ICD serves the rest); if it is missing the offset is skipped and
+`--traza-mem` says so once. It is parsed for every textured vertex type, including the
+two-volume ones and the intensity variants — those carry a *second* intensity that multiplies
+the header's **offset face color**, which only a Type 2 header brings (words 12-15; a Type 4
+puts the other volume's face color there instead). Nothing in the ten-demo control set uses
+it (all byte-identical); in Virtua Tenis 2 it is what puts the highlights back on the
+players' skin. `usa_offset` (the ISP word's Offset bit) gates it per strip, and the fog pass
+turns it off — that pass draws the fog color and nothing else.
+
 **Two more that between them lost the whole `conio/*` family**, which draws one textured quad
 per character straight through `pvr_prim()`:
 
@@ -1025,6 +1040,23 @@ the fault is in the vertex layout or the store queues, not in the rasteriser. At
 prints how many scenes were rendered and the strip count of the last twelve — which is what
 separates "the demo stopped submitting" from "the capture is wrong", a distinction that has
 already cost a whole sweep.
+
+**`DCEMU_TRAZA_ESCENA` dumps one whole scene, strip by strip, and it is the tool for "the
+geometry arrives and it still looks wrong".** `=N[:M]` takes M scenes from number N (the
+`traza_rendidas` count, the same one the exit summary uses); **`=+K[:M]` takes the first M
+scenes with more than K strips**, which is how you pick a *gameplay* scene without knowing its
+number — the index does not survive from one run to the next (one frame more in a menu and it
+moves), while the weight separates a match (thousands of strips) from a menu (five). Chasing
+the index cost two seven-minute runs that landed on a transition screen. Per scene it prints
+`PT_ALPHA_REF`, `FOG_CLAMP_MIN`/`MAX` and `FPU_SHAD_SCALE`; per strip the list type, blend
+factors, the SRC/DST Select bits, the Offset bit, depth mode, culling, the whole texture state
+and **the raw TSP and TCW words**; and per vertex the position, UVs, colour and offset colour.
+The raw words are what settle "is this field being read from the right place" — decoding
+`tsp=` against the bit table of §3.7.9.2 is what proved dcemu reads every TSP field where the
+document puts it. `--traza-mem` must be on. The GL context also reports its **real** alpha
+bits (`GL_ALPHA_BITS`) next to the requested ones: asking for `SDL_GL_ALPHA_SIZE` does not
+guarantee a destination alpha channel, and without one GL silently answers 1.0 for
+`GL_DST_ALPHA` and discards whatever is written to it.
 
 The guest submits geometry through the SH-4 store queues, not through a normal write:
 `pref142()` in `syscontrol.c` flushes SQ0/SQ1, and when the target lands in the TA FIFO

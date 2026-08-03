@@ -128,6 +128,21 @@ typedef struct vertex
 	float t1,t2,tr,tq;
 	float r1,g1,b1,a1;
 	float u1,v1,ur,uq;
+
+	/*
+		El COLOR DE OFFSET, un juego por parametro. La instruccion de
+		textura/sombreado lo SUMA al color del pixel DESPUES de combinar el
+		texel con el color base -- PIXRGB = COLRGB x TEXRGB + OFFSETRGB en los
+		cuatro modos (DevBox, tabla de Texture/Shading Instruction) --, que es
+		exactamente lo que hace el color secundario de GL con GL_COLOR_SUM.
+		No lleva alfa: el chip no lo usa (salvo como coeficiente de niebla por
+		vertice, que es otra cosa).
+
+		Las tres componentes de cada juego van contiguas porque
+		glSecondaryColorPointer recorre con sizeof(vertex) de paso.
+	*/
+	float ro,go,bo;
+	float ro1,go1,bo1;
 }vertex;
 
 /*
@@ -152,6 +167,26 @@ typedef struct TriangleStripInfo
 	GLenum depthmode;
 	DWORD pvr_srcblend;
 	DWORD pvr_dstblend;
+
+	/* Bits 25 y 24 del TSP: eligen el BUFER DE ACUMULACION SECUNDARIO como
+	   origen y como destino de la mezcla, en vez del primario --que es el que
+	   termina en el framebuffer--. DevBox 3.4.6.1: existe para tratar el
+	   resultado de superponer varios poligonos como si fuera uno solo. */
+	DWORD srcselect;
+	DWORD dstselect;
+
+	/* Bit "Offset" de la palabra ISP/TSP: el vertice trae un color de offset
+	   que la instruccion de textura/sombreado SUMA al color del pixel
+	   (DevBox, tabla de Texture/Shading Instruction: PIXRGB = ... + OFFSETRGB
+	   en los cuatro modos). */
+	DWORD usa_offset;
+
+	/* La palabra TSP tal como llego. Como el tcw_crudo de la textura: cuando un
+	   parametro parece mal leido, esto es lo que deja mirar los bits sin
+	   intermediarios -- y hay campos que dcemu todavia no usa (bit 21 Color
+	   Clamp, bit 19 Ignore Texture Alpha). */
+	DWORD tsp_crudo;
+
 	DWORD zwrite;
 	DWORD culling;
 	DWORD type;
