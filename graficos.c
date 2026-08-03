@@ -2453,11 +2453,18 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 				/* Las esquinas y con que coordenadas de textura se muestrean.
 				   Los cuatro vertices y no solo el primero: un cuadrilatero mal
-				   armado -- un sprite, por ejemplo -- se ve aca y no en el v0. */
+				   armado -- un sprite, por ejemplo -- se ve aca y no en el v0.
+
+				   Cuando la escena se pidio a proposito van **todos**: con
+				   cuatro no se puede ubicar en pantalla una tira larga -- la
+				   caja que se calcula con los cuatro primeros no es la que
+				   cubre --, y ubicarlas es justamente para lo que se pide una
+				   escena entera. */
 				{
 					DWORD k;
+					DWORD tope_v = pedida ? TriangleStrip[t].count : 4;
 
-					for (k = 0; k < TriangleStrip[t].count && k < 4; k++)
+					for (k = 0; k < TriangleStrip[t].count && k < tope_v; k++)
 					{
 						DWORD ix = TriangleStrip[t].index + k;
 

@@ -1053,7 +1053,19 @@ factors, the SRC/DST Select bits, the Offset bit, depth mode, culling, the whole
 and **the raw TSP and TCW words**; and per vertex the position, UVs, colour and offset colour.
 The raw words are what settle "is this field being read from the right place" — decoding
 `tsp=` against the bit table of §3.7.9.2 is what proved dcemu reads every TSP field where the
-document puts it. `--traza-mem` must be on. The GL context also reports its **real** alpha
+document puts it. `--traza-mem` must be on.
+
+**A scene asked for by name prints every vertex; the automatic first-two-scenes dump still
+stops at four.** Four is enough to see a malformed quad, which is what it was for, and useless
+for the other question the dump answers — *which* strips cover a given place on screen. A
+22-vertex strip's real bounding box is nothing like the one its first four vertices describe,
+so with the cut the box lands somewhere else and the search comes up empty: chasing a
+transparent Crazy Taxi car this way pointed at a fence in the background for two rounds.
+Beware that some strips carry vertices at ±15 million with `z` around 2.1 — geometry the chip
+clips against the near plane and dcemu does not — so any box computed from a dump has to
+discard the absurd ones before believing it.
+
+The GL context also reports its **real** alpha
 bits (`GL_ALPHA_BITS`) next to the requested ones: asking for `SDL_GL_ALPHA_SIZE` does not
 guarantee a destination alpha channel, and without one GL silently answers 1.0 for
 `GL_DST_ALPHA` and discards whatever is written to it.
