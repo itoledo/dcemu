@@ -590,3 +590,68 @@ documento.
   volúmenes modificadores por plantilla, el autosort por tira). Pero es una reescritura del
   pipeline y no es un plan de rendimiento.
 - **Bajar la resolución o saltar cuadros.** Esconde el problema en vez de medirlo.
+
+---
+
+# 69,8 fps: cómo se llegó, al 2026-08-03
+
+Crazy Taxi en 3D en movimiento (1183 tiras por escena), `--salir-tras=180`, i9-13900.
+
+| | tiempo real | velocidad | fps |
+| --- | --- | --- | --- |
+| punto de partida de la rama | 400 458 ms | 0,45× | ~25 |
+| Release, sin el cambio de GL | 252 330 ms | 0,71× | 39,6 |
+| **Release, con el cambio de GL** | **143 165 ms** | **1,25×** | **69,8** |
+
+Reproduce tres de tres (143 966 / 143 305 / 143 226 ms) con trabajo idéntico:
+9994 escenas, 1183 tiras, 22 280 050 873 instrucciones.
+
+## Las dos cosas que valieron, y las que no
+
+**1. Compilar en Release.** El intérprete pasa de 189 s a 84 s, un 55 %. Verificado
+aparte: 21/21 en `ctest` y 113 191 ok / 0 fallan en SingleStepTests, igual que Debug.
+
+**2. El estado de GL que ya estaba puesto.** 43,3 % por sí solo — de 39,6 a 69,8 fps.
+`dibujar_escena()` baja de 143 040 a 33 637 ms y las texturas de 81 206 a 1 488, un 98 %.
+Eran dos cosas, las dos en el camino de las tiras:
+
+- **`getenv()`**, unos 44 millones de barridos del bloque de entorno en tres minutos, por
+  cuatro valores de diagnóstico que no cambian nunca después del arranque.
+- **Cuatro `glTexParameteri` por tira** —58 millones— reponiendo valores que el objeto de
+  textura ya tenía. Son estado del objeto, no del contexto, así que sobreviven al desligado.
+
+**Lo que no valió**, todo medido: la tabla de despacho compacta (−1,2 a −2,5 %), el hilo
+para el AICA (−4 a −5 %), sacar las comprobaciones por instrucción (cero), y el trío
+ARM7 + `context_t` + `mem_base_directa`, que da 1-2 % cada una en Debug y **≈0 en Release**
+—el optimizador ya se lleva eso—.
+
+## Las tres lecciones de método, que costaron una sesión cada una
+
+**Una optimización del lado del driver no se puede evaluar en un binario que no lo satura.**
+El cambio de GL vale 11,6 % en Debug y 43 % en Release. No es que Debug atenúe: en Debug el
+emulador va tan despacio que el driver siempre tiene la cola vacía y absorbe los 58 millones
+de llamadas sin que se noten. El síntoma que lo delataba estaba a la vista y tardé en
+leerlo: `dibujar_escena()` medía **más** en Release que en Debug —142 s contra 53—, lo que
+sólo puede significar que el cuello pasó al otro lado.
+
+**Y su contracara: un porcentaje de muestras en un perfil de Debug no predice el ahorro.**
+`fpu_dn_s` tenía 9,6 % de las muestras y su optimización rindió 0,44 %. Debug infla
+exactamente lo que el optimizador elimina igual, y lo infla más en una hoja llamada
+constantemente que en el promedio.
+
+**Medir descarta más de lo que confirma, y eso es lo que la hace rentable.** Los contadores
+de la caché de texturas se escribieron para elegir entre tres arreglos posibles y
+contestaron que dos eran innecesarios: 99,9 % de aciertos y **cero desalojos** significa que
+agrandar la caché o afinar el marcado por página de `vram.c` —las dos cosas que iba a
+hacer— habrían sido trabajo perdido. El tercero era el bueno.
+
+De cinco hipótesis razonadas en una pizarra, cuatro murieron. Las dos optimizaciones que
+funcionaron —un `getenv()` por tira y cuatro parámetros de textura redundantes— no las
+habría propuesto nadie sin instrumentar primero.
+
+## El banco de pruebas
+
+Sin `--bios` —con `--bios` el juego no arranca— y con **180 segundos**: a los 120 la corrida
+está en `MODE SELECTION`, con 479 tiras por escena contra las 1183 del juego. Toda
+comparación verifica cuadros, escenas y tiras antes de mirar el reloj, y descarta la corrida
+que no completó los segundos pedidos. Ver `herramientas/despacho-ab.ps1` y `rama-ab.ps1`.
