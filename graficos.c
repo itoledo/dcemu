@@ -359,6 +359,13 @@ struct cached_texture
 	   con mipmaps podia ligar un objeto subido sin niveles: incompleta, y GL
 	   la muestrea BLANCA (el "mundo blanco" intermitente del juego). */
 	DWORD	con_mip;
+
+	/* Los cuatro parametros de muestreo que quedaron puestos en este objeto de
+	   GL la ultima vez. Son estado **del objeto**, no del contexto, asi que
+	   volverlos a poner con el mismo valor no cambia nada y cuesta cuatro
+	   llamadas al driver: con 1183 tiras por escena eran 58 millones de
+	   glTexParameteri en una corrida de tres minutos. -1 es "sin poner". */
+	GLint	f_mag, f_min, f_wrap_s, f_wrap_t;
 };
 
 typedef struct cached_texture cached_texture;
@@ -887,28 +894,96 @@ static GLint wrap_gl(DWORD w)
 		 : GL_REPEAT;
 }
 
-static void aplicar_filtros(int strip)
+/*
+	Un interruptor de entorno resuelto una sola vez.
+
+	getenv() en el camino de las tiras es un barrido del bloque de entorno
+	completo, comparando cadenas, **por cada llamada**. aplicar_filtros() hacia
+	dos, la busqueda en cache una y el lazo de dibujo otra: con 1183 tiras por
+	escena y 9994 escenas son unos 44 millones de barridos en una corrida de
+	tres minutos, por cuatro valores que no cambian nunca despues del arranque.
+
+	El entorno no se lee de nuevo, a proposito: estos interruptores son de
+	diagnostico y se fijan antes de arrancar. -1 es "todavia no preguntado".
+*/
+static int env_sin_cache_tex  = -1;
+static int env_sin_alphatest  = -1;
+
+static int env_interruptor(const char * nombre, int * cache)
 {
+	if (*cache < 0)
+		*cache = (getenv(nombre) != NULL);
+
+	return *cache;
+}
+
+/*
+	Pone los cuatro parametros de muestreo del objeto ligado, **saltandose los
+	que ya estaban en ese valor**.
+
+	Son estado del objeto de textura, no del contexto, asi que sobreviven al
+	desligado: reponerlos identicos no cambia nada y cuesta una llamada al
+	driver cada uno. Se hacian cuatro por tira -- 58 millones en una corrida de
+	tres minutos -- y la caché acierta el 99,9 % de las veces, o sea que casi
+	todas caian sobre un objeto que ya los tenia puestos.
+
+	`slot` es la entrada de la cache del objeto ligado, que es donde se recuerda
+	lo ultimo aplicado. Con -1 se ponen los cuatro sin preguntar, que es lo que
+	necesita el camino de subida.
+*/
+static void aplicar_filtros_en(int strip, int slot)
+{
+	static int mip_auto = -1, sin_filtro_mip = -1;
+
 	GLint modo = TriangleStrip[strip].texture.filtermode ? GL_LINEAR : GL_NEAREST;
 	GLint min  = modo;
+	GLint ws, wt;
 
 	/* Con mipmaps (GL los genero al subir la textura; ver get_texture()), la
 	   minificacion los usa: es lo que corta el alias del piso lejano. */
-	if ((TriangleStrip[strip].texture.mipmapped || getenv("DCEMU_MIP_AUTO"))
-		&& !getenv("DCEMU_SIN_FILTRO_MIP"))
+	if ((TriangleStrip[strip].texture.mipmapped
+	     || env_interruptor("DCEMU_MIP_AUTO", &mip_auto))
+		&& !env_interruptor("DCEMU_SIN_FILTRO_MIP", &sin_filtro_mip))
 		min = TriangleStrip[strip].texture.filtermode
 			? GL_LINEAR_MIPMAP_LINEAR
 			: GL_NEAREST_MIPMAP_NEAREST;
 
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+	/* La repeticion es estado del objeto de textura, igual que los filtros. */
+	ws = wrap_gl(TriangleStrip[strip].texture.wrap_u);
+	wt = wrap_gl(TriangleStrip[strip].texture.wrap_v);
 
-	/* La repeticion es estado del objeto de textura, igual que los filtros:
-	   se pone tras cada ligado, con lo que pida la tira en curso. */
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
-		wrap_gl(TriangleStrip[strip].texture.wrap_u));
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
-		wrap_gl(TriangleStrip[strip].texture.wrap_v));
+	if (slot < 0)
+	{
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, ws);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wt);
+		return;
+	}
+
+	if (cached_textures[slot].f_mag != modo)
+	{
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modo);
+		cached_textures[slot].f_mag = modo;
+	}
+
+	if (cached_textures[slot].f_min != min)
+	{
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+		cached_textures[slot].f_min = min;
+	}
+
+	if (cached_textures[slot].f_wrap_s != ws)
+	{
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, ws);
+		cached_textures[slot].f_wrap_s = ws;
+	}
+
+	if (cached_textures[slot].f_wrap_t != wt)
+	{
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wt);
+		cached_textures[slot].f_wrap_t = wt;
+	}
 }
 
 /*
@@ -1057,7 +1132,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 	slot = -1;
 
-	if (!getenv("DCEMU_SIN_CACHE_TEX"))
+	if (!env_interruptor("DCEMU_SIN_CACHE_TEX", &env_sin_cache_tex))
 	for (i = tex_hash[tex_hash_balde(memorypos)]; i >= 0; i = tex_hash_sig[i])
 	{
 		if (cached_textures[i].memorypos == memorypos
@@ -1071,10 +1146,16 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			&&  cached_textures[i].gen_pal == pal_ahora)
 			{
 				logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
+				PERF_CONTAR(perf_tex_acierto);
 				glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
-				aplicar_filtros(strip);
+				aplicar_filtros_en(strip, i);
 				return;
 			}
+
+			/* La clave esta y la generacion no: alguien escribio adentro de la
+			   huella, o cambio la paleta. Ver perf.h -- con desalojos en cero,
+			   esta cifra sola acusa al marcado por pagina de vram.c. */
+			PERF_CONTAR(perf_tex_regenera);
 
 			/* La clave esta pero alguien escribio adentro (o cambio la
 			   paleta): se decodifica de nuevo en el mismo slot, que ya esta
@@ -1094,10 +1175,17 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	{
 		static int tex_rueda = 0;
 
+		PERF_CONTAR(perf_tex_nueva);
+
 		if (cur_tex_count < MAX_TEXTURE_COUNT)
 			slot = cur_tex_count;
 		else
 		{
+			/* La rueda piso una entrada viva: 1024 no alcanzan para esta
+			   escena. Es la cifra que separa "agrandar la cache" de las otras
+			   dos explicaciones. Ver perf.h. */
+			PERF_CONTAR(perf_tex_desalojo);
+
 			slot = tex_rueda++ % MAX_TEXTURE_COUNT;
 			tex_hash_sacar(slot);	/* la victima deja su cadena vieja */
 		}
@@ -1341,7 +1429,17 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	}
 
 	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
-	   aplicar_filtros(strip);
+
+	/* Recien subida: el objeto puede ser nuevo, y entonces sus parametros estan
+	   en los de fabrica de GL. Se olvida lo recordado para que los cuatro se
+	   pongan de verdad -- pasa 451 veces en toda una corrida, contra los 14,6
+	   millones de ligados. */
+	cached_textures[cur_tex_count].f_mag    = -1;
+	cached_textures[cur_tex_count].f_min    = -1;
+	cached_textures[cur_tex_count].f_wrap_s = -1;
+	cached_textures[cur_tex_count].f_wrap_t = -1;
+
+	   aplicar_filtros_en(strip, cur_tex_count);
 
 	/*
 		La cadena de mipmaps. Sin los niveles chicos la minificacion fuerte
@@ -2470,7 +2568,8 @@ static void tira_estado(DWORD i)
 				umbral es 0. El alfa comparado es el ya modulado, asi que una
 				textura sin canal alfa se recorta igual por el del vertice.
 			*/
-			if (TriangleStrip[i].type == 0 && !getenv("DCEMU_SIN_ALPHATEST"))
+			if (TriangleStrip[i].type == 0
+			    && !env_interruptor("DCEMU_SIN_ALPHATEST", &env_sin_alphatest))
 			{
 				DWORD	ref = 0;
 				GLfloat	umbral;

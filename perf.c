@@ -72,6 +72,11 @@ unsigned long long perf_onda_escr		= 0;
 unsigned long long perf_cuadros			= 0;
 unsigned long long perf_instrucciones	= 0;
 
+unsigned long long perf_tex_acierto		= 0;
+unsigned long long perf_tex_regenera	= 0;
+unsigned long long perf_tex_nueva		= 0;
+unsigned long long perf_tex_desalojo	= 0;
+
 static unsigned long long arranque = 0;
 
 /*
@@ -186,6 +191,26 @@ void perf_resumen(void)
 
 		linea("resto (interprete)",
 			real > medido ? real - medido : 0, real);
+	}
+
+	/* La cache de texturas. Ver perf.h: las tres cifras piden acciones
+	   opuestas, asi que van juntas o no sirven. */
+	{
+		unsigned long long tex = perf_tex_acierto + perf_tex_regenera
+		                       + perf_tex_nueva;
+
+		if (tex)
+			fprintf(stderr, "perf: texturas: %llu pedidas, %llu aciertos"
+				" (%.1f %%), %llu regeneradas, %llu nuevas, %llu desalojos\n",
+				tex, perf_tex_acierto,
+				100.0 * (double) perf_tex_acierto / (double) tex,
+				perf_tex_regenera, perf_tex_nueva, perf_tex_desalojo);
+
+		if (tex && perf_escenas)
+			fprintf(stderr, "perf:   por escena: %.0f pedidas, %.0f subidas\n",
+				(double) tex / (double) perf_escenas,
+				(double) (perf_tex_regenera + perf_tex_nueva)
+				/ (double) perf_escenas);
 	}
 
 	if (perf_escenas)

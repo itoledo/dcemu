@@ -126,6 +126,27 @@ extern unsigned long long perf_cuadros;
 */
 extern unsigned long long perf_instrucciones;
 
+/*
+	La cache de texturas, que es el bloque grande que queda sin explicar:
+	get_texture() se lleva el 32 % del tiempo real en un binario optimizado, con
+	1024 entradas persistentes que deberian estar evitando las resubidas.
+
+	Hay tres explicaciones posibles y **piden acciones opuestas**, asi que sin
+	medir no se puede elegir:
+
+	 - acierta y el costo es el bind y el cambio de estado por tira -> hay que
+	   reducir tiras, no texturas;
+	 - falla porque 1024 entradas no alcanzan para una escena de este juego ->
+	   hay que agrandarla, y `desalojo` lo dice;
+	 - falla porque la generacion se invalida de mas -- el marcado por pagina de
+	   8 KB de vram.c tira una textura entera cuando el guest escribe cerca --
+	   y eso lo dice `regenera` con `desalojo` en cero.
+*/
+extern unsigned long long perf_tex_acierto;		/* clave y generacion al dia */
+extern unsigned long long perf_tex_regenera;	/* la clave estaba, cambio la generacion */
+extern unsigned long long perf_tex_nueva;		/* clave que no estaba */
+extern unsigned long long perf_tex_desalojo;	/* la rueda piso una entrada viva */
+
 void perf_inicio(void);
 void perf_resumen(void);
 
