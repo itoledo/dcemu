@@ -940,8 +940,13 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 				desde 2005 envenenaba ese ciclo -- ddhal reescribia la constante
 				cuadro tras cuadro y el display nunca apuntaba a la superficie
 				del juego, que quedaba dibujada e invisible. La fuente de verdad
-				es pvr_fb_r_sof1: la escritura no llega al respaldo de
-				control_mem porque PVR_WRITE_CB_1 la consume.
+				es pvr_fb_r_sof1, que es lo que mira graficos.c; el respaldo de
+				control_mem lleva el mismo valor --se escribe arriba, antes del
+				switch, para todo el bloque de control-- asi que este caso es
+				redundante y no contradictorio. Por eso mismo un registro
+				"leido sin caso propio" NO es sospechoso por si solo: contesta
+				lo que el guest escribio. Solo importa cuando el valor no viene
+				de una escritura del guest (REVISION, SB_G1SYSM, SB_SBREV).
 			*/
 			memcpy(p, &pvr_fb_r_sof1, size);
 		}

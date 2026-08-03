@@ -1304,10 +1304,13 @@ desde el 21, con 1785 muestras al riel (0,06%). El ritmo es de ~27 escenas por s
 emulado, que para un renderizador por software a 320×200 subido por DirectDraw es lo
 esperable.
 
-Lo que queda son detalles, ninguno bloqueante: `FB_W_SOF1` se lee sin caso propio y contesta
-del respaldo —el mismo gemelo del `FB_R_SOF1` que ya costó el flip, así que conviene mirarlo
-antes de que cueste otro—, y una única dirección sin emular en toda la corrida (`01d91b40`,
-dentro de ddhal, leída una vez por el kernel).
+Lo que queda son detalles y ninguno bloquea. La corrida reporta nueve registros "leídos sin
+caso propio" —`FB_W_SOF1`, `FB_W_LINESTRIDE`, `PT_ALPHA_REF`, `ISP_FEED_CFG`…—, y **eso por
+sí solo no es sospechoso**: el respaldo de `control_mem` se escribe arriba de todo, antes
+del `switch`, así que devuelven exactamente lo que el guest escribió. El diagnóstico sirve
+para el otro caso, el que ya costó tres cuelgues: un registro cuyo valor **no** viene de una
+escritura del guest (`REVISION`, `SB_G1SYSM`, `SB_SBREV`). Queda además una única dirección
+sin emular en toda la corrida (`01d91b40`, dentro de ddhal, leída una vez por el kernel).
 
 Lo que hizo legible todo esto fue subir de 8 a 24 el tope de las trazas del flujo
 (`REQ_PIO_TRANS`, la copia del `MAINLOOP`) —con 8 no entra una sola transacción completa— y
