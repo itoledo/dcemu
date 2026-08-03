@@ -719,11 +719,13 @@ static int		wp_informes = 0;
    corte estaba, pero un filtro sobre la salida lo dejo afuera. */
 static int		wp_tope = -1;
 
-void watchpoint_escritura(unsigned long direccion, size_t tam)
+void watchpoint_escritura(unsigned long direccion, const void * valor,
+						  size_t tam)
 {
 	DWORD escrita  = (DWORD) direccion & 0x1FFFFFFFu;
 	DWORD vigilada = (DWORD) watchpoint_dir & 0x1FFFFFFFu;
 	DWORD ahora    = 0;
+	DWORD escrito  = 0;
 
 	/* Solapamiento de rangos: escribir un byte dentro de la palabra vigilada
 	   tambien cuenta. */
@@ -742,6 +744,11 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 
 	memread_fisico(watchpoint_dir, &ahora, watchpoint_tam);
 
+	/* El valor ESCRITO, aparte de la relectura: en un registro con semantica
+	   de acuse o de dos caras (SB_ISTNRM, la flash) la relectura no es lo que
+	   el guest escribio, y confundirlas ya costo una hora de pista falsa. */
+	memcpy(&escrito, valor, (tam < sizeof(DWORD)) ? tam : sizeof(DWORD));
+
 	/* La primera vez no hay con que comparar: se toma como valor de partida. */
 	if (!wp_arrancado)
 	{
@@ -755,9 +762,10 @@ void watchpoint_escritura(unsigned long direccion, size_t tam)
 #endif
 
 	fprintf(stderr,
-		"watchpoint: %08lx = %08lx (antes %08lx)%s"
+		"watchpoint: %08lx escribe %08lx: queda %08lx (antes %08lx)%s"
 		" -- escritura de %u en %08lx, PC %08lx, PR %08lx, %llu ciclos\n",
 		(unsigned long) watchpoint_dir,
+		(unsigned long) escrito,
 		(unsigned long) ahora,
 		(unsigned long) wp_anterior,
 		(ahora == wp_anterior) ? ", sin cambio" : "",

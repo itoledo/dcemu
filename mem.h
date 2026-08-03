@@ -80,7 +80,7 @@ void dump_registers();
 		(*mem_hash_write[_wp_dir >> 24]) (_wp_dir, (source), _wp_tam);	\
 																		\
 		if (watchpoint_dir)												\
-			watchpoint_escritura(_wp_dir, _wp_tam);						\
+			watchpoint_escritura(_wp_dir, (source), _wp_tam);						\
 	} while (0)
 
 /* Acceso del programa emulado: pasa por la MMU. Es el que usan los handlers de

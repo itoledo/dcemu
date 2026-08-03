@@ -87,7 +87,8 @@ void traza_caida_instalar(void);
 extern unsigned long	watchpoint_dir;
 extern size_t			watchpoint_tam;
 
-void watchpoint_escritura(unsigned long direccion, size_t tam);
+void watchpoint_escritura(unsigned long direccion, const void * valor,
+						  size_t tam);
 
 /*
 	El de lectura, con --watchpoint-lectura=DIR[:TAM]. Cuelga de

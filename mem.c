@@ -641,6 +641,11 @@ void video_read(unsigned long direccion, void * p, size_t size)
     }
 }
 
+/* Registros del Sort-DMA -- los usa pvr_read/pvr_write y el recorrido vive en
+   sort_dma_ejecutar(), mas abajo. */
+static DWORD sb_sdstaw = 0, sb_sdbaaw = 0, sb_sdwlt = 0, sb_sdlas = 0;
+static DWORD sb_sdst = 0, sb_sddiv = 0;
+
 void pvr_read(unsigned long direccion, void * p, size_t size)
 {
 	DWORD dw;
@@ -732,6 +737,16 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 			memcpy(p, &SB_C2DST, size);
 		}
 		break;
+
+		/*** Sort-DMA: SB_SDST se lee 0 en reposo -- el papel manda sondearlo
+		     para confirmar el fin -- y SB_SDDIV informa las entradas de tabla
+		     leidas. Ver sort_dma_ejecutar(). ***/
+		case 0xa05f6810: memcpy(p, &sb_sdstaw, size); break; // SB_SDSTAW
+		case 0xa05f6814: memcpy(p, &sb_sdbaaw, size); break; // SB_SDBAAW
+		case 0xa05f6818: memcpy(p, &sb_sdwlt,  size); break; // SB_SDWLT
+		case 0xa05f681c: memcpy(p, &sb_sdlas,  size); break; // SB_SDLAS
+		case 0xa05f6820: memcpy(p, &sb_sdst,   size); break; // SB_SDST
+		case 0xa05f6860: memcpy(p, &sb_sddiv,  size); break; // SB_SDDIV
 
 		case 0xa05f6900: // Pending Interrupts 1
 		{
@@ -1045,6 +1060,34 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 			{
 				memcpy(p, &control_mem[fisica & 0xFFFF], size);
 				logxmsg(LOG_MEM, "leyendo desde control_mem: DW %x\n", *(DWORD *) p);
+
+				/*
+					Un registro que se LEE sin caso propio es la familia
+					entera de agujeros de este arbol en su forma de lectura:
+					REVISION, SB_G1SYSM, SB_SBREV y FB_R_SOF1 se encontraron
+					de a uno, cada uno al costo de un cuelgue. Una linea por
+					direccion distinta, con lo contestado, los saca a todos
+					de una pasada.
+				*/
+				if (traza_activa)
+				{
+					static DWORD	vistas[64];
+					static int		n = 0;
+					int				i;
+
+					for (i = 0; i < n; i++)
+						if (vistas[i] == fisica)
+							break;
+
+					if (i == n && n < 64)
+					{
+						vistas[n++] = fisica;
+						fprintf(stderr, "traza: registro %08lx leido sin caso"
+							" propio, se contesta %08lx del respaldo\n",
+							(unsigned long) fisica,
+							(unsigned long) *(DWORD *) p);
+					}
+				}
 				break;
 			}
 
@@ -1257,6 +1300,166 @@ static void ch2_dma_ejecutar(void)
 }
 
 /*
+	El Sort-DMA: la otra via de subida al TA, y la que usa el ddraw de
+	Windows CE para toda su geometria. "Dreamcast/Dev.Box System
+	Architecture", 2.6.5.3 y figuras 2-10 a 2-13: el guest arma la lista de
+	despliegue en RAM como cadenas enlazadas -- una tabla de Start Link
+	Addresses (de 16 o 32 bits segun SB_SDWLT) y, dentro de cada parametro de
+	poligono, el septimo word del Global Parameter lleva el tamano actual en
+	unidades de 32 bytes y el octavo el Next Link Address --, y el chip
+	recorre los enlaces y alimenta la FIFO del TA. Los codigos: 1 = fin de
+	lista (seguir con la proxima entrada de la tabla), 2 = fin del DMA. Cada
+	direccion de enlace se multiplica por 32 si SB_SDLAS vale 1 y se le suma
+	SB_SDBAAW; las direcciones son fisicas -- este DMA no pasa por la MMU.
+
+	Al terminar, el papel manda: SB_SDSTAW queda avanzado, SB_SDDIV cuenta
+	las entradas de tabla leidas, SB_SDST vuelve a 0, y sube el bit 20 de
+	SB_ISTNRM (DTDESINT) -- con demora proporcional, la leccion del CH2 DMA.
+
+	Sin esto, el kick del ddraw de DCDoom (SB_SDST=1 a los 677 ms, tras armar
+	sus cadenas en RAM con las store queues) se desvanecia en control_mem: la
+	geometria no llegaba jamas, ningun fin de lista disparaba, y su maquina
+	de estados esperaba en el estado 7 reintentando con "Timeout for Tile
+	Accelerator" 13 veces por segundo.
+*/
+
+static void sort_dma_ejecutar(void)
+{
+	DWORD	total = 0;		/* bytes movidos, para la demora del fin */
+	int		fin = 0;		/* 1: EOD visto; -1: error de parametro */
+
+	sb_sddiv = 0;
+
+	if (traza_activa)
+		fprintf(stderr, "traza: Sort-DMA tabla=%08lx base=%08lx"
+			" ancho=%s corrimiento=%s\n",
+			(unsigned long) sb_sdstaw, (unsigned long) sb_sdbaaw,
+			sb_sdwlt ? "32" : "16", sb_sdlas ? "x32" : "x1");
+
+	while (!fin)
+	{
+		DWORD entrada = 0;
+
+		/* La proxima entrada de la tabla de Start Link Addresses. */
+		if (sb_sdwlt)
+		{
+			memread_fisico(sb_sdstaw, &entrada, 4);
+			sb_sdstaw += 4;
+		}
+		else
+		{
+			WORD w = 0;
+
+			memread_fisico(sb_sdstaw, &w, 2);
+			entrada = w;
+			sb_sdstaw += 2;
+		}
+
+		sb_sddiv++;
+
+		if (entrada == 1)
+			continue;			/* fin de lista: proxima entrada */
+
+		if (entrada == 2)
+		{
+			fin = 1;			/* fin del DMA */
+			break;
+		}
+
+		/* Recorrer la cadena de este arranque. */
+		{
+			DWORD enlace = entrada;
+
+			for (;;)
+			{
+				DWORD dir, tam, siguiente = 0;
+				DWORD i;
+				int   global = -1;
+
+				if (sb_sdlas)
+					enlace *= 32;
+
+				dir = sb_sdbaaw + enlace;
+
+				/*
+					El Global Parameter tiene que aparecer en los primeros
+					128 bytes (la figura 2-13 corta ahi con error de
+					parametro). Se lo reconoce por el para type del PCW:
+					4 es poligono y 5 sprite; 0-3 son parametros de control
+					que pueden precederlo.
+				*/
+				for (i = 0; i < 128; i += 32)
+				{
+					DWORD pcw = 0;
+
+					memread_fisico(dir + i, &pcw, 4);
+
+					if (((pcw >> 29) & 7) == 4 || ((pcw >> 29) & 7) == 5)
+					{
+						global = (int) i;
+						break;
+					}
+				}
+
+				if (global < 0)
+				{
+					/* Error de parametro: el chip aborta el DMA y sube el
+					   bit 28. dcemu lo reporta y corta, que es lo que un
+					   guest sano nunca deberia ver. */
+					if (traza_activa)
+						fprintf(stderr, "traza: Sort-DMA sin Global Parameter"
+							" en %08lx, transferencia abortada\n",
+							(unsigned long) dir);
+
+					fin = -1;
+					break;
+				}
+
+				/* Palabras 7 y 8 del Global: tamano actual (en unidades de
+				   32) y proximo enlace. */
+				memread_fisico(dir + (DWORD) global + 0x18, &tam, 4);
+				memread_fisico(dir + (DWORD) global + 0x1C, &siguiente, 4);
+
+				tam = (tam & 0xFF) * 32;
+
+				for (i = 0; i + 32 <= tam; i += 32)
+				{
+					BYTE bloque[32];
+
+					memread_fisico(dir + i, bloque, 32);
+					ta_procesar_bloque(bloque);
+				}
+
+				total += tam;
+
+				if (siguiente == 1)
+					break;				/* fin de lista: vuelve a la tabla */
+
+				if (siguiente == 2)
+				{
+					fin = 1;
+					break;
+				}
+
+				enlace = siguiente;
+			}
+		}
+	}
+
+	sb_sdst = 0;
+
+	if (traza_activa)
+		fprintf(stderr, "traza: Sort-DMA fin: %lu bytes al TA,"
+			" %lu entradas de tabla\n",
+			(unsigned long) total, (unsigned long) sb_sddiv);
+
+	/* El fin con demora proporcional, como el CH2: instantaneo, la
+	   interrupcion le gana al driver que vuelve del disparo. */
+	if (fin == 1)
+		intc_add(ASIC_EVT_PVR_SORTDMA, (int) (total / 200) + 10);
+}
+
+/*
 	El disparo por hardware del Maple: con SB_MDTSEL en 1 y SB_MDEN en 1 el
 	chip arranca el DMA solo, en cada vblank -- asi sondea Windows CE el
 	mando, sin escribir SB_MDST jamas. Se reusa el caso de SB_MDST de
@@ -1352,6 +1555,36 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				ch2_dma_ejecutar();
 			else
 				SB_C2DST = 0;
+		}
+		break;
+
+		/*** Sort-DMA: ver sort_dma_ejecutar(). ***/
+		case 0xa05f6810: // SB_SDSTAW
+			memcpy(&sb_sdstaw, p, size);
+			break;
+
+		case 0xa05f6814: // SB_SDBAAW
+			memcpy(&sb_sdbaaw, p, size);
+			break;
+
+		case 0xa05f6818: // SB_SDWLT
+			memcpy(&sb_sdwlt, p, size);
+			break;
+
+		case 0xa05f681c: // SB_SDLAS
+			memcpy(&sb_sdlas, p, size);
+			break;
+
+		case 0xa05f6820: // SB_SDST
+		{
+			memcpy(&dw, p, size);
+
+			/* Escribir 0 pide interrumpirlo; aca nunca hay una transferencia
+			   en curso, porque se hacen enteras, igual que el CH2. */
+			if (dw & 1)
+				sort_dma_ejecutar();
+			else
+				sb_sdst = 0;
 		}
 		break;
 
