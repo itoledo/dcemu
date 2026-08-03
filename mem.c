@@ -59,7 +59,8 @@ BYTE	stack_mem[256 * 1024];	// la haremos de 256kb...?
 unsigned char * mem_zone[0x100]; // para las zonas de memoria
 
 /* Zonas que son memoria plana. Ver mem.h; la llena mem_hash_setup(). */
-unsigned char mem_zona_directa[0x100];
+unsigned char * mem_base_lectura[0x100];
+unsigned char * mem_base_escritura[0x100];
 
 mem_access_read_t video_read;
 mem_access_read_t ram_read;
@@ -533,9 +534,34 @@ void mem_hash_setup(void)
 		cosas no pueden divergir cuando alguien agregue o mueva una zona. Ver
 		mem.h.
 	*/
+	mem_directo_recalcular();
+}
+
+/*
+	Deriva las dos tablas del camino rapido. Se llama al final de
+	mem_hash_setup(), cuando ya estan puestos todos los manejadores, y **se
+	deriva de ellos** en vez de listar las zonas aparte: asi las dos cosas no
+	pueden divergir cuando alguien agregue o mueva una zona.
+
+	Una zona entra al camino rapido solo si es memoria plana en las dos
+	direcciones -- que un acceso de escritura tenga efectos secundarios la
+	descalifica tambien para leer, porque lo que se lee es lo que esos efectos
+	dejaron -- y si el watchpoint correspondiente esta apagado.
+*/
+void mem_directo_recalcular(void)
+{
+	int i;
+
 	for (i = 0; i <= 0xFF; i++)
-		mem_zona_directa[i] = (unsigned char)
-			(mem_hash_read[i] == ram_read && mem_hash_write[i] == ram_write);
+	{
+		int plana = (mem_hash_read[i] == ram_read
+		             && mem_hash_write[i] == ram_write);
+
+		mem_base_lectura[i]   = (plana && !watchpoint_lectura_dir)
+		                        ? mem_zone[i] : NULL;
+		mem_base_escritura[i] = (plana && !watchpoint_dir)
+		                        ? mem_zone[i] : NULL;
+	}
 }
 
 void mem_read_error(unsigned long direccion, void * p, size_t size)

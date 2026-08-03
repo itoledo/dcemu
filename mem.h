@@ -22,24 +22,33 @@ extern mem_access_read_t * mem_hash_read[0x100];
 extern mem_access_write_t * mem_hash_write[0x100];
 
 /*
-	1 en las zonas que son memoria respaldada y sin efectos secundarios: leer o
-	escribir ahi es exactamente mover bytes a traves de mem_zone[], que es lo
-	que hacen ram_read() y ram_write().
+	El camino rapido de memread()/memwrite(): **el puntero base de la zona, o
+	NULL** si el acceso tiene que ir por el camino lento.
 
-	Existe porque **cada carga y cada guardado del programa emulado costaba una
-	llamada indirecta**: memread() despachaba por mem_hash_read[dir >> 24] a una
+	Existe porque cada carga y cada guardado del programa emulado costaba una
+	llamada indirecta: memread() despachaba por mem_hash_read[dir >> 24] a una
 	funcion que recibe un puntero y un tamano, hace un switch sobre el tamano y
 	escribe a traves del puntero. Son tres instrucciones de trabajo util dentro
 	de una llamada que el compilador no puede ver a traves, y entre un 30 y un
 	40 % de las instrucciones del SH-4 son accesos a memoria. Ver
 	docs/rendimiento-plan.md, fase 2.3.
 
-	**La tabla se deriva de los manejadores, no se lista aparte**, para que no
-	puedan divergir: una zona es directa si sus dos manejadores son los de RAM.
-	La RAM de video, el PVR, los registros y las store queues tienen efectos
+	Guarda el puntero y no una bandera porque antes hacian falta **tres** cargas
+	globales para lo mismo -- si la zona es plana, si hay watchpoint, y donde
+	empieza la zona -- y las tres son constantes durante toda la corrida.
+
+	**Se derivan de los manejadores, no se listan aparte**, para que no puedan
+	divergir: una zona es directa si sus dos manejadores son los de RAM. La RAM
+	de video, el PVR, los registros y las store queues tienen efectos
 	secundarios y siguen por la llamada indirecta, que es donde deben estar.
+
+	Las arma mem_hash_setup() al final. Si alguna vez se arma un watchpoint
+	despues del arranque, hay que volver a llamar a mem_directo_recalcular().
 */
-extern unsigned char mem_zona_directa[0x100];
+extern unsigned char * mem_base_lectura[0x100];
+extern unsigned char * mem_base_escritura[0x100];
+
+void mem_directo_recalcular(void);
 
 /* El disparo por hardware del Maple (SB_MDTSEL=1): main_loop() lo llama en
    cada vblank. Ver mem.c. */
@@ -129,10 +138,13 @@ void ubc_operando(unsigned long direccion, const void * valor, size_t tam,
 	no hace sin optimizacion. La idea es que el acceso quede dentro del handler
 	del opcode, no que cambie una llamada por otra.
 */
-#define MEM_DIRECTO_LEER(dir, target, size)								\
+/* Reciben el puntero ya resuelto: quien los llama saco la base de
+   mem_base_lectura/mem_base_escritura, que es la carga que reemplazo a las
+   tres de antes. */
+#define MEM_DIRECTO_LEER(ptr, target, size)								\
 	do																	\
 	{																	\
-		unsigned char * _md_p = get_memory_pointer(dir);				\
+		unsigned char * _md_p = (ptr);									\
 																		\
 		switch (size)													\
 		{																\
@@ -143,10 +155,10 @@ void ubc_operando(unsigned long direccion, const void * valor, size_t tam,
 		}																\
 	} while (0)
 
-#define MEM_DIRECTO_ESCRIBIR(dir, source, size)							\
+#define MEM_DIRECTO_ESCRIBIR(ptr, source, size)							\
 	do																	\
 	{																	\
-		unsigned char * _md_p = get_memory_pointer(dir);				\
+		unsigned char * _md_p = (ptr);									\
 																		\
 		switch (size)													\
 		{																\
@@ -169,13 +181,32 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 	--watchpoint sin ver la RAM, que es justo lo que se vigila. Apagado, la
 	comparacion contra cero es la misma que ya habia.
 */
+/*
+	La tabla lleva **el puntero base o NULL**, no una bandera. Antes el camino
+	rapido preguntaba tres cosas distintas a tres globales -- si la zona es
+	plana (mem_zona_directa), si hay watchpoint armado, y donde empieza la zona
+	(mem_zone) -- y las tres son constantes durante toda la corrida. Ahora una
+	sola carga da la prueba y la base: no nulo significa "plana y sin
+	watchpoint", y su valor es donde empieza.
+
+	El watchpoint se pliega adentro en vez de preguntarse aparte porque tiene
+	que caer del lado lento: su gancho vive en memread_fisico/memwrite_fisico,
+	que es el unico sitio por el que pasan **todas** las escrituras, y saltearlo
+	dejaria a --watchpoint sin ver la RAM, que es justo lo que vigila. Con la
+	base en NULL, la zona entera se va al camino lento sola.
+
+	Lectura y escritura tienen tablas separadas porque los dos watchpoints son
+	independientes: vigilar escrituras no tiene por que frenar las lecturas.
+*/
 #define memread(direccion, target, size) \
 	do { \
 		unsigned long _ubc_d = (direccion); \
 		unsigned long _mmu_d = _ubc_d; \
+		unsigned char * _md_b; \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_LECTURA); \
-		if (mem_zona_directa[_mmu_d >> 24] && !watchpoint_lectura_dir) \
-			MEM_DIRECTO_LEER(_mmu_d, (target), (size)); \
+		_md_b = mem_base_lectura[_mmu_d >> 24]; \
+		if (_md_b) \
+			MEM_DIRECTO_LEER(_md_b + ((_mmu_d) & 0xFFFFFF), (target), (size)); \
 		else \
 			memread_fisico(_mmu_d, (target), (size)); \
 		if (ubc_operando_activa) \
@@ -186,9 +217,11 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 	do { \
 		unsigned long _ubc_d = (direccion); \
 		unsigned long _mmu_d = _ubc_d; \
+		unsigned char * _md_b; \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_ESCRITURA); \
-		if (mem_zona_directa[_mmu_d >> 24] && !watchpoint_dir) \
-			MEM_DIRECTO_ESCRIBIR(_mmu_d, (source), (size)); \
+		_md_b = mem_base_escritura[_mmu_d >> 24]; \
+		if (_md_b) \
+			MEM_DIRECTO_ESCRIBIR(_md_b + ((_mmu_d) & 0xFFFFFF), (source), (size)); \
 		else \
 			memwrite_fisico(_mmu_d, (source), (size)); \
 		if (ubc_operando_activa) \
