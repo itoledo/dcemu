@@ -417,3 +417,212 @@ detrás. **No es refactorizar `core`, es cambiar el orden de los campos**, y nad
 él. Eso además habilita al candidato B, que solo no cerraba: si el par (zona, base) de la
 búsqueda de instrucciones vive en esa misma línea, se lee gratis con el `PC` que ya se
 cargó.
+
+---
+
+# Plan 2: lo que el perfil dijo
+
+Escrito el 2026-08-02 con el perfil de muestreo en la mano —el paso 0.1, que hasta ahora
+era el único del plan anterior sin hacer—. **Todo lo de arriba fue razonamiento; esto es
+medición**, y no coincidieron: de los cuatro candidatos originales, uno se midió y perdió,
+dos quedaron sin objeto y el hallazgo grande no estaba en la lista.
+
+## El reparto, por fin
+
+WPR a 1 kHz sobre Crazy Taxi en 3D en movimiento, Debug, 180 s emulados. De las ~325 000
+muestras del hilo principal, **256 878 caen en código de dcemu** (79 %); el resto está en el
+driver de GL y en el kernel. Repartidas por subsistema:
+
+| grupo | % del código de dcemu |
+| --- | --- |
+| handlers del SH-4 | **38,6 %** |
+| ARM7 del AICA | **19,6 %** |
+| `main_loop` + `run` | 16,6 % |
+| `fpu_dn_s` / `fpu_dn_d` | **9,6 %** |
+| resto de la FPU | 6,9 % |
+| `_RTC_*` (andamiaje de Debug) | 3,2 % |
+| gráficos y TA | 2,3 % |
+| memoria y PVR | 1,9 % |
+| reloj y periféricos | 1,3 % |
+
+Las funciones más caras, una por una:
+
+```
+main_loop            15,71 %      movl21                1,80 %
+fpu_dn_s              9,61 %      arm7_paso             1,79 %
+op_datos     (ARM7)   5,99 %      add40                 1,49 %
+movl2                 4,74 %      reg16        (ARM7)   1,18 %
+movl9                 4,45 %      dma_canal             1,15 %
+_RTC_CheckStackVars   3,22 %      fipr                  0,93 %
+ftrv                  2,70 %      jsr111                0,91 %
+op_transferencia      2,51 %      mov3                  0,85 %
+condicion    (ARM7)   2,16 %      run                   0,84 %
+arm7_leer             2,11 %      add39                 0,78 %
+op_bloque    (ARM7)   2,03 %
+```
+
+## El patrón, que es uno solo
+
+Todo lo caro que el perfil encontró es **trabajo barato pagado como llamada a función**:
+cinco instrucciones de cuenta detrás de un `call`, un prólogo, un epílogo y una barrera
+para el optimizador. No hay ningún algoritmo malo. Eso explica también por qué las
+hipótesis anteriores fallaron: buscaban un problema de *estructura* —la tabla de despacho,
+los hilos, las comprobaciones del bucle— donde lo que hay es un problema de *frontera de
+compilación*.
+
+Y explica el resultado de Release: `/O2` recupera el 55 % del intérprete inlineando lo que
+está en la misma unidad de traducción, y deja intacto todo lo que la cruza.
+
+## Fase 0 — Lo que no cuesta diseño
+
+### 0.1 Compilar en Release *(medido: −55 % del intérprete)*
+
+189 011 ms → 84 207 ms, o sea 8,48 → 3,78 ns por instrucción. Ya verificado: 21/21 en
+`ctest` y **113 191 ok, 0 fallan** en SingleStepTests, idéntico a Debug. Nada que escribir,
+sólo dejar de medir y jugar en Debug.
+
+De paso se lleva el 3,2 % de `_RTC_CheckStackVars`, que no es código nuestro.
+
+### 0.2 `fpu_dn_s` y `fpu_dn_d` en la cabecera *(hecho)*
+
+**9,6 %**, la función más cara después del bucle. Cinco instrucciones llamadas sobre cada
+operando de cada operación de punto flotante —25 sitios, cuatro sólo en la entrada de
+`ftrv`—, y en otra unidad de traducción, así que ni `/O2` la inlinea. Movida a
+`floatsimple.h` como `static DC_INLINE`, con el caso desnormalizado —rarísimo en un juego—
+fuera de línea.
+
+### 0.3 Activar `/GL` y `/LTCG` en Release
+
+Es la versión general de 0.2: deja al optimizador inlinear a través de unidades de
+traducción. El perfil nombra a los candidatos que quedan —`condicion`, `reg16`, `poner_r`,
+`arm7_leer`, `aica_fiq_pendiente`, `fpu_es_nan`, `fpu_causas`—, que juntos son otro 7 %
+largo. Son dos líneas de CMake y una medición.
+
+Ojo con dos cosas: alarga el enlace bastante, y **cambia el código generado de la FPU**, así
+que `dcemu_sh4json` no es opcional acá.
+
+## Fase 1 — El ARM7 del AICA: 19,6 %
+
+Es el segundo bloque del emulador y **nunca se lo miró**. No es el lazo de espera de KOS:
+`--perf` reporta `2 161 263 760 pasos, 0 ociosos` —Crazy Taxi sube su propio firmware y el
+ARM corre de verdad—. El promedio da 1,87 ciclos por instrucción, o sea que la contabilidad
+de ciclos está bien y no se está sobre-ejecutando.
+
+El camino caliente es `arm7_paso()`, y tiene cuatro cosas de la misma familia que `fpu_dn_s`:
+
+```c
+ciclos_op = 1;                                       /* global */
+pc_cambio = 0;                                       /* global */
+if (!(arm7.cpsr & ARM7_F) && aica_fiq_pendiente())   /* llamada, cada instruccion */
+op = arm7_leer(arm7.r[15], 4);                       /* llamada */
+if (condicion(op))                                   /* llamada */
+{
+    idx = ARM7_INDICE(op);
+    if (arm7_opfila[idx] >= 0) arm7_usada[arm7_opfila[idx]] = 1;   /* cobertura */
+    arm7_oplist[idx](op);
+}
+```
+
+- **1.1 `condicion()` — 2,16 %.** Extrae N, Z, C y V y entra a un `switch` de 16 casos
+  **para cada instrucción**, cuando en código ARM real la enorme mayoría es `AL` (`0xE`).
+  Un `if ((op >> 28) == 0xE)` antes de la llamada se salta todo. Es una línea.
+- **1.2 `arm7_usada[]` corre en producción.** Es el instrumento de cobertura de la suite
+  —lo lee `arm7_fila_usada()`, de `tests/`— y hoy se ejecuta en cada instrucción del ARM en
+  una corrida normal. Va detrás de una bandera, como el resto de los instrumentos.
+- **1.3 `aica_fiq_pendiente()` en línea.** Una llamada cruzando unidad de traducción por
+  instrucción para mirar un par de máscaras. Aparece con 0,42 % propio, más el costo en el
+  llamador.
+- **1.4 El camino de búsqueda.** `arm7_leer()` (2,11 %) resuelve región y tamaño en cada
+  lectura. La búsqueda de instrucción siempre es de 4 bytes y casi siempre en RAM de onda:
+  merece su propio camino corto, igual que `mem_zona_directa` en el SH-4.
+
+Nada de esto cambia una decisión del emulador, así que la suite `arm7` y el `.wav` de
+`--captura-audio` —que es determinista— alcanzan como baranda.
+
+## Fase 2 — Los handlers del SH-4: 38,6 %
+
+Los cuatro más caros son `movl2` (4,74 %), `movl9` (4,45 %), `movl21` (1,80 %) y `add40`
+(1,49 %). Tres de los cuatro son **lecturas de memoria**, y `movl2` —la carga del literal,
+la instrucción más común del código SH-4— es la primera. O sea que el tiempo de los
+handlers está en el camino de acceso, no en la aritmética.
+
+Hoy una lectura del guest hace esto:
+
+```c
+if (mmu_activa) ...                                           /* 1 carga global */
+if (mem_zona_directa[dir >> 24] && !watchpoint_lectura_dir)   /* 2 cargas globales */
+    MEM_DIRECTO_LEER(...)   /* get_memory_pointer -> mem_zone[dir >> 24]   1 mas */
+if (ubc_operando_activa) ...                                  /* 1 mas */
+```
+
+**2.1** Una sola tabla `mem_base_directa[256]` que guarde **el puntero base o NULL** da la
+prueba y la base en una carga en vez de tres. Se pone en NULL cuando la zona no es RAM
+plana, cuando hay watchpoint armado o cuando el UBC vigila operandos: armar y desarmar
+reescribe 256 entradas, que pasa una vez por corrida.
+
+Hay que tener cuidado con una cosa: `memread_fisico` es el único punto por el que pasan
+**todas** las escrituras y es donde vive el gancho de `--watchpoint`. Saltearlo dejaría al
+watchpoint sin ver la RAM, que es justo lo que vigila; por eso el NULL y no una bandera
+aparte.
+
+## Fase 3 — El bucle y el contexto: 16,6 %
+
+`main_loop` con 15,71 % es la función más cara del emulador. Contiene el bloque periódico
+—ya atacado con `RELOJ_GRANO`— y el andamiaje por instrucción, que se midió en cero. Lo que
+queda es el tráfico de memoria contra la global `core`, que `/O2` no puede evitar porque
+cada handler tiene que dejarla escrita antes de volver.
+
+**3.1 Reordenar `context_t`.** Hoy:
+
+```
+  0   cycles                <- CADA instruccion lo escribe     linea 0
+  4   cycles_v_int          <- SIN USAR
+  8   cycles_v_int_total    <- SIN USAR
+ 12   registers[24]         R0..R15 en 12..75                  lineas 0 y 1
+                            R0_BANK..R7_BANK en 76..107  (frios)
+108   banco_activo .. 148 PR
+152   PC_REG                <- CADA instruccion lo escribe     linea 2
+156   SR_REG                <- SR_T lo tocan muchisimas        linea 2
+```
+
+Cada instrucción toca la línea 0 (`cycles`), una de registros y la línea **2** (`PC`): dos o
+tres donde alcanzarían una o dos. Y ocho bytes de la línea más caliente los ocupan dos
+campos que el propio comentario declara sin usar, conservados "para no cambiar el tamaño del
+contexto" —motivo que no se sostiene, porque la instantánea copia con `sizeof`—.
+
+Poner `cycles, PC_REG, SR_REG, registers[0..15]` primero son 76 bytes: dos líneas, con lo
+frío detrás. **No es refactorizar `core`, es cambiar el orden de los campos.**
+
+**3.2 Cachear el puntero de búsqueda de instrucciones**, y sólo después de 3.1. Solo, cambia
+una carga por otra carga más una comparación, o sea nada; pero si el par (zona, base) vive
+en la línea caliente del contexto se lee gratis con el `PC` que ya se cargó.
+
+## Lo que ya se midió y no hay que volver a intentar
+
+| | resultado |
+| --- | --- |
+| tabla de despacho compacta (128 KB en vez de 512) | **−1,2 a −2,5 %**, y no depende del conjunto activo |
+| hilo aparte para el AICA | **−4 a −5 %**; el techo que `--perf` calcula es 1,07× |
+| sacar las comprobaciones por instrucción del bucle | **cero** |
+| optimizar los decodificadores de textura | el 2,3 % es código nuestro; el resto está en el driver de GL |
+
+## Orden y barandas
+
+| # | qué | esperado | riesgo |
+| --- | --- | --- | --- |
+| 0.1 | Release | −55 % del intérprete (medido) | ninguno |
+| 0.2 | `fpu_dn_s` en línea | hasta 9,6 % | bajo |
+| 0.3 | `/GL /LTCG` | 7 % largo, a medir | bajo, pero toca la FPU |
+| 1.1-1.4 | ARM7 | de 19,6 % a la mitad, a medir | bajo |
+| 2.1 | `mem_base_directa` | parte del 38,6 % | medio: el gancho del watchpoint |
+| 3.1 | reordenar `context_t` | a medir | bajo |
+| 3.2 | caché del puntero de búsqueda | a medir | medio: invalidación |
+
+Las de siempre, y una que ahora pesa más: **`dcemu_sh4json` bit a bit**, porque 0.2, 0.3 y
+todo lo de la FPU cambian el código generado de los flotantes. Después `ctest`, el barrido
+de las 150 demos con su corrida de control, y el `.wav` de `--captura-audio` para la fase 1,
+que es determinista y es la única baranda real del ARM7.
+
+Y la regla de método, que esta vez se cobró una sesión entera: **el banco de pruebas es sin
+`--bios` y con 180 segundos**, y toda comparación verifica cuadros, escenas y tiras por
+escena antes de mirar el reloj.
