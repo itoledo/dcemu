@@ -1030,6 +1030,63 @@ static void aplicar_filtros_en(int strip, int slot)
 static int volcado_fb_armado = 0;
 
 /*
+	**Los registros de salida del render se latchean en STARTRENDER**, no
+	cuando dcemu dibuja.
+
+	El chip toma su configuracion de salida --a donde escribe, con que recorte,
+	con que paso entre filas y en que formato-- en el instante del strobe.
+	dcemu dibuja la escena en el TA_LIST_INIT siguiente, que es un cuadro
+	despues, y para entonces el guest ya reprogramo esos registros para lo que
+	venga.
+
+	Crazy Taxi es el caso que lo destapo. Para el fondo de su menu de pausa
+	renderiza la escena congelada a una textura de 512x480 y pone
+	FB_W_LINESTRIDE en 128 --1024 bytes, o sea 512 pixeles--; dos milisegundos
+	despues, ya para la pantalla, lo devuelve a 160 (1280 bytes = 640 pixeles).
+	Leidos tarde, el ancho salia de un instante y el paso del otro: la textura
+	se escribia con filas de 640 y se leia con filas de 512, y el fondo de la
+	pausa era el ultimo cuadro cortado en tiras y repetido a lo ancho.
+
+	Es el mismo error que ya habia costado el plano de fondo (ver
+	color_de_fondo): el chip latchea en STARTRENDER y hay que muestrear ahi.
+*/
+typedef struct
+{
+	DWORD	sof1;			/* FB_W_SOF1        0x005F8060 */
+	DWORD	clip_x;			/* FB_X_CLIP        0x005F8068 */
+	DWORD	clip_y;			/* FB_Y_CLIP        0x005F806C */
+	DWORD	paso;			/* FB_W_LINESTRIDE  0x005F804C */
+	DWORD	ctrl;			/* FB_W_CTRL        0x005F8048 */
+} regs_render_t;
+
+static regs_render_t	regs_render;
+static int				regs_render_validos = 0;	/* 0 hasta el primer strobe */
+
+static void regs_render_de_los_registros(regs_render_t * r)
+{
+	memread_fisico(0xA05F8060, &r->sof1,   4);
+	memread_fisico(0xA05F8068, &r->clip_x, 4);
+	memread_fisico(0xA05F806C, &r->clip_y, 4);
+	memread_fisico(0xA05F804C, &r->paso,   4);
+	memread_fisico(0xA05F8048, &r->ctrl,   4);
+}
+
+/* Lo que se latcheo, o los registros de ahora si todavia no hubo strobe. */
+static void regs_render_leer(regs_render_t * r)
+{
+	if (regs_render_validos)
+		*r = regs_render;
+	else
+		regs_render_de_los_registros(r);
+}
+
+void regs_render_latchear(void)
+{
+	regs_render_de_los_registros(&regs_render);
+	regs_render_validos = 1;
+}
+
+/*
 	El disparador: una textura cuya direccion, convertida a la numeracion de
 	32 bits, cae dentro del cuadro que el PVR escribe o muestra, esta
 	muestreando el framebuffer.
@@ -1037,18 +1094,20 @@ static int volcado_fb_armado = 0;
 static void armar_volcado_si_muestrea_framebuffer(DWORD memorypos)
 {
 	DWORD	a32 = vram_64_a_32(memorypos);
-	DWORD	sof_w = 0, paso = 0, pclip_y = 0;
+	DWORD	sof_w, paso, pclip_y;
 	DWORD	sof_r = pvr_fb_r_sof1 & 0x007FFFFF;
 	DWORD	filas, alto, tam;
+	regs_render_t r;
 
-	memread_fisico(0xA05F8060, &sof_w, 4);
+	regs_render_leer(&r);
+	sof_w = r.sof1;
 
 	/* Con el bit 24 FB_W apunta a una textura, no al framebuffer. */
 	if (sof_w & 0x01000000)
 		return;
 
-	memread_fisico(0xA05F804C, &paso, 4);
-	memread_fisico(0xA05F806C, &pclip_y, 4);
+	paso    = r.paso;
+	pclip_y = r.clip_y;
 
 	filas = (paso & 0x1FF) * 8;
 	alto  = ((pclip_y >> 16) & 0x3FF) + 1;
@@ -1784,9 +1843,19 @@ void cb_renderstart(DWORD addr, void * p, size_t size)
 	pvr_bkg_poly_t bkg;
 	DWORD bgplane = 0;
 
+	/* Lo primero: el chip toma aca su configuracion de salida, y dcemu dibuja
+	   un cuadro despues. Ver regs_render_latchear(). */
+	regs_render_latchear();
+
 	if (traza_activa)
-		fprintf(stderr, "traza: STARTRENDER: hechas=%02x habilitadas=%02x tiras=%d\n",
-			(unsigned) pvr_listdone, (unsigned) pvr_registered, strip_count);
+		fprintf(stderr, "traza: STARTRENDER: hechas=%02x habilitadas=%02x tiras=%d"
+			" destino=%08lx recorte=%dx%d paso=%lu formato=%lu\n",
+			(unsigned) pvr_listdone, (unsigned) pvr_registered, strip_count,
+			(unsigned long) regs_render.sof1,
+			(int) (((regs_render.clip_x >> 16) & 0x7FF) + 1),
+			(int) (((regs_render.clip_y >> 16) & 0x3FF) + 1),
+			(unsigned long) ((regs_render.paso & 0x1FF) * 8),
+			(unsigned long) (regs_render.ctrl & 0x7));
 
 	/*
 		Los tres finales del render (SB_ISTNRM bits 0, 1 y 2: TSP, ISP y
@@ -3376,60 +3445,54 @@ static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
 */
 static void volcar_escena_a_framebuffer(void)
 {
-	DWORD	sof = 0, pclip_x = 0, pclip_y = 0, ctrl = 0, paso = 0;
 	DWORD	ancho, alto, filas_bytes;
+	regs_render_t r;
 
 	if (!volcado_fb_armado)
 		return;
 
-	memread_fisico(0xA05F8060, &sof, 4);
+	/* Latcheados en STARTRENDER, no leidos ahora: ver regs_render_latchear(). */
+	regs_render_leer(&r);
 
 	/* Con el bit 24 la escena era para una textura y no llega aca. */
-	if (sof & 0x01000000)
+	if (r.sof1 & 0x01000000)
 		return;
 
-	memread_fisico(0xA05F8068, &pclip_x, 4);
-	memread_fisico(0xA05F806C, &pclip_y, 4);
-	memread_fisico(0xA05F804C, &paso, 4);
-	memread_fisico(0xA05F8048, &ctrl, 4);
-
-	ancho = ((pclip_x >> 16) & 0x7FF) + 1;
-	alto  = ((pclip_y >> 16) & 0x3FF) + 1;
-	filas_bytes = (paso & 0x1FF) * 8;
+	ancho = ((r.clip_x >> 16) & 0x7FF) + 1;
+	alto  = ((r.clip_y >> 16) & 0x3FF) + 1;
+	filas_bytes = (r.paso & 0x1FF) * 8;
 
 	if (ancho == 0 || alto == 0 || ancho > 2048 || alto > 2048)
 		return;
 
-	volcar_a_memoria(sof & 0x007FFFFF, ancho, alto, filas_bytes,
-		(int) (ctrl & 0x7),
+	volcar_a_memoria(r.sof1 & 0x007FFFFF, ancho, alto, filas_bytes,
+		(int) (r.ctrl & 0x7),
 		(DWORD) (outputscreen ? outputscreen->w : 800),
 		(DWORD) (outputscreen ? outputscreen->h : 600), 0);
 }
 
 static int render_a_textura(void)
 {
-	DWORD			sof1 = 0, pclip_x = 0, pclip_y = 0, ctrl = 0, paso = 0;
 	DWORD			destino, ancho, alto, filas_bytes;
 	int				formato;
+	regs_render_t	r;
 
-	memread_fisico(0xA05F8060, &sof1, 4);
+	/* Latcheados en STARTRENDER, no leidos ahora: ver regs_render_latchear().
+	   Aca importa mas que en ningun otro lado -- el ancho y el paso de un
+	   render a textura viven un solo cuadro. */
+	regs_render_leer(&r);
 
-	if (!(sof1 & 0x01000000))
+	if (!(r.sof1 & 0x01000000))
 		return 0;
 
-	memread_fisico(0xA05F8068, &pclip_x, 4);
-	memread_fisico(0xA05F806C, &pclip_y, 4);
-	memread_fisico(0xA05F804C, &paso, 4);
-	memread_fisico(0xA05F8048, &ctrl, 4);
-
-	destino = sof1 & 0x007FFFFF;
-	ancho = ((pclip_x >> 16) & 0x7FF) + 1;
-	alto  = ((pclip_y >> 16) & 0x3FF) + 1;
-	formato = ctrl & 0x7;
+	destino = r.sof1 & 0x007FFFFF;
+	ancho = ((r.clip_x >> 16) & 0x7FF) + 1;
+	alto  = ((r.clip_y >> 16) & 0x3FF) + 1;
+	formato = r.ctrl & 0x7;
 
 	/* El paso viene en unidades de 8 bytes y cubre la fila entera, que puede ser
 	   mas ancha que la imagen: eso es el stride de la textura. */
-	filas_bytes = (paso & 0x1FF) * 8;
+	filas_bytes = (r.paso & 0x1FF) * 8;
 
 	if (ancho == 0 || alto == 0 || ancho > 2048 || alto > 2048)
 		return 0;

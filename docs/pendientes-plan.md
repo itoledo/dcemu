@@ -1636,6 +1636,62 @@ sus ventanas. **Otra ruta que ningún demo ejerce** — se suma a la lista de A.
 
 ---
 
+### A.15 — El menú de pausa de Crazy Taxi: los registros del render se latchean en STARTRENDER (3 de agosto de 2026)
+
+**El síntoma**, reportado jugando: al apretar START dentro del partido, el fondo del menú de
+pausa sale como el último cuadro cortado en tiras horizontales y repetido a lo ancho. Debería
+ser ese mismo cuadro, congelado y oscurecido, con el menú encima.
+
+**No era una regresión del día.** Compilado `ed056fa` —antes de los dos commits de rendimiento
+que llegaron por pull— el cuadro de la pausa sale **idéntico**, así que ni el ligado de textura
+fuera del bucle ni el alfa del entorno de textura tienen que ver.
+
+**Cómo se acorraló**, con el reproductor `DCEMU_PULSAR_START=300,1100,2600` (la tercera
+pulsación cae dentro del partido) y `DCEMU_CAPTURA_TODAS=10`. La pausa se encuentra sola: son
+los únicos cuadros de brillo **exactamente** constante, 39,7 sobre una mediana de 122,8 —
+congelados, todos iguales entre sí. El volcado de esa escena da 31 tiras, y la 0 es el fondo:
+
+```
+tira 0: tipo=2 n=4  tex=00530080 512x512 tw=0 vq=0 fmt=RGB565 env=3
+        uv=(0,0) (0,1.875) (2,0) (2,1.875)
+traza: render a textura 512x480 en 530080, paso 1280, formato 1
+```
+
+Un solo render a textura en toda la corrida, de 512 de ancho y **1280 bytes de paso**, que son
+640 píxeles. Los dos números no pueden ser los dos del mismo instante. El watchpoint lo confirma:
+
+```
+watchpoint: 005f804c escribe 00000080: queda 00000080 (antes 000000a0)  ...  8716384741 ciclos
+watchpoint: 005f804c escribe 000000a0: queda 000000a0 (antes 00000080)  ...  8718396851 ciclos
+```
+
+El guest pone `FB_W_LINESTRIDE` en 128 —1024 bytes, o sea 512 píxeles, justo el ancho de la
+textura— y dos millones de ciclos después, ya para la pantalla, lo devuelve a 160. Y
+`FB_X_CLIP` cuenta la misma historia: escribe `01ff0000` (512) para el render a textura y
+`027f0000` (640) para la pantalla.
+
+**Lo que era.** `render_a_textura()` lee los cinco registros de salida en `cb_tastart()`, o sea
+en el `TA_LIST_INIT` siguiente — un cuadro tarde. El chip los latchea en **STARTRENDER**. Con
+la lectura tarde, el ancho salía de un instante y el paso del otro: la textura se escribía con
+filas de 640 y se leía con filas de 512.
+
+**El arreglo**: `regs_render_latchear()` toma los cinco (`FB_W_SOF1`, `FB_X_CLIP`, `FB_Y_CLIP`,
+`FB_W_LINESTRIDE`, `FB_W_CTRL`) en `cb_renderstart()`, y `render_a_textura()`,
+`volcar_escena_a_framebuffer()` y el armado del volcado los consumen de ahí. Sin strobe todavía
+—nadie lo hace, pero por si acaso— caen a leer los registros como antes. La línea de traza de
+STARTRENDER ahora imprime los cinco, que es lo que hacía falta para ver esto de una.
+
+**Es el mismo error que ya había costado el plano de fondo** (`color_de_fondo`, A de julio): un
+registro que sólo vale para un cuadro, muestreado cuando el guest ya lo movió. Vale mirarlo cada
+vez que aparezca un valor que "no puede ser" al lado de otro que sí.
+
+**Medido**: los diez del juego de control más `pvr-texture_render` y `pvr-strided_texture`
+—los dos que ejercen esta ruta—, Virtua Tennis, Virtua Tenis 2, Capcom vs. SNK y DCDoom salen
+**idénticos byte a byte**, y las 21 suites pasan. En Crazy Taxi cambian los 8 cuadros de la
+pausa y ninguno más.
+
+---
+
 ## Vía B — El AICA (hito E)
 
 > **Esta vía tiene su propio plan desarrollado: [aica-plan.md](aica-plan.md)**, escrito contra el

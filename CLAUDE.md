@@ -1129,6 +1129,20 @@ draws the strips and `terminar_escena()` presents. **The marker is bit 24 of `FB
 `0x005F8068`/`0x6C`, maximum in bits 31-16), row pitch from `FB_W_LINESTRIDE` (`0x005F804C`, in
 units of 8 bytes) and the pixel format from `FB_W_CTRL` (`0x005F8048`).
 
+**Those five registers are latched at `STARTRENDER`, not read when dcemu draws** —
+`regs_render_latchear()`, called first thing in `cb_renderstart()`. The chip takes its output
+configuration at the strobe; dcemu draws at the *next* `TA_LIST_INIT`, a frame later, and by
+then the guest has reprogrammed them for whatever comes next. Crazy Taxi is what exposed it:
+for its pause-menu background it renders the frozen scene into a 512×480 texture with
+`FB_W_LINESTRIDE` at 128 (1024 bytes = 512 pixels) and restores it to 160 (640 pixels) two
+milliseconds later, so read late the *width* came from one instant and the *pitch* from the
+other — the texture was written with 640-pixel rows and read with 512-pixel ones, and the
+pause background was the last frame sliced into bands and repeated across the width. Same
+mistake the background plane had made before (see "The background plane"), and worth checking
+for whenever a register only matters for one frame. Nothing else moves: the ten control demos,
+`pvr-texture_render`, `pvr-strided_texture` and all four games stay byte-identical, because KOS
+and everyone else program these registers right before the strobe and leave them alone.
+
 dcemu sends 3D to OpenGL, so the scene never passes through video RAM: it has to be drawn and read
 back with `glReadPixels`. Two things are easy to get wrong — the guest submits vertices **in the
 target's coordinates** (0..128 by 0..64 for `pvr_rtt_sized`), so the viewport and `glOrtho` must be
