@@ -44,7 +44,11 @@ option(DCEMU_DESPACHO_COMPACTO "Despachar por indice de 16 bits en vez de por pu
 # lo que decide es alternar los dos binarios en la misma tanda, y para eso
 # tienen que poder existir a la vez. Las barandas para validarlo son las de
 # siempre --las 21 suites, SingleStepTests bit a bit, el barrido de 150 demos--.
-option(DCEMU_LTCG "Optimizacion de todo el programa (/GL + /LTCG) en Release" OFF)
+#
+# Viene en ON: medido en Virtua Tennis vale 6,6 % de la corrida y 14 % del ARM,
+# con la salida identica byte a byte. Sigue siendo alternable con OFF, que es
+# para lo que existe la opcion.
+option(DCEMU_LTCG "Optimizacion de todo el programa (/GL + /LTCG) en Release" ON)
 
 # ---------------------------------------------------------------------------
 # SDL 1.2, via sdl12-compat

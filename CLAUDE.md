@@ -1711,12 +1711,23 @@ loops*: a scan over 48-byte records at `0x6294` whose body never once executes i
 run (26%), a 64-entry scan testing bit 7 at `0x0a04` that finds work 4.5% of the time (20%),
 and a third at `0x09d4` (3%). A quarter of all instructions are branches; `MRS` and `MSR`
 come out with the *same* count, which is a critical section entered 36 million times.
-**LTCG (`-DDCEMU_LTCG=ON`, off by default) is worth 10.0% of the ARM and 1.4% of the run** —
+**LTCG (`DCEMU_LTCG`, now ON by default) is worth 10.0% of the ARM and 1.4% of the run** —
 almost all of it in the ARM, because `arm7.c` calls `aica_fiq_pendiente()` in `aica.c` on
 every instruction; the SH-4 interpreter barely moves, which contradicts what
 `rendimiento-plan.md` expected of it. Validated: 20/20 suites, SingleStepTests 113 191 ok /
 0 fail **identical to the non-LTCG build**, same capture hash. Not validated: the 150-demo
 sweep. `docs/arm7-plan.md` has the numbers and the three routes.
+
+**On a game the same flag is worth much more: 6.6% of the run and 14% of the ARM** (Virtua
+Tennis, 60 emulated seconds through the 3D attract, 0.97x → 1.03x of real time, which is the
+threshold of console speed). The `.wav`, the `--captura-gl` BMP, the scene count and the
+instruction count all come out identical between the two builds, which is what says the flag
+changes nothing but the speed. Two things distort this measurement and both cost a
+conclusion: **`--captura-gl` eats 40% of the real time**, so a comparison made with it on
+measures the BMP dump; and **the first run after a `--clean-first` comes out slow** (124.9
+MIPS against 138.7 for the two after it), so it has to be discarded. Alternate the two
+binaries within one batch rather than trusting one run of each — with `--perf`, the LTCG
+figures repeat to 0.1% while the baseline drifts as the machine loads up.
 
 **What is not emulated**: CDDA, the audio DSP, the LFO, the FEG filter (the paper says how to
 leave it pass-through: `Q = 4`, `FLV = 0x1FF8`, and KOS's firmware simply turns it off) and the

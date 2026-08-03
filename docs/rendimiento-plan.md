@@ -257,6 +257,16 @@ desactivar la optimización.
   aquí**: los handlers de opcodes viven en `mov.c`, `arith.c`, `logic.c`… — una unidad de
   traducción por categoría — y el bucle está en `main.c`. Sin LTCG el compilador no puede
   inlinear ni un `memread` de RAM dentro de un handler. Con LTCG, sí.
+  **Hecho, y viene en ON.** Sobre una demo valía 1,4 % de la corrida; sobre un juego vale
+  **6,6 %**, y el 14 % es del ARM. Virtua Tennis, 60 s emulados hasta el atractivo en 3D:
+  0,97x contra 1,03x de tiempo emulado sobre real, o sea cruzar la velocidad de consola.
+  El `.wav`, el BMP de `--captura-gl`, las 3562 escenas y las 8 068 071 255 instrucciones
+  salen idénticos en las dos compilaciones. Dos trampas de la medición, cada una costó un
+  número inservible: **`--captura-gl` se lleva el 40 % del tiempo real**, así que comparar
+  con ella puesta mide el volcado de BMP; y **la primera pasada después de un
+  `--clean-first` sale lenta** —124,9 MIPS contra 138,7 de las dos siguientes— y hay que
+  descartarla. Conviene alternar los dos binarios dentro de la misma tanda: los números de
+  LTCG se repiten al 0,1 % mientras los de la base derivan según se carga la máquina.
 - **PGO** (`/GENPROFILE` … `/USEPROFILE`), entrenado con la corrida fija de 0.3. Un
   intérprete es el caso de libro: el layout de código y la predicción de saltos del
   despacho es todo lo que hay. Vale entre un 10 % y un 20 % de forma típica.
