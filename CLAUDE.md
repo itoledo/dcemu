@@ -830,6 +830,17 @@ dcemu tracks no horizontal position and no interlacing. Finding this also turned
 **`SPG_VBLANK` and `SPG_WIDTH` had read cases but no write cases**, so `pvr_spg_vblank` and
 `pvr_spg_width` kept `reg.c`'s defaults no matter what the guest programmed.
 
+**`DCEMU_TRAZA_DEPURACION=1` prints what the guest sends to its own debug output.**
+Windows CE throws it away — its OAL writes to neither the SCI nor the SCIF (measured with a
+watchpoint on both TDRs) — so hundreds of lines in which the guest narrates what it is doing
+went nowhere. dcemu intercepts `OutputDebugStringW` and `NKvDbgPrintfW` (apiset 0, methods
+14 and 23 — CE's numbering, not this image's) on the way into the exception, *before* the
+bank switch takes the guest's R4, and reads the string with `mmu_traducir_mirar()`: a
+translation that looks without faulting and without advancing URC, because a `longjmp` from
+inside `excepcion_entrar()` would leave the emulator half-way into an exception. DCDoom's
+whole DOOM startup log comes out this way, and it named its own blocker in one line —
+`W_ReadLump: only read 0 of 17544 on lump 1968`.
+
 **A register read with no case of its own reports itself under `--traza-mem`** — one line
 per distinct address, with what the `control_mem` backing store answered. `REVISION`,
 `SB_G1SYSM`, `SB_SBREV` and `FB_R_SOF1` were each found the hard way, one hang apiece; this

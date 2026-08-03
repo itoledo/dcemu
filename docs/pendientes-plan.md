@@ -1205,6 +1205,52 @@ y no en algo que dcemu contesta mal. Para retomar: la cadena de retorno es
 `0x395xx` hacia el bucle. `DCEMU_TRAZA_SYSCALL=ffffdb3d:395d0:400000` cubre desde el
 `PeekMessageW` hasta la salida en una sola traza.
 
+#### El guest cuenta su propio arranque: DOOM entero, y lo que faltaba dicho en una línea
+
+**Windows CE tira su salida de depuración.** Su OAL no escribe ni al SCI ni al SCIF
+(medido con watchpoint sobre los dos TDR), así que los cientos de líneas en las que el
+guest narra lo que hace no salían por ningún lado. **`DCEMU_TRAZA_DEPURACION=1` las
+imprime**: intercepta `OutputDebugStringW` y `NKvDbgPrintfW` (apiset 0, métodos 14 y 23 —
+numeración de CE, no de esta imagen) al entrar a la excepción, **antes** de que el cambio
+de banco se lleve el R4 del guest, y lee la cadena con `mmu_traducir_mirar()`, una
+traducción nueva que mira sin fallar: no entra a ninguna excepción y no mueve URC, porque
+un `longjmp` desde adentro de `excepcion_entrar()` dejaría al emulador a medio entrar.
+
+Con eso DCDoom dijo en una línea lo que costaba días:
+
+```
+Error:
+W_ReadLump: only read 0 of 17544 on lump 1968
+Exiting windoom...
+```
+
+**La causa**: el destino de un pedazo del flujo PIO es una dirección virtual de otra
+ranura de CE (el buffer del llamador, en la ranura 6; el de rebote del propio driver, en
+la 0) y su página puede no estar en la TLB. La escritura fallaba a mitad de la copia,
+abortaba la instrucción, y el guest reejecutaba el stub con la bomba del driver ya a
+mitad de camino — los bytes llegaban a su buffer y el conteo volvía en cero. Ahora se
+**toca el destino antes de mover nada**: el fallo ocurre con el estado del flujo intacto,
+CE recarga la TLB, reejecuta el stub y la copia entera pasa de una. Dos correcciones más
+del mismo protocolo, las dos como el HLE de flycast: `CHECK_COMMAND` escribe sus cuatro
+words **siempre** (el driver hace una consulta final ya sin petición viva, y de ahí saca
+el conteo que devuelve a su llamador), y `CHECK_DMA_TRANS`/`CHECK_PIO_TRANS` no matan el
+flujo al vaciarlo — eso lo hace el COMPLETED.
+
+Dos medidas de esta sesión que parecían resolverlo y no: escribir el destino del PIO como
+**físico** hace que el conteo salga bien (no falla, luego no aborta) pero manda los datos
+a otra página, y el juego muere después con `W_GetNumForName: PNAMES not found!`; y
+partir la regla por rango de dirección tampoco, porque **las dos son virtuales** — 0x00160000
+es la ranura 0 y 0x0c2d6afc la 6, no RAM física. La regla correcta es traducir siempre,
+y lo que había que arreglar era el momento del fallo.
+
+**DOOM arranca entero ahora** y lo dice él mismo: `W_Init` con `\CD-ROM\doom.wad`,
+"Ultimate Doom WAD - fourth episode enabled", la pantalla de startup v1.9, `M_Init`,
+`R_Init` (las texturas, que es donde moría), `I_Init`, `D_CheckNetGame` ("player 1 of 1"),
+`S_Init`, `HU_Init`, `ST_Init`, `CO_Init`. **Lo que falta es que presente**: sigue en 42
+escenas de una tira y la captura en negro, así que la frontera es el blit de DirectDraw —
+DOOM dibuja en su framebuffer de 320×200 y ddhal lo lleva a la pantalla. El log del guest
+es ahora la primera herramienta a mirar.
+
 **Dónde quedó DCDoom antes de este arreglo**: CE arranca entero, CreateProcess funciona,
 el juego abre DOOM.WAD por `CreateFileW`/`ReadFile` — el montaje ISO9660 de CE sirviendo
 por los dos flujos —, lee sus lumps (paleta, colormaps, flats: sectores 15024-15033,
