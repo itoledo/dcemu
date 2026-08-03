@@ -25,6 +25,8 @@ unsigned long long perf_ns_aica		= 0;
 unsigned long long perf_ns_arm		= 0;
 unsigned long long perf_ns_escena	= 0;
 unsigned long long perf_ns_textura	= 0;
+unsigned long long perf_ns_cuadro	= 0;
+unsigned long long perf_ns_orden	= 0;
 unsigned long long perf_ns_presentar= 0;
 unsigned long long perf_ns_servicio	= 0;
 unsigned long long perf_ns_ta		= 0;
@@ -78,6 +80,7 @@ unsigned long long perf_tex_nueva		= 0;
 unsigned long long perf_tex_desalojo	= 0;
 
 unsigned long long perf_tiras_dibujadas	= 0;
+unsigned long long perf_tiras_sin_cambio= 0;
 
 static unsigned long long arranque = 0;
 
@@ -171,9 +174,11 @@ void perf_resumen(void)
 	linea("AICA (mezcla)",		perf_ns_aica,		real);
 	linea("AICA (ARM7)",		perf_ns_arm,		real);
 	linea("  AICA total",		aica_total,			real);
-	linea("dibujar_escena()",	perf_ns_escena,		real);
-	linea("  de eso texturas",	perf_ns_textura,	real);
-	linea("presentar",			perf_ns_presentar,	real);
+	linea("cuadro (cb_tastart)",perf_ns_cuadro,		real);
+	linea("  de eso ordenar",	perf_ns_orden,		real);
+	linea("  de eso escena",	perf_ns_escena,		real);
+	linea("    de eso texturas",perf_ns_textura,	real);
+	linea("  de eso presentar",	perf_ns_presentar,	real);
 	linea("bloque periodico",	perf_ns_servicio,	real);
 	linea("TA (store queue)",	perf_ns_ta,			real);
 
@@ -185,11 +190,12 @@ void perf_resumen(void)
 
 	/* Lo que queda es el interprete del SH-4 y el andamiaje de main_loop().
 	   El bloque periodico y el AICA estan anidados, asi que no se restan dos
-	   veces: perf_ns_servicio ya incluye a aica_total. */
+	   veces: perf_ns_servicio ya incluye a aica_total. Del lado grafico el que
+	   se resta es perf_ns_cuadro, que contiene a escena, presentar y captura --
+	   y ademas la ordenacion, que antes no la contaba nadie. */
 	{
-		unsigned long long medido = perf_ns_servicio + perf_ns_escena
-		                          + perf_ns_presentar + perf_ns_ta
-		                          + perf_ns_captura;
+		unsigned long long medido = perf_ns_servicio + perf_ns_cuadro
+		                          + perf_ns_ta;
 
 		linea("resto (interprete)",
 			real > medido ? real - medido : 0, real);
@@ -216,7 +222,14 @@ void perf_resumen(void)
 	}
 
 	if (perf_tiras_dibujadas)
-		fprintf(stderr, "perf: %llu llamadas de dibujo\n", perf_tiras_dibujadas);
+		fprintf(stderr, "perf: %llu llamadas de dibujo, %llu sin cambio de estado"
+			" (%.1f %%, o sea %.2f tiras por lote si se agruparan)\n",
+			perf_tiras_dibujadas, perf_tiras_sin_cambio,
+			100.0 * (double) perf_tiras_sin_cambio / (double) perf_tiras_dibujadas,
+			perf_tiras_dibujadas > perf_tiras_sin_cambio
+				? (double) perf_tiras_dibujadas
+				  / (double) (perf_tiras_dibujadas - perf_tiras_sin_cambio)
+				: 0.0);
 
 	if (perf_escenas)
 		fprintf(stderr, "perf: %llu escenas, %.0f tiras por escena en promedio,"

@@ -714,8 +714,24 @@ looked fine. `DCEMU_SIN_FILTRO_MIP` is what split it — artifact gone without m
 — and the free now runs after the chain upload. No KOS demo uses the mipmap bit, so the
 demo sweep can never catch a regression here: a game has to.
 
-**Strips with zero vertices are skipped at draw** — a game's shadow headers leave hundreds of
-empty end-of-strip records per scene that drew nothing but paid the full GL state churn.
+**Strips with zero vertices are skipped at draw, and that skip is load-bearing** — a game's
+shadow headers leave hundreds of empty end-of-strip records per scene. They drew nothing but
+paid the full GL state churn, which is why the skip went in; what was found later is that
+letting one through **takes the process down**. `glDrawArrays(GL_TRIANGLE_STRIP, first, 0)`
+faults inside the ICD, reading past the end of `VertexBuffer[]`: the driver computes the range
+as `first..first+count-1` and with `count` 0 that wraps. Reproducible; `traza_caida_instalar()`
+is what made it readable.
+
+**The graphics path costs 7.6% of a run, and that is the ceiling for anything left in it.**
+Measured on Crazy Taxi in motion (1183 strips/scene, 180 emulated seconds, Release): the whole
+of `cb_tastart()` is 6.0% — strip sort 0.6, `dibujar_escena()` 5.0, of which textures 0.8 —
+and the TA's store-queue decode another 1.6%. For comparison the AICA's ARM7 alone is 14.2%
+and the SH-4 interpreter 72.9%. **`DCEMU_SIN_DIBUJO=1` skips the `glDrawArrays` and nothing
+else** (the scene goes black on purpose; the guest never reads back what GL rasterized, so the
+execution is identical and that is verified before comparing): the 9.5 million draw calls are
+worth **1.7%**, which is the summed ceiling of a VBO and of batching strips — both now
+discarded by measurement, not by judgement. `docs/rendimiento-plan.md`, "La fase 3 se cierra",
+has the numbers and the two hypotheses that died with them.
 
 ## Architecture
 

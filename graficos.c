@@ -2155,35 +2155,69 @@ static void plantilla_para(int i, int dentro, int hay_volumen)
 
 	El perfil de Release contra Virtua Tennis puso el 34,5 % del tiempo real en
 	dibujar_escena() y solo el 2,9 % en codigo grafico nuestro: todo lo demas
-	esta adentro del driver. La llamada que se hace una vez por tira es
+	estaba adentro del driver. La llamada que se hace una vez por tira es
 	glDrawArrays -- 1837 por escena, con tiras de unos seis vertices --, asi que
 	agruparlas con glMultiDrawArrays parecia el paso obvio.
 
-	**Se implemento y se midio: 26093408 tiras en 26005596 llamadas, o sea 1,0
-	tiras por llamada.** El lote se cortaba en casi todas, y la razon es el
-	ligado de textura: una escena usa del orden de 1900 texturas distintas y las
-	tiras llegan ordenadas por tipo de lista, no por material, asi que casi
-	ninguna comparte textura con la anterior.
+	Se implemento y se midio: **26093408 tiras en 26005596 llamadas, o sea 1,0
+	tiras por llamada**, con lo que quedo descartado. El lote se cortaba en casi
+	todas por el ligado de textura: una escena usa del orden de 1900 texturas
+	distintas y las tiras llegan ordenadas por tipo de lista, no por material.
 
-	Y el intento tenia ademas un defecto de orden que el barrido de demos
-	delato: el lote se soltaba **despues** de que tira_estado() ya habia
-	aplicado el estado nuevo, con lo que las tiras acumuladas bajo el estado
-	viejo salian dibujadas con el nuevo. Arreglarlo pide partir tira_estado()
-	en "calcular" y "aplicar" para poder decidir sin emitir.
+	**Esa cifra caduco y hay que decirlo, porque la caduco este mismo archivo.**
+	Es anterior a que gl_ligar() sombreara el glBindTexture, o sea que entonces
+	cada tira religaba y eso contaba siempre como cambio de estado. Con el bind
+	sombreado son **59,2 % de las tiras sin cambiar nada, o sea 2,45 por lote**
+	(perf_tiras_sin_cambio, que existe para que la cifra no vuelva a vivir
+	congelada en un comentario).
 
-	Nada de eso vale la pena mientras el factor sea 1,0. Lo que haria pagar al
-	agrupamiento es ordenar las tiras opacas por textura dentro de su lista
-	-- seguro ahi, porque decide el test de profundidad, y NO en la translucida,
-	donde el orden es el resultado --, y eso es otro cambio.
+	Y aun asi no se agrupa, por una razon que ninguna de las dos mediciones
+	anteriores podia dar: **las 9,5 millones de llamadas cuestan 1,7 % de la
+	corrida entera**, medido con DCEMU_SIN_DIBUJO (ver abajo). Ese es el techo
+	sumado de agrupar y de un VBO, y no alcanza para pagar el riesgo -- que es
+	concreto: el intento anterior soltaba el lote **despues** de que
+	tira_estado() ya habia aplicado el estado nuevo, con lo que las tiras
+	acumuladas bajo el estado viejo salian dibujadas con el nuevo, y hacerlo
+	bien pide partir tira_estado() en "calcular" y "aplicar".
 
 	Lo que si quedo de todo esto, y es de donde salio la ganancia, esta en la
 	sombra de estado: el glDisable(GL_STENCIL_TEST) que se hacia por tira y el
 	glBindTexture que reponia la textura que ya estaba ligada.
 */
+/*
+	DCEMU_SIN_DIBUJO=1 saltea el glDrawArrays y nada mas. **Dibuja mal a
+	proposito**: la escena sale negra.
+
+	Es la unica forma de medir cuanto del cuadro esta del otro lado del driver,
+	porque ese tiempo no aparece en un perfil de muestreo de dcemu -- sale
+	adentro del ICD -- y --perf no puede separarlo desde adentro. La diferencia
+	contra la corrida normal es el costo COMPLETO de las llamadas: entrada al
+	driver, recorrido de los arreglos de cliente y envio a la GPU.
+
+	No cambia la ejecucion del guest --nada del juego lee lo que GL rasterizo--
+	y eso se verifica antes de comparar: instrucciones, escenas, tiras por
+	escena y llamadas de dibujo tienen que salir identicas. Si no salen, los
+	tiempos no significan nada.
+
+	Lo que contesto, en Crazy Taxi en juego (ver docs/rendimiento-plan.md): las
+	9 502 399 llamadas cuestan **1,7 %** de la corrida, y con eso quedan
+	descartadas por medicion la fase 3.3 (VBO) y la 3.4 (agrupar las tiras), que
+	no pueden dar mas que eso entre las dos.
+
+	Hubo una segunda sonda, "llamar con count 0" para separar la entrada al
+	driver del recorrido de los vertices, y **no se puede hacer**: el driver
+	cae con acceso invalido leyendo pasado el final de VertexBuffer[]. Calcula
+	el rango como first..first+count-1 y con count 0 eso da la vuelta. O sea
+	que saltar las tiras de cero vertices en dibujar_escena() no es una
+	optimizacion sino un requisito.
+*/
+static int env_sin_dibujo = -1;
+
 static void dibujar_tira(DWORD i)
 {
-	glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,
-		TriangleStrip[i].count);
+	if (!env_interruptor("DCEMU_SIN_DIBUJO", &env_sin_dibujo))
+		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,
+			TriangleStrip[i].count);
 
 	PERF_CONTAR(perf_tiras_dibujadas);
 }
@@ -2339,7 +2373,26 @@ static void volcar_a_memoria(DWORD destino, DWORD dst_w, DWORD dst_h,
 							 DWORD src_w, DWORD src_h, int ventana64);
 static void volcar_escena_a_framebuffer(void);
 
+static void cb_tastart_cuerpo(DWORD addr, void * p, size_t size);
+
+/*
+	La frontera de cuadro, cronometrada entera.
+
+	El cuerpo tiene tres salidas -- la inicializacion vacia, el render a textura
+	y el camino normal -- asi que el reloj va en una envoltura y no adentro: un
+	PERF_SUMAR por salida se olvida en la proxima que se agregue. Ver perf.h por
+	que hace falta medirlo entero y no solo dibujar_escena().
+*/
 void cb_tastart(DWORD addr, void * p, size_t size)
+{
+	PERF_MARCA(t_cuadro);
+
+	cb_tastart_cuerpo(addr, p, size);
+
+	PERF_SUMAR(t_cuadro, perf_ns_cuadro);
+}
+
+static void cb_tastart_cuerpo(DWORD addr, void * p, size_t size)
 {
 	/*
 		Un TA_LIST_INIT que llega sin nada registrado desde el anterior no
@@ -2444,6 +2497,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 
 	/* La llave del autosort de la lista translucida: la z mas cercana de cada
 	   tira, y si el guest pidio pre-sort (ISP_FEED_CFG, bit 0). Ver compare(). */
+	PERF_MARCA(t_orden);
+
 	{
 		DWORD feed = 0, si, k;
 
@@ -2467,6 +2522,8 @@ void cb_tastart(DWORD addr, void * p, size_t size)
 	}
 
 	qsort(TriangleStrip,strip_count,sizeof(TSI),compare);
+
+	PERF_SUMAR(t_orden, perf_ns_orden);
 
 	/* El estado con que sale cada tira. Si la geometria llega bien y no se ve
 	   nada, esto es lo que queda por mirar: es lo que descubrio que a conio se
@@ -3205,13 +3262,29 @@ static void dibujar_escena(void)
 		tener que comparar campo por campo -- o una tira con niebla, que
 		necesita dibujarse y repintarse antes de que siga otra.
 	*/
+	/* Saltar las tiras de cero vertices **no es una optimizacion**: un
+	   glDrawArrays con count 0 hace que el driver lea pasado el final de
+	   VertexBuffer[] y caiga con acceso invalido (calcula el rango como
+	   first..first+count-1). Medido con la sonda de dibujar_tira(). Un juego
+	   deja cientos de esas tiras por escena -- encabezados de sombra que
+	   cierran sin geometria --, asi que la guarda corre siempre. */
 	for (i = 0; i < strip_count; i++)
 	{
 		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2)
 			continue;
 
-		gl_estencil(0);
-		tira_estado(i);
+		/* La cuenta de llamadas de estado antes y despues: si no se movio, esta
+		   tira habria entrado en el lote de la anterior. Ver perf.h. */
+		{
+			unsigned long antes = gl_e.cambios;
+
+			gl_estencil(0);
+			tira_estado(i);
+
+			if (perf_activa && gl_e.cambios == antes)
+				perf_tiras_sin_cambio++;
+		}
+
 		dibujar_tira(i);
 
 		if (niebla_aplica(i))
@@ -3270,8 +3343,16 @@ static void dibujar_escena(void)
 		/* Fuera del volumen, o entera si ninguno la afecta. Con mezcla de
 		   por medio cada pixel tiene que salir UNA sola vez, asi que la tira
 		   afectada se parte en fuera/dentro en vez de repintarse. */
-		plantilla_para(i, 0, vol_trans);
-		tira_estado(i);
+		{
+			unsigned long antes = gl_e.cambios;
+
+			plantilla_para(i, 0, vol_trans);
+			tira_estado(i);
+
+			if (perf_activa && gl_e.cambios == antes)
+				perf_tiras_sin_cambio++;
+		}
+
 		dibujar_tira(i);
 
 		/* Dentro: la misma geometria con el juego 1, aqui mismo para que

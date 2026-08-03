@@ -759,3 +759,113 @@ escenas. Un juego ejercita esos caminos con geometría real; el parque de KOS no
 Y la aislación vale como método: dos sondas temporales, una puenteando la sombra —la
 diferencia desaparecía— y otra puenteando la caché de filtros de textura —no desaparecía—,
 que es lo que declaró inocente a la caché.
+
+---
+
+# La fase 3 se cierra: el camino gráfico entero, medido, al 2026-08-03
+
+Crazy Taxi en 3D en movimiento (1183 tiras por escena), `--salir-tras=180`, **Release**,
+i9-13900. Las variantes se alternan en la misma tanda y se verifica que hicieron el mismo
+trabajo antes de mirar el reloj: **22 280 053 333 instrucciones, 9994 escenas, 1183 tiras y
+9 502 399 llamadas de dibujo, idénticas en las cuatro corridas válidas**.
+
+## Primero, el agujero que tenía el reparto
+
+`--perf` medía `dibujar_escena()` y llamaba "resto (intérprete)" a todo lo demás. Pero
+`cb_tastart()` hace dos cosas **antes** de llamarla: recorre todos los vértices de la escena
+para sacar la profundidad de cada tira, y ordena `TriangleStrip[]` con `qsort` —144 bytes por
+elemento, del orden de mil elementos, diez mil veces—. Eso caía entero del lado del
+intérprete, y un desglose que le llama "intérprete" a la ordenación de la geometría no puede
+contestar si el camino gráfico pesa.
+
+`perf_ns_cuadro` mide ahora `cb_tastart()` entera y `perf_ns_orden` la ordenación aparte:
+
+| | ms | % |
+| --- | --- | --- |
+| cuadro (`cb_tastart`) | 7045 | 6,0 |
+| — de eso ordenar | 704 | 0,6 |
+| — de eso escena | 5914 | 5,0 |
+| — de eso texturas | 931 | 0,8 |
+| — de eso presentar | 338 | 0,2 |
+| TA (store queue) | 1917 | 1,6 |
+| **el camino gráfico entero** | **8962** | **7,6** |
+| bloque periódico | 22 445 | 19,3 |
+| resto (intérprete) | 84 680 | 72,9 |
+
+**El camino gráfico entero es el 7,6 %.** El ARM7 del AICA solo, que no es gráfico, es el
+14,2 % —casi el doble—.
+
+## Las tres cosas que quedaban de la fase 3, medidas
+
+- **La ordenación: 704 ms, 0,6 %.** Era una hipótesis razonable —`qsort` con comparador por
+  puntero moviendo estructuras de 144 bytes, cuando la llave son tres bits de tipo de lista y
+  el arreglo ya llega en orden de envío— y no es nada. Cambiarla por un conteo habría ganado
+  medio punto.
+- **La caché de texturas y su marcado por generaciones (fase 3.5): 931 ms, 0,8 %** con todo
+  adentro: `vram_gen_rango64()` por tira, la búsqueda en el hash, el ligado y los filtros.
+  14 585 979 consultas con 99,9 % de aciertos, 0 desalojos. Descartada.
+- **Las 9,5 millones de llamadas de dibujo: 1,7 %.** Ésta es la que cierra la fase entera.
+
+## Cómo se midió la última
+
+`DCEMU_SIN_DIBUJO=1` saltea el `glDrawArrays` de `dibujar_tira()` y nada más. La escena sale
+negra —dibuja mal a propósito—, pero el guest no lee lo que GL rasterizó, así que la ejecución
+es idéntica y eso se verifica antes de comparar.
+
+| | ms reales | `cb_tastart` | `dibujar_escena` |
+| --- | --- | --- | --- |
+| normal | 119 179 / 119 915 | 7104 / 7134 | 5902 / 5946 |
+| sin `glDrawArrays` | 117 574 / 117 434 | 5498 / 5439 | 4308 / 4288 |
+
+**2043 ms sobre las medianas: 1,7 %.** Ése es el techo **sumado** de todo lo que quedaba por
+hacer del lado de GL:
+
+- **el VBO (fase 3.3) no puede dar más que eso**: lo único que ataca —que el driver recorra y
+  valide los arreglos de cliente en cada llamada— vive adentro de esos 1,7 %;
+- **agrupar las tiras (fase 3.4) tampoco**, y de hecho bastante menos: `glMultiDrawArrays`
+  ahorra la entrada al driver pero sigue teniendo que dibujar los mismos triángulos.
+
+Las dos quedan **descartadas por medición**, no por criterio. La fase 3 está cerrada.
+
+### La sonda que no se pudo hacer, y lo que enseñó
+
+Había una segunda sonda pensada para separar la entrada al driver del recorrido de los
+vértices: llamar `glDrawArrays` con `count` 0. **No se puede.** El driver cae con acceso
+inválido leyendo `00007FF746E9D974` —pasado el final de `VertexBuffer[]`, que vive en la
+imagen de dcemu—, reproducible en las tres corridas que lo intentaron. Calcula el rango como
+`first..first+count-1` y con `count` 0 eso da la vuelta.
+
+Y de rebote deja una cosa dicha que no lo estaba: **saltar las tiras de cero vértices en
+`dibujar_escena()` no es una optimización, es un requisito**. Un juego deja cientos de esas
+por escena —encabezados de sombra que cierran sin geometría— y si una llegara al driver, se
+lleva el proceso. Está anotado en las dos guardas.
+
+El manejador de caídas (`traza_caida_instalar()`) es lo que permitió leerlo en una corrida:
+sin él el proceso desaparece y SDL se lleva `stderr` con él.
+
+## Y el número que justificaba no agrupar cambió, aunque ya no importe
+
+`dibujar_tira()` documentaba «26 093 408 tiras en 26 005 596 llamadas: 1,0 tiras por llamada»
+y de ahí salía que agrupar no servía. Hoy son **59,2 % de las tiras sin cambio de estado, o
+sea 2,45 por lote**. La diferencia no es la escena: aquella medida es **anterior** a que
+`gl_ligar()` sombreara el `glBindTexture`, así que cada tira religaba y eso contaba siempre
+como cambio de estado.
+
+O sea que la razón que el documento daba para no agrupar dejó de ser cierta, y el
+agrupamiento sigue sin valer la pena pero por otro motivo y con otro número. Es la segunda vez
+en esta rama que una optimización invalida la medida que justificaba a otra;
+`perf_tiras_sin_cambio` existe para que la próxima vez la cifra esté al día sola, en vez de
+vivir congelada en un comentario.
+
+## Dónde está la leña, entonces
+
+| | % |
+| --- | --- |
+| intérprete SH-4 | 72,9 |
+| ARM7 del AICA | 14,2 |
+| **camino gráfico entero** | **7,6** |
+| bloque periódico sin el AICA | 4,2 |
+
+Lo que queda por delante no es gráfico. El ARM7 da 2 161 263 641 pasos con **0 % ociosos** —o
+sea que no está en el salto a sí mismo de `spu_init()`, está corriendo firmware de verdad— y
+cuesta casi el doble que todo el pipeline junto.

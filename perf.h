@@ -36,6 +36,24 @@ extern unsigned long long perf_ns_aica;			/* mezclar_una_muestra() */
 extern unsigned long long perf_ns_arm;			/* arm7_ejecutar() */
 extern unsigned long long perf_ns_escena;		/* dibujar_escena() entera */
 extern unsigned long long perf_ns_textura;		/* get_texture(), subconjunto de la anterior */
+
+/*
+	El cuadro grafico entero: cb_tastart(), que es la frontera de cuadro y por
+	donde pasa TODO lo que dcemu hace por escena.
+
+	Existe porque el reparto tenia un agujero y la conclusion que salia de el
+	era falsa. perf_ns_escena mide solo el bucle de tiras; **antes** de llamarlo,
+	cb_tastart() recorre todos los vertices de la escena para sacar la
+	profundidad de cada tira y despues ordena TriangleStrip[] con qsort -- 144
+	bytes por elemento, del orden de mil elementos, diez mil veces --, y eso caia
+	entero en "resto (interprete)". Un desglose que llama "interprete" a la
+	ordenacion de la geometria no puede contestar si el camino grafico pesa.
+
+	Anida a escena, presentar y captura, asi que el resto se calcula contra este
+	y no contra la suma de aquellos.
+*/
+extern unsigned long long perf_ns_cuadro;
+extern unsigned long long perf_ns_orden;		/* profundidad por tira + qsort */
 extern unsigned long long perf_ns_presentar;	/* el intercambio de buffers */
 extern unsigned long long perf_ns_servicio;		/* el bloque periodico de main_loop() */
 extern unsigned long long perf_ns_ta;			/* ta_procesar_bloque() por store queue */
@@ -153,7 +171,19 @@ extern unsigned long long perf_tex_desalojo;
 	tarda dibujar sino cuantas veces se entra al driver. Hoy es una por tira;
 	ver dibujar_tira() en graficos.c por que no se agrupan.
 */
-extern unsigned long long perf_tiras_dibujadas;	/* la rueda piso una entrada viva */
+extern unsigned long long perf_tiras_dibujadas;	/* una por glDrawArrays de tira */
+
+/*
+	Cuantas de esas tiras podrian haberse sumado al lote de la anterior, o sea
+	las que salieron de tira_estado() **sin emitir una sola llamada de estado**.
+
+	Es la medida directa del techo de glMultiDrawArrays, y existe porque el
+	intento anterior se midio al reves: se implemento primero y despues se
+	descubrio que daba 1,0 tiras por llamada. Esta cifra lo contesta antes, y
+	con la escena real: si queda cerca de cero, agrupar no tiene nada que
+	ganar por mas que se ordene por material.
+*/
+extern unsigned long long perf_tiras_sin_cambio;
 
 void perf_inicio(void);
 void perf_resumen(void);
