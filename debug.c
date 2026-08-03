@@ -69,7 +69,27 @@ void DebugUpdate(void)
 	Uint32 color_white = SDL_MapRGBA(DebugWindow->format, 0xff, 0xff, 0xff, 0x0);
 	extern int filelogging;
 
-	if (DebugVisible) 
+	/* Sin fuente no se dibuja nada: BFont_LoadFont() devuelve NULL cuando el
+	   archivo no esta, DebugInit() lo guarda igual y contesta que todo bien, y
+	   la primera letra que se pintara hace src = Font->Chars[c] sobre un
+	   puntero nulo. O sea que a font.bmp le alcanzaba con faltar para que F12
+	   se llevara el emulador -- y falto, borrado junto con los BMP de capturas.
+	   No se aborta el arranque, que es lo que haria devolver 1 desde
+	   DebugInit(): la vista de depuracion no vale una consola que no arranca. */
+	if (DebugVisible && DebugFont == NULL)
+	{
+		static int avisado = 0;
+
+		if (!avisado)
+		{
+			fprintf(stderr, "debug: sin font.bmp no hay vista de depuracion\n");
+			avisado = 1;
+		}
+
+		return;
+	}
+
+	if (DebugVisible)
  	{
 #if defined(DEBUG_MEM_READ) || defined(DEBUG_MEM_WRITE)
 		filelogging &= ~(FILELOG_MEMREADS | FILELOG_MEMWRITES);
