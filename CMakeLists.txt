@@ -194,8 +194,8 @@ target_compile_options(dcemu PRIVATE
 
 set(DCEMU_RUNTIME_FILES
 	font.png			# BFont, main.c
-	font.bmp			# BFont, debug.c
-	fixedfont.bmp		# guichan
+	font.bmp			# BFont, debug.c -- la vista F12
+	fixedfont.bmp		# guichan, gui.cpp
 )
 
 add_custom_command(TARGET dcemu POST_BUILD
@@ -203,11 +203,21 @@ add_custom_command(TARGET dcemu POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:dcemu>/bios"
 	VERBATIM)
 
+# Se copia lo que exista y se avisa de lo que no, en vez de romper la
+# compilacion: `copy_if_different` sobre un archivo ausente devuelve error y se
+# lleva el enlace entero por delante. Paso una vez -- font.bmp y fixedfont.bmp
+# se borraron junto con los BMP de capturas -- y el sintoma, un MSB3073 con
+# cuatro pantallas de eco de MSBuild, no se parece en nada a "falta un archivo".
 foreach(_f ${DCEMU_RUNTIME_FILES})
-	add_custom_command(TARGET dcemu POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			"${CMAKE_SOURCE_DIR}/${_f}" "$<TARGET_FILE_DIR:dcemu>/"
-		VERBATIM)
+	if(EXISTS "${CMAKE_SOURCE_DIR}/${_f}")
+		add_custom_command(TARGET dcemu POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"${CMAKE_SOURCE_DIR}/${_f}" "$<TARGET_FILE_DIR:dcemu>/"
+			VERBATIM)
+	else()
+		message(WARNING "falta ${_f}: el emulador compila, pero lo que lo abre "
+			"se queda sin fuente en tiempo de ejecucion")
+	endif()
 endforeach()
 
 # La cadena completa: SDL.dll es sdl12-compat, que carga SDL2.dll (que a su vez
