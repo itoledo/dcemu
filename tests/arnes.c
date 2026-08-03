@@ -68,8 +68,6 @@ void arnes_reset(void)
 	core.context.banco_activo = 0;
 
 	core.context.cycles = 0;
-	core.context.cycles_v_int = 0;
-	core.context.cycles_v_int_total = 0;
 
 	delayslot = 0;
 	NEXTPC = 0;

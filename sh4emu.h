@@ -256,23 +256,43 @@ DC_ASSERT_SIZE(fpscr_bits, struct FPSCR_REG_BITS_t, 4);
 
 typedef struct context_t context_t;
 
+/*
+	El orden de los campos importa, y no es el que tenia.
+
+	Cada instruccion escribe `cycles`, escribe `PC_REG` y toca algun registro; y
+	muchisimas leen SR.T. Estaban repartidos asi: `cycles` en el byte 0,
+	`registers[]` desde el 12, y `PC_REG` en el 152 -- o sea en la **tercera**
+	linea de cache de 64 bytes. Dos o tres lineas por instruccion donde alcanzan
+	una o dos. Peor: ocho bytes de la linea mas caliente los ocupaban dos campos
+	sin usar desde la fase 2 de docs/clock-plan.md, conservados "para no cambiar
+	el tamano del contexto" -- motivo que nunca se sostuvo, porque la instantanea
+	de la MMU copia con sizeof y no con un numero.
+
+	Ahora lo caliente va primero: cycles, PC, SR, PR y R0-R15 entran en 84 bytes,
+	o sea dos lineas, y detras queda todo lo que se toca de vez en cuando -- los
+	bancos de R0-R7, los registros de sistema y los punteros a los bancos de
+	punto flotante.
+
+	Nada depende del orden: no hay serializacion del contexto ni acceso por
+	desplazamiento. Lo unico que lo copia entero es la instantanea de la MMU.
+*/
 struct context_t
 {
-	DWORD cycles; // cycles count
-	// Sin usar desde la fase 2 de docs/clock-plan.md: el barrido compara contra
-	// una marca de reloj_total y ya no necesita acumuladores. Se dejan para no
-	// cambiar el tamano del contexto, que main_loop() copia entero para
-	// reejecutar instrucciones que fallan por MMU.
-	DWORD cycles_v_int; // sin usar
-	DWORD cycles_v_int_total; // sin usar, nunca se leyo
-	DWORD registers [24]; // GENERAL PURPOSE REGISTERS
+	DWORD cycles;					// cycles count
+	unsigned long PC_REG;			// Program Counter
+	SR_t SR_REG;
+	unsigned long PR_REG;			// Procedure register
+
+	/* R0-R15 lo caliente; R0_BANK-R7_BANK, en 16..23, casi nunca. */
+	DWORD registers [24];			// GENERAL PURPOSE REGISTERS
+
 	/* Que banco de R0-R7 esta puesto en registers[0..7]. Es estado de CPU y va
 	   aca a proposito: la instantanea de la MMU restaura el contexto entero, y
 	   si el banco quedara afuera podria desincronizarse del arreglo que si se
 	   restaura. Lo mueve swap_registers() y lo decide UpdateSR(); ver ahi por
 	   que no alcanza con mirar SR.RB. */
 	int banco_activo;
-	FPSCR_t FPSCR_REG; 
+	FPSCR_t FPSCR_REG;
 	unsigned long SSR_REG;
 	unsigned long SPC_REG;
 	unsigned long GBR_REG;
@@ -282,9 +302,6 @@ struct context_t
   // system registers
 	unsigned long MACH_REG; // multiply and accumulate high
 	unsigned long MACL_REG; // multiply and acumulate low
-	unsigned long PR_REG; // Procedure register
-	unsigned long PC_REG; // Program Counter
-	SR_t SR_REG;
 	DWORD FPUL_REG;
   // floating point registers
 	FPR_BANK * FR_BANK;
