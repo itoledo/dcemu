@@ -159,6 +159,17 @@ if(DCEMU_DESPACHO_COMPACTO)
 	target_compile_definitions(dcemu PRIVATE DESPACHO_COMPACTO)
 endif()
 
+# Release con simbolos. Los flags por omision de CMake para Release son
+# /O2 /Ob2 /DNDEBUG, **sin /Zi**, asi que no deja PDB -- y sin PDB un perfil de
+# muestreo atribuye cero muestras al emulador y las manda todas a
+# ***unknown***. Paso: el primer perfil de Release salio vacio.
+#
+# /Zi no cambia el codigo generado. /DEBUG en el enlace si apaga /OPT:REF y
+# /OPT:ICF, que Release trae puestos, asi que se reponen: el binario perfilado
+# tiene que ser el mismo que se mide.
+target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/Zi>)
+target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+
 # glu32 y winmm estan en los makefiles pero no se usan: la unica llamada a GLU
 # esta comentada (graficos.c) y no hay ninguna a winmm.
 target_link_libraries(dcemu PRIVATE
