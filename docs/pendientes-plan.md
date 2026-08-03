@@ -1489,6 +1489,60 @@ no llegó sola — la navegó el usuario con el mando mientras miraba. **XInput 
 sin foco de ventana**, así que las pulsaciones de quien esté jugando entran a la medición. Ya
 estaba anotado para el sonido; vale igual para la navegación.
 
+### A.13 — El color de offset, contra la especificación; y por qué la sombra de VT2 sigue sin salir (3 de agosto de 2026)
+
+Perseguido con el volcado de escena, ampliado para informar tres campos nuevos: los bits 25 y
+24 del TSP (`sel=`), el bit Offset de la palabra ISP (`off=`) y el color de offset por vértice.
+Lo que dio la escena 1600 del attract, de 3029 tiras:
+
+| combinación de mezcla | tiras | qué es |
+| --- | --- | --- |
+| `0001/0000` (SRC=1, DST=0) | 2457 | opacas — y el documento **exige** justo eso para una opaca |
+| `0001/0304` | 275 | |
+| `0302/0303` (SRC=4, DST=5) | 258 | lo que el documento **exige** para punch-through |
+| **`0307/0301` (SRC=3, DST=3)** | **27** | **las sombras** |
+| `0001/0001` | 8 | segunda pasada de las sombras |
+| `0000/0000` | 4 | degeneradas, fuera de pantalla |
+
+Las dos filas en negrita del documento —opaca = (1,0), punch-through = (4,5)— confirman de
+paso, y de forma independiente, que dcemu lee los campos en el orden correcto: bits 31-29 el
+origen y 28-26 el destino.
+
+**Tres mecanismos quedaron descartados por medición, no por lectura:**
+
+- **volumen modificador**: con `DCEMU_SIN_VOLUMEN=1` la escena sale byte a byte idéntica;
+- **búfer de acumulación secundario** (§3.4.6.1, bits 25 y 24 del TSP): `sel=0/0` en las 3029;
+- **alfa del destino**: limpiar el búfer con alfa 1 en vez de 0 no cambia un solo píxel.
+
+**Lo que sí faltaba y ahora está: el color de offset.** La tabla de la instrucción de
+textura/sombreado lo suma DESPUÉS de combinar el texel con el color base —`PIXRGB = COLRGB ×
+TEXRGB + OFFSETRGB` en los cuatro modos— y dcemu no lo leía en ninguna parte, con `off=1` en
+3022 de las 3029 tiras. En GL eso es el **color secundario** con `GL_COLOR_SUM`, que suma
+exactamente donde corresponde; plegarlo en el color del vértice no sirve, porque
+`(COL+OFF) × TEX` no es `COL × TEX + OFF` salvo con textura blanca. La entrada es de GL 1.4,
+así que se pide por `SDL_GL_GetProcAddress`. Se analiza en todos los tipos de vértice
+texturados, incluidos los de dos volúmenes y los de intensidad —estos traen una **segunda**
+intensidad que multiplica el *color de cara de offset* del encabezado, que solo trae el
+encabezado de tipo 2, en sus palabras 12-15—. Regresión: los diez del juego de control byte a
+byte, los cuatro juegos con sus perfiles exactos, DCDoom en sus 867 escenas, 21 suites en
+verde. Efecto visible: en Virtua Tenis 2 le devuelve los brillos a la piel de los jugadores.
+
+**Y aun así la sombra no sale, y ahora se puede decir por qué con precisión.** Las 27 tiras
+traen, medido: color base **negro**, color de offset **cero**, y una textura RGB565 de 8×8
+—sin canal alfa—, o sea `PIXRGB = 0 × TEX + 0 = 0`. Con el origen en negro y códigos (3,3) la
+ecuación del propio documento da
+
+```
+DST_rgb' = SRC_rgb·(1−DST_rgb) + DST_rgb·(1−SRC_rgb) = 0 + DST_rgb·1 = DST_rgb
+```
+
+es decir **no toca nada**, y no hay color de origen negro que pueda oscurecer por esa vía. Así
+que el oscurecimiento no está en esas tiras tal como dcemu las decodifica. Queda una hipótesis
+sola, y es la que hay que atacar: que las palabras ISP/TSP de esos encabezados no se estén
+leyendo de donde corresponde —el resto del pipeline ya está descartado— o que la sombra la
+dibuje algo que en esta escena del attract no aparece. El instrumental para contestarlo ya
+está puesto: el volcado imprime `sel=`, `off=` y el offset por vértice.
+
 ---
 
 ## Vía B — El AICA (hito E)

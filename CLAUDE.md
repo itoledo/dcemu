@@ -938,6 +938,21 @@ that buffer instead of the framebuffer as the blend operand and which dcemu only
 face colour of an intensity-mode vertex, since those strips arrive pure black with only the
 per-vertex alpha varying (0.00, 0.11, 0.15).
 
+**The Offset Color is emulated now, and it is GL's secondary color.** The Texture/Shading
+Instruction adds it *after* the texel is combined with the base color — `PIXRGB = COLRGB ×
+TEXRGB + OFFSETRGB` in all four modes (DevBox, the Texture/Shading Instruction table) — which
+is exactly `GL_COLOR_SUM` with `glSecondaryColorPointer`, and there is no way to fold it into
+the vertex color: `(COL+OFF) × TEX` is not `COL × TEX + OFF` unless the texture is white. The
+entry point is GL 1.4, so on Windows it comes from `SDL_GL_GetProcAddress` (opengl32.dll only
+exports 1.1 and the ICD serves the rest); if it is missing the offset is skipped and
+`--traza-mem` says so once. It is parsed for every textured vertex type, including the
+two-volume ones and the intensity variants — those carry a *second* intensity that multiplies
+the header's **offset face color**, which only a Type 2 header brings (words 12-15; a Type 4
+puts the other volume's face color there instead). Nothing in the ten-demo control set uses
+it (all byte-identical); in Virtua Tenis 2 it is what puts the highlights back on the
+players' skin. `usa_offset` (the ISP word's Offset bit) gates it per strip, and the fog pass
+turns it off — that pass draws the fog color and nothing else.
+
 **Two more that between them lost the whole `conio/*` family**, which draws one textured quad
 per character straight through `pvr_prim()`:
 
