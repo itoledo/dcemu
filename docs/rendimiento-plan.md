@@ -655,3 +655,83 @@ Sin `--bios` —con `--bios` el juego no arranca— y con **180 segundos**: a lo
 está en `MODE SELECTION`, con 479 tiras por escena contra las 1183 del juego. Toda
 comparación verifica cuadros, escenas y tiras antes de mirar el reloj, y descarta la corrida
 que no completó los segundos pedidos. Ver `herramientas/despacho-ab.ps1` y `rama-ab.ps1`.
+
+---
+
+# El dibujado de la escena, al 2026-08-03
+
+El perfil de muestreo sobre **Release** —el primero que se pudo tomar, porque hasta
+`826779c` esa configuración no dejaba PDB— contra Virtua Tennis, que es el banco pesado
+(1837 tiras por escena contra 1183 de Crazy Taxi, y picos de 23 509 vértices):
+
+| dónde | % del hilo |
+| --- | --- |
+| **fuera de dcemu: driver de GL y kernel** | **34,2 %** |
+| handlers del SH-4 | 28,7 % |
+| `main_loop` + `run` | 17,1 % |
+| ARM7 del AICA | 8,1 % |
+| FPU | 6,4 % |
+| **código gráfico propio** | **2,9 %** |
+
+**El 34,5 % que `--perf` llamaba `dibujar_escena()` era casi todo tiempo del driver.** La
+correspondencia es exacta —34,5 % contra 34,2 % de muestras fuera de dcemu— y la conclusión
+es que no había nada que acelerar *dentro*: había que **entrar menos veces al driver**.
+
+Dos llamadas se hacían una vez por tira sin mirar si hacían falta:
+
+- **`glDisable(GL_STENCIL_TEST)`**, que estaba dentro del lazo de dibujo.
+- **`glBindTexture`**, reponiendo la textura ya ligada. Con la caché acertando el 99,9 %,
+  casi todas las tiras consecutivas del mismo material religaban lo mismo.
+
+Con 26 millones de tiras dibujadas en una corrida, son 52 millones de llamadas al driver
+que no hacían nada. Ambas pasaron por la sombra de estado de `tira_estado()`.
+
+| | antes | después | |
+| --- | --- | --- | --- |
+| **Crazy Taxi** | 1,26× · 70,3 fps | **1,53× · 85,3 fps** | +21 % |
+| **Virtua Tennis** | 0,96× · 55,8 fps | **1,36× · 79,1 fps** | +42 % |
+| `dibujar_escena()` VT | 86 765 ms (34,5 %) | **12 276 ms (6,9 %)** | −86 % |
+
+## Lo que se probó y no sirvió: agrupar las llamadas de dibujo
+
+`glMultiDrawArrays` parecía el paso obvio: una entrada al driver para todas las tiras que
+compartan estado, en vez de una por tira. Se implementó y se midió.
+
+**26 093 408 tiras en 26 005 596 llamadas: 1,0 tiras por llamada.** El lote se cortaba en
+casi todas, y la causa está identificada: una escena usa del orden de 1900 texturas
+distintas y las tiras llegan ordenadas **por tipo de lista, no por material**, así que casi
+ninguna comparte textura con la anterior.
+
+Lo que lo haría pagar es ordenar las tiras opacas por textura dentro de su lista —seguro
+ahí, porque decide el test de profundidad, y **no** en la translúcida, donde el orden *es*
+el resultado—. Queda anotado en `dibujar_tira()`.
+
+## Y el error que sólo el barrido podía ver
+
+El intento de agrupamiento soltaba el lote **después** de que `tira_estado()` ya había
+aplicado el estado nuevo, con lo que las tiras acumuladas bajo el estado viejo salían
+dibujadas con el nuevo.
+
+Pasó `ctest` 21/21 y SingleStepTests 113 191 ok / 0 fallan —el error es de orden y sólo se
+manifiesta dibujando escenas reales— y el binario roto era **más rápido**: 78,3 fps
+dibujando mal, contra los 79,1 del corregido. Reportarlo sin barrer habría sido un récord
+falso.
+
+Lo delató un detalle: demos que sólo dibujan texto —`hello`, `basic-exec`, `dev-devroot`—
+cambiaron todas del mismo hash al mismo hash. Eso no es fase de animación, es algo
+sistémico; con 40 demos moviéndose la única lectura posible era una regresión.
+
+**Regla que queda**: una optimización que salta llamadas de estado de GL no está medida
+hasta que el barrido de las 150 demos da limpio, y la cifra de velocidad no cuenta antes de
+eso —parte de la velocidad puede ser trabajo que no se hizo—.
+
+## El punto frágil
+
+La sombra guarda estado **del contexto**, no del objeto, y hay una docena de sitios que lo
+cambian sin pasar por `tira_estado()`: las dos pasadas de volúmenes modificadores, el
+barrido de niebla, los quads del framebuffer, el limpiado. Cada uno llama a
+`gl_estado_olvidar()`, y **a la entrada de la función, no a la salida**: si esa función
+crece y agrega otra llamada, sigue cubierta.
+
+Si alguien agrega un sitio nuevo y no lo hace, la sombra miente y se dibuja mal, en silencio
+y según la escena. Ya pasó una vez con `plantilla_para()`, que tocaba el estencil por fuera.

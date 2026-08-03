@@ -145,7 +145,15 @@ extern unsigned long long perf_instrucciones;
 extern unsigned long long perf_tex_acierto;		/* clave y generacion al dia */
 extern unsigned long long perf_tex_regenera;	/* la clave estaba, cambio la generacion */
 extern unsigned long long perf_tex_nueva;		/* clave que no estaba */
-extern unsigned long long perf_tex_desalojo;	/* la rueda piso una entrada viva */
+extern unsigned long long perf_tex_desalojo;
+
+/*
+	Llamadas de dibujo. Con el perfil poniendo el 34,5 % del tiempo real adentro
+	del driver y solo el 2,9 % en codigo nuestro, lo que importa no es cuanto
+	tarda dibujar sino cuantas veces se entra al driver. Hoy es una por tira;
+	ver dibujar_tira() en graficos.c por que no se agrupan.
+*/
+extern unsigned long long perf_tiras_dibujadas;	/* la rueda piso una entrada viva */
 
 void perf_inicio(void);
 void perf_resumen(void);

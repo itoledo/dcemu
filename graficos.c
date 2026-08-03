@@ -930,6 +930,10 @@ static GLint wrap_gl(DWORD w)
 	El entorno no se lee de nuevo, a proposito: estos interruptores son de
 	diagnostico y se fijan antes de arrancar. -1 es "todavia no preguntado".
 */
+/* La sombra del estado de GL vive junto a tira_estado(); esto adelanta lo que
+   get_texture() necesita, que esta antes en el archivo. */
+static void gl_ligar(GLuint t);
+
 static int env_sin_cache_tex  = -1;
 static int env_sin_alphatest  = -1;
 
@@ -1171,7 +1175,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			{
 				logxmsg(LOG_PVR, "get_texture: retornando textura %d en cache\n", i);
 				PERF_CONTAR(perf_tex_acierto);
-				glBindTexture(GL_TEXTURE_2D, cached_textures[i].texture);
+				gl_ligar(cached_textures[i].texture);
 				aplicar_filtros_en(strip, i);
 				return;
 			}
@@ -1452,7 +1456,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		cached_textures[cur_tex_count].twiddled = true;
 	}
 
-	   glBindTexture(GL_TEXTURE_2D, cached_textures[cur_tex_count].texture);
+	   gl_ligar(cached_textures[cur_tex_count].texture);
 
 	/* Recien subida: el objeto puede ser nuevo, y entonces sus parametros estan
 	   en los de fabrica de GL. Se olvida lo recordado para que los cuatro se
@@ -1939,6 +1943,14 @@ static struct
 	int		textura;
 	GLint	tex_env;
 	int		offset;		/* GL_COLOR_SUM y el arreglo de color secundario */
+	int		estencil;
+	GLuint	ligada;		/* la textura de GL ligada; 0 es "ninguna o no se" */
+
+	/* Cuantas llamadas a GL emitio la sombra. No se lee su valor: se compara
+	   contra si mismo antes y despues de tira_estado() para saber si esa tira
+	   cambio algo. Es lo que decide si puede sumarse al lote de dibujo en vez
+	   de cortarlo. */
+	unsigned long cambios;
 } gl_e;
 
 /* Las funciones que la manejan viven junto a tira_estado(), que es quien la
@@ -2026,15 +2038,23 @@ static void marcar_volumenes(DWORD lista)
 	que ningun volumen afecta se dibuja entera. `hay_volumen` es el de la
 	lista que rige la fase en curso: la plantilla vale para una a la vez.
 */
+/* La sombra vive junto a tira_estado(); esto adelanta lo que plantilla_para()
+   necesita, que esta antes en el archivo. */
+static void gl_estencil(int on);
+
 static void plantilla_para(int i, int dentro, int hay_volumen)
 {
+	/* Por gl_estencil() y no por glEnable/glDisable a secas: si esta funcion
+	   cambiara el estencil por afuera, la sombra quedaria creyendo lo que dejo
+	   el lazo opaco y se saltaria un apagado que hace falta -- el estencil se
+	   quedaria encendido sobre lo que se dibuje despues. */
 	if (!TriangleStrip[i].volumen || !hay_volumen)
 	{
-		glDisable(GL_STENCIL_TEST);
+		gl_estencil(0);
 		return;
 	}
 
-	glEnable(GL_STENCIL_TEST);
+	gl_estencil(1);
 	glStencilFunc(dentro ? GL_NOTEQUAL : GL_EQUAL, 0, 0xFF);
 }
 
@@ -2061,6 +2081,44 @@ static void plantilla_para(int i, int dentro, int hay_volumen)
 	color este en el offset. Es lo que dejaba sin sombra a Virtua Tenis 2: sus
 	27 tiras de sombra tienen COLRGB = 0 y `off=1`.
 */
+/*
+	El dibujo de una tira, y por que NO se agrupan.
+
+	El perfil de Release contra Virtua Tennis puso el 34,5 % del tiempo real en
+	dibujar_escena() y solo el 2,9 % en codigo grafico nuestro: todo lo demas
+	esta adentro del driver. La llamada que se hace una vez por tira es
+	glDrawArrays -- 1837 por escena, con tiras de unos seis vertices --, asi que
+	agruparlas con glMultiDrawArrays parecia el paso obvio.
+
+	**Se implemento y se midio: 26093408 tiras en 26005596 llamadas, o sea 1,0
+	tiras por llamada.** El lote se cortaba en casi todas, y la razon es el
+	ligado de textura: una escena usa del orden de 1900 texturas distintas y las
+	tiras llegan ordenadas por tipo de lista, no por material, asi que casi
+	ninguna comparte textura con la anterior.
+
+	Y el intento tenia ademas un defecto de orden que el barrido de demos
+	delato: el lote se soltaba **despues** de que tira_estado() ya habia
+	aplicado el estado nuevo, con lo que las tiras acumuladas bajo el estado
+	viejo salian dibujadas con el nuevo. Arreglarlo pide partir tira_estado()
+	en "calcular" y "aplicar" para poder decidir sin emitir.
+
+	Nada de eso vale la pena mientras el factor sea 1,0. Lo que haria pagar al
+	agrupamiento es ordenar las tiras opacas por textura dentro de su lista
+	-- seguro ahi, porque decide el test de profundidad, y NO en la translucida,
+	donde el orden es el resultado --, y eso es otro cambio.
+
+	Lo que si quedo de todo esto, y es de donde salio la ganancia, esta en la
+	sombra de estado: el glDisable(GL_STENCIL_TEST) que se hacia por tira y el
+	glBindTexture que reponia la textura que ya estaba ligada.
+*/
+static void dibujar_tira(DWORD i)
+{
+	glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,
+		TriangleStrip[i].count);
+
+	PERF_CONTAR(perf_tiras_dibujadas);
+}
+
 typedef void (APIENTRY * PTR_SECONDARY_COLOR_POINTER)(GLint, GLenum, GLsizei, const GLvoid *);
 
 static PTR_SECONDARY_COLOR_POINTER p_glSecondaryColorPointer = NULL;
@@ -2082,6 +2140,7 @@ static void offset_iniciar(void)
 	if (p_glSecondaryColorPointer == NULL)
 		p_glSecondaryColorPointer = (PTR_SECONDARY_COLOR_POINTER)
 			SDL_GL_GetProcAddress("glSecondaryColorPointerEXT");
+
 
 	offset_disponible = (p_glSecondaryColorPointer != NULL);
 
@@ -2120,6 +2179,7 @@ static void offset_estado(int encendido)
 		return;
 
 	gl_e.offset = encendido;
+	gl_e.cambios++;
 
 	if (encendido)
 	{
@@ -2559,17 +2619,37 @@ void cb_tastart(DWORD addr, void * p, size_t size)
    que un tope distinto al de VertexBuffer[] es una escritura fuera. */
 static float niebla_rgba[VERTICES_MAX][4];
 
+/*
+	Si la pasada de niebla va a dibujar algo, sin dibujarlo.
+
+	Existe por el lote: una tira con niebla se dibuja y se repinta enseguida,
+	asi que corta el agrupamiento. Preguntarlo antes evita cortarlo por las que
+	no la tienen -- que en la lista opaca son casi todas.
+
+	Es la MISMA condicion de entrada de dibujar_niebla_tira(), y por eso esta
+	pegada a ella: si una cambia y la otra no, el lote se suelta de mas (lento
+	pero correcto) o de menos (una tira sin repintar, que se ve). El resto de
+	los cortes de la funcion -- densidad, tabla en cero, ningun vertice con
+	alfa -- no se replican: soltar el lote de mas no rompe nada.
+*/
+static int niebla_aplica(DWORD i)
+{
+	static int sin_niebla = -1;
+
+	if (TriangleStrip[i].niebla != 0 && TriangleStrip[i].niebla != 3)
+		return 0;
+
+	return !env_interruptor("DCEMU_SIN_NIEBLA", &sin_niebla);
+}
+
 static void dibujar_niebla_tira(DWORD i)
 {
 	DWORD	reg = 0, col = 0, palabra = 0, k, alguna = 0;
 	float	densidad, fr, fg, fb, v, m16, frac, a;
 	int	e, m;
 
-	if (TriangleStrip[i].niebla != 0 && TriangleStrip[i].niebla != 3)
-		return;
-
-	/* Diagnostico: apaga la pasada de niebla sin tocar nada mas. */
-	if (getenv("DCEMU_SIN_NIEBLA"))
+	/* La condicion de entrada esta duplicada en niebla_aplica(); ver ahi. */
+	if (!niebla_aplica(i))
 		return;
 
 	memread_fisico(0xA05F80B8, &reg, 4);
@@ -2706,11 +2786,39 @@ static void gl_estado_olvidar(void)
 	gl_e.textura    = -1;
 	gl_e.tex_env    = -1;
 	gl_e.offset     = -1;
+	gl_e.estencil   = -1;
+	gl_e.ligada     = 0;
+
+	/* El olvido cuenta como cambio: quien venia agrupando tiene que cortar. */
+	gl_e.cambios++;
+}
+
+/* Ligar la misma textura otra vez no cambia nada y cuesta una llamada: con
+   99,9 % de aciertos de cache, casi todas las tiras consecutivas que comparten
+   material vuelven a ligar lo que ya estaba. */
+static void gl_ligar(GLuint t)
+{
+	if (gl_e.ligada != t)
+	{
+		glBindTexture(GL_TEXTURE_2D, t);
+		gl_e.ligada = t;
+		gl_e.cambios++;
+	}
+}
+
+static void gl_estencil(int on)
+{
+	if (gl_e.estencil != on)
+	{
+		if (on) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+		gl_e.estencil = on;
+		gl_e.cambios++;
+	}
 }
 
 static void gl_depth_func(GLint f)
 {
-	if (gl_e.depth_func != f) { glDepthFunc(f); gl_e.depth_func = f; }
+	if (gl_e.depth_func != f) { glDepthFunc(f); gl_e.depth_func = f; gl_e.cambios++; }
 }
 
 static void gl_depth_mask(int on)
@@ -2719,6 +2827,7 @@ static void gl_depth_mask(int on)
 	{
 		glDepthMask(on ? GL_TRUE : GL_FALSE);
 		gl_e.depth_mask = on;
+		gl_e.cambios++;
 	}
 }
 
@@ -2728,6 +2837,7 @@ static void gl_blend(int on)
 	{
 		if (on) glEnable(GL_BLEND); else glDisable(GL_BLEND);
 		gl_e.blend = on;
+		gl_e.cambios++;
 	}
 }
 
@@ -2738,6 +2848,7 @@ static void gl_blend_func(GLint s, GLint d)
 		glBlendFunc(s, d);
 		gl_e.blend_src = s;
 		gl_e.blend_dst = d;
+		gl_e.cambios++;
 	}
 }
 
@@ -2748,6 +2859,7 @@ static void gl_cull(int on, GLint cara)
 	{
 		if (on) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
 		gl_e.cull = on;
+		gl_e.cambios++;
 
 		/* glCullFace es siempre GL_BACK aca: los dos modos del chip que GL
 		   puede expresar se distinguen por el sentido de giro. */
@@ -2759,6 +2871,7 @@ static void gl_cull(int on, GLint cara)
 	{
 		glFrontFace(cara);
 		gl_e.front_face = cara;
+		gl_e.cambios++;
 	}
 }
 
@@ -2768,12 +2881,14 @@ static void gl_alpha_test(int on, GLfloat ref)
 	{
 		if (on) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
 		gl_e.alpha = on;
+		gl_e.cambios++;
 	}
 
 	if (on && gl_e.alpha_ref != ref)
 	{
 		glAlphaFunc(GL_GEQUAL, ref);
 		gl_e.alpha_ref = ref;
+		gl_e.cambios++;
 	}
 }
 
@@ -2783,6 +2898,7 @@ static void gl_textura(int on)
 	{
 		if (on) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
 		gl_e.textura = on;
+		gl_e.cambios++;
 	}
 }
 
@@ -2922,6 +3038,7 @@ static void tira_estado(DWORD i)
 					if (gl_e.tex_env != (GLint) TriangleStrip[i].texture.pvr_texture_env)
 				{
 					gl_e.tex_env = (GLint) TriangleStrip[i].texture.pvr_texture_env;
+					gl_e.cambios++;
 
 				switch (TriangleStrip[i].texture.pvr_texture_env)
 				{
@@ -3010,16 +3127,26 @@ static void dibujar_escena(void)
 		del taxi con su propia sombra.
 	*/
 
-	/* (1) Opaca y punch-through, enteras y con el juego 0. */
+	/*
+		(1) Opaca y punch-through, enteras y con el juego 0.
+
+		Las tiras se acumulan en un lote y salen de a una llamada al driver:
+		mientras tira_estado() no cambie nada, la siguiente se suma. Lo que
+		corta el lote es un cambio de estado -- que gl_e.cambios delata sin
+		tener que comparar campo por campo -- o una tira con niebla, que
+		necesita dibujarse y repintarse antes de que siga otra.
+	*/
 	for (i = 0; i < strip_count; i++)
 	{
 		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2)
 			continue;
 
-		glDisable(GL_STENCIL_TEST);
+		gl_estencil(0);
 		tira_estado(i);
-		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
-		dibujar_niebla_tira(i);
+		dibujar_tira(i);
+
+		if (niebla_aplica(i))
+			dibujar_niebla_tira(i);
 	}
 
 	/* (2) Dentro del volumen opaco: la misma geometria con el juego 1 (en
@@ -3043,11 +3170,14 @@ static void dibujar_escena(void)
 			   tira, asi que un glDepthFunc suelto deja a gl_e mintiendo y la
 			   tira siguiente se salta el suyo por "ya estaba puesto". Era
 			   16234 pixeles de diferencia en el cielo y las palmeras lejanas
-			   de Crazy Taxi contra la rama sin la sombra. */
+			   de Crazy Taxi contra la rama sin la sombra.
+
+			   Lo mismo vale para el estencil, por la misma razon y en el
+			   mismo bucle. */
 			gl_depth_func(TriangleStrip[i].zwrite ? TriangleStrip[i].depthmode
 												  : GL_EQUAL);
 			gl_depth_mask(0);
-			glEnable(GL_STENCIL_TEST);
+			gl_estencil(1);
 			glStencilFunc(GL_NOTEQUAL, 0, 0xFF);
 			juego_de_parametros(1);
 
@@ -3073,7 +3203,7 @@ static void dibujar_escena(void)
 		   afectada se parte en fuera/dentro en vez de repintarse. */
 		plantilla_para(i, 0, vol_trans);
 		tira_estado(i);
-		glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index, TriangleStrip[i].count);
+		dibujar_tira(i);
 
 		/* Dentro: la misma geometria con el juego 1, aqui mismo para que
 		   herede el estado recien programado -- blend, culling, profundidad
@@ -3088,10 +3218,11 @@ static void dibujar_escena(void)
 			juego_de_parametros(0);
 		}
 
-		dibujar_niebla_tira(i);
+		if (niebla_aplica(i))
+			dibujar_niebla_tira(i);
 	}
 
-	glDisable(GL_STENCIL_TEST);
+	gl_estencil(0);
 
 	PERF_SUMAR(t_escena, perf_ns_escena);
 }

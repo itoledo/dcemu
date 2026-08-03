@@ -77,6 +77,8 @@ unsigned long long perf_tex_regenera	= 0;
 unsigned long long perf_tex_nueva		= 0;
 unsigned long long perf_tex_desalojo	= 0;
 
+unsigned long long perf_tiras_dibujadas	= 0;
+
 static unsigned long long arranque = 0;
 
 /*
@@ -212,6 +214,9 @@ void perf_resumen(void)
 				(double) (perf_tex_regenera + perf_tex_nueva)
 				/ (double) perf_escenas);
 	}
+
+	if (perf_tiras_dibujadas)
+		fprintf(stderr, "perf: %llu llamadas de dibujo\n", perf_tiras_dibujadas);
 
 	if (perf_escenas)
 		fprintf(stderr, "perf: %llu escenas, %.0f tiras por escena en promedio,"
