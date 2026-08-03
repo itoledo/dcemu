@@ -473,6 +473,30 @@ compilación*.
 Y explica el resultado de Release: `/O2` recupera el 55 % del intérprete inlineando lo que
 está en la misma unidad de traducción, y deja intacto todo lo que la cruza.
 
+## La trampa: en Debug el inline no existe
+
+Antes de nada, porque invalida la primera medición que se intentó de este plan y va a
+invalidar las que siguen si no se tiene presente:
+
+**MSVC en Debug compila con `/Od`, que desactiva el inlining por completo.** `DC_INLINE` es
+`__inline`, que es una *sugerencia*: con `/Od` no se aplica nunca, ni siquiera para una
+función de cinco instrucciones. Así que mover algo a una cabecera no cambia nada en Debug —
+sigue siendo una llamada, sólo que ahora hay una copia por unidad de traducción.
+
+Medido: pasar `fpu_dn_s` a la cabecera dio **0,4 %** en Debug, con los rangos de las dos
+variantes superpuestos. Es ruido, y no refuta la hipótesis: no la prueba.
+
+De ahí sale una corrección al orden de este plan que no es cosmética. **La fase 0.1 no es
+"una ganancia gratis más": es la precondición para poder medir 0.2, 0.3 y buena parte de la
+fase 1.** Todo lo que este plan propone contra fronteras de compilación es invisible en
+Debug por construcción. Las fases 2 y 3 —el camino de memoria y la disposición de
+`context_t`— sí se miden en Debug, porque son cargas y líneas de caché, no inlining.
+
+Y el corolario incómodo: **el perfil que originó este plan es de Debug**, así que el 9,6 %
+de `fpu_dn_s` es en parte un artefacto de un binario donde nada se inlinea. Conviene
+repetirlo sobre Release —`herramientas\perfil.ps1 -Exe build-x64\Release\dcemu.exe`— antes
+de invertir en las fases 1 y 2, aceptando que el inlining borronea la atribución.
+
 ## Fase 0 — Lo que no cuesta diseño
 
 ### 0.1 Compilar en Release *(medido: −55 % del intérprete)*
@@ -483,13 +507,43 @@ sólo dejar de medir y jugar en Debug.
 
 De paso se lleva el 3,2 % de `_RTC_CheckStackVars`, que no es código nuestro.
 
-### 0.2 `fpu_dn_s` y `fpu_dn_d` en la cabecera *(hecho)*
+### 0.2 `fpu_dn_s` y `fpu_dn_d` en la cabecera *(hecho, y da 0,4 %, no 9,6 %)*
 
-**9,6 %**, la función más cara después del bucle. Cinco instrucciones llamadas sobre cada
-operando de cada operación de punto flotante —25 sitios, cuatro sólo en la entrada de
-`ftrv`—, y en otra unidad de traducción, así que ni `/O2` la inlinea. Movida a
+El perfil le daba **9,6 %**, la función más cara después del bucle. Cinco instrucciones
+llamadas sobre cada operando de cada operación de punto flotante —25 sitios, cuatro sólo en
+la entrada de `ftrv`—, y en otra unidad de traducción, así que ni `/O2` la inlinea. Movida a
 `floatsimple.h` como `static DC_INLINE`, con el caso desnormalizado —rarísimo en un juego—
 fuera de línea.
+
+Medido en Release, dos pares alternados con trabajo idéntico (10 001 escenas, 1182 tiras,
+las cuentas de instrucciones dentro de 612 sobre 22 mil millones):
+
+| | base | en línea |
+| --- | --- | --- |
+| vuelta 1 | 256 911 ms | 255 308 ms |
+| vuelta 2 | 255 787 ms | 255 147 ms |
+
+**0,44 %.** El signo es consistente en los dos pares, así que la ganancia es real; la
+magnitud no se parece a lo que el perfil prometía. Se queda —es gratis, es seguro y está
+verificada bit a bit— pero por 0,4 %, no por 9,6.
+
+### La lección, que vale para todo lo que sigue
+
+**Un porcentaje de muestras exclusivas en un perfil de Debug no predice el ahorro en tiempo
+real.** Debug infla exactamente aquello que el optimizador elimina de todos modos —el
+prólogo, el epílogo, `_RTC_CheckStackVars`—, y lo infla *más* en una hoja llamada
+constantemente que en el promedio. El intérprete entero pasa de 189 s a 84 s con `/O2`, un
+factor 2,24; una función como `fpu_dn_s` se encoge mucho más que eso, así que su porción del
+pastel de Debug no es su porción del pastel de Release.
+
+Esto pone bajo la misma sospecha a **todo lo que este plan derivó del mismo perfil**: el
+19,6 % del ARM7, los 2,16 % de `condicion()`, los 2,11 % de `arm7_leer()`, el 7 % largo que
+se le atribuye a `/GL /LTCG`. Ninguno está refutado; todos están sin verificar, y el primero
+que se verificó rindió una vigésima parte de lo prometido.
+
+**Por eso el orden real es: primero Release, después un perfil *de Release*, y recién ahí
+decidir las fases 1 y 2.** Lo que sí se puede seguir midiendo en Debug son las fases 2 y 3
+—cargas y líneas de caché, no inlining—, que es la razón de que estén separadas.
 
 ### 0.3 Activar `/GL` y `/LTCG` en Release
 

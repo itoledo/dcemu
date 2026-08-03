@@ -81,39 +81,30 @@ static DC_INLINE void fpu_causa(DWORD causas)
    listaba como pendientes de la FPU. La otra, RM, la aplica ahora
    UpdateFPSCR(). */
 
-float fpu_dn_s(float x)
+/* La parte rara, fuera de linea. La prueba vive en floatsimple.h; ver ahi por
+   que. Aca solo se llega con un desnormalizado en la mano, que en un juego es
+   casi siempre un accidente. */
+float fpu_dn_s_aplastar(float x)
 {
 	DWORD b;
 
-	if (!FPSCR_DN)
-		return x;
-
 	memcpy(&b, &x, sizeof(b));
 
-	if ((b & 0x7F800000u) == 0 && (b & 0x007FFFFFu) != 0)
-	{
-		b &= 0x80000000u;
-		memcpy(&x, &b, sizeof(x));
-	}
+	b &= 0x80000000u;					/* cero con su signo */
+	memcpy(&x, &b, sizeof(x));
 
 	return x;
 }
 
-double fpu_dn_d(double x)
+double fpu_dn_d_aplastar(double x)
 {
 	DWORD b[2];		/* little-endian: [0] la mitad baja, [1] la alta */
 
-	if (!FPSCR_DN)
-		return x;
-
 	memcpy(b, &x, sizeof(b));
 
-	if ((b[1] & 0x7FF00000u) == 0 && ((b[1] & 0x000FFFFFu) != 0 || b[0] != 0))
-	{
-		b[1] &= 0x80000000u;
-		b[0] = 0;
-		memcpy(&x, b, sizeof(x));
-	}
+	b[1] &= 0x80000000u;
+	b[0] = 0;
+	memcpy(&x, b, sizeof(x));
 
 	return x;
 }

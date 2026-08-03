@@ -2,9 +2,53 @@
 	FPSCR.DN: con el bit puesto, todo desnormalizado -- de entrada o de salida --
 	sale aplastado a cero con su signo. Manual del SH-4, 6.2.3. Lo usan los
 	handlers de este archivo y los de floatgraph.c y dcopcodes.c.
+
+	**Va en la cabecera, y no en el .c, porque es la funcion mas cara del
+	emulador despues del bucle principal**: 9,6 % de las muestras del perfil,
+	mas que cualquier handler del SH-4. No por lo que hace -- son cinco
+	instrucciones -- sino por cuantas veces se la llama: sobre **cada operando
+	de cada operacion** de punto flotante, 25 sitios entre floatsimple.c y
+	floatgraph.c, cuatro veces solo en la entrada de ftrv. Estando en otra
+	unidad de traduccion no se puede inlinear ni con /O2; hace falta /GL /LTCG,
+	que no esta puesto. Lo que se pagaba era la llamada, no la cuenta.
+
+	El caso desnormalizado se queda afuera de linea: es rarisimo -- un
+	desnormalizado en un juego es casi siempre un accidente -- y sacarlo del
+	cuerpo deja la parte comun en una prueba y un retorno.
 */
-float  fpu_dn_s(float x);
-double fpu_dn_d(double x);
+float  fpu_dn_s_aplastar(float x);
+double fpu_dn_d_aplastar(double x);
+
+static DC_INLINE float fpu_dn_s(float x)
+{
+	DWORD b;
+
+	if (!FPSCR_DN)
+		return x;
+
+	memcpy(&b, &x, sizeof(b));
+
+	/* Exponente en cero y mantisa no nula: desnormalizado. */
+	if ((b & 0x7F800000u) == 0 && (b & 0x007FFFFFu) != 0)
+		return fpu_dn_s_aplastar(x);
+
+	return x;
+}
+
+static DC_INLINE double fpu_dn_d(double x)
+{
+	DWORD b[2];		/* little-endian: [0] la mitad baja, [1] la alta */
+
+	if (!FPSCR_DN)
+		return x;
+
+	memcpy(b, &x, sizeof(b));
+
+	if ((b[1] & 0x7FF00000u) == 0 && ((b[1] & 0x000FFFFFu) != 0 || b[0] != 0))
+		return fpu_dn_d_aplastar(x);
+
+	return x;
+}
 
 OPCODE(fldi0170); // FLDI0 FRn (1111nnnn 10001101)
 OPCODE(fldi1171); // FLDI1 FRn (1111nnnn 10011101)
