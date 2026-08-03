@@ -180,6 +180,16 @@ los segundos de `--salir-tras`). **Las variables de entorno `DCEMU_*` van en dec
 (`atoi`): pasarle `3e8` a `DCEMU_PULSAR_START` se lee como 3, y el Start cae en el cuadro
 equivocado sin ningún aviso — ya costó una corrida.
 
+**Cómo se llega a una pantalla de juego sin nadie delante.** `DCEMU_PULSAR_START=N[,N2,...]`
+y `DCEMU_SOLO_A=N[,N2,...]` (con `DCEMU_PULSAR_A=1` al lado) aprietan el botón durante 20
+sondeos a partir de cada número de la lista, y hay **60 sondeos por segundo emulado**.
+`DCEMU_SOLO_A=1` es el caso aparte: aprieta A cada 200 sondeos para siempre, que llega a un
+menú pero después **se sale del partido** — por eso existe la lista. La forma de encontrar
+los números es la película: `DCEMU_CAPTURA_TODAS=40` con `--traza-mem` deja una imagen cada
+40 cuadros con su instante emulado al lado. **Ojo con XInput: se lee global y sin foco de
+ventana**, así que si alguien toca un mando mientras corre la medición, sus pulsaciones
+entran — una corrida que "llegó sola al partido" resultó ser eso.
+
 Tres de esas variables existen por Windows CE y sirven para cualquier guest con MMU o
 syscalls por trampa. **`DCEMU_TRAZA_EXC=1`** (con `--traza-mem`) imprime un histograma de
 excepciones por segundo emulado — recargas de TLB (040/060), syscalls de CE (0e0), FPU
@@ -468,7 +478,11 @@ in `graficos.c`), so it shows what the guest drew rather than what GL rasterized
 last frame when the emulator exits — pair it with `--salir-tras` and a sweep needs no window
 at all. With `DCEMU_CAPTURA_TODAS=1` in the environment every frame goes to its own
 numbered file (`DIR/f0000-ARCHIVO`, ...) instead of overwriting — it is how you inspect an
-animation frame by frame, and what let the boot ROM's intro be diagnosed. **The number goes
+animation frame by frame, and what let the boot ROM's intro be diagnosed. **`=N` keeps one
+frame in every N**, which is what makes it usable on a game: two minutes of play is 7 GB at
+one frame each, and one in forty is enough to see *where the game is* — with `--traza-mem`
+each saved frame logs its number and its emulated instant, so "the menu appears in this
+image" converts into a poll number for `DCEMU_PULSAR_START`. **The number goes
 in front of the file name, not in front of the path**: it used to be `"f%04d-%s"` over the
 whole argument, so `--captura-gl=C:/tmp/f.bmp` produced `f0000-C:/tmp/f.bmp`, which is not a
 path to anything — 480 frames silently not written, with the only complaint in `stderr.txt`,
@@ -903,6 +917,26 @@ Two more of the same family, both fixed: the TSP word's source and destination b
 written and `glBlendFunc()` got an invalid enum — which GL ignores, leaving whatever blend
 was set before. And vertex type 3 took its alpha from bits 23-16, the same field as red,
 instead of 31-24.
+
+**The eight blend factors are two tables, not one.** The codes are 0 Zero, 1 One, 2 "Other
+Color", 3 Inverse "Other Color", 4 SRC Alpha, 5 Inverse SRC Alpha, 6 DST Alpha, 7 Inverse DST
+Alpha. The last four name their operand absolutely, so they read the same on either side;
+**2 and 3 do not** — "the other colour" is the *destination's* when it is the source factor and
+the *source's* when it is the destination factor. One shared table gave the destination
+`GL_DST_COLOR` where `GL_SRC_COLOR` belongs, which turns any `dst × something` recipe into
+`dst × dst`: a uniform darkening of the whole polygon, in the shape of the polygon. That is
+what drew Virtua Tenis 2's player shadows as opaque black trapezoids across the court —
+codes (3,3) with a black source compose to "leave the destination alone", and the mis-mapping
+made them `dst·(1−dst)`, i.e. about half brightness everywhere the quad covered. Fixing it
+changes exactly those 35836 pixels of the frame and nothing else, and no KOS demo uses the
+two codes (all ten of the control set stay byte-identical) — another one only a game shows.
+The shadows now draw *nothing*, which is right for what those strips carry and still not what
+the console shows: the darkening has to come from somewhere dcemu drops. It is not a modifier
+volume (measured: `DCEMU_SIN_VOLUMEN=1` leaves the scene byte-identical). The two open
+suspects are the **secondary accumulation buffer** bits of the TSP (25 and 24), which pick
+that buffer instead of the framebuffer as the blend operand and which dcemu only logs, and the
+face colour of an intensity-mode vertex, since those strips arrive pure black with only the
+per-vertex alpha varying (0.00, 0.11, 0.15).
 
 **Two more that between them lost the whole `conio/*` family**, which draws one textured quad
 per character straight through `pvr_prim()`:

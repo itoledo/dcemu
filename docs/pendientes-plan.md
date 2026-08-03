@@ -1424,6 +1424,71 @@ ruta entera** (`f0000-C:/tmp/f.bmp`), así que con una ruta absoluta no escribí
 queja iba a `stderr.txt` — que es justo donde nadie mira cuando lo que se iba a mirar eran los
 BMP. Costó una corrida de 480 cuadros. Ahora el número va delante del nombre del archivo.
 
+### A.12 — Las sombras opacas de Virtua Tenis 2: el factor de destino de la mezcla usaba la tabla del origen (3 de agosto de 2026)
+
+Reportado en vivo: la sombra sobre la cancha «se ve casi opaca». En el attract del propio
+juego —al que se llega **sin tocar nada**, entre los cuadros 1520 y 2960— salen como
+trapecios y cruces **negros y sólidos** encima de la cancha.
+
+`DCEMU_TRAZA_ESCENA` sobre esa escena (3027 tiras) y un filtro por la caja de pantalla donde
+está la sombra dio las tiras culpables en una pasada:
+
+```
+tira 2669: tipo=2 blend=0001/0001 env=1 rgba=(0.01,0.00,0.00,1.00)
+tira 2668: tipo=2 blend=0307/0307 env=3 rgba=(0.00,0.00,0.00,0.00) .. (0,0,0,0.11)
+```
+
+`0x0307` es `GL_ONE_MINUS_DST_COLOR`, o sea el código **3** del TSP de los dos lados. Y ahí
+estaba: `blend_modes[]` era **una sola tabla para el factor de origen y el de destino**. Los
+ocho códigos son 0 Zero, 1 One, 2 «Other Color», 3 Inverse «Other Color», 4 SRC Alpha, 5
+Inverse SRC Alpha, 6 DST Alpha, 7 Inverse DST Alpha: los cuatro últimos nombran su operando
+de forma absoluta y valen igual de los dos lados, pero **2 y 3 no** — «el otro color» es el
+del destino cuando es el factor del origen y el del origen cuando es el del destino. La tabla
+compartida le daba al destino `GL_DST_COLOR` donde va `GL_SRC_COLOR`.
+
+La cuenta cierra con el píxel. Con origen negro y códigos (3,3):
+
+- correcto: `src·(1−dst) + dst·(1−src)` = `0 + dst·1` = **dst**, no toca nada;
+- como estaba: `src·(1−dst) + dst·(1−dst)` = `dst·(1−dst)`, que sobre el verde de la cancha
+  (~0,45) da 0,25 — **la mitad de brillo en toda el área del cuadrilátero**. El trapecio negro.
+
+Con las dos tablas separadas cambian **exactamente 35836 píxeles** del cuadro, todos dentro
+de las sombras, y ni uno fuera (diferencia byte a byte de la misma escena, corrida
+determinista con `DCEMU_RTC_FIJO`). Regresión: los diez demos del juego de control idénticos
+byte a byte —ningún demo de KOS usa los códigos 2 ni 3, otra vez algo que solo un juego
+muestra—, los otros tres juegos con sus perfiles exactos y las 21 suites en verde.
+
+**Lo que queda abierto, dicho como es**: ahora la sombra no se dibuja **en absoluto**. Eso es
+lo correcto para lo que esas tiras traen —con origen negro, (3,3) es una operación nula— y
+sigue sin ser lo que muestra la consola, así que el oscurecimiento sale de algo que dcemu
+tira. **No es el volumen modificador**: medido con `DCEMU_SIN_VOLUMEN=1`, la escena queda byte
+a byte idéntica. Quedan dos sospechosos:
+
+- **los bits 25 y 24 del TSP**, que eligen el *búfer de acumulación secundario* en vez del
+  framebuffer como operando de la mezcla, y que dcemu solo registra en el log
+  (`pvr_srcblendmode` / `pvr_dstblendmode`) — la forma de agujero de siempre;
+- **el color de cara de un vértice de intensidad**: esas tiras llegan negras puras con solo el
+  alfa por vértice variando (0,00, 0,11, 0,15), que es justo lo que se ve si el color de cara
+  del encabezado se perdió.
+
+**Y del método salieron tres herramientas**, porque llegar a una pantalla de juego sin nadie
+delante costó cinco corridas de siete minutos:
+
+- `DCEMU_CAPTURA_TODAS=N` guarda **un cuadro de cada N** (antes, todos: dos minutos de juego
+  son 7 GB) y con `--traza-mem` cada uno deja su número y su instante emulado. Con eso se arma
+  una hoja de contactos del arranque entero y se ve en qué instante aparece cada menú.
+- `DCEMU_TRAZA_ESCENA=+K[:M]` elige la escena **por peso** —las M primeras de más de K
+  tiras— en vez de por índice. El índice no sobrevive de una corrida a otra; el peso separa
+  el partido (miles de tiras) de los menús (cinco). Perseguir el índice tiró dos corridas
+  enteras que cayeron en una pantalla de transición.
+- `DCEMU_PULSAR_START` y `DCEMU_SOLO_A` aceptan una **lista** de sondeos. Apretar A cada 200
+  sondeos llega a un partido y después lo abandona.
+
+**Y una trampa de medición que costó tres corridas**: la primera que «llegó sola al partido»
+no llegó sola — la navegó el usuario con el mando mientras miraba. **XInput se lee global y
+sin foco de ventana**, así que las pulsaciones de quien esté jugando entran a la medición. Ya
+estaba anotado para el sonido; vale igual para la navegación.
+
 ---
 
 ## Vía B — El AICA (hito E)
