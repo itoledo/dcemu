@@ -688,9 +688,13 @@ que no hacían nada. Ambas pasaron por la sombra de estado de `tira_estado()`.
 
 | | antes | después | |
 | --- | --- | --- | --- |
-| **Crazy Taxi** | 1,26× · 70,3 fps | **1,53× · 85,3 fps** | +21 % |
-| **Virtua Tennis** | 0,96× · 55,8 fps | **1,36× · 79,1 fps** | +42 % |
-| `dibujar_escena()` VT | 86 765 ms (34,5 %) | **12 276 ms (6,9 %)** | −86 % |
+| **Crazy Taxi** | 1,26× · 70,3 fps | **1,50× · 83,6 fps** | +19 % |
+| **Virtua Tennis** | 0,96× · 55,8 fps | **1,33× · 77,6 fps** | +39 % |
+| `dibujar_escena()` VT | 86 765 ms (34,5 %) | **12 280 ms (6,8 %)** | −86 % |
+
+(Las primeras medidas dieron 85,3 y 79,1, y son de antes de que la segunda pasada
+de volúmenes pasara por la sombra —ver abajo—. Ese arreglo hace trabajo que se
+estaba salteando y cuesta un 2 %, que es exactamente lo que hay que pagar.)
 
 ## Lo que se probó y no sirvió: agrupar las llamadas de dibujo
 
@@ -734,4 +738,24 @@ barrido de niebla, los quads del framebuffer, el limpiado. Cada uno llama a
 crece y agrega otra llamada, sigue cubierta.
 
 Si alguien agrega un sitio nuevo y no lo hace, la sombra miente y se dibuja mal, en silencio
-y según la escena. Ya pasó una vez con `plantilla_para()`, que tocaba el estencil por fuera.
+y según la escena. **Pasó dos veces.** Una con `plantilla_para()`, que tocaba el estencil por
+fuera. La otra, más grave, en la segunda pasada de volúmenes modificadores: llamaba
+`glDepthFunc` y `glDepthMask` directo **dentro del bucle por tira**, así que `gl_e` quedaba
+diciendo lo que puso `tira_estado()` mientras GL tenía lo de la pasada, y la tira siguiente
+se saltaba los suyos por "ya estaba puesto". Eran 16 234 píxeles de diferencia en el cielo y
+las palmeras lejanas de Crazy Taxi.
+
+### El barrido no puede ver esto, y hay que saberlo
+
+Ese error sobrevivió a un barrido de 150 demos con 146 idénticas, **y no por casualidad**:
+el único camino que lo ejercita es la pasada de volúmenes, y las únicas demos que la
+recorren son `pvr-modifier_volume*`, que están en el censo de no deterministas y por eso
+quedan fuera de la comparación por hash. El barrido tiene un punto ciego exactamente ahí.
+
+Lo que sí lo encontró fue **comparar píxel a píxel una captura de Crazy Taxi contra la rama
+de referencia**: 16 234 píxeles de diferencia, cero tras el arreglo, con las mismas 9994
+escenas. Un juego ejercita esos caminos con geometría real; el parque de KOS no.
+
+Y la aislación vale como método: dos sondas temporales, una puenteando la sombra —la
+diferencia desaparecía— y otra puenteando la caché de filtros de textura —no desaparecía—,
+que es lo que declaró inocente a la caché.
