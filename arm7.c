@@ -830,6 +830,11 @@ static void (* arm7_oplist[4096])(DWORD op);
 static signed char arm7_opfila[4096];
 static unsigned char arm7_usada[ARM7_FILAS < 64 ? 64 : ARM7_FILAS];
 
+/* Lo enciende la suite (tests/test_arm7.c) para poder pedir el censo de filas
+   al final. Apagado en el emulador, que es donde el ARM da miles de millones de
+   pasos y nadie lee el resultado. */
+int arm7_cobertura = 0;
+
 #define ARM7_INDICE(op)		((((op) >> 16) & 0xFF0) | (((op) >> 4) & 0xF))
 
 void arm7_init(void)
@@ -905,11 +910,25 @@ int arm7_paso(void)
 	op = arm7_leer(arm7.r[15], 4);
 	arm7.instrucciones++;
 
-	if (condicion(op))
+	/*
+		AL --el campo de condicion en 0xE, "siempre"-- se atiende aqui y no en
+		condicion(). En codigo ARM real es la enorme mayoria de las
+		instrucciones, y condicion() extrae N, Z, C y V y entra a un switch de
+		dieciseis casos para contestar que si. Es una comparacion contra una
+		llamada.
+	*/
+	if ((op >> 28) == 0xE || condicion(op))
 	{
 		idx = (int) ARM7_INDICE(op);
 
-		if (arm7_opfila[idx] >= 0)
+		/*
+			El censo de filas que la suite lee por arm7_fila_usada(). Es un
+			instrumento de tests/ y estaba escribiendo en cada instruccion del
+			ARM en una corrida normal -- dos cargas y un almacenamiento por
+			paso, por un dato que en produccion nadie mira. Misma regla que el
+			resto de los instrumentos: apagado, cuesta una comparacion.
+		*/
+		if (arm7_cobertura && arm7_opfila[idx] >= 0)
 			arm7_usada[arm7_opfila[idx]] = 1;
 
 		arm7_oplist[idx](op);

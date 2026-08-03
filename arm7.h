@@ -110,6 +110,11 @@ void  arm7_escribir(DWORD direccion, int tam, DWORD valor);
 
 /* Cuantas filas de la tabla existen, y cuantas se ejercitaron. Es lo que mira
    la suite de cobertura. */
+/* El censo de filas ejercitadas que la suite pide al terminar. Lo enciende
+   tests/, no el emulador: escribirlo en cada paso del ARM cuesta dos cargas y
+   un almacenamiento por instruccion por un dato que en produccion nadie mira. */
+extern int arm7_cobertura;
+
 int arm7_filas(void);
 int arm7_fila_usada(int i);
 const char * arm7_fila_nombre(int i);

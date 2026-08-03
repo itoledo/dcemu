@@ -48,6 +48,11 @@ static void cargar(const DWORD * programa, int n)
 {
 	int i;
 
+	/* El censo que pide toda_fila_implementada_se_ejercita(). Se enciende aca
+	   y no en el emulador: alli el ARM da miles de millones de pasos y el dato
+	   no lo lee nadie. */
+	arm7_cobertura = 1;
+
 	aica_reset();
 	arm7_reset();
 
