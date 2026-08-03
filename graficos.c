@@ -1921,8 +1921,23 @@ static int hay_volumen_de(DWORD lista)
 	quedo en el buffer. Deja cuenta != 0 en los pixeles cuya superficie esta
 	dentro del volumen.
 */
-/* La sombra del estado de GL vive mas abajo, junto a tira_estado(); esto la
-   adelanta para las funciones que tocan el estado a mano y estan antes. */
+static struct
+{
+	GLint	depth_func;
+	int		depth_mask;
+	int		blend;
+	GLint	blend_src, blend_dst;
+	int		cull;
+	GLint	front_face;
+	int		alpha;
+	GLfloat	alpha_ref;
+	int		textura;
+	GLint	tex_env;
+	int		offset;		/* GL_COLOR_SUM y el arreglo de color secundario */
+} gl_e;
+
+/* Las funciones que la manejan viven junto a tira_estado(), que es quien la
+   usa; aca esta solo la estructura, que offset_estado() necesita antes. */
 static void gl_estado_olvidar(void);
 
 static void marcar_volumenes(DWORD lista)
@@ -2084,11 +2099,22 @@ static void offset_puntero(int juego)
 		juego ? &VertexBuffer[0].ro1 : &VertexBuffer[0].ro);
 }
 
-/* Encendido por tira: solo las que traen el bit Offset de la palabra ISP. */
+/* Encendido por tira: solo las que traen el bit Offset de la palabra ISP.
+
+   Pasa por la sombra de gl_e como el resto del estado por tira: son dos
+   llamadas mas por tira, o sea otros veinte millones largos, y la mayoria de
+   las tiras consecutivas coinciden en si traen el bit. gl_estado_olvidar() lo
+   pone en -1 junto con lo demas, asi que las funciones que tocan el estado a
+   mano ya lo cubren sin cambio. */
 static void offset_estado(int encendido)
 {
 	if (!offset_disponible)
 		return;
+
+	if (gl_e.offset == encendido)
+		return;
+
+	gl_e.offset = encendido;
 
 	if (encendido)
 	{
@@ -2652,19 +2678,6 @@ static void dibujar_niebla_tira(DWORD i)
 	-1 es "no se que hay puesto", que es con lo que se arranca y a lo que vuelve
 	cada olvido.
 */
-static struct
-{
-	GLint	depth_func;
-	int		depth_mask;
-	int		blend;
-	GLint	blend_src, blend_dst;
-	int		cull;
-	GLint	front_face;
-	int		alpha;
-	GLfloat	alpha_ref;
-	int		textura;
-	GLint	tex_env;
-} gl_e;
 
 static void gl_estado_olvidar(void)
 {
@@ -2679,6 +2692,7 @@ static void gl_estado_olvidar(void)
 	gl_e.alpha_ref  = -1.0f;
 	gl_e.textura    = -1;
 	gl_e.tex_env    = -1;
+	gl_e.offset     = -1;
 }
 
 static void gl_depth_func(GLint f)
