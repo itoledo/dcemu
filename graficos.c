@@ -3344,20 +3344,28 @@ static void nombre_numerado(char * dst, size_t tam, const char * ruta, int nf)
 	ms, que es lo que permite convertir "el menu sale en tal imagen" en un numero
 	de sondeo: la traza de las pulsaciones informa las dos cosas a la vez.
 */
+static int captura_cada(void)
+{
+	static int cada = -1;		/* -1: sin leer */
+
+	if (cada < 0)
+	{
+		const char * e = getenv("DCEMU_CAPTURA_TODAS");
+
+		cada = (e == NULL) ? 0 : atoi(e);
+
+		if (e != NULL && cada < 1)
+			cada = 1;
+	}
+
+	return cada;			/* 0 = apagado */
+}
+
 static int captura_toca(int nf)
 {
-	const char *	e = getenv("DCEMU_CAPTURA_TODAS");
-	int				cada;
+	int cada = captura_cada();
 
-	if (e == NULL)
-		return 0;
-
-	cada = atoi(e);
-
-	if (cada < 1)
-		cada = 1;
-
-	return (nf % cada) == 0;
+	return cada > 0 && (nf % cada) == 0;
 }
 
 static void captura_informar(int nf, const char * nom)
@@ -3389,7 +3397,7 @@ static void terminar_escena(void)
 		   si el interprete se hubiera puesto lento. */
 		PERF_MARCA(t_cap);
 
-		if (getenv("DCEMU_CAPTURA_TODAS"))
+		if (captura_cada() > 0)
 		{
 			static int nf = 0;
 
@@ -5265,7 +5273,7 @@ void capturar_gl_framebuffer(void)
 	if (opciones.captura_gl == NULL || traza_rendidas > 0)
 		return;
 
-	if (getenv("DCEMU_CAPTURA_TODAS"))
+	if (captura_cada() > 0)
 	{
 		static int	nf = 0;
 
