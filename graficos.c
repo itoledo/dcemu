@@ -1916,8 +1916,16 @@ static int hay_volumen_de(DWORD lista)
 	quedo en el buffer. Deja cuenta != 0 en los pixeles cuya superficie esta
 	dentro del volumen.
 */
+/* La sombra del estado de GL vive mas abajo, junto a tira_estado(); esto la
+   adelanta para las funciones que tocan el estado a mano y estan antes. */
+static void gl_estado_olvidar(void);
+
 static void marcar_volumenes(DWORD lista)
 {
+	/* De aca en adelante se toca el estado de GL a mano; la sombra de
+	   tira_estado() deja de valer. Ver gl_estado_olvidar(). */
+	gl_estado_olvidar();
+
 	int paso;
 	DWORD v;
 
@@ -2488,6 +2496,8 @@ static void dibujar_niebla_tira(DWORD i)
 		}
 	}
 
+	gl_estado_olvidar();
+
 	glDisable(GL_TEXTURE_2D);
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_STENCIL_TEST);
@@ -2510,9 +2520,138 @@ static void dibujar_niebla_tira(DWORD i)
 	dibujar_escena() para poder repetirlo en la segunda pasada de los
 	volumenes, que recorre las tiras afectadas fuera de ese bucle.
 */
+/*
+	La sombra del estado de GL que pone tira_estado().
+
+	Cada tira emitia una decena de llamadas de estado sin mirar si hacia falta:
+	depthFunc, el trio de culling, depthMask, la mezcla y sus factores, el alpha
+	test, y el modo de entorno de textura -- que en decal son once glTexEnvi
+	seguidos. Con 1183 tiras por escena y 9994 escenas son 11,8 millones de
+	tiras y del orden de cien millones de llamadas al driver, casi todas
+	reponiendo lo que ya estaba: las tiras vienen ordenadas por tipo de lista,
+	asi que las consecutivas comparten casi todo.
+
+	Es el mismo hallazgo que en los parametros de textura, y por eso la misma
+	solucion. Pero con una diferencia que importa: **esto es estado del
+	contexto, no del objeto**, y hay una docena de sitios que lo cambian sin
+	pasar por aca -- el barrido de niebla, las dos pasadas de volumenes
+	modificadores, el limpiado, los quads del framebuffer. Cada uno de ellos
+	llama a gl_estado_olvidar(); si alguien agrega otro y no lo hace, la sombra
+	miente y se dibuja mal.
+
+	-1 es "no se que hay puesto", que es con lo que se arranca y a lo que vuelve
+	cada olvido.
+*/
+static struct
+{
+	GLint	depth_func;
+	int		depth_mask;
+	int		blend;
+	GLint	blend_src, blend_dst;
+	int		cull;
+	GLint	front_face;
+	int		alpha;
+	GLfloat	alpha_ref;
+	int		textura;
+	GLint	tex_env;
+} gl_e;
+
+static void gl_estado_olvidar(void)
+{
+	gl_e.depth_func = -1;
+	gl_e.depth_mask = -1;
+	gl_e.blend      = -1;
+	gl_e.blend_src  = -1;
+	gl_e.blend_dst  = -1;
+	gl_e.cull       = -1;
+	gl_e.front_face = -1;
+	gl_e.alpha      = -1;
+	gl_e.alpha_ref  = -1.0f;
+	gl_e.textura    = -1;
+	gl_e.tex_env    = -1;
+}
+
+static void gl_depth_func(GLint f)
+{
+	if (gl_e.depth_func != f) { glDepthFunc(f); gl_e.depth_func = f; }
+}
+
+static void gl_depth_mask(int on)
+{
+	if (gl_e.depth_mask != on)
+	{
+		glDepthMask(on ? GL_TRUE : GL_FALSE);
+		gl_e.depth_mask = on;
+	}
+}
+
+static void gl_blend(int on)
+{
+	if (gl_e.blend != on)
+	{
+		if (on) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+		gl_e.blend = on;
+	}
+}
+
+static void gl_blend_func(GLint s, GLint d)
+{
+	if (gl_e.blend_src != s || gl_e.blend_dst != d)
+	{
+		glBlendFunc(s, d);
+		gl_e.blend_src = s;
+		gl_e.blend_dst = d;
+	}
+}
+
+/* `cara` es GL_CW o GL_CCW; con `on` en cero no se mira. */
+static void gl_cull(int on, GLint cara)
+{
+	if (gl_e.cull != on)
+	{
+		if (on) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+		gl_e.cull = on;
+
+		/* glCullFace es siempre GL_BACK aca: los dos modos del chip que GL
+		   puede expresar se distinguen por el sentido de giro. */
+		if (on)
+			glCullFace(GL_BACK);
+	}
+
+	if (on && gl_e.front_face != cara)
+	{
+		glFrontFace(cara);
+		gl_e.front_face = cara;
+	}
+}
+
+static void gl_alpha_test(int on, GLfloat ref)
+{
+	if (gl_e.alpha != on)
+	{
+		if (on) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
+		gl_e.alpha = on;
+	}
+
+	if (on && gl_e.alpha_ref != ref)
+	{
+		glAlphaFunc(GL_GEQUAL, ref);
+		gl_e.alpha_ref = ref;
+	}
+}
+
+static void gl_textura(int on)
+{
+	if (gl_e.textura != on)
+	{
+		if (on) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
+		gl_e.textura = on;
+	}
+}
+
 static void tira_estado(DWORD i)
 {
-			glDepthFunc(TriangleStrip[i].depthmode);
+			gl_depth_func(TriangleStrip[i].depthmode);
 
 			/* Iban indexadas con strip_count, que en este bucle ya es la
 			   cantidad total: uno mas que el ultimo indice valido. O sea que
@@ -2535,33 +2674,14 @@ static void tira_estado(DWORD i)
 			*/
 			switch(TriangleStrip[i].culling)
 			{
-				case 2:
-				glEnable(GL_CULL_FACE);
-				glCullFace(GL_BACK);
-				glFrontFace(GL_CW);
-				break;
-
-				case 3:
-				glEnable(GL_CULL_FACE);
-				glCullFace(GL_BACK);
-				glFrontFace(GL_CCW);
-				break;
-
-				default:	/* 0 sin culling, 1 sin equivalente en GL */
-				glDisable(GL_CULL_FACE);
-				break;
+				case 2:  gl_cull(1, GL_CW);  break;
+				case 3:  gl_cull(1, GL_CCW); break;
+				default: gl_cull(0, 0);      break;	/* 0 sin culling, 1 sin equivalente */
 			}
 
 			/* El campo lleva el bit "Z Write Disable" de la palabra ISP del
 			   PVR, asi que en 1 hay que APAGAR la escritura de profundidad. */
-			if(TriangleStrip[i].zwrite)
-			{
-				glDepthMask(GL_FALSE);
-			}
-			else
-			{
-				glDepthMask(GL_TRUE);
-			}
+			gl_depth_mask(TriangleStrip[i].zwrite ? 0 : 1);
 	
 
 			/*
@@ -2575,16 +2695,8 @@ static void tira_estado(DWORD i)
 				salian opacas, con el fondo alfa-0 como caja negra. Las listas
 				opaca y punch-through no mezclan en el chip.
 			*/
-			if (TriangleStrip[i].type == 2 || TriangleStrip[i].type == 1)
-			{
-				glEnable(GL_BLEND);
-			}
-			else
-			{
-				glDisable(GL_BLEND);
-			}
-
-			glBlendFunc(TriangleStrip[i].pvr_srcblend, TriangleStrip[i].pvr_dstblend);
+			gl_blend(TriangleStrip[i].type == 2 || TriangleStrip[i].type == 1);
+			gl_blend_func(TriangleStrip[i].pvr_srcblend, TriangleStrip[i].pvr_dstblend);
 
 			/*
 				Lo que distingue al punch-through en el chip es que descarta el
@@ -2624,15 +2736,14 @@ static void tira_estado(DWORD i)
 				if (umbral < 0.5f / 255.0f)
 					umbral = 0.5f / 255.0f;
 
-				glEnable(GL_ALPHA_TEST);
-				glAlphaFunc(GL_GEQUAL, umbral);
+				gl_alpha_test(1, umbral);
 			}
 			else
-				glDisable(GL_ALPHA_TEST);
+				gl_alpha_test(0, 0.0f);
 
 			if(TriangleStrip[i].texture.surface)
 			{
-				glEnable(GL_TEXTURE_2D);
+				gl_textura(1);
 
 				/*
 					Los cuatro modos del chip, con su equivalente en GL:
@@ -2656,6 +2767,10 @@ static void tira_estado(DWORD i)
 					(interpolar textura/vertice por el alfa del texel) con alfa
 					= textura x vertice, que con vertice 1.0 es el del texel.
 				*/
+					if (gl_e.tex_env != (GLint) TriangleStrip[i].texture.pvr_texture_env)
+				{
+					gl_e.tex_env = (GLint) TriangleStrip[i].texture.pvr_texture_env;
+
 				switch (TriangleStrip[i].texture.pvr_texture_env)
 				{
 					case 0:
@@ -2680,6 +2795,7 @@ static void tira_estado(DWORD i)
 					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 					break;
 				}
+				}
 
 				/* Los filtros los pone get_texture(), **despues** de ligar la
 				   textura: glTexParameteri afecta a la que este ligada en ese
@@ -2695,14 +2811,15 @@ static void tira_estado(DWORD i)
 				}
 			}
 			else
-			{
-				glDisable(GL_TEXTURE_2D);
-			}
-
+				gl_textura(0);
 }
 
 static void dibujar_escena(void)
 {
+	/* Cada escena arranca sin suponer nada: entre una y otra pasaron el
+	   presentado y el limpiado, que tocan el estado. */
+	gl_estado_olvidar();
+
 	DWORD i;
 	int vol_opaca, vol_trans;
 	PERF_MARCA(t_escena);
@@ -4768,6 +4885,8 @@ int volcar_framebuffer(const char * ruta)
 
 void DibujarFramebuffer()
 {
+	gl_estado_olvidar();
+
 	/* Formato y tipo de GL que corresponden al formato del framebuffer. */
 	GLenum formato, tipo;
 
@@ -5239,6 +5358,8 @@ int screeninit(void)
 
 void DibujarGL(SDL_Surface * sfc)
 {
+	gl_estado_olvidar();
+
 	glEnable(GL_TEXTURE_2D);
 		
 	glBindTexture(GL_TEXTURE_2D, background_texture);
