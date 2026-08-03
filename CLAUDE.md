@@ -210,7 +210,9 @@ a stray pointer walks millions of *distinct* ones, so there is a cap of 4096 rep
 it the log went to gigabytes and the window stopped responding.
 
 **`--watchpoint=DIR[:TAM]` is the other tool**: a write watchpoint that reports every
-write touching a given address, with the PC and PR that did it. The hook is in
+write touching a given address, with **the value written** and the value the address reads
+back afterwards (they differ on any register with acknowledge semantics — `SB_ISTNRM`, the
+flash — and confusing the two has cost a false lead), plus the PC and PR that did it. The hook is in
 `memwrite_fisico()` (`mem.h`) — the one place *every* write goes through, guest and
 internal alike — and the implementation is in `traza.c`. It costs a compare against zero
 per write when off. It is what answers "who writes this variable", which is the question the
@@ -416,6 +418,18 @@ all: everything goes through the syscall hooks. Both paths now reach the same pl
 
 `--traza-mem` prints the PC and PR of every SPI packet, what each `REQ_SES` answered, and
 the disc format the drive settled on.
+
+**`0x005F6810-0x005F6820` is the Sort-DMA, the *other* way to feed the TA** — and the one
+Windows CE's ddraw uses for all its geometry. Sega's DevBox §2.6.5.3 and figures 2-10 to
+2-13: the guest builds the display list in RAM as linked chains (a Start Link Address table
+of 16- or 32-bit entries per `SB_SDWLT`, and inside each Global Parameter the seventh word
+holds the current size in 32-byte units and the eighth the next link, with 1 = end of list
+and 2 = end of DMA), then writes 1 to `SB_SDST`. `sort_dma_ejecutar()` in `mem.c` walks the
+chains into `ta_procesar_bloque()`; the end raises `SB_ISTNRM` bit 20 (DTDESINT) with the
+usual proportional delay. All six registers had backing store in `control_mem` and no
+reader — the same disease as everything else here — and the symptom was DCDoom's ddraw HAL
+stuck in its state 7 printing "Timeout for Tile Accelerator" 13 times a second, having
+submitted a header and four vertices that never arrived.
 
 **`0x005F6800-0x005F6808` is the CH2 DMA, and it is how the guest feeds the TA.** The Holly
 drives it, not the DMAC: the SH-4 only puts the source in `SAR2` and arms `CHCR2` for
@@ -815,6 +829,11 @@ the first `SPG_WIDTH.vswidth` lines of the frame and blanking runs from
 dcemu tracks no horizontal position and no interlacing. Finding this also turned up that
 **`SPG_VBLANK` and `SPG_WIDTH` had read cases but no write cases**, so `pvr_spg_vblank` and
 `pvr_spg_width` kept `reg.c`'s defaults no matter what the guest programmed.
+
+**A register read with no case of its own reports itself under `--traza-mem`** — one line
+per distinct address, with what the `control_mem` backing store answered. `REVISION`,
+`SB_G1SYSM`, `SB_SBREV` and `FB_R_SOF1` were each found the hard way, one hang apiece; this
+lists them in a single pass.
 
 SH-4 on-chip registers (TMU, DMA, SCIF, INTC, ports) are plain pointers into the `regmem`
 block, bound once in `regmem_setup()` (`mem.c`) and declared `extern` in `sh4emu.h`. So

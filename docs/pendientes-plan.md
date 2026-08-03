@@ -1174,7 +1174,38 @@ una tapando la siguiente**:
    saliendo del próximo LIST_INIT), pero el ddraw de CE recibía un "render terminado" que
    nunca pidió, antes de su primer vértice. Movido a `cb_renderstart()`.
 
-**Dónde queda DCDoom** (commit de esta sesión): CE arranca entero, CreateProcess funciona,
+#### El Sort-DMA: el TA gira, DCDoom rinde cuadros, y ahora sale por la puerta de adelante
+
+La espera del estado 7 era **el Sort-DMA, que dcemu no implementaba**. El ddraw de CE no
+alimenta al TA por las store queues —eso es solo su blit de píxeles— sino por la vía de
+cadenas enlazadas que documenta el DevBox en 2.6.5.3 y las figuras 2-10 a 2-13: el guest
+arma la lista de despliegue en RAM (una tabla de Start Link Addresses de 16 o 32 bits
+según `SB_SDWLT`, y dentro de cada Global Parameter el séptimo word con el tamaño en
+unidades de 32 bytes y el octavo con el próximo enlace, más los códigos 1 = fin de lista y
+2 = fin del DMA), y escribe 1 en `SB_SDST`. Los seis registros del bloque
+(`0x005F6810`-`0x6820` más `SB_SDDIV`) caían en `control_mem` sin lector: la forma de
+siempre, y la que el diagnóstico nuevo —"registro leído sin caso propio"— saca de una
+pasada. `sort_dma_ejecutar()` en mem.c recorre los enlaces y entrega a
+`ta_procesar_bloque()`.
+
+Con eso el pipeline gira entero: dos Sort-DMA por cuadro (uno de 640 bytes y 5 entradas de
+tabla, otro de 320 y 3), las **cinco listas cierran** (`hechas=1f`), STARTRENDER dispara,
+y **el "Timeout for Tile Accelerator" desaparece por completo** (de 13/s a cero). DCDoom
+rinde 42 cuadros.
+
+**Y a los 9.4 s sale por la puerta de adelante**: su WinMain **retorna 0** y el epílogo del
+CRT hace lo que corresponde —recorre su tabla de atexit liberando (`free`), llama dos
+rutinas de platutil.dll y termina en `TerminateProcess(handle, 0)` desde `0x3bf5c`—. No es
+una excepción ni un error: el juego decidió terminar. Antes de eso corre su bucle de
+mensajes (`PeekMessageW`), carga recursos (`FindResource`/`LoadResource`/`SizeofResource`,
+todos con éxito) y consulta `GetTickCount` en caliente. **Por qué su main loop se acaba es
+la pregunta nueva** y es la primera vez que la frontera está dentro de la lógica del juego
+y no en algo que dcemu contesta mal. Para retomar: la cadena de retorno es
+`0x39676` (fin del main) → `0x3be9a` → `0x3bef0` (exit) → `0x3bf5c`; hay que subir desde
+`0x395xx` hacia el bucle. `DCEMU_TRAZA_SYSCALL=ffffdb3d:395d0:400000` cubre desde el
+`PeekMessageW` hasta la salida en una sola traza.
+
+**Dónde quedó DCDoom antes de este arreglo**: CE arranca entero, CreateProcess funciona,
 el juego abre DOOM.WAD por `CreateFileW`/`ReadFile` — el montaje ISO9660 de CE sirviendo
 por los dos flujos —, lee sus lumps (paleta, colormaps, flats: sectores 15024-15033,
 17735+, el flujo de 18041), crea su ventana (las seis DefWindowProcW), su IST de vblank
