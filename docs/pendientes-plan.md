@@ -80,7 +80,7 @@ Nueve imágenes, ocho segundos cada una, camino de los hooks de syscall, con `--
 | Virtua Tennis (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tennis DCRES | 2, LBA 45000 | 0 | 16384 / 8388608 | `2d2d2d0a` ← PC `8c1dcc66` | 7, último a 0,79 s | franja |
 | Virtua Tenis 2 (USA) | 2, LBA 45000 | 0 | 16384 / 8388608 | `a1000400`… ← PC `8c28cd86` | 9, último a 0,82 s | franja — **corre desde el 2 de agosto, ver A.8** |
-| DCDoom | 2, LBA 11702 | — | — | — | — | **no carga** — resuelto: es Windows CE, ver A.9 |
+| DCDoom | 2, LBA 11702 | — | — | — | — | **corre y es jugable desde el 2 de agosto** — es Windows CE, ver A.9 |
 | mame4all (`.iso`) | carpeta empaquetada | 0 (no usa el TA) | 0 / 235315200 | ninguna | 105 | **su propio menú** |
 
 Cuatro cosas salen de esta tabla y ninguna se veía mirando una imagen sola.
@@ -1292,6 +1292,22 @@ piscina de nukage, el arma y la barra de estado entera, y el log del guest cierr
 5661 colores distintos y ningún píxel negro. Un detalle que parece un error y no lo es: una
 captura salió entera rojiza — es el destello de paleta de DOOM al recoger un ítem
 ("PICKED UP THE ARMOR"), y la siguiente sale con los grises y marrones correctos.
+
+**Y es jugable.** Medido en la misma corrida: `DCEMU_PULSAR_START=1500` abre el menú
+principal de DOOM sobre la demo —o sea que la cadena entera de entrada llega: XInput o
+teclado, `entrada_leer()`, el Maple disparado por hardware en cada vblank, el driver de CE
+y el juego—, y con `DCEMU_PULSAR_A=1` más `DCEMU_SOLO_A=1` (una pulsación cada 200 sondeos)
+se recorren "New Game" → "Which Episode?" → dificultad y **empieza E1M1 con 100% de salud**.
+El sonido también sale: `--captura-audio` da 2,16 millones de muestras no nulas de 2,9,
+silencio hasta el segundo 7 (CE arrancando), un tramo fuerte entre el 8 y el 12 y actividad
+desde el 21, con 1785 muestras al riel (0,06%). El ritmo es de ~27 escenas por segundo
+emulado, que para un renderizador por software a 320×200 subido por DirectDraw es lo
+esperable.
+
+Lo que queda son detalles, ninguno bloqueante: `FB_W_SOF1` se lee sin caso propio y contesta
+del respaldo —el mismo gemelo del `FB_R_SOF1` que ya costó el flip, así que conviene mirarlo
+antes de que cueste otro—, y una única dirección sin emular en toda la corrida (`01d91b40`,
+dentro de ddhal, leída una vez por el kernel).
 
 Lo que hizo legible todo esto fue subir de 8 a 24 el tope de las trazas del flujo
 (`REQ_PIO_TRANS`, la copia del `MAINLOOP`) —con 8 no entra una sola transacción completa— y
