@@ -63,6 +63,22 @@ con el mismo código; comparar contra los números de un `resumen.txt` viejo no 
 Los resultados quedan en `build/Release/barrido-2026-08-01/` (capturas y serial), al lado de
 los del 31 de julio.
 
+## El 3 de agosto de 2026: cuatro cambios del PVR y el juego de control intacto
+
+Los cuatro se validaron con el método fuerte —RTC fijo y comparación byte a byte contra el
+binario anterior al cambio— y **los diez del juego de control salieron idénticos byte a byte
+en los cuatro**: el `TA_LIST_INIT` vacío que no presenta (A.11), la tabla del factor de
+destino de la mezcla (A.12), el color de offset (A.13) y el volcado ampliado de escena. Los
+cuatro juegos comerciales conservaron sus perfiles exactos y DCDoom sus 867 escenas.
+
+**Y eso es el dato, no el trámite.** Tres de esos cuatro cambios arreglan cosas que se ven en
+un juego y en ningún demo: los códigos 2 y 3 de los factores de mezcla, el color de offset (con
+el bit puesto en 3022 de las 3029 tiras de una escena de Virtua Tenis 2) y la doble
+inicialización del TA por cuadro que hace Katana. Se suman a la lista que ya venía —el bit de
+mipmap, Flip y Clamp de las UV, el alfa del decal—: **el parque de demos no puede cazar una
+regresión en ninguna de esas rutas, porque no las ejerce.** Para esas, la línea base son los
+juegos, y por eso conviene medirlos junto con los demos.
+
 ## Cómo se mide
 
 **Desde el 31 de julio de 2026, con `--captura-gl`**, no capturando la ventana:

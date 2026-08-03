@@ -32,6 +32,8 @@ Actualizado el 2 de agosto de 2026.
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
 | mame4all | arranca desde el `.iso` y dibuja su menú |
 | **Los cuatro juegos comerciales** | **corren**: Crazy Taxi (A.3), Virtua Tennis (A.6), Capcom vs. SNK (A.7) y Virtua Tenis 2 (A.8) — todos con título y attract/menú |
+| Parpadeo de los juegos de Katana | **resuelto** (A.11): inicializaban el TA dos veces por cuadro y la mitad de los cuadros salía negra |
+| Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12, la tabla del factor de destino); la sombra en sí **sigue sin dibujarse** y el pipeline ya está agotado etapa por etapa (A.13) |
 
 Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
 no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
@@ -451,6 +453,10 @@ Lo que queda de la vía A, medido el mismo día con los dos arreglos puestos:
 | Virtua Tennis (los dos rips) | ~~0 escenas~~ → **corre desde el 2 de agosto**: aviso de VMU, título, Main Menu y attract en 3D — ver A.6 |
 | Capcom vs. SNK | ~~2 escenas~~ → **corre desde el 2 de agosto**: aviso de Memory Card y pantalla de título — ver A.7 |
 | mame4all | idéntico, byte a byte: 93650 colores |
+
+Los tres de Katana —Capcom y las dos Virtua Tennis— presentaban además **un cuadro negro de
+cada dos** hasta el 3 de agosto, y sus cifras de escenas de arriba lo llevan dentro: las de
+hoy son la mitad. Ver A.11.
 
 La lectura de `0x2d2d2d0a` quedó explicada por el lado que no acusaba: en Crazy Taxi ocurre
 **una sola vez** y el juego sigue; era consecuencia del estado a medio cargar, no la causa. En

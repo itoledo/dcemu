@@ -1041,6 +1041,23 @@ prints how many scenes were rendered and the strip count of the last twelve — 
 separates "the demo stopped submitting" from "the capture is wrong", a distinction that has
 already cost a whole sweep.
 
+**`DCEMU_TRAZA_ESCENA` dumps one whole scene, strip by strip, and it is the tool for "the
+geometry arrives and it still looks wrong".** `=N[:M]` takes M scenes from number N (the
+`traza_rendidas` count, the same one the exit summary uses); **`=+K[:M]` takes the first M
+scenes with more than K strips**, which is how you pick a *gameplay* scene without knowing its
+number — the index does not survive from one run to the next (one frame more in a menu and it
+moves), while the weight separates a match (thousands of strips) from a menu (five). Chasing
+the index cost two seven-minute runs that landed on a transition screen. Per scene it prints
+`PT_ALPHA_REF`, `FOG_CLAMP_MIN`/`MAX` and `FPU_SHAD_SCALE`; per strip the list type, blend
+factors, the SRC/DST Select bits, the Offset bit, depth mode, culling, the whole texture state
+and **the raw TSP and TCW words**; and per vertex the position, UVs, colour and offset colour.
+The raw words are what settle "is this field being read from the right place" — decoding
+`tsp=` against the bit table of §3.7.9.2 is what proved dcemu reads every TSP field where the
+document puts it. `--traza-mem` must be on. The GL context also reports its **real** alpha
+bits (`GL_ALPHA_BITS`) next to the requested ones: asking for `SDL_GL_ALPHA_SIZE` does not
+guarantee a destination alpha channel, and without one GL silently answers 1.0 for
+`GL_DST_ALPHA` and discards whatever is written to it.
+
 The guest submits geometry through the SH-4 store queues, not through a normal write:
 `pref142()` in `syscontrol.c` flushes SQ0/SQ1, and when the target lands in the TA FIFO
 (`0x10000000`) it hands the 32-byte block to `ta_procesar_bloque()` in `ta.c`, which dispatches
