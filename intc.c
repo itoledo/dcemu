@@ -179,6 +179,53 @@ bool intc(DWORD irq)
 	
 	*INTEVT = irq;
 
+	/*
+		Censo de interrupciones entregadas por segundo emulado, por INTEVT. La
+		pregunta que contesta es a que ritmo late la logica del guest: un juego
+		que mueve su menu sobre un temporizador repite tan rapido como ese
+		temporizador le pida, y el histograma de DCEMU_TRAZA_EXC no lo ve
+		porque las interrupciones no pasan por excepcion_entrar().
+	*/
+	if (traza_activa)
+	{
+		static unsigned long      codigo[16];
+		static unsigned long      cuenta[16];
+		static int                usados = 0;
+		static unsigned long long marca  = 0;
+
+		unsigned long long ahora = reloj_ms();
+		int i;
+
+		for (i = 0; i < usados; i++)
+			if (codigo[i] == (unsigned long) irq)
+				break;
+
+		if (i == usados && usados < 16)
+		{
+			codigo[usados] = (unsigned long) irq;
+			cuenta[usados] = 0;
+			usados++;
+		}
+
+		if (i < 16)
+			cuenta[i]++;
+
+		if (ahora - marca >= 1000)
+		{
+			fprintf(stderr, "traza: interrupciones en %lu ms:",
+				(unsigned long) (ahora - marca));
+
+			for (i = 0; i < usados; i++)
+			{
+				fprintf(stderr, " %03lx=%lu", codigo[i], cuenta[i]);
+				cuenta[i] = 0;
+			}
+
+			fprintf(stderr, "\n");
+			marca = ahora;
+		}
+	}
+
 	SSR = SR;
 	SPC = PC;
 	SGR = R(15);
@@ -228,8 +275,12 @@ bool intc_asic_pendiente(void)
 	    || (ASIC_ACK_A & (ASIC_IRQ9_A | ASIC_IRQB_A | ASIC_IRQD_A)) != 0;
 }
 
+static void censo_evento(DWORD inttoadd);
+
 void intc_add(DWORD inttoadd, int cnt)
 {
+	censo_evento(inttoadd);
+
 #ifdef INT_QUEUE
 	PENDING_INT * tmp;
 
@@ -284,6 +335,50 @@ void intc_add(DWORD inttoadd, int cnt)
 	SET_BIT(ASIC_ACK_A, inttoadd);
 	logxmsg(LOG_INTC, "a�adiendo int %x, estado %x\n", inttoadd, ASIC_ACK_A);
 #endif
+}
+
+/*
+	Censo de eventos del ASIC generados por segundo emulado, por bit. Es el
+	desglose del censo de entregas de intc(): dice cuales son los eventos de
+	cada cuadro y si alguno se genera de mas.
+
+	**Va al principio de intc_add(), no al final.** Un evento con demora se
+	guarda en la tabla y la funcion retorna ahi mismo, asi que un censo puesto
+	al final no ve ninguno de los demorados --RENDERDONE, los fines de lista,
+	los fines de DMA-- y da la lista de eventos incompleta sin decirlo: la
+	primera version contaba cuatro por cuadro contra nueve entradas al ISR, y
+	esa diferencia era el censo, no el emulador.
+*/
+static void censo_evento(DWORD inttoadd)
+{
+	if (traza_activa)
+	{
+		static unsigned long      bit[32];
+		static unsigned long long marca = 0;
+
+		unsigned long long ahora = reloj_ms();
+		int b;
+
+		for (b = 0; b < 32; b++)
+			if (inttoadd & (1u << b))
+				bit[b]++;
+
+		if (ahora - marca >= 1000)
+		{
+			fprintf(stderr, "traza: eventos ASIC en %lu ms:",
+				(unsigned long) (ahora - marca));
+
+			for (b = 0; b < 32; b++)
+				if (bit[b])
+				{
+					fprintf(stderr, " b%d=%lu", b, bit[b]);
+					bit[b] = 0;
+				}
+
+			fprintf(stderr, "\n");
+			marca = ahora;
+		}
+	}
 }
 
 /* Cola del registro externo (SB_ISTEXT). Es la misma mecanica que intc_add()

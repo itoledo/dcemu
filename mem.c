@@ -1961,16 +1961,60 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								&ct.joyx, &ct.joyy);
 
 							/* Solo cuando cambia: si no, son ~77 lineas por
-							   segundo de tiempo emulado. */
+							   segundo de tiempo emulado. Con el instante
+							   emulado al lado, que es lo que convierte "el
+							   mando parpadea" en un periodo medible. */
 							if (traza_activa)
 							{
 								static WORD ultimo = 0xFFFF;
+								static BYTE ux = 0xFF, uy = 0xFF;
+								static unsigned long sondeos = 0;
 
-								if (ct.buttons != ultimo)
+								sondeos++;
+
+								if (ct.buttons != ultimo
+								||  ct.joyx != ux || ct.joyy != uy)
 								{
-									fprintf(stderr, "traza: maple botones %04x\n",
-										(unsigned) ct.buttons);
+									fprintf(stderr, "traza: maple botones %04x"
+										" ejes %02x,%02x gatillos %02x,%02x"
+										" a los %llu ms (sondeo %lu, respuesta"
+										" en %08lx)\n",
+										(unsigned) ct.buttons,
+										(unsigned) ct.joyx, (unsigned) ct.joyy,
+										(unsigned) ct.ltrig, (unsigned) ct.rtrig,
+										(unsigned long long) reloj_ms(),
+										sondeos, (unsigned long) (td2 + 8));
 									ultimo = ct.buttons;
+									ux = ct.joyx;
+									uy = ct.joyy;
+								}
+
+								/*
+									Y con DCEMU_TRAZA_MANDO=N, las N
+									instrucciones que siguen a la PRIMERA
+									entrega con una direccion apretada. Armarlo
+									desde aca y no con --traza-desde es lo unico
+									que sirve: la rutina que lee el mando pasa 60
+									veces por segundo desde el arranque, asi que
+									cualquier K de --traza-desde cae donde no hay
+									nada apretado. Esto dispara justo cuando lo
+									hay.
+								*/
+								{
+									static int armado = 0;
+									const char * e = getenv("DCEMU_TRAZA_MANDO");
+
+									/* Bits 4-7: las cuatro direcciones. */
+									if (e != NULL && !armado
+									&&  (ct.buttons & 0x00F0) != 0x00F0)
+									{
+										armado = 1;
+										fprintf(stderr, "traza: mando: direccion"
+											" apretada (%04x), armando %d"
+											" instrucciones\n",
+											(unsigned) ct.buttons, atoi(e));
+										traza_arrancar(atoi(e));
+									}
 								}
 							}
 

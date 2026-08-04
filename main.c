@@ -164,6 +164,55 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 		}
 	}
 
+	/* DCEMU_MANTENER_DERECHA=desde[:hasta] (y _ARRIBA, _ABAJO, _IZQUIERDA):
+	   esa cruceta SOSTENIDA entre esos dos sondeos (decimal, ~60 por segundo
+	   emulado; sin hasta, para siempre). Es la otra mitad de PULSAR_START:
+	   aquello pulsa, esto mantiene. Existe para medir la auto-repeticion de un
+	   menu sin nadie delante -- una direccion mantenida N segundos exactos,
+	   identica en la corrida base y en la corregida, que es lo que un pulgar
+	   no da. Se pueden combinar: la diagonal es lo que separo la guerra de
+	   contadores de Virtua Tennis de un defecto de dcemu. */
+	{
+		static const struct {
+			const char *	variable;
+			WORD			bit;
+			const char *	nombre;
+		} mantenidas[4] = {
+			{ "DCEMU_MANTENER_DERECHA",   CONT_DPAD_RIGHT, "derecha"   },
+			{ "DCEMU_MANTENER_IZQUIERDA", CONT_DPAD_LEFT,  "izquierda" },
+			{ "DCEMU_MANTENER_ARRIBA",    CONT_DPAD_UP,    "arriba"    },
+			{ "DCEMU_MANTENER_ABAJO",     CONT_DPAD_DOWN,  "abajo"     },
+		};
+		static int t = 0;
+		int i;
+
+		t++;
+
+		for (i = 0; i < 4; i++)
+		{
+			const char * e = getenv(mantenidas[i].variable);
+			int desde, hasta;
+			const char * dp;
+
+			if (e == NULL)
+				continue;
+
+			desde = atoi(e);
+			dp    = strchr(e, ':');
+			hasta = dp ? atoi(dp + 1) : 0;
+
+			if (t >= desde && (hasta == 0 || t < hasta))
+			{
+				if (traza_activa && t == desde)
+					fprintf(stderr, "traza: manteniendo %s desde el sondeo"
+						" %d, a los %lu ms de tiempo emulado.\n",
+						mantenidas[i].nombre, t, (unsigned long) reloj_ms());
+
+				REMOVE_BIT(*botones, mantenidas[i].bit);
+			}
+		}
+	}
+
 	/* EXPERIMENTO: pasar el selector de fecha del boot ROM sin nadie delante.
 	   Son cinco movimientos a la derecha --mes, dia, ano, hora, minuto-- para
 	   llegar a "Select", y ahi el boton A. La secuencia se repite por si la
@@ -681,6 +730,55 @@ void main_loop(void)
 			fprintf(stderr, "salida automatica a los %d s de tiempo emulado.\n",
 				opciones.salir_tras);
 			return;
+		}
+
+		// La relacion entre tiempo emulado y real, **por segundo**. El resumen
+		// del final da el promedio, y el promedio esconde justo lo que importa
+		// para el mando: un menu liviano puede correr al doble mientras una
+		// escena en 3D arrastra la media hacia 1. Y la auto-repeticion de un
+		// juego cuenta cuadros, asi que corre tan rapido como corra el emulador.
+		if (traza_activa)
+		{
+			static unsigned long long marca_emulado = 0;
+			static unsigned long      marca_real    = 0;
+			static unsigned long      marca_cuadros = 0;
+
+			unsigned long long emulado = reloj_ms();
+			unsigned long      real    = SDL_GetTicks() - real_inicio;
+
+			marca_cuadros++;
+
+			if (emulado - marca_emulado >= 1000)
+			{
+				unsigned long de = (unsigned long) (emulado - marca_emulado);
+				unsigned long dr = real - marca_real;
+
+				fprintf(stderr, "traza: ritmo: %lu ms emulados en %lu reales"
+					" (%.2fx), %lu cuadros\n",
+					de, dr, dr ? (double) de / (double) dr : 0.0,
+					marca_cuadros);
+
+				/* Y el estado de los tres TMU al lado: un juego que mide el
+				   retardo de repeticion de su menu con un temporizador repite
+				   al ritmo que ese temporizador le marque, y eso no se ve en
+				   el censo de interrupciones si el guest lo sondea en vez de
+				   pedir la interrupcion. */
+				fprintf(stderr, "traza: TMU TSTR=%02x"
+					" ch0 TCR=%04x TCNT=%08lx TCOR=%08lx"
+					" ch1 TCR=%04x TCNT=%08lx TCOR=%08lx"
+					" ch2 TCR=%04x TCNT=%08lx TCOR=%08lx\n",
+					(unsigned) *TSTR,
+					(unsigned) *TCR0, (unsigned long) *TCNT0,
+					(unsigned long) *TCOR0,
+					(unsigned) *TCR1, (unsigned long) *TCNT1,
+					(unsigned long) *TCOR1,
+					(unsigned) *TCR2, (unsigned long) *TCNT2,
+					(unsigned long) *TCOR2);
+
+				marca_emulado = emulado;
+				marca_real    = real;
+				marca_cuadros = 0;
+			}
 		}
 
 		// Fin de frame: el unico sitio donde tiene sentido frenar. Con --limitar,

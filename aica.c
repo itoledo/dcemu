@@ -539,7 +539,7 @@ static void canal_encender(int canal)
 
 		fprintf(stderr, "traza: AICA key on canal %2d: %-11s SA %06lx "
 			"LSA %04lx LEA %04lx OCT %+d FNS %03lx TL %02lx DISDL %lx "
-			"DIPAN %02lx%s\n",
+			"DIPAN %02lx%s a los %llu ms\n",
 			canal, nombre[(r0 >> 7) & 3],
 			(unsigned long) (((r0 & 0x7F) << 16) | CAN(canal, 0x04)),
 			(unsigned long) CAN(canal, 0x08),
@@ -548,7 +548,8 @@ static void canal_encender(int canal)
 			(unsigned long) ((CAN(canal, 0x28) >> 8) & 0xFF),
 			(unsigned long) ((CAN(canal, 0x24) >> 8) & 0xF),
 			(unsigned long) (CAN(canal, 0x24) & 0x1F),
-			(r0 & 0x200) ? " bucle" : "");
+			(r0 & 0x200) ? " bucle" : "",
+			(unsigned long long) reloj_ms());
 	}
 
 	c->activo    = 1;

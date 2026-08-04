@@ -429,6 +429,24 @@ Note dcemu also boots these games **without** `--bios` — it loads `ip.bin` and
 `1st_read.bin` from the image directly, and with a `.cdi` that path issues no SPI packet at
 all: everything goes through the syscall hooks. Both paths now reach the same place.
 
+**`Virtua Tennis (USA).cdi` is a damaged rip, and the damage reads as an emulator input bug.**
+Its menus repeat one cursor move per frame (60/s) while a direction is held — measured with
+`DCEMU_MANTENER_DERECHA`: 120 AICA key-ons/s of the menu tick, no initial delay — because
+three bytes of the game's key-repeat function are zeroed in the file: the `MOV #imm,R4`
+direction indexes (`E4 01/02/03` → `E4 00` ×3, single occurrence, at `0x3066e600+18/22/26`).
+With index 0 for every direction, the per-direction repeat counters collapse onto UP's slot,
+which the per-frame janitor reloads to "idle" whenever UP is *not* held — so every held
+direction fires as a fresh press each frame. UP alone (or any diagonal with UP) repeats at
+the designed 7.5/s, which is the fingerprint. The
+`Virtua Tennis (2000)(Sega)(US)[cr DCRES][f PAL 60Hz][repack].cdi` rip has the correct
+bytes and repeats at 7.5/s — **use that one**. flycast and Deecy reproduce the machine-gun
+identically with the damaged file (all three emulators answer the Maple byte-for-byte the
+same, verified against both sources), which is what proved the file and not the emulator:
+when a game misbehaves identically across independent emulators, diff the rip against
+another lineage before blaming emulation — the anchor-needle + sector-geometry search in
+this file's bytes is how both facts (damage, and its exact extent: 3 bytes in ±1KB) were
+established without booting anything.
+
 `--traza-mem` prints the PC and PR of every SPI packet, what each `REQ_SES` answered, and
 the disc format the drive settled on.
 
