@@ -680,3 +680,24 @@ que es determinista y es la única baranda real del ARM7.
 Y la regla de método, que esta vez se cobró una sesión entera: **el banco de pruebas es sin
 `--bios` y con 180 segundos**, y toda comparación verifica cuadros, escenas y tiras por
 escena antes de mirar el reloj.
+
+---
+
+## Estado al 2026-08-04
+
+El baseline de los tres bancos y el desglose de la MMU están en
+[`rendimiento-plan.md`](rendimiento-plan.md), fase 6. Lo que le toca a este documento:
+
+- **De la fase 1 (el ARM7) están hechas 1.1 y 1.2**: `(op >> 28) == 0xE` corta antes de
+  llamar a `condicion()`, y el arreglo de cobertura `arm7_usada[]` corre detrás de
+  `arm7_cobertura`. Quedan **1.3** —`aica_fiq_pendiente()` cruzando unidad de traducción una
+  vez por instrucción de ARM— y **1.4** —un camino corto en `arm7_leer()`, que siempre busca
+  4 bytes y casi siempre en RAM de onda—.
+- **El ARM7 sigue siendo el segundo bloque del emulador en los guests sin MMU**: 15,3 % de
+  Crazy Taxi y 13,6 % de Virtua Tennis, contra 7-9 % del camino gráfico entero. En DCDoom es
+  3,3 %, así que la baranda del `.wav` de `--captura-audio` sigue siendo la única que lo
+  cubre.
+- **El intérprete ya no es el 71,6 % de un emulador lento**: los dos guests sin MMU corren a
+  1,54× y 1,36× de la consola. El 71 % que se lleva es de un total que ya sobra, y por eso
+  los candidatos B, C y D de este plan valen menos que antes de medir. El guest que sí está
+  lento es el de MMU, y lo que le pesa no es el despacho.

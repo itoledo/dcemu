@@ -50,6 +50,33 @@ option(DCEMU_DESPACHO_COMPACTO "Despachar por indice de 16 bits en vez de por pu
 # para lo que existe la opcion.
 option(DCEMU_LTCG "Optimizacion de todo el programa (/GL + /LTCG) en Release" ON)
 
+# Optimizacion guiada por perfil. Tres estados, y el orden importa:
+#
+#   cmake -S . -B build -DDCEMU_PGO=GEN     # binario instrumentado
+#   cmake --build build --config Release --target dcemu
+#   herramientas\pgo.ps1 -Paso entrenar     # corre el banco fijo y junta los .pgc
+#   cmake -S . -B build -DDCEMU_PGO=USE     # binario final, con el perfil puesto
+#   cmake --build build --config Release --target dcemu
+#
+# Que resuelve. En este arbol **la disposicion del binario mueve la cifra tanto
+# como una optimizacion**: agregar codigo a mmu.c que un guest sin MMU no
+# ejecuta le costo un 8 % a Crazy Taxi, dos veces, y una vez se recupero entero
+# revirtiendo un cambio que no ejecutaba nada. El orden de enlace es hoy quien
+# decide donde cae el codigo caliente del interprete, y eso no es una variable
+# que se pueda dejar suelta si lo que se quiere es medir optimizaciones.
+#
+# PGO la fija: ordena las funciones y las ramas por lo que hizo una corrida
+# real, no por el orden en que estan los .obj. Ver docs/rendimiento-plan.md,
+# fase 6, "Pero la regresion volvio".
+#
+# El entrenamiento **tiene que ser el banco fijo** --Crazy Taxi en juego, Virtua
+# Tennis y DCDoom-- porque un perfil sacado de los menus ordena el codigo del
+# menu. Y el binario instrumentado corre del orden de tres veces mas lento, asi
+# que pgo.ps1 usa segundos emulados mas cortos: lo que importa es que pase por
+# los mismos caminos, no cuantas veces.
+set(DCEMU_PGO "OFF" CACHE STRING "Optimizacion guiada por perfil: OFF, GEN o USE")
+set_property(CACHE DCEMU_PGO PROPERTY STRINGS OFF GEN USE)
+
 # ---------------------------------------------------------------------------
 # SDL 1.2, via sdl12-compat
 #
@@ -190,6 +217,37 @@ target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
 if(DCEMU_LTCG)
 	target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/GL>)
 	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
+# PGO. Exige /GL, que es lo que hace LTCG: sin el, el enlazador no tiene el
+# codigo intermedio sobre el que aplicar el perfil.
+if(NOT DCEMU_PGO STREQUAL "OFF")
+	if(NOT DCEMU_LTCG)
+		message(FATAL_ERROR "DCEMU_PGO necesita DCEMU_LTCG=ON (/GL)")
+	endif()
+
+	# El .pgd vive fuera del directorio de build a proposito: sobrevive a un
+	# borrado de build/ y a cambiar de GEN a USE, que es todo el punto de
+	# entrenar una vez y compilar despues.
+	set(DCEMU_PGD "${CMAKE_SOURCE_DIR}/build-pgo/dcemu.pgd")
+	file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/build-pgo")
+
+	if(DCEMU_PGO STREQUAL "GEN")
+		target_link_options(dcemu PRIVATE
+			$<$<CONFIG:Release>:/GENPROFILE:PGD=${DCEMU_PGD}>)
+		message(STATUS "dcemu: PGO instrumentado, perfil a ${DCEMU_PGD}")
+	elseif(DCEMU_PGO STREQUAL "USE")
+		if(NOT EXISTS "${DCEMU_PGD}")
+			message(FATAL_ERROR
+				"DCEMU_PGO=USE pero no existe ${DCEMU_PGD}: falta entrenar")
+		endif()
+
+		target_link_options(dcemu PRIVATE
+			$<$<CONFIG:Release>:/USEPROFILE:PGD=${DCEMU_PGD}>)
+		message(STATUS "dcemu: PGO aplicado desde ${DCEMU_PGD}")
+	else()
+		message(FATAL_ERROR "DCEMU_PGO tiene que ser OFF, GEN o USE")
+	endif()
 endif()
 
 # glu32 y winmm estan en los makefiles pero no se usan: la unica llamada a GLU

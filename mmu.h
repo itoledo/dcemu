@@ -186,7 +186,25 @@ extern DWORD           mmu_fetch_md;
 extern unsigned char * mmu_fetch_base;
 
 unsigned char * mmu_fetch_resolver(DWORD pc);
+
+/*
+	Las dos invalidaciones, que no son la misma cosa y confundirlas cuesta el
+	8 % de un guest con MMU:
+
+	 - mmu_fetch_invalidar() tira **solo la pagina unica** de busqueda, cuya
+	   etiqueta no lleva el ASID. Es lo unico que una escritura a PTEH necesita.
+	 - mmu_tlb_invalidar() tira ademas las tres cachas etiquetadas por ASID. Es
+	   para cuando cambia el contenido de la TLB: LDTLB, los arreglos por P4 y
+	   MMUCR.
+
+	El porque completo esta en mmu.c, sobre mmu_tlb_invalidar().
+*/
 void mmu_fetch_invalidar(void);
+void mmu_tlb_invalidar(void);
+
+/* La sonda de techo del recorrido de la UTLB (DCEMU_SONDA_UTLB_CACHE=1); el
+   porque esta en mmu.c, junto a la cache. */
+void mmu_sondas_iniciar(void);
 
 #define MMU_FETCH_PUNTERO(pc)											\
 	(!mmu_activa														\

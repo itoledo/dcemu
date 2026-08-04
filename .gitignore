@@ -30,6 +30,10 @@ logs/*.txt
 # Por eso van tambien las extensiones: una imagen de disco no se versiona
 # **este donde este**.
 bios/
+# Lo mismo que bios/, con otro nombre: data/ es donde caen dc_boot.bin y
+# dc_flash.bin, o sea el firmware de la consola. No estaba ignorado y por eso
+# aparecia en cada `git status` esperando que alguien lo agregara por error.
+data/
 roms/
 *.iso
 *.cue

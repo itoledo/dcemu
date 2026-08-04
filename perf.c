@@ -44,6 +44,22 @@ unsigned long      perf_vertices_max= 0;
 unsigned long long perf_sync_instantes = 0;
 unsigned long long perf_ns_espera	= 0;
 
+unsigned long long perf_mmu_traduce			= 0;
+unsigned long long perf_mmu_utlb			= 0;
+unsigned long long perf_mmu_utlb_pasos		= 0;
+unsigned long long perf_mmu_cache_acierto	= 0;
+unsigned long long perf_mmu_datos_acierto	= 0;
+unsigned long long perf_mmu_vaciados		= 0;
+unsigned long long perf_mmu_datos_choque	= 0;
+unsigned long long perf_mmu_datos_capacidad	= 0;
+unsigned long long perf_mmu_fetch_acierto2	= 0;
+unsigned long long perf_mmu_fetch_fallo		= 0;
+unsigned long long perf_mmu_falta			= 0;
+unsigned long long perf_instantaneas		= 0;
+unsigned long long perf_instantaneas_usadas	= 0;
+unsigned long long perf_ns_traducir			= 0;
+unsigned long long perf_ns_instantanea		= 0;
+
 /*
 	Un acceso al estado del AICA. Solo cuenta si el reloj emulado avanzo desde
 	el anterior: si no avanzo, el hilo del AICA ya estaba al dia y no habria
@@ -245,6 +261,97 @@ void perf_resumen(void)
 		fprintf(stderr, "perf: ARM7: %llu pasos, %llu ociosos (%.1f %%)\n",
 			perf_arm_pasos, perf_arm_ocioso,
 			100.0 * (double) perf_arm_ocioso / (double) perf_arm_pasos);
+
+	/*
+		La MMU. Solo sale si el guest la encendio alguna vez, porque en todo lo
+		demas del arbol estas lineas serian seis ceros. Ver perf.h.
+	*/
+	if (perf_instantaneas || perf_mmu_traduce)
+	{
+		fprintf(stderr, "perf: MMU\n");
+
+		fprintf(stderr, "perf:   instantaneas         %12llu"
+			" (%.2f por instruccion)\n",
+			perf_instantaneas,
+			perf_instrucciones
+				? (double) perf_instantaneas / (double) perf_instrucciones : 0.0);
+
+		/* La razon de trabajo util a trabajo tirado: la instantanea existe
+		   para poder deshacer, y esto dice cuantas veces hubo que deshacer. */
+		fprintf(stderr, "perf:   ... restauradas      %12llu"
+			" (1 de cada %.0f)\n",
+			perf_instantaneas_usadas,
+			perf_instantaneas_usadas
+				? (double) perf_instantaneas / (double) perf_instantaneas_usadas
+				: 0.0);
+
+		/* Aciertos = instrucciones - fallos: el acierto no se cuenta porque
+		   vive en el camino de cada instruccion. Ver mmu_fetch_resolver(). */
+		fprintf(stderr, "perf:   busqueda: fallos     %12llu (%.3f %% de las"
+			" instrucciones), %.1f %% los atiende la de 64\n",
+			perf_mmu_fetch_fallo,
+			perf_instrucciones
+				? 100.0 * (double) perf_mmu_fetch_fallo
+				  / (double) perf_instrucciones : 0.0,
+			perf_mmu_fetch_fallo
+				? 100.0 * (double) perf_mmu_fetch_acierto2
+				  / (double) perf_mmu_fetch_fallo : 0.0);
+
+		fprintf(stderr, "perf:   datos: traducciones  %12llu"
+			" (%.2f por instruccion), %.1f %% ya resueltas, %llu faltas\n",
+			perf_mmu_traduce,
+			perf_instrucciones
+				? (double) perf_mmu_traduce / (double) perf_instrucciones : 0.0,
+			perf_mmu_traduce
+				? 100.0 * (double) perf_mmu_datos_acierto
+				  / (double) perf_mmu_traduce : 0.0,
+			perf_mmu_falta);
+
+		/* Las dos piezas del sobrecosto, cronometradas por muestreo. Contra
+		   los ~5,5 ns por instruccion de un guest sin MMU, esto dice cuanto
+		   del resto queda por atacar y en cual de las dos. */
+		fprintf(stderr, "perf:   instantanea          %10.0f ms  %5.1f %%"
+			"   traducir %.0f ms  %.1f %%\n",
+			(double) perf_ns_instantanea / 1e6,
+			100.0 * (double) perf_ns_instantanea / (double) real,
+			(double) perf_ns_traducir / 1e6,
+			100.0 * (double) perf_ns_traducir / (double) real);
+
+		/* Cada vaciado tira las tres cachas enteras. Si son frecuentes, los
+		   fallos no son de tamano sino obligatorios y agrandar no sirve. */
+		fprintf(stderr, "perf:   vaciados completos   %12llu"
+			" (1 cada %.0f traducciones)\n",
+			perf_mmu_vaciados,
+			perf_mmu_vaciados
+				? (double) perf_mmu_traduce / (double) perf_mmu_vaciados : 0.0);
+
+		/* De que tipo son los fallos de esa cache: la respuesta es
+		   asociatividad o tamano, y son cosas distintas. Ver mmu.c. */
+		if (perf_mmu_datos_choque + perf_mmu_datos_capacidad)
+			fprintf(stderr, "perf:   ... de los fallos, %.1f %% son la misma"
+				" pagina con otra etiqueta (modo o ASID)\n",
+				100.0 * (double) perf_mmu_datos_choque
+					/ (double) (perf_mmu_datos_choque
+								+ perf_mmu_datos_capacidad));
+
+		/*
+			La cache de traduccion y lo que queda del recorrido detras de
+			ella. El recorrido medio cuenta el acierto como 1, asi que sube
+			apenas la cache empieza a fallar: es la cifra que avisa si el
+			tamano se quedo chico para otro guest.
+
+			Las busquedas son las de los TRES caminos --datos, instrucciones y
+			store queues--, que comparten la cache; por eso son mas que las
+			traducciones de datos de la linea de arriba.
+		*/
+		if (perf_mmu_utlb)
+			fprintf(stderr, "perf:   busquedas de entrada %12llu,"
+				" %.2f %% aciertan la cache, recorrido medio %.1f de 64\n",
+				perf_mmu_utlb,
+				100.0 * (double) perf_mmu_cache_acierto
+					/ (double) perf_mmu_utlb,
+				(double) perf_mmu_utlb_pasos / (double) perf_mmu_utlb);
+	}
 
 	/*
 		El techo de la fase 1 de docs/hilos-plan.md. No es el porcentaje de

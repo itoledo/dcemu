@@ -219,10 +219,22 @@ void run(WORD arg)
 {
 	/* El chequeo va aca y no en main_loop() porque asi cubre tambien las
 	   ranuras de retardo, que branch.c ejecuta con un core.execute() anidado.
-	   La distincion entre 0x800 y 0x820 es justamente esa. */
-	if (fpu_deshabilitada && es_instruccion_fpu(arg))
-		excepcion_abortar(en_ranura_retardo ? EXC_FPU_RANURA : EXC_FPU_GENERAL,
-						  EXC_VEC_GENERAL);
+	   La distincion entre 0x800 y 0x820 es justamente esa.
+
+	   Y por la misma razon va aca la instantanea de los bancos de coma
+	   flotante: son 128 de los ~318 bytes que se copian por instruccion y solo
+	   sirven si la instruccion puede escribirlos. Las dos preguntas comparten
+	   es_instruccion_fpu(), que se evalua una vez. Ver excepciones.c. */
+	if ((fpu_deshabilitada | excepcion_salto_armado) && es_instruccion_fpu(arg))
+	{
+		if (excepcion_salto_armado)
+			excepcion_instantanea_fpu();
+
+		if (fpu_deshabilitada)
+			excepcion_abortar(en_ranura_retardo ? EXC_FPU_RANURA
+												: EXC_FPU_GENERAL,
+							  EXC_VEC_GENERAL);
+	}
 
 	/* El camino rapido de main_loop() no pasa por aca, asi que lo que esto
 	   cuenta son las ranuras de retardo y el camino con excepciones. Ver

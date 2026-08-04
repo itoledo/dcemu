@@ -7,6 +7,7 @@
 *****************************************************************************/
 
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,6 +15,7 @@
 #include "log.h"
 #include "mem.h"		/* memread_fisico: el directorio de proceso del censo */
 #include "mmu.h"
+#include "perf.h"		/* los contadores de la instantanea */
 #include "sh4emu.h"
 #include "tmu.h"		/* reloj_ms(): el histograma DCEMU_TRAZA_EXC */
 #include "traza.h"
@@ -405,19 +407,130 @@ static context_t	instantanea_contexto;
 static FPR_BANK		instantanea_fr;
 static FPR_BANK		instantanea_xf;
 
+/*
+	Las dos sondas de techo de la fase 5 de docs/rendimiento-plan.md.
+
+	Se leen una vez al arrancar --nunca con getenv() en el camino caliente, que
+	ya costo 44 millones de barridos del bloque de entorno en otra ocasion-- y
+	viven en el mismo binario a proposito: comparar dos compilaciones distintas
+	introduce el layout como variable, y este arbol ya perdio una sesion por
+	eso. Con una sola imagen, la A y la B difieren solo en un getenv del
+	arranque.
+
+	DCEMU_SONDA_SIN_BANCOS_FPU=1 saltea las dos copias de los bancos de coma
+	flotante, en tomar Y en restaurar. Es exactamente la salida 1 del plan
+	llevada al extremo (ninguna instruccion los copia, ni siquiera las de FPU),
+	asi que mide su techo. **Puede alterar el resultado** si una instruccion de
+	FPU escribe su destino y despues falla; que no lo haya alterado se verifica
+	con la cuenta de instrucciones y de escenas, como cualquier A/B de aca.
+
+	DCEMU_SONDA_SIN_INSTANTANEA=1 saltea las tres copias. Mide el techo total
+	del mecanismo y **rompe el guest** en cuanto una falta tenga algo que
+	deshacer; el numero vale solo si el trabajo sale igual, y si no sale igual
+	lo que vale es saber cuanto se apoya el guest en esto.
+*/
+int excepcion_sonda_sin_bancos     = 0;
+int excepcion_sonda_sin_instantanea = 0;
+int excepcion_sonda_setjmp_instr   = 0;
+
+void excepcion_sondas_iniciar(void)
+{
+	const char * v;
+
+	v = getenv("DCEMU_SONDA_SIN_BANCOS_FPU");
+	excepcion_sonda_sin_bancos = (v != NULL && atoi(v) != 0);
+
+	v = getenv("DCEMU_SONDA_SIN_INSTANTANEA");
+	excepcion_sonda_sin_instantanea = (v != NULL && atoi(v) != 0);
+
+	/* La forma vieja de armar el salto: un setjmp por instruccion. Se conserva
+	   para poder medir la nueva contra ella sin cambiar de binario. */
+	v = getenv("DCEMU_SONDA_SETJMP_POR_INSTRUCCION");
+	excepcion_sonda_setjmp_instr = (v != NULL && atoi(v) != 0);
+
+	if (excepcion_sonda_sin_bancos || excepcion_sonda_sin_instantanea)
+		fprintf(stderr, "sonda: instantanea %s\n",
+			excepcion_sonda_sin_instantanea ? "APAGADA (el guest puede divergir)"
+											: "sin los bancos de FPU");
+}
+
+/*
+	Si los bancos de coma flotante entraron en la instantanea de esta
+	instruccion. Ver excepcion_instantanea_fpu().
+*/
+static int instantanea_con_bancos = 0;
+
+/*
+	Si hay instantanea que restaurar para la instruccion en curso.
+
+	Vale 0 en dos casos y los dos significan lo mismo --nada que deshacer--:
+	entre la invalidacion y la toma, o sea mientras se busca la instruccion, y
+	durante toda instruccion que la clasificacion de opcodes.c declara incapaz
+	de abortar. Restaurar en cualquiera de los dos desharia la instruccion
+	**anterior**, que si se ejecutó entera.
+*/
+static int instantanea_valida = 0;
+
+void excepcion_instantanea_invalidar(void)
+{
+	instantanea_valida = 0;
+}
+
 void excepcion_instantanea_tomar(void)
 {
-	memcpy(&instantanea_contexto, &core.context, sizeof(context_t));
+	PERF_CONTAR(perf_instantaneas);
+
+	instantanea_con_bancos = 0;
+	instantanea_valida     = 1;
+
+	if (!excepcion_sonda_sin_instantanea)
+		memcpy(&instantanea_contexto, &core.context, sizeof(context_t));
+}
+
+/*
+	Los dos bancos de coma flotante, que son 128 de los ~318 bytes y **solo
+	hacen falta si la instruccion puede escribirlos**.
+
+	Lo llama run() cuando la instruccion es de FPU segun es_instruccion_fpu(),
+	que es la misma definicion que decide la trampa de SR.FD y sale del manual:
+	todo lo que empieza con 1111 mas las cuatro transferencias de FPUL y FPSCR.
+	Ponerlo ahi y no en main_loop() es lo que cierra el agujero de las ranuras
+	de retardo: una instruccion de FPU en la ranura de un salto tambien pasa por
+	run(), y su instantanea de contexto es la del salto -- tomada antes, cuando
+	los bancos todavia no se habian tocado --.
+
+	Con la MMU apagada no se llama nunca: sin instantanea armada no hay nada que
+	guardar.
+*/
+void excepcion_instantanea_fpu(void)
+{
+	if (excepcion_sonda_sin_instantanea || excepcion_sonda_sin_bancos)
+		return;
+
 	memcpy(&instantanea_fr, core.context.FR_BANK, sizeof(FPR_BANK));
 	memcpy(&instantanea_xf, core.context.XF_BANK, sizeof(FPR_BANK));
+
+	instantanea_con_bancos = 1;
 }
 
 void excepcion_instantanea_restaurar(void)
 {
+	PERF_CONTAR(perf_instantaneas_usadas);
+
+	/* Sin instantanea no hay nada que deshacer, y deshacer seria peor: ver
+	   instantanea_valida. Pasa en la falta de busqueda, que ocurre antes de
+	   ejecutar. */
+	if (!instantanea_valida || excepcion_sonda_sin_instantanea)
+		return;
+
 	/* Los punteros de banco vuelven con el contexto, asi que hay que escribir
 	   el contenido despues de restaurarlo: si FRCHG los intercambio, los
 	   bloques tienen que volver a su banco original, no al que quedo. */
 	memcpy(&core.context, &instantanea_contexto, sizeof(context_t));
+
+	if (!instantanea_con_bancos)
+		return;
+
 	memcpy(core.context.FR_BANK, &instantanea_fr, sizeof(FPR_BANK));
 	memcpy(core.context.XF_BANK, &instantanea_xf, sizeof(FPR_BANK));
 }

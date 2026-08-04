@@ -620,3 +620,14 @@ instantánea en las que no pueden fallar después de mutar— está en
 [`rendimiento-plan.md`](rendimiento-plan.md), fase 5, con sus barandas. La que importa aquí:
 **DCDoom es el único guest del árbol que enciende la MMU**, así que el barrido de demos no
 puede ver ninguna regresión de este camino.
+
+> **Corrección del mismo 2026-08-04, con el desglose hecho: el culpable no era ése.** La
+> instantánea existe, pero sus dos bancos de FPU valen **3,6 %** y el mecanismo entero no
+> llega al 10 %. Lo que se lleva el tiempo es **el recorrido de la UTLB en el camino de
+> datos**, que no tiene caché ninguna: 1313 millones de recorridos con 34,5 entradas de
+> promedio sobre 64. Una caché de traducción de datos de 256 entradas da **1,73× en DCDoom**
+> —de 0,33× a 0,58×— con la ejecución idéntica al dígito y el BMP byte a byte igual. El
+> párrafo de arriba queda como estaba escrito porque el error vale más documentado que
+> borrado: atribuyó los 8,9 ns a lo primero que se tenía a la vista sin separar los sumandos.
+> El desglose, las sondas y el plan están en [`rendimiento-plan.md`](rendimiento-plan.md),
+> fase 6.

@@ -482,6 +482,25 @@ static unsigned long long marca_linea = 0;
 /* Tiempo real (SDL_GetTicks) al entrar a main_loop, para --limitar. */
 static unsigned long real_inicio = 0;
 
+/*
+	La vuelta de una falta, compartida por las dos formas de armar el salto.
+
+	Restaurar deja PC en la instruccion que fallo -- o en el salto, si la falta
+	fue en su ranura de retardo, porque el longjmp desenrolla los dos niveles.
+*/
+static void falta_reponer(void)
+{
+	excepcion_salto_armado = 0;
+	en_ranura_retardo = 0;
+	excepcion_instantanea_restaurar();
+
+	/* Lo poco que no se restaura: la excepcion de operacion de FPU deja Cause
+	   escrito, y Flag no. */
+	excepcion_reponer();
+
+	excepcion_entrar(excepcion_codigo, excepcion_vector);
+}
+
 void main_loop(void)
 {
 	SDL_Event event;
@@ -497,16 +516,39 @@ void main_loop(void)
 
 	for (;;)
 	{
+		/*
+			El salto de vuelta de una falta, armado UNA vez y no por
+			instruccion.
+
+			Estaba adentro del bucle, en el `else if (setjmp(...) == 0)` que
+			envolvia a cada instruccion con la MMU encendida. Eso es un setjmp
+			por instruccion emulada -- con Windows CE, 5100 millones en 35
+			segundos emulados -- y en MSVC no es barato: guarda el contexto de
+			registros y el marco de SEH.
+
+			Aca se ejecuta una vez por vuelta del bucle exterior, que gira solo
+			cuando el emulador se detiene. Un longjmp desde excepcion_abortar()
+			aterriza aqui, repone la falta y vuelve a entrar al bucle interior;
+			la instruccion que fallo se reejecuta, que es justo lo que pide el
+			manual.
+
+			Lo unico que hay que cuidar es que ninguna variable local de
+			main_loop() sobreviva al salto con valor util: `event` es la unica
+			que hay y SDL_PollEvent la vuelve a llenar antes de mirarla.
+		*/
+		if (setjmp(excepcion_salto) != 0)
+			falta_reponer();
+
 		for (;;)
 		{
 			if (DebugMode == DBG_STOP)
 				break;
-			
-#ifdef PRINT_ASM
+		
+	#ifdef PRINT_ASM
 	disasm(PC, &buf[0]);
 	logmsg("TRACE: %s\r\n", buf);
-#endif	
-//		instr = *(WORD *) str_PC;
+	#endif	
+	//		instr = *(WORD *) str_PC;
 
 			if (traza_activa)
 				traza_paso(PC);
@@ -548,7 +590,22 @@ void main_loop(void)
 					OP_DESPACHAR(instr);
 				}
 			}
-			else if (setjmp(excepcion_salto) == 0)
+			else if (excepcion_sonda_setjmp_instr)
+			{
+				// La forma vieja, conservada para poder medir la nueva contra
+				// ella en el mismo binario: un setjmp por instruccion.
+				if (setjmp(excepcion_salto) == 0)
+				{
+					excepcion_instantanea_tomar();
+
+					excepcion_salto_armado = 1;
+					core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));
+					excepcion_salto_armado = 0;
+				}
+				else
+					falta_reponer();
+			}
+			else
 			{
 				// Las excepciones generales del SH-4 son reejecutables: el
 				// manejador arregla lo que haga falta, hace RTE y la
@@ -556,29 +613,26 @@ void main_loop(void)
 				// mutan registros alrededor del acceso (MOV.L @Rn+,
 				// MOV.L Rm,@-Rn, FMUL sobre su propio destino), asi que hay
 				// que poder deshacerlo. Ver docs/mmu-plan.md, fase 5.
+				//
+				// **El setjmp no esta aca**: vive arriba del bucle exterior y
+				// se arma una vez. Un longjmp aterriza alli, repone y vuelve a
+				// entrar. Lo que hay que dejar por instruccion es la
+				// instantanea --que depende de la instruccion-- y la bandera
+				// de armado, que dice si una falta debe saltar o solo
+				// registrarse. Ver docs/rendimiento-plan.md, fase 6.3.
+				//
+				// Se toma en TODAS. Saltarla en las que "no pueden abortar"
+				// --clasificando opcodes[] por tipo de operando-- se intento y
+				// se revirtio: rompe a DCDoom en silencio. Ver
+				// docs/rendimiento-plan.md, fase 6.3.
 				excepcion_instantanea_tomar();
 
 				excepcion_salto_armado = 1;
 				core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));
 				excepcion_salto_armado = 0;
 			}
-			else
-			{
-				// Volvimos de una falta. Restaurar deja PC en la instruccion
-				// que fallo -- o en el salto, si la falta fue en su ranura de
-				// retardo, porque el longjmp desenrolla los dos niveles.
-				excepcion_salto_armado = 0;
-				en_ranura_retardo = 0;
-				excepcion_instantanea_restaurar();
 
-				// Lo poco que no se restaura: la excepcion de operacion de FPU
-				// deja Cause escrito, y Flag no.
-				excepcion_reponer();
-
-				excepcion_entrar(excepcion_codigo, excepcion_vector);
-			}
-
-//			(*PC_func) ();
+	//			(*PC_func) ();
 
 			// Cada cuantos ciclos se atiende a los perifericos. El numero y su
 			// derivacion viven en tmu.h, junto al reloj: era 50 y con eso este
@@ -674,18 +728,18 @@ void main_loop(void)
 				PERF_SUMAR_MUESTRA(t_serv, perf_ns_servicio);
 			}
 
-/*			if (PC == BreakPoint)
+	/*			if (PC == BreakPoint)
 				DebugMode = DBG_STOP; */
-				
+			
 			if (DebugMode == DBG_STEP)
 			{
 				DebugMode = DBG_STOP;
 				RedibujarPantalla();
 			}
    	
-// 			core.context.cycles++;
+	// 			core.context.cycles++;
 
-//			if (cnt % (500000 / 0x1FF) == 0)
+	//			if (cnt % (500000 / 0x1FF) == 0)
 			// Antes era 978 fijo, una constante empirica que hacia los frames
 			// 6,5 veces mas rapidos. Ahora sale de SPG_LOAD y SPG_CONTROL:
 			// DC_CPU_HZ / (lineas * campos por segundo). Ver
@@ -701,21 +755,21 @@ void main_loop(void)
 
 				if (pvr_scanline == pvr_spg_vblank_int_out)
 				{
-        			logxmsg(LOG_PVR, "llamando SCANINT1\n");
-    				intc_add(ASIC_EVT_PVR_SCANINT1, 0);
+	        			logxmsg(LOG_PVR, "llamando SCANINT1\n");
+	    				intc_add(ASIC_EVT_PVR_SCANINT1, 0);
 				}
 				else
 				if (pvr_scanline == pvr_spg_vblank_int_in)
 				{
-        			logxmsg(LOG_PVR, "llamando SCANINT2\n");
-    				intc_add(ASIC_EVT_PVR_SCANINT2, 0);
+	        			logxmsg(LOG_PVR, "llamando SCANINT2\n");
+	    				intc_add(ASIC_EVT_PVR_SCANINT2, 0);
 				}
 
-//				if ((++cnt) == 500000)
+	//				if ((++cnt) == 500000)
 				if (pvr_scanline >= pvr_spg_load_vcount) // valor m�ximo que puede tomar
 				{
 	   				pvr_scanline = 0;
-//	   				cnt = 0;
+	//	   				cnt = 0;
 					break; // salimos de este ciclo y vamos al siguiente
 				}
 			}
@@ -1734,6 +1788,8 @@ int main(int argc, char *argv[])
 
 	perf_inicio();
 	arm7_perfil_inicio();
+	excepcion_sondas_iniciar();
+	mmu_sondas_iniciar();
 
 	/* El AICA y el ARM7 a su propio hilo. Va justo antes del bucle: hasta aqui
 	   el arranque escribe RAM de onda y registros del AICA sin competencia. */

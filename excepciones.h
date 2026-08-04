@@ -116,6 +116,31 @@ void excepcion_reponer(void);
    antes de abortar. */
 extern DWORD excepcion_fpu_cause;
 
+/*
+	Las sondas de techo de la instantanea (fase 5 de docs/rendimiento-plan.md),
+	leidas del entorno una sola vez por excepcion_sondas_iniciar(). El porque de
+	que vivan en el binario normal y no en uno desechable esta en excepciones.c.
+*/
+extern int excepcion_sonda_sin_bancos;
+extern int excepcion_sonda_sin_instantanea;
+extern int excepcion_sonda_setjmp_instr;
+
+void excepcion_sondas_iniciar(void);
+
+/*
+	Los bancos de coma flotante entran en la instantanea solo si la instruccion
+	puede escribirlos. Lo decide run(), con es_instruccion_fpu(); el porque de
+	que sea ahi y no en main_loop() esta en excepciones.c.
+*/
+void excepcion_instantanea_fpu(void);
+
+/*
+	Declara que **no hay instantanea vigente**. main_loop() la llama antes de
+	buscar la instruccion, porque esa busqueda puede faltar y entonces no hay
+	nada que deshacer. El porque completo esta en excepciones.c.
+*/
+void excepcion_instantanea_invalidar(void);
+
 /* ------------------------------------------------------------------------ */
 /* Ranura de retardo                                                        */
 /* ------------------------------------------------------------------------ */

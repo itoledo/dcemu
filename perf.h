@@ -185,12 +185,77 @@ extern unsigned long long perf_tiras_dibujadas;	/* una por glDrawArrays de tira 
 */
 extern unsigned long long perf_tiras_sin_cambio;
 
+/*
+	La MMU, que es el bloque grande sin desglosar del unico guest que la
+	enciende.
+
+	El reparto de --perf le llama "resto (interprete)" al 93,6 % de DCDoom, y
+	adentro de ese numero hay tres cosas que piden acciones distintas y que
+	nadie separo todavia:
+
+	 - la instantanea por instruccion (context_t mas los dos bancos de coma
+	   flotante) que arma excepcion_instantanea_tomar();
+	 - la traduccion de la busqueda de instruccion, que tiene cache de una
+	   entrada y por lo tanto deberia ser casi gratis;
+	 - **la traduccion de cada acceso a datos, que no tiene cache ninguna**:
+	   recorre las 64 entradas de la UTLB desempaquetando mascaras al vuelo y
+	   encima hace un read-modify-write de MMUCR por el avance de URC.
+
+	`utlb_pasos` es la cifra que decidio la tercera: dividida por las busquedas
+	da la profundidad media del recorrido, que antes de la cache de traduccion
+	era de 34,5 entradas sobre 64. `cache_acierto` es la tasa de aciertos de esa
+	cache, y `utlb_pasos` mide ahora lo que queda: un acierto cuenta como 1.
+
+	**Cuidado con leer `datos_acierto` como una tasa de aciertos.** El
+	denominador son TODAS las traducciones, y de esas una parte grande --el 35 %
+	en DCDoom-- son direcciones de P1 o P2, que no pasan por la TLB y salen por
+	un `return` temprano sin mirar ninguna cache. Contra las que si necesitan
+	traducir, la cache sirve el 99 %: la cifra honesta es `utlb` --las busquedas
+	que llegan al segundo nivel-- contra `traduce` menos las de P1/P2.
+
+	`falta` cuenta las traducciones que terminaron en excepcion, o sea las
+	unicas veces que la instantanea sirvio para algo. Contra `instantanea`
+	--que se toma en TODAS-- da la razon de trabajo util a trabajo tirado.
+*/
+extern unsigned long long perf_mmu_traduce;			/* mmu_traducir(), datos */
+extern unsigned long long perf_mmu_utlb;			/* ... de esas, las que buscan entrada */
+extern unsigned long long perf_mmu_utlb_pasos;		/* entradas recorridas en total */
+extern unsigned long long perf_mmu_cache_acierto;	/* aciertos de la cache de traduccion */
+extern unsigned long long perf_mmu_datos_acierto;
+extern unsigned long long perf_mmu_vaciados;		/* mmu_tlb_invalidar(): el vaciado entero */
+extern unsigned long long perf_mmu_datos_choque;	/* fallo con la MISMA pagina: modo o ASID */
+extern unsigned long long perf_mmu_datos_capacidad;	/* fallo con otra pagina: capacidad */
+extern unsigned long long perf_mmu_fetch_fallo;		/* el acierto no se cuenta: ver mmu.c */
+extern unsigned long long perf_mmu_fetch_acierto2;	/* ... de esos, los que atiende la de 64 */
+extern unsigned long long perf_mmu_falta;			/* traducciones que abortaron */
+extern unsigned long long perf_instantaneas;		/* instantaneas tomadas */
+extern unsigned long long perf_instantaneas_usadas;	/* ... y restauradas */
+
+/*
+	Y cuanto cuestan las dos piezas que quedan del sobrecosto de un guest con
+	MMU. **No creerles: el instrumento no llega a esta escala.**
+
+	Se cronometran por muestreo, como el bloque periodico, pero aquello dura
+	microsegundos y esto nanosegundos: el par de QueryPerformanceCounter cuesta
+	bastante mas que lo que envuelve, asi que cada muestra mide sobre todo el
+	reloj y multiplicarla por PERF_MUESTREO lo agranda. Medido sobre DCDoom, la
+	instantanea informa **235,9 % del tiempo real**, que es la manera en que un
+	instrumento avisa que no sirve.
+
+	Se dejan porque la cifra absurda es mas util que ninguna: dice que a esta
+	escala hay que medir implementando el cambio y comparando dos binarios en la
+	misma tanda, no cronometrando adentro.
+*/
+extern unsigned long long perf_ns_traducir;		/* mmu_traducir() entera */
+extern unsigned long long perf_ns_instantanea;	/* excepcion_instantanea_tomar() */
+
 void perf_inicio(void);
 void perf_resumen(void);
 
 #define PERF_MARCA(v)		unsigned long long v = perf_activa ? perf_ahora() : 0
 #define PERF_SUMAR(v, ac)	do { if (perf_activa) (ac) += perf_ahora() - (v); } while (0)
 #define PERF_CONTAR(c)		do { if (perf_activa) (c)++; } while (0)
+#define PERF_SUMAR_A(c, n)	do { if (perf_activa) (c) += (n); } while (0)
 
 /*
 	La variante para lo que se llama millones de veces por segundo.

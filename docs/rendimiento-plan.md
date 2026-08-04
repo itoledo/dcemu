@@ -954,3 +954,502 @@ guest con medio registro escrito y sin síntoma inmediato:
   extremo que existe para esto.
 - El barrido de 150 demos, que **no puede ver nada de esto** —ninguna enciende la MMU— y por
   eso no sirve de baranda aquí. Conviene saberlo antes de confiarse.
+
+---
+
+# Fase 6 — Baseline del 2026-08-04, y la fase 5 apuntaba al lugar equivocado
+
+Release, i9-13900, con la instrumentación de MMU que este trabajo agregó a `--perf`.
+**La conclusión de la fase 5 —que los 8,9 ns de diferencia por instrucción eran la
+instantánea— es falsa. La instantánea vale 3,6 %; el recorrido de la UTLB vale 42 %.**
+
+## Los tres bancos, en una sola tanda
+
+| banco | s emulados | ms reales | velocidad | fps | ns/instr | MIPS |
+| --- | --- | --- | --- | --- | --- | --- |
+| Crazy Taxi (Katana, sin MMU) | 180 | 116 805 | **1,54×** | 85,6 | 5,2 | 190,7 |
+| Virtua Tennis PAL (sin MMU) | 180 | 132 576 | **1,36×** | 79,6 | 5,6 | 178,1 |
+| DCDoom (Windows CE, con MMU) | 35 | 105 138 | **0,33×** | 14,1 | 19,4 | 51,7 |
+
+Dos vueltas de cada uno, alternadas en la misma tanda, y repiten: 115 764 ms Crazy Taxi
+(0,9 %), 132 556 Virtua Tennis (**0,02 %**) y 105 104 DCDoom (**0,03 %**).
+
+> **Una tabla armada con corridas de tandas distintas no se puede leer, y esto casi costó
+> otra conclusión falsa.** El primer baseline de Crazy Taxi dio 133 643 ms; el mismo binario
+> con el mismo trabajo —22 279 918 868 instrucciones, idénticas a menos de 100— dio 116 805
+> minutos después. Un 13 %, más grande que casi todo lo que vale la pena medir. La causa es
+> conocida y estaba anotada sólo para `--clean-first`: **hay que descartar la primera pasada
+> de cualquier binario recién enlazado**, no sólo después de una compilación limpia.
+
+Y el reparto, que es lo que decide dónde trabajar:
+
+| | Crazy Taxi | Virtua Tennis | DCDoom |
+| --- | --- | --- | --- |
+| intérprete | 71,6 % | 71,9 % | **93,0 %** |
+| ARM7 del AICA | 15,3 % | 13,6 % | 3,3 % |
+| camino gráfico entero (cuadro + TA) | 6,9 % | 9,2 % | 0,3 % |
+| bloque periódico sin el AICA | 5,1 % | 4,4 % | 3,1 % |
+
+El trabajo de cada corrida, que es lo que permite compararlas después:
+
+- Crazy Taxi: 22 279 918 868 instrucciones, 10 001 cuadros, 9994 escenas, 1183 tiras/escena.
+- Virtua Tennis: 23 611 808 332 instrucciones, 10 551 cuadros, 10 542 escenas, 1925
+  tiras/escena, pico de 22 731 vértices.
+- DCDoom: 5 433 014 158 instrucciones, 1482 cuadros, 977 escenas, **1 tira por escena** —el
+  blit por software de DOOM es un cuadro texturado, y por eso el PVR no aparece por ningún
+  lado en esa columna—.
+
+**Los dos guests sin MMU ya pasan la velocidad de consola.** Lo que queda ahí es margen, no
+déficit. El déficit está entero del lado de la MMU, que corre a un tercio.
+
+> La fase 5 daba 86,3 MIPS y 11,5 ns para Crazy Taxi. Sobre el banco canónico —180 s, en
+> juego, Release— son 190,7 y 5,2. Con eso se cae también la relación que reportaba: el guest
+> con MMU no cuesta el doble por instrucción sino **casi cuatro veces**.
+
+## El desglose de la MMU, que hasta ahora era un solo número
+
+`--perf` le llamaba "resto (intérprete)" al 93 % de DCDoom. Adentro hay tres cosas que piden
+acciones distintas, y ahora se cuentan por separado (ver `perf.h`):
+
+```
+instantaneas           5105350540 (0.94 por instruccion)
+... restauradas           4073050 (1 de cada 1253)
+busqueda: fallos         94181047 (1.733 % de las instrucciones)
+datos: traducciones    2018178493 (0.37 por instruccion), 846105 faltas
+... por la UTLB        1313078123, recorrido medio 34.5 de 64, 33.9 % repiten pagina
+```
+
+Las tres lecturas cambian el plan:
+
+- **La instantánea se tira el 99,92 % de las veces.** Se toma en casi toda instrucción —el
+  0,94 es 1 menos las ranuras de retardo, que quedan cubiertas por la del salto— y se
+  restaura una de cada 1253. Eso no la hace gratis, pero dice que el arreglo correcto es *no
+  tomarla*, no tomarla más barata.
+- **La caché de página de la búsqueda de instrucciones funciona**: 1,73 % de fallos. Ese
+  camino está resuelto y no hay nada que hacer ahí.
+- **El camino de datos no tiene caché ninguna**, y se nota: 1313 millones de recorridos con
+  **34,5 entradas de promedio sobre 64**, cada vuelta desempaquetando la máscara de página de
+  su entrada. Son unas 45 mil millones de vueltas de ese bucle —8,3 por instrucción emulada—.
+  Encima, cada acceso hace un read-modify-write de `MMUCR` por el avance de URC.
+
+> Precisión del instrumento: `utlb_pasos` suma las vueltas de **todos** los que recorren la
+> UTLB, y el promedio se divide por las traducciones de datos solas. Como la búsqueda de
+> instrucciones también recorre en sus 94 millones de fallos, 34,5 es cota superior y el
+> promedio real por recorrido ronda 32. La conclusión no depende de eso: el 1,73× está medido
+> de frente, no derivado de esta cifra.
+
+## Las tres sondas
+
+Todas en **el mismo binario**, elegidas por una variable de entorno leída una vez al
+arrancar. Es a propósito: comparar dos compilaciones mete el layout como variable, y este
+árbol ya perdió una sesión por eso (`sh4zam-bruces_balls`). Así la A y la B difieren en un
+`getenv` del arranque y en nada más.
+
+### Tanda 1 — la instantánea: 3,6 %
+
+| | ms reales | ns/instr | |
+| --- | --- | --- | --- |
+| base | 107 774 | 19,8 | — |
+| `DCEMU_SONDA_SIN_BANCOS_FPU=1` | 103 871 | 19,1 | **3,6 %** |
+
+Saltea las dos copias de los bancos de coma flotante —128 de los ~310 bytes— en tomar **y**
+en restaurar. Trabajo idéntico al dígito, contadores de MMU incluidos.
+
+Extrapolando por bytes copiados, **el mecanismo entero no llega al 10 %**. La fase 5 esperaba
+de ahí un 1,4×.
+
+### Tanda 2 — el recorrido de la UTLB: 1,73×
+
+`DCEMU_SONDA_UTLB_CACHE=1` instala una caché de traducción de datos de 256 entradas, mapeo
+directo por los bits de 4 KB, con etiqueta completa (página con su propia máscara, ASID,
+modo). **No saltea ninguna comprobación**: devuelve el mismo índice de entrada que habría
+devuelto el recorrido, y la protección, el bit D y la primera escritura se evalúan igual
+sobre la entrada real. El avance de URC se mantiene, porque de él depende qué entrada elige
+el `LDTLB` del manejador de recarga de Windows CE —sin eso la corrida con sonda tomaría otro
+camino y no sería comparable—. La invalidación cuelga de `mmu_fetch_invalidar()`, que los
+cuatro sitios que mutan la TLB ya llaman.
+
+| vuelta | base | con caché | |
+| --- | --- | --- | --- |
+| 1 | 105 113 ms | 60 551 ms | −42,4 % |
+| 2 | 104 612 ms | 60 942 ms | −41,7 % |
+
+**1,73×: de 0,33× a 0,58×, de 19,3 a 11,1 ns por instrucción, de 51,7 a 89,7 MIPS**, y de
+14,1 a 24,5 cuadros por segundo real, que es lo que se ve en pantalla. El recorrido medio
+baja de 34,5 entradas a 4,2.
+
+La prueba de que las cuatro corridas son la misma ejecución es la más fuerte que admite este
+banco: **5 433 014 158 instrucciones, 1482 cuadros, 977 escenas, 2 018 178 493 traducciones,
+846 105 faltas y 94 181 047 fallos de búsqueda, idénticos en las cuatro**. Y el BMP de
+`--captura-gl` sale **byte a byte igual** con la sonda y sin ella (`36578F59…`), jugando E1M1
+con el HUD puesto.
+
+### Tanda 3 — la sonda que rompió el guest, y lo que enseñó
+
+`DCEMU_SONDA_SIN_INSTANTANEA=1` saltea las tres copias. El guest se desbarranca, como estaba
+previsto, y el número no sirve: 6 979 557 404 instrucciones en vez de 5433 millones, la
+instantánea restaurada **1 de cada 16** y 434 millones de faltas contra 846 mil. Cae en una
+tormenta de recargas de TLB de la que no sale, y la pantalla queda negra.
+
+Sirve igual para dos cosas: confirma que el mecanismo es portante —no es andamiaje muerto— y
+deja registrado que **el techo de la instantánea no se puede medir apagándola**. Hay que
+sacarlo por partes que preserven la corrección, que es lo que hace la tanda 1.
+
+## El plan, en orden de beneficio medido sobre riesgo
+
+| # | qué | medido | riesgo | esfuerzo |
+| --- | --- | --- | --- | --- |
+| 6.1 | **Caché de traducción de datos** (la sonda, hecha en serio) | **1,73× en DCDoom** | medio | bajo |
+| 6.2 | Volver a medir el reparto de DCDoom con 6.1 puesta | — | ninguno | trivial |
+| 6.3 | No sacar instantánea en las que no pueden fallar tras mutar | ≤5 % | medio | medio |
+| 6.4 | No copiar los bancos de FPU salvo en instrucciones de FPU | 3,6 % | bajo | medio |
+| 6.5 | El ARM7: `aica_fiq_pendiente()` en línea y camino corto de búsqueda | a medir, sobre 13-15 % | bajo | bajo |
+| — | Deshacer en vez de copiar (salida 3 de la fase 5) | — | alto | alto |
+
+### 6.1 — La caché de traducción de datos
+
+Es la sonda convertida en implementación. Lo que hay que resolver para que deje de serlo:
+
+- **La etiqueta no incluye `MMUCR.SV`**, y de él depende si el ASID participa de la
+  comparación. Queda cubierto porque escribir `MMUCR` invalida, pero hay que dejarlo dicho en
+  el código: es el invariante que un cambio futuro rompería en silencio.
+- **La etiqueta tampoco incluye lectura contra escritura**, y no hace falta: los permisos y
+  el bit D se evalúan sobre la entrada real. Es lo que hace que la caché no pueda cambiar una
+  decisión, y por eso las cuatro corridas dan la misma cuenta de faltas.
+- **Las páginas de 1 KB comparten ranura de a cuatro**, porque el índice usa los bits de
+  4 KB. Es conflicto de caché, no error —la etiqueta lo atrapa—, pero conviene medirlo antes
+  de fijar la geometría.
+- **256 entradas es el número de la sonda, no una medida.** Con 33,9 % de aciertos para una
+  sola entrada y 4,2 de recorrido medio con 256, barrer tamaños es una tarde y dice si 64
+  alcanzan.
+- **Los otros dos caminos que recorren la UTLB deberían compartirla**: `traducir_busqueda()`,
+  que son 94 millones de recorridos completos, y `mmu_traducir_sq()`, el destino de las store
+  queues con MMU —que es justo lo que usa el ddraw de CE—.
+
+### 6.2 — Volver a medir antes de seguir
+
+Con la caché puesta DCDoom queda en 11,1 ns contra los 5,2 de Crazy Taxi. Esos ~6 ns que
+sobran son la instantánea, el `setjmp`, la traducción de la búsqueda y el trabajo propio de
+CE —94 millones de fallos de búsqueda, 846 mil faltas y 4 millones de reejecuciones son
+código del guest que hay que interpretar igual—. **No están repartidos todavía.** Elegir
+entre 6.3 y 6.4 sin ese reparto es exactamente el error que este documento acaba de corregir.
+
+### 6.3 y 6.4 — La instantánea, con la expectativa corregida
+
+Siguen valiendo la pena y siguen siendo lo que decía la fase 5 —clasificación derivada de
+`opcodes[]` y expandida en `initopcodes()`, para que no pueda divergir de los manejadores—,
+pero **por un 5-9 % entre las dos, no por un 1,4×**. El orden va al revés que en la fase 5:
+6.3 (no tomarla) domina a 6.4 (tomarla más barata), y si 6.3 cubre el 60-70 % de las
+instrucciones, 6.4 casi no agrega.
+
+#### 6.3 se intentó y se revirtió: la clasificación tiene un agujero
+
+Escrita como decía el plan: una tabla de un byte por codificación, derivada de `opcodes[]` en
+`initopcodes()`, con la omisión en «sí necesita» y una lista blanca corta de tipos de operando
+sin memoria y sin FPU, más la exclusión por mnemónico de los saltos con operando de registro
+(`BRAF`, `BSRF`). Bajó las instantáneas de 0,94 a **0,51 por instrucción**, o sea que la
+clasificación hacía lo suyo.
+
+**Y rompe a DCDoom.** 5 291 902 937 instrucciones en vez de 5 433 052 826, 2100 cuadros en vez
+de 1482, y la captura con otro hash. Alguna instrucción que sí puede abortar quedó marcada
+como incapaz, y el guest se corrompe en silencio.
+
+Lo que hay que saber antes de volver a intentarlo:
+
+- **Las 21 suites, los 113 191 casos de SingleStepTests, `demos/mmu-mapeo` y las dos demos de
+  MMU de KOS pasaron todas, en verde, con el árbol roto.** Lo único que lo vio fue la captura
+  byte a byte de DCDoom. Ninguna de esas pruebas ejerce el camino: `dcemu_sh4json` no enciende
+  la MMU, y las demos de MMU levantan una falta y no cientos de miles.
+- La sospecha que se descartó por el camino: la tabla **asignaba** mal —limpiaba la marca sin
+  reponerla, así que una fila posterior que reclamara la misma codificación se quedaba con la
+  bandera de la anterior—. Se corrigió y el guest siguió rompiéndose igual, con la cuenta de
+  instrucciones idéntica al dígito, así que las filas de `opcodes[]` no se solapan y el
+  agujero es otro.
+- Queda como trabajo de auditoría fila por fila, no de lista blanca por tipo de operando: hay
+  que ir a los manejadores y ver cuáles pueden llegar a `excepcion_abortar()`. Los tres únicos
+  orígenes de aborto son `mmu.c`, `floatsimple.c` y `run()`, así que la pregunta está acotada
+  —pero el modo de fallo es medio registro escrito sin síntoma, y eso no se audita por
+  mnemónico—.
+
+### 6.6 — Las direcciones que no se traducen, en línea *(hecho, y no dio nada)*
+
+`mmu_traducir()` devuelve P1 y P2 sin tocar después de dos comparaciones, y con Windows CE eso
+es **el 35 % de los accesos a datos**: 688 de los 2018 millones de una corrida. Probarlo en el
+macro de `memread`/`memwrite` (`MMU_SIN_TRADUCIR`) los saca del todo —las traducciones bajan a
+1330 millones— y **el reloj no se movió**.
+
+Eso vale como resultado: **la llamada no era el costo**. Con 688 millones de llamadas menos y
+cero diferencia medible, lo que queda del sobrecosto de la MMU no está en entrar y salir de
+`mmu_traducir()`. Se deja puesto porque además arregla la cifra de aciertos de la caché de
+traducciones resueltas, que pasa a leerse **97,7 %** en vez de 64,4 %: el denominador dejó de
+incluir las que nunca necesitaron caché.
+
+### 6.5 — El ARM7, que es lo único grande que queda en los guests sin MMU
+
+Con el camino gráfico cerrado en 7-9 % y el bloque periódico sin AICA en 4-5 %, el ARM7 es el
+15,3 % de Crazy Taxi y el 13,6 % de Virtua Tennis. De la fase 1 de `interprete-plan.md` ya
+están hechas 1.1 (`(op >> 28) == 0xE` antes de `condicion()`) y 1.2 (la cobertura detrás de
+`arm7_cobertura`); quedan **1.3**, `aica_fiq_pendiente()` cruzando unidad de traducción una
+vez por instrucción de ARM, y **1.4**, un camino corto de búsqueda en `arm7_leer()` —siempre
+4 bytes y casi siempre RAM de onda—.
+
+## Las barandas, que aquí no son opcionales
+
+Ya corridas contra la instrumentación de este trabajo:
+
+- **21/21 en `ctest`** y **113 191 ok / 0 fallan en `dcemu_sh4json`** bit a bit, idéntico a la
+  línea documentada.
+- **DCDoom con captura byte a byte**: el BMP con la sonda y sin ella dan el mismo SHA-256.
+
+Pendientes para cuando 6.1 deje de ser sonda:
+
+- `demos/mmu-mapeo` y `basic/mmu/{nullptr,pvrmap}`, que ejercitan la falta de verdad y la
+  reejecución —lo único que prueba que la traducción resuelve a la página correcta y no a
+  otra—.
+- El barrido de 150 demos **no puede ver nada de esto**: ninguna enciende la MMU. Es la única
+  parte del árbol donde el barrido no sirve de baranda, y conviene saberlo antes de
+  confiarse.
+
+---
+
+# Fase 6, implementada: DCDoom de 14,1 a 29,0 fps
+
+Todo medido sobre DCDoom, 35 s emulados, Release, i9-13900. Cada paso se alterna con el
+anterior en la misma tanda y con una pasada de calentamiento descartada.
+
+| paso | ms reales | velocidad | fps | ns/instr |
+| --- | --- | --- | --- | --- |
+| punto de partida | 105 138 | 0,33× | 14,1 | 19,4 |
+| + caché de traducción sobre la UTLB | 60 610 | 0,58× | 24,5 | 11,2 |
+| + `setjmp` fuera del bucle de instrucciones | 55 083 | 0,64× | 26,9 | 10,1 |
+| + caché de búsqueda de 64 y de traducciones resueltas | 53 385 | 0,66× | 27,8 | 9,8 |
+| + permisos por separado, y los bancos de FPU sólo si hacen falta | 51 700 | 0,68× | 28,7 | 9,5 |
+| **+ generación por entrada de UTLB** | **51 932** | **0,67×** | **28,5** | **9,6** |
+
+**2,03× en total**, medido alternando los dos binarios en una sola tanda —ver abajo, que es
+donde está el número que vale, junto con el 8 % que esto le cuesta hoy a los guests sin MMU
+por disposición del binario—.
+
+(Las filas intermedias salen de tandas distintas y sirven para atribuir cada paso, no para
+sumarlas: la máquina derivó un 10 % a lo largo de la sesión.)
+
+## Los cinco cambios
+
+1. **La caché de traducción sobre la UTLB** (`utlb_buscar`), compartida por los tres caminos
+   que traducen. Guarda el **índice de entrada**, no la traducción, que es lo que la hace
+   segura: la protección, el bit D y la primera escritura se siguen evaluando sobre la
+   entrada real.
+2. **El `setjmp` fuera del bucle.** Era uno por instrucción emulada —5100 millones en 35 s—
+   y en MSVC guarda el contexto de registros y el marco de SEH. Ahora se arma una vez por
+   vuelta del bucle exterior y el `longjmp` aterriza ahí. Vale **1,135×** por sí solo.
+3. **Un segundo nivel para la búsqueda de instrucciones**, de 64 entradas, detrás de la
+   página única que ya existía. Atiende el 78 % de sus 94 millones de fallos.
+4. **Una caché de traducciones ya resueltas** (`mmu_datos`), que además de la entrada guarda
+   la física compuesta y **qué tipos de acceso ya pasaron todas las pruebas**. El permiso va
+   en un campo aparte y no en la etiqueta: en la primera versión iba en la etiqueta y leer y
+   escribir la misma página se expulsaban a cada acceso —el patrón exacto de un blit—.
+5. **Generación por entrada de UTLB.** `LDTLB` reemplaza una entrada de 64 y vaciaba las
+   tres cachés enteras: **1 091 201 veces**, una cada 1850 traducciones. Ahora incrementa la
+   generación de esa entrada y nada más; los vaciados completos bajan a **461**.
+
+Y una que no es caché: **los dos bancos de coma flotante entran en la instantánea sólo si la
+instrucción puede escribirlos**, decidido por `es_instruccion_fpu()` —la misma definición del
+manual que gobierna la trampa de `SR.FD`— y evaluado dentro de `run()`, que es lo que cubre
+también las ranuras de retardo.
+
+## Cuatro hipótesis medidas, tres refutadas
+
+Vale anotarlas porque cada una parecía obvia:
+
+- **Que las escrituras a PTEH mataban la caché.** Se separó la invalidación en dos —la
+  página única, que no lleva ASID, y las cachés etiquetadas por ASID, que no la necesitan— y
+  el resultado fue **cero**: la tasa de aciertos no se movió ni una décima.
+- **Que faltaba tamaño.** Barrido dentro de un mismo binario: 1024 → 62,4 %, 4096 → 63,9 %,
+  8192 → 63,9 %. Ocho veces más entradas compran punto y medio. Saturado.
+- **Que faltaba asociatividad.** El contador de tipo de fallo dijo que sólo el 19-34 % eran
+  la misma página con otra etiqueta. Tampoco era eso.
+- **Que el vaciado por `LDTLB` era la causa.** Esta sí era real —de un millón a 461— pero la
+  tasa de aciertos subió apenas medio punto, y ahí apareció el error de medición.
+
+**Y un instrumento que tampoco sirvió.** Se cronometraron `mmu_traducir()` y la instantánea
+con el muestreo de `PERF_MARCA_MUESTRA`, que es lo que mide bien el bloque periódico. A esta
+escala no funciona: aquello dura microsegundos y esto nanosegundos, así que el par de
+`QueryPerformanceCounter` cuesta más que lo que envuelve y multiplicar por 1021 lo agranda. La
+instantánea informó **235,9 % del tiempo real**, que es la manera en que un instrumento avisa
+de que no sirve. Queda anotado en `perf.h`: a esta escala hay que medir implementando el
+cambio y alternando dos binarios, no cronometrando adentro.
+
+**El error de medición, que es la lección de todo esto.** `datos: traducciones ... % ya
+resueltas` usaba como denominador *todas* las traducciones, y el **35 %** de ellas son
+direcciones de P1 o P2 que no pasan por la TLB y salen por un `return` temprano sin mirar
+ninguna caché. Contadas como fallos, hacían parecer que la caché rendía el 64 % cuando contra
+lo que de verdad hay que traducir sirve el **99 %** —de 1300 millones de traducciones por TLB,
+sólo 14,9 millones llegan a buscar entrada—. Tres de las cuatro hipótesis se persiguieron
+contra una cifra que medía otra cosa. Está anotado en `perf.h`, junto al contador.
+
+## El A/B que decide, y la regresión que destapó
+
+Todo lo de arriba se midió comparando corridas de tandas distintas, y **esta rama ya sabía
+que eso no se puede**. La máquina derivó a lo largo de la sesión: Crazy Taxi, con el mismo
+trabajo al dígito, pasó de 116 805 a 128 217 ms en unas horas de banco —un 10 %— sin que
+nadie tocara su camino. Toda conclusión sacada de comparar tandas es sospechosa por
+construcción.
+
+Lo único que vale es alternar los dos binarios en la misma tanda. Se construyó el de HEAD
+(`git stash` de los ocho archivos de código, compilar, guardar el `.exe`, `git stash pop`) y
+se corrieron alternados:
+
+Y destapó una regresión que ninguna medición cruzada había podido ver, con el bucle de
+instrucciones partido en su propia función (`bucle_instrucciones()`):
+
+| banco | antes | después | |
+| --- | --- | --- | --- |
+| **DCDoom** | 111 900 / 121 661 ms · 12,7 fps | 50 956 / 52 501 ms · 28,6 fps | 2,25× |
+| **Crazy Taxi** | 123 897 / 124 053 ms · 1,45× | 129 684 / 129 953 ms · 1,38× | **−4,7 %** |
+
+**Un 4,7 % en un guest que no ejecuta una sola línea de lo que se agregó** —con `MMUCR.AT` en
+cero no se llama a `mmu_traducir()` ni se toma instantánea—, así que sólo podía ser código
+generado. La partición se había hecho para sacar el `setjmp` del cuerpo de la función caliente
+(MSVC compila conservadoramente toda función que lo contenga), y esa hipótesis venía de una
+comparación entre tandas, o sea de nada.
+
+**Revertida la partición, esa regresión desapareció entera:**
+
+| banco | antes | después | |
+| --- | --- | --- | --- |
+| **DCDoom** | 107 342 / 107 122 ms · 0,33× · 13,8 fps | **50 221 / 50 202 ms · 0,70× · 29,5 fps** | 2,13× |
+| **Crazy Taxi** | 123 497 / 122 623 ms · 1,45× | 123 564 / 123 044 ms · 1,45× | ±0,3 % |
+
+**El `setjmp` fuera del bucle sigue puesto y sigue valiendo su 13,5 %**: nunca hizo falta
+partir la función para eso. La partición era una hipótesis sobre el código generado que costó
+un 4,7 % y no daba nada, y la única herramienta que podía verla fue alternar dos binarios en
+una misma tanda.
+
+## Pero la regresión volvió, y ese es el estado real
+
+Repetido el mismo A/B sobre el árbol final —después de agregar y **revertir** los intentos de
+6.3 y 6.6, o sea con el código ejecutable de vuelta en el estado del ±0,3 %—:
+
+| banco | antes | después | |
+| --- | --- | --- | --- |
+| **DCDoom** | 106 071 / 105 471 ms · 0,33× · 14,0 fps | **52 081 / 51 932 ms · 0,67× · 28,5 fps** | **2,03×** |
+| **Crazy Taxi** | 121 577 / 121 324 ms · 1,48× · 82,3 fps | 131 324 / 131 472 ms · 1,36× · 76,1 fps | **−8,0 %** |
+
+Los cuatro pares con trabajo idéntico: 22 279 918 813 instrucciones y 9994 escenas en Crazy
+Taxi; 977 escenas y 1482 cuadros en DCDoom, con la captura en el mismo SHA-256 de siempre.
+
+**Es disposición del binario, y ya van dos veces.** Con `MMUCR.AT` en cero no se ejecuta una
+sola línea de lo agregado, así que el 8 % no puede ser lógica; lo que cambia es dónde cae el
+código caliente del intérprete cuando `mmu.c` y `main.c` crecen. La primera vez el culpable
+era identificable —la partición del bucle— y revertirla lo recuperó. Esta vez el código
+ejecutable es el mismo que dio ±0,3 % y la cifra volvió a −8 %: o sea que **aquel ±0,3 % fue
+en parte suerte de layout**, y la variable no está bajo control.
+
+Lo que corresponde hacer con eso, y en este orden:
+
+1. **PGO** (`/GENPROFILE` … `/USEPROFILE`), que este plan lista desde su primera versión como
+   pendiente y estima en 10-20 %. Es exactamente la herramienta para esto: ordena el código
+   por el perfil de una corrida real en vez de por el orden de enlace, que es lo que hoy
+   decide. Entrenado con el banco fijo de 0.3, debería absorber la varianza **y** dar de más.
+2. Recién con el layout bajo control tiene sentido volver a medir 6.3 y 6.6, porque hoy
+   cualquier cambio de tamaño de `mmu.c` mueve la cifra más que la optimización que se mide.
+
+## PGO, que era la respuesta: el canje desaparece y los tres bancos mejoran
+
+Hecho. `-DDCEMU_PGO=GEN` → `herramientas\pgo.ps1` → `-DDCEMU_PGO=USE`, con el `.pgd` fuera de
+`build/` para que sobreviva a un borrado. Medido alternando el mismo código con y sin perfil:
+
+| banco | sin PGO | con PGO | |
+| --- | --- | --- | --- |
+| **Crazy Taxi** | 134 448 / 132 346 ms · 1,33-1,36× · 74,9 fps | **112 985 / 113 053 ms · 1,59× · 88,5 fps** | **+15,2 %** |
+| **DCDoom** | 52 852 / 52 301 ms · 0,66× · 28,2 fps | **48 010 / 47 371 ms · 0,73× · 31,1 fps** | **+9,4 %** |
+
+Y contra el punto de partida de toda la fase 6:
+
+| banco | HEAD | final (fase 6 + PGO) | |
+| --- | --- | --- | --- |
+| **DCDoom** | 0,33× · **14,0 fps** | **0,73× · 31,1 fps** | **2,22×** |
+| **Crazy Taxi** | 1,48× · 82,3 fps | **1,59× · 88,5 fps** | **+7,5 %** |
+
+**El 8 % de regresión no sólo se recupera: queda a favor.** Era disposición del binario, y PGO
+es exactamente la herramienta que la fija, porque ordena por lo que la corrida hizo y no por el
+orden en que el enlazador encontró los `.obj`.
+
+### Las dos trampas del entrenamiento, las dos medidas
+
+**El binario instrumentado no arranca sin `pgort140.dll`**, y falla con `0xC000007B` —«formato
+de imagen inválido», que no sugiere nada—. Peor: `& $exe ... | Out-Null` no mira el código de
+retorno, así que el primer entrenamiento reportó las tres corridas «ok» y terminó sin un solo
+`.pgc`. `pgo.ps1` copia la DLL y **verifica que cada corrida haya dejado su archivo de perfil**,
+que es la única prueba de que corrió. Y los `.pgc` caen junto al **ejecutable**, no junto al
+`.pgd`.
+
+**Un perfil sin ponderar reproduce el canje que se quería eliminar.** PGO ordena por cuentas, y
+las cuentas son instrucciones ejecutadas: 90 s emulados de Crazy Taxi más 90 de Virtua Tennis
+son unos 22 mil millones, contra 3,1 de los 20 s de DCDoom. Con pesos iguales el guest con MMU
+queda en el 12 % del perfil y su código se va al fondo. Medido así:
+
+| banco | sin PGO | con PGO sin ponderar | |
+| --- | --- | --- | --- |
+| Crazy Taxi | 1,38× · 77,0 fps | 1,60× · 89,2 fps | +15,9 % |
+| **DCDoom** | 0,67× · 28,5 fps | **0,63× · 26,8 fps** | **−6,3 %** |
+
+`pgomgr /merge:N` pondera al fundir, así que DCDoom entra con peso 7 y las dos mitades del
+perfil quedan parejas. Multiplicar sus segundos emulados por siete habría dado lo mismo y
+costado doce minutos de corrida instrumentada.
+
+### Lo que esto cambia para el resto del plan
+
+**Medir sin PGO ya no tiene sentido en este árbol.** Cualquier cambio que mueva el tamaño de
+un `.c` mueve la cifra más que la optimización que se está midiendo, y eso invalidó tres
+mediciones de esta misma fase. De acá en adelante el A/B se hace entre dos binarios con
+perfil, y el perfil se reentrena cuando el código cambia de forma —el `.pgd` viejo sigue
+aplicándose, pero describe otro programa—.
+
+Con eso vuelven a estar sobre la mesa 6.3 (la instantánea, que rompió el guest y necesita
+auditoría fila por fila) y 6.6 (P1/P2 en línea, que dio cero): las dos se midieron con el
+layout suelto y ninguna de las dos cifras es confiable.
+
+## Las barandas, en cada paso
+
+- `ctest` **21/21** y `dcemu_sh4json` **113 191 ok / 0 fallan** bit a bit.
+- **`demos/mmu-mapeo`: `TEST SUCCEEDED`** con la misma dirección física. Es la única prueba de
+  extremo a extremo de la reejecución, y estos cambios tocan justo ese camino.
+- `basic/mmu/nullptr` y `basic/mmu/pvrmap`: el serial **byte a byte idéntico**, incluido el
+  `kernel panic: unhandled MMU exception` que `nullptr` tiene que producir.
+- **DCDoom con `--captura-gl`: el mismo SHA-256 (`36578F59…`) que antes de tocar nada**, en
+  cada uno de los cinco pasos. Jugando E1M1, con el HUD.
+
+Las cuentas de instrucciones se mueven ~0,001 % (5 433 014 158 → 5 433 052 826). Es el
+bloque periódico, que después de una falta se evalúa una instrucción más tarde que antes:
+la reposición ahora vuelve al tope del bucle en vez de caer al final del cuerpo. Los cuadros
+(1482), las escenas (977) y la captura son idénticos.
+
+## Y por qué 60 fps no sale de aquí
+
+DCDoom presenta **42,3 cuadros por segundo emulado**. Los fps reales son eso por la velocidad
+de emulación, así que:
+
+| para ver | hace falta | o sea |
+| --- | --- | --- |
+| 31,1 fps (hoy, con PGO) | 0,73× | 8,7 ns por instrucción |
+| 42,3 fps | 1,00× | 6,4 ns |
+| **60 fps** | **1,42×** | **4,6 ns** |
+
+Y el techo que eso choca: **Crazy Taxi, sin MMU en absoluto, corre a 5,0 ns por instrucción**
+—ése es el número con PGO; sin él eran 5,5—. Aun con una MMU de costo cero DCDoom quedaría en
+unos 5,0 ns, o sea **~1,28× y ~54 fps**. Los
+60 fps no están del otro lado de la MMU: están del otro lado del intérprete, y pedirían que
+el despacho y los manejadores fueran aproximadamente el doble de rápidos **para todos los
+guests**.
+
+Eso es un recompilador dinámico, que este documento descarta desde su primera versión y por
+razones que siguen valiendo: cambia el modelo de ejecución, rompe la relación uno a uno entre
+`opcodes[]` y su suite —que es lo que hace verificable a este núcleo— y deja sin sentido
+`--traza-desde`, el anillo de PC y el UBC.
+
+**Lo que sí queda por delante, y cuánto vale como mucho:** de los 9,4 ns actuales, unos 4,2
+son MMU (la diferencia contra los 5,2 de un guest sin ella). Ahí adentro quedan la instantánea
+de contexto —190 bytes por instrucción, ~1 ns— y la llamada a `mmu_traducir()` con sus
+comprobaciones de rango, que se podría meter en el macro de `memread`/`memwrite` para las
+0,37 traducciones por instrucción. Optimista, eso deja DCDoom cerca de **0,80× y 34 fps**.
