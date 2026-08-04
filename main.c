@@ -580,22 +580,6 @@ void main_loop(void)
 
 //			(*PC_func) ();
 
-			// **La entrega al SH-4 no espera al compas periodico.** Lo que le
-			// falta a una interrupcion para entregarse es que la fuente pida y
-			// que SR lo permita, y las dos cosas ocurren en instantes precisos:
-			// el temporizador que desborda, el DMAC que termina, el guest que
-			// escribe SR. Esos sitios ponen la bandera y aca se cobra, con una
-			// comparacion por instruccion. Ver intc.c.
-			//
-			// Con esto sola no alcanza --una fuente puede quedar pidiendo con
-			// SR cerrado y hay que reintentar--, asi que el compas periodico de
-			// abajo sigue llamando a intc_revisar_sh4() como red.
-			if (intc_sh4_reintentar)
-			{
-				intc_sh4_reintentar = 0;
-				intc_revisar_sh4();
-			}
-
 			// Cada cuantos ciclos se atiende a los perifericos. El numero y su
 			// derivacion viven en tmu.h, junto al reloj: era 50 y con eso este
 			// bloque se llevaba un 21 % del tiempo real preguntando si habia
@@ -603,7 +587,21 @@ void main_loop(void)
 			//
 			// (El comentario que estaba aqui hablaba de los ticks por segundo
 			// del timer de KOS, que no es lo que decide este numero.)
-			if (core.context.cycles >= RELOJ_GRANO)
+			//
+			// **La segunda condicion adelanta el bloque cuando una interrupcion
+			// se vuelve entregable**, y no espera al compas: lo que le falta a
+			// una peticion es que la fuente pida y que SR lo permita, y las dos
+			// cosas pasan en instantes precisos --el temporizador que desborda,
+			// el DMAC que termina, el guest que escribe SR--. Esos sitios ponen
+			// intc_sh4_reintentar; ver intc.c.
+			//
+			// Va **pegada al `if` que ya se evaluaba**, no en una rama propia, y
+			// esa diferencia es todo el costo: con su propio `if` Crazy Taxi
+			// pagaba 8,5 % (62 007 ms contra 57 152); aqui no paga nada medible
+			// (56 790). Adelantar el bloque entero por una peticion no molesta:
+			// pasa unas mil veces por segundo emulado y sus consumidores llevan
+			// su propio resto.
+			if (core.context.cycles >= RELOJ_GRANO || intc_sh4_reintentar)
 			{
 				// Consumir el acumulado entero y pasarlo al contador monotono.
 				// Los consumidores periodicos comparan contra su propia marca:
@@ -614,6 +612,7 @@ void main_loop(void)
 
 				core.context.cycles -= ciclos;
 				reloj_total += ciclos;
+				intc_sh4_reintentar = 0;
 
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan
 				// su propio resto, cada uno con su divisor. Ninguno entrega su
