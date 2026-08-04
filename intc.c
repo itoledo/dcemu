@@ -66,8 +66,19 @@ static DWORD intc_demorados = 0;
 
 	Asi que ademas del compas periodico se intenta justo cuando la ventana se
 	abre: UpdateSR() y UpdateSR_ya_escrito() ponen esta bandera, y main_loop()
-	la mira con una comparacion por instruccion. Escribir SR es raro -- RTE,
-	LDC ...,SR y la entrada a una excepcion --, asi que no cuesta nada.
+	la mira con una comparacion por instruccion. La ponen tambien las fuentes al
+	empezar a pedir -- tmu.c, wdt.c y dma_canal() --, y con SR sola no alcanza:
+	medido, 175 escenas contra 977.
+
+	**Ojo: esto restaura el juego pero no se entiende del todo.** El grano no es
+	monotono -- un compas de 100 para intc_revisar_sh4() falla donde 200 y 50
+	pasan, y esta bandera deja de servir si RELOJ_GRANO sube a 800 --, asi que
+	no es "hay que entregar pronto": DCDoom es sensible a en que instruccion cae
+	la interrupcion, y lo que hay detras es una carrera del guest a la que el
+	emulador no deberia exponerlo. La tabla completa esta en CLAUDE.md. Se eligio
+	este camino y no el compas de 200, que sale gratis, porque es el unico que
+	imita lo que hace el chip: entregar en el primer borde de instruccion en que
+	se cumplen las condiciones.
 */
 int intc_sh4_reintentar = 0;
 

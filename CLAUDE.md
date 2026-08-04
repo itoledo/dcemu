@@ -1514,15 +1514,41 @@ are identical second by second up to emulated second 12. It is not latency — 4
 2 µs — but **how many times the delivery is attempted**: what a request needs is a source
 asserting *and* `SR` allowing, and a guest that lives with `BL` set (Windows CE, thousands of
 exceptions per second, its ISR returning through `RTE` to take the next one) only allows it
-in short windows. `intc_sh4_reintentar` is the fix: the moments that can open a window arm it
-— `tmu.c` on `TCR.UNF`, `wdt.c` on `WTCSR.IOVF`, `dma_canal()` on `CHCR.TE`, and both
+in short windows. `intc_sh4_reintentar` restores it: the moments that can open a window arm
+it — `tmu.c` on `TCR.UNF`, `wdt.c` on `WTCSR.IOVF`, `dma_canal()` on `CHCR.TE`, and both
 `UpdateSR()` entries — and `main_loop()` spends one compare per instruction to cash it in.
-The periodic call stays as the net, because a source can keep asserting with `SR` shut and
-has to be retried. Measured: DCDoom back to 977 with a byte-identical capture; Crazy Taxi,
-Virtua Tennis, Capcom vs. SNK and Virtua Tenis 2 keep their scene counts, their instruction
-counts and **byte-identical captures**; the 21 suites pass; Crazy Taxi pays 6.5% (85 878 ms
-against 80 651), so most of the 19% survives. Note `tests/dobles.c` has to define the flag
-too — it replaces `intc.c` in the harness.
+DCDoom comes back to 977 with a byte-identical capture; Crazy Taxi, Virtua Tennis, Capcom vs.
+SNK and Virtua Tenis 2 keep their scene counts, their instruction counts and **byte-identical
+captures**; the 21 suites pass; Crazy Taxi pays **5.3%** (59 493 ms against 56 493 on an idle
+machine), so most of the 19% survives. `tests/dobles.c` has to define the flag too — it
+replaces `intc.c` in the harness.
+
+**But do not believe the story above about *why* it works: the knob is not monotone, so none
+of this is a principled fix.** The full table, DCDoom scenes in 35 emulated seconds (977 =
+playing the demo, ~170 = frozen title):
+
+| configuration | scenes |
+| --- | --- |
+| everything at 50 (how it was before `RELOJ_GRANO`) | 977 |
+| everything at 400 | 170 |
+| 400, `reloj_total` advanced every 50 | 183 |
+| 400, `timer_check`/`wdt_tick` every 50 | 177 |
+| 400, `intc_revisar_sh4()` every 50 | 977 |
+| 400, flag armed by `SR` writes only | 175 |
+| **400, flag armed by `SR` *and* the sources — what is committed** | **977** |
+| `intc_revisar_sh4()` on its own 200-cycle cadence, no flag | 977 |
+| the same at **100** | 170 |
+| **800, with the flag** | **172** |
+
+100 fails where 200 and 50 pass, and the committed fix stops working if `RELOJ_GRANO` moves
+to 800. So it is not "delivery has to be prompt": **DCDoom is chaotically sensitive to which
+instruction the interrupt lands on**, and every one of these settings is a coin toss that
+happens to land right. What is really going on is a race inside the guest that the emulator
+should not be exposing it to, and that is the open question — the fix restores the game and
+provably moves nothing else, but the mechanism is not understood. Two cheaper settings exist
+(the 200-cycle cadence costs nothing measurable) and were **rejected on purpose**: they are
+the same coin toss without even the excuse of matching what the chip does, which is to
+deliver at the first instruction boundary where the conditions hold.
 
 **The DMAC's end-of-transfer follows the same pattern**: `dma_canal()` leaves `CHCR.TE` set
 (and does not touch `DE`, per the manual), and `intc_revisar_sh4()` derives DMTE0-3 (INTEVT
