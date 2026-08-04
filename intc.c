@@ -55,6 +55,22 @@ static DWORD intc_demorados = 0;
 	un evento puntual: asi una interrupcion que no se puede entregar ahora sigue
 	pendiente hasta que se pueda, que es lo que hace el chip. Ver intc.h.
 */
+/*
+	**Armado cuando el guest escribe SR.** La entrega de una interrupcion al
+	SH-4 no depende solo de que la fuente pida: depende de que SR lo permita, y
+	un guest que pasa la mayor parte del tiempo con BL puesto -- Windows CE, con
+	miles de excepciones por segundo -- solo la acepta en ventanas cortas. Mirar
+	cada RELOJ_GRANO ciclos hace que esas ventanas se pierdan de forma
+	sistematica, y eso es lo que dejaba a DCDoom en su pantalla de titulo: no es
+	latencia --400 ciclos son 2 us-- sino **cuantas veces se intenta**.
+
+	Asi que ademas del compas periodico se intenta justo cuando la ventana se
+	abre: UpdateSR() y UpdateSR_ya_escrito() ponen esta bandera, y main_loop()
+	la mira con una comparacion por instruccion. Escribir SR es raro -- RTE,
+	LDC ...,SR y la entrada a una excepcion --, asi que no cuesta nada.
+*/
+int intc_sh4_reintentar = 0;
+
 void intc_revisar_sh4(void)
 {
 	/* Si no se puede entregar ninguna, ni vale mirar las banderas. */

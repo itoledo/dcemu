@@ -9,6 +9,8 @@
 #include <string.h>
 
 #include "wdt.h"
+#include "sh4emu.h"
+#include "intc.h"
 #include "log.h"
 
 static BYTE  wtcnt;			/* contador de 8 bits, sube */
@@ -142,6 +144,7 @@ int wdt_tick(DWORD ciclos)
 			else
 			{
 				wtcsr |= WTCSR_IOVF;
+				intc_sh4_reintentar = 1;
 				iti = 1;
 			}
 		}

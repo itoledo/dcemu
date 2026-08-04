@@ -98,6 +98,10 @@ bool inside_int = false;
 DWORD	intc_queuemask = 0;
 DWORD	intc_queuemask_ext = 0;
 
+/* La ponen las dos entradas de escritura de SR y los productores de
+   peticiones; en el arnes no la consume nadie. Ver intc.c. */
+int	intc_sh4_reintentar = 0;
+
 /* La lectora avisa el fin de cada comando; las pruebas del GD-ROM miran estos
    contadores para verificar que interrumpio cuando correspondia. */
 int dobles_int_normal;

@@ -452,6 +452,7 @@ static void dma_canal(int n, DWORD * sar, DWORD * dar, DWORD * dmatcr, DWORD * c
 	   DMTE la deriva intc_revisar_sh4() de estas mismas banderas -- aca no se
 	   entrega nada, igual que el TMU y el WDT. */
 	*chcr  |= CHCR_TE;
+	intc_sh4_reintentar = 1;
 
 	if (traza_activa)
 		fprintf(stderr, "traza: DMAC canal %d: transferencia hecha, "
@@ -579,6 +580,22 @@ void main_loop(void)
 
 //			(*PC_func) ();
 
+			// **La entrega al SH-4 no espera al compas periodico.** Lo que le
+			// falta a una interrupcion para entregarse es que la fuente pida y
+			// que SR lo permita, y las dos cosas ocurren en instantes precisos:
+			// el temporizador que desborda, el DMAC que termina, el guest que
+			// escribe SR. Esos sitios ponen la bandera y aca se cobra, con una
+			// comparacion por instruccion. Ver intc.c.
+			//
+			// Con esto sola no alcanza --una fuente puede quedar pidiendo con
+			// SR cerrado y hay que reintentar--, asi que el compas periodico de
+			// abajo sigue llamando a intc_revisar_sh4() como red.
+			if (intc_sh4_reintentar)
+			{
+				intc_sh4_reintentar = 0;
+				intc_revisar_sh4();
+			}
+
 			// Cada cuantos ciclos se atiende a los perifericos. El numero y su
 			// derivacion viven en tmu.h, junto al reloj: era 50 y con eso este
 			// bloque se llevaba un 21 % del tiempo real preguntando si habia
@@ -640,17 +657,16 @@ void main_loop(void)
 					}
 				}
 
-				// Y aca se entrega la que corresponda, si SR lo permite. Si no
-				// se puede, la bandera sigue puesta y se reintenta en la vuelta
-				// siguiente, que es lo que hace el chip.
+				// Y aca la que corresponda, si SR lo permite. Si no se puede, la
+				// bandera sigue puesta y se reintenta en la vuelta siguiente,
+				// que es lo que hace el chip.
 				intc_revisar_sh4();
 
-				// El ASIC va en el mismo compas. Con la peticion por nivel la
-				// compuerta es verdadera mientras haya un bit sin acusar, o
-				// sea casi siempre: por instruccion costaba 9 veces mas en
-				// Crazy Taxi. Cada 50 ciclos la latencia queda a la par de la
-				// de los perifericos del SH-4, y el tic de las demoras pasa a
-				// valer lo que dice (50 ciclos por vuelta).
+				// El ASIC va en este compas y le alcanza: lo que DCDoom
+				// necesitaba pronto era la entrega al SH-4, no esta. Con la
+				// peticion por nivel la compuerta es verdadera mientras haya un
+				// bit sin acusar, o sea casi siempre, y por instruccion costaba
+				// 9 veces mas en Crazy Taxi.
 				if (intc_asic_pendiente())
 					check_ints();
 

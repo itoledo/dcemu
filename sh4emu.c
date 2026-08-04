@@ -385,6 +385,10 @@ void UpdateSR(DWORD new)
 	*/
 	SR = sr_normalizar(new);
 
+	// Escribir SR puede abrir la ventana de entrega: bajar BL o el IMASK deja
+	// entregable lo que ya estaba pidiendo. Ver intc_sh4_reintentar en intc.h.
+	intc_sh4_reintentar = 1;
+
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
 
@@ -402,6 +406,8 @@ void UpdateSR(DWORD new)
 */
 void UpdateSR_ya_escrito(void)
 {
+	intc_sh4_reintentar = 1;
+
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
 

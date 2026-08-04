@@ -8,6 +8,7 @@
 
 #include "tmu.h"
 #include "sh4emu.h"
+#include "intc.h"
 #include "log.h"
 
 /* Ciclos de CPU desde el arranque. Lo incrementa main_loop(). */
@@ -129,6 +130,9 @@ int tmu_tick(DWORD ciclos)
 				   TCOR+1 cuentas, como en el chip. */
 				*tcnt[n] = *tcor[n];
 				*tcr[n] |= TMU_TCR_UNF;
+
+				/* Recien pide: que la entrega no espere al compas grueso. */
+				intc_sh4_reintentar = 1;
 
 				if (*tcr[n] & TMU_TCR_UNIE)
 					pendientes |= (1 << n);

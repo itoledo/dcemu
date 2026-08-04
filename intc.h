@@ -31,6 +31,10 @@ void intc_add(DWORD inttoadd, int cnt);
    la peticion es por nivel, asi que es estado y no cola). */
 bool intc_asic_pendiente(void);
 
+/* La ponen las dos entradas de escritura de SR; la consume main_loop().
+   Ver el comentario en intc.c. */
+extern int intc_sh4_reintentar;
+
 /* El ASIC tiene dos registros de estado: el normal (SB_ISTNRM, ASIC_ACK_A) y
    el externo (SB_ISTEXT, ASIC_ACK_B). El fin de comando de la lectora llega
    por el externo, asi que hace falta una cola aparte. */

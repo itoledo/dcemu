@@ -1504,6 +1504,26 @@ guest clears the flag. Dropping them made KOS lose time (`basic/watchdog` measur
 it asked for 10) and starved the thread scheduler badly enough to hang
 `basic/threading/atomics`. Both pass now.
 
+**But the delivery cannot wait for the periodic block, and that is what broke DCDoom.**
+`RELOJ_GRANO` raised that block from 50 to 400 cycles for a measured 19%, and with it went
+the cadence at which `intc_revisar_sh4()` gets to try. DOOM then never left its title screen:
+977 scenes in 35 emulated seconds became **170**, and the count stopped growing — a still
+picture. Nothing else moved; the guest's whole startup log, its GD-ROM syscall profile (692
+vs 655 SEND, 64 vs 60 of command `0x24`) and its sector reads are the same, and the two runs
+are identical second by second up to emulated second 12. It is not latency — 400 cycles are
+2 µs — but **how many times the delivery is attempted**: what a request needs is a source
+asserting *and* `SR` allowing, and a guest that lives with `BL` set (Windows CE, thousands of
+exceptions per second, its ISR returning through `RTE` to take the next one) only allows it
+in short windows. `intc_sh4_reintentar` is the fix: the moments that can open a window arm it
+— `tmu.c` on `TCR.UNF`, `wdt.c` on `WTCSR.IOVF`, `dma_canal()` on `CHCR.TE`, and both
+`UpdateSR()` entries — and `main_loop()` spends one compare per instruction to cash it in.
+The periodic call stays as the net, because a source can keep asserting with `SR` shut and
+has to be retried. Measured: DCDoom back to 977 with a byte-identical capture; Crazy Taxi,
+Virtua Tennis, Capcom vs. SNK and Virtua Tenis 2 keep their scene counts, their instruction
+counts and **byte-identical captures**; the 21 suites pass; Crazy Taxi pays 6.5% (85 878 ms
+against 80 651), so most of the 19% survives. Note `tests/dobles.c` has to define the flag
+too — it replaces `intc.c` in the harness.
+
 **The DMAC's end-of-transfer follows the same pattern**: `dma_canal()` leaves `CHCR.TE` set
 (and does not touch `DE`, per the manual), and `intc_revisar_sh4()` derives DMTE0-3 (INTEVT
 `0x640`/`0x660`/`0x680`/`0x6A0`, priority in IPRC bits 11-8) from `TE && IE && DMAOR.DME`;
