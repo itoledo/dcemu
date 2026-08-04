@@ -1791,6 +1791,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			{
 				DWORD td1 = 0, td2, curaddr;
 				int i = 0, j, tam;
+				int palabras = 0;	/* movidas por el bus, para la demora */
 
 //				logmsg( "pvr_write: MAPLE_STATE enabled\r\n");
 
@@ -1842,6 +1843,12 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					last = (td1 & 0x80000000) ? true : false;
 //					logmsg( "tama�o del paquete: %x\r\n", (tam = (td1 & 0xFF) + 1));
 					tam = (td1 & 0xFF) + 1;
+
+					/* El comando de ida mas una respuesta nominal. No hace
+					   falta exactitud: la demora tiene que caer despues de la
+					   contabilidad del que disparo y antes del cuadro que
+					   viene, y todo el rango razonable cumple. */
+					palabras += tam + 8;
 					// ahora tenemos el paquetito! a tratar de leerlo.
 
 					if (((td1 >> 16) & 0x3) != 0) // si no es el puerto 1
@@ -1990,7 +1997,6 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								fprintf(stderr, "traza: maple comando %02lx sin emular\n",
 									(unsigned long) (paquete[0] & 0xFF));
 						}
-						intc_add(ASIC_EVT_MAPLE_DMA, 0);
 						free(paquete);
 					}
 					else
@@ -2007,6 +2013,31 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				   registro, que hacia que la primera consulta viera un DMA en
 				   curso que no existia. */
 				REMOVE_BIT(MAPLE_STATE, 0x1);
+
+				/*
+					El fin de DMA es **uno por recorrido y con la demora del
+					bus**, no uno instantaneo por respuesta. El Maple es serial
+					a 2 Mbps: una palabra tarda 16 us (64 cuentas de a 50
+					ciclos), asi que el fin llega cientos de microsegundos
+					despues del disparo -- y eso no es un adorno. Virtua Tennis
+					dispara SB_MDST desde su callback de vblank con IMASK=6 y
+					recien despues corre la contabilidad de sus 24
+					PDS_PERIPHERAL (actual->anterior, y actual en cero);
+					instantaneo, la IRQ9 del fin entraba en medio de ese
+					corrimiento y el copiado del ISR quedaba antes o despues
+					del corrimiento segun la fase del bloque de 50 ciclos: el
+					juego veia el mando soltado y apretado en cuadros
+					alternados, o sea **una pulsacion nueva por cuadro** --
+					medido con DCEMU_MANTENER_DERECHA: 120 key-ons por segundo
+					del tic del menu, sin retardo inicial, los 20 s completos.
+					Es la misma forma que A.6: la interrupcion le ganaba al
+					driver que vuelve del disparo.
+
+					Ademas el fin instantaneo salia una vez por respuesta al
+					puerto A, dentro del lazo: una lista sin puerto A no
+					levantaba fin de DMA jamas.
+				*/
+				intc_add(ASIC_EVT_MAPLE_DMA, palabras * 64 + 200);
 
 				maple_dma = true;
 			}
