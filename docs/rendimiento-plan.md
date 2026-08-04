@@ -879,3 +879,78 @@ vivir congelada en un comentario.
 Lo que queda por delante no es gráfico. El ARM7 da 2 161 263 641 pasos con **0 % ociosos** —o
 sea que no está en el salto a sí mismo de `spu_init()`, está corriendo firmware de verdad— y
 cuesta casi el doble que todo el pipeline junto.
+
+---
+
+# Fase 5 — La instantánea de la MMU: un guest con MMU cuesta el doble por instrucción
+
+Propuesto el 2026-08-04, con la medida hecha. **Nada de esto está implementado.**
+
+## El número
+
+Mismo intérprete, mismo binario, dos guests:
+
+| | Crazy Taxi (Katana) | DCDoom (Windows CE) |
+| --- | --- | --- |
+| MIPS | 86,3 | **49,0** |
+| ns por instrucción | 11,5 | **20,4** |
+| intérprete, % del tiempo real | ~85 | **92,8** |
+| camino gráfico (`cb_tastart`) | 1,4 % | 0,3 % |
+| AICA total | ~10 % | 3,8 % |
+
+DCDoom corre a **0,33x** y su pantalla se mueve a unos 10 fps. No es por ser DOOM: el PVR
+dibuja **una tira por escena** —el blit por software de DOOM, un cuadro texturado— y cuesta
+el 0,3 %. Es por ser Windows CE, que es el único guest del árbol que enciende la MMU.
+
+## De dónde salen los 8,9 ns de diferencia
+
+De `main_loop()`, y está a la vista. Las excepciones generales del SH-4 son de reejecución,
+pero los manejadores de dcemu mutan registros alrededor del acceso —`MOV.L @Rn+`, un `FMUL`
+sobre su propio destino—, así que antes de **cada** instrucción se saca una instantánea para
+poder abortar y rehacer:
+
+```c
+memcpy(&instantanea_contexto, &core.context, sizeof(context_t));
+memcpy(&instantanea_fr, core.context.FR_BANK, sizeof(FPR_BANK));
+memcpy(&instantanea_xf, core.context.XF_BANK, sizeof(FPR_BANK));
+```
+
+Tres copias —el contexto entero y **los dos bancos de coma flotante**— más el `setjmp`, por
+instrucción. Lo gobierna `excepcion_vigilar`, que vale 1 si la MMU traduce, si `SR.FD` está
+puesto o si hay alguna habilitación de excepción de FPU. En todo lo demás del árbol vale 0 y
+el camino rápido no copia nada: por eso Katana no lo paga y CE sí.
+
+## Las tres salidas, de menos a más invasiva
+
+1. **No copiar los bancos de FPU salvo en instrucciones de FPU.** Son dos de las tres copias
+   y la inmensa mayoría de las instrucciones son de enteros. La clasificación tiene que salir
+   de `opcodes[]` y expandirse en `initopcodes()`, junto a las cuatro tablas de despacho, para
+   que no pueda divergir de los manejadores —la misma regla que ya sigue todo lo demás en ese
+   archivo—.
+2. **No sacar instantánea en las instrucciones que no pueden fallar después de mutar.** Una
+   falta de búsqueda ocurre *antes* de ejecutar, así que no hay nada que deshacer; sólo las
+   que tocan memoria de datos necesitan la red. Entre un 30 y un 40 % de las instrucciones del
+   SH-4 son accesos, así que esto quita la instantánea de la mayoría. Misma tabla derivada que
+   el punto 1, un bit más.
+3. **Deshacer en vez de copiar**: que los manejadores anoten (registro, valor viejo) sólo
+   cuando `excepcion_vigilar` esté puesto. Es la que más rinde y la única que toca los
+   manejadores uno por uno; no vale la pena hasta agotar las dos anteriores.
+
+Expectativa: si los 8,9 ns son la instantánea y las dos primeras salidas la quitan del 60-70 %
+de las instrucciones, quedaría en unos 14 ns, o sea **~1,4x en cualquier guest con MMU**. Hay
+que medirlo, no darlo por hecho: el `setjmp` sigue ahí y el reparto puede tener más de un
+sumando.
+
+## Las barandas, que aquí no son opcionales
+
+Esto toca el camino por el que se reejecuta una instrucción que faltó, y equivocarse deja al
+guest con medio registro escrito y sin síntoma inmediato:
+
+- Las 21 suites y **`dcemu_sh4json` bit a bit**, que es la que ve un registro restaurado de
+  más o de menos.
+- `demos/mmu-mapeo` y `basic/mmu/*`, que ejercitan la falta de verdad.
+- **DCDoom con captura byte a byte**: 977 escenas en 35 s emulados, jugando el demo de E1M1.
+  Es el único guest del árbol que enciende la MMU, así que es la única prueba de extremo a
+  extremo que existe para esto.
+- El barrido de 150 demos, que **no puede ver nada de esto** —ninguna enciende la MMU— y por
+  eso no sirve de baranda aquí. Conviene saberlo antes de confiarse.

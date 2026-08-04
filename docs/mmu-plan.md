@@ -605,3 +605,18 @@ Ver `docs/pendientes-plan.md`, la sección de DCDoom.
   arranque, entre la instantánea por instrucción y este recorrido.
 - No hay chequeo de alineación, así que los errores de dirección por acceso desalineado no
   se levantan. dcemu tampoco los chequeaba antes.
+
+## Y lo que cuesta, medido
+
+El "~0.2-0.5×" de arriba ya tiene número y culpable, del 2026-08-04: **un guest con MMU
+cuesta el doble por instrucción**. DCDoom da 49,0 MIPS —20,4 ns por instrucción— contra los
+86,3 MIPS y 11,5 ns de Crazy Taxi, con el intérprete en el 92,8 % del tiempo real y el camino
+gráfico en el 0,3 %. Los 8,9 ns de diferencia son la instantánea de la fase 5: `context_t`
+más **los dos bancos de coma flotante**, copiados antes de cada instrucción porque
+`excepcion_vigilar` está puesto en cuanto la MMU traduce.
+
+El plan para bajarlo —no copiar los bancos de FPU salvo en instrucciones de FPU, y no sacar
+instantánea en las que no pueden fallar después de mutar— está en
+[`rendimiento-plan.md`](rendimiento-plan.md), fase 5, con sus barandas. La que importa aquí:
+**DCDoom es el único guest del árbol que enciende la MMU**, así que el barrido de demos no
+puede ver ninguna regresión de este camino.
