@@ -29,6 +29,7 @@
 #include "gdrom.h"
 #include "intc.h"
 #include "iso.h"
+#include "cdda.h"
 #include "opciones.h"
 #include "traza.h"
 #include "tmu.h"			/* reloj_ms(), para fechar los comandos */
@@ -131,6 +132,9 @@ void gdrom_iniciar(int bandeja)
 	sentido_clave = GD_SENTIDO_OK;
 	sentido_asc   = 0;
 	sentido_ascq  = 0;
+
+	/* Y el audio se calla: reiniciar la lectora para la musica. */
+	cdda_reiniciar();
 
 	logmsg("gdrom: unidad en estado %d, formato %d\n", gdrom.unidad, gdrom.formato);
 
@@ -514,22 +518,45 @@ static void identificar(BYTE * dest, int tam)
 /* Comandos del modo paquete                                                */
 /* ------------------------------------------------------------------------ */
 
+/*
+	Una posicion de los comandos de audio. El tipo sale de los tres bits bajos
+	del byte 1 del paquete: 1 son FAD --tres bytes, el mas significativo
+	primero-- y 2 son MSF, o sea minuto, segundo y cuadro, con 75 cuadros por
+	segundo. Devuelve -1 si el tipo no es ninguno de los dos.
+*/
+static int spi_posicion(int tipo, const BYTE * b)
+{
+	if (tipo == 1)
+		return (b[0] << 16) | (b[1] << 8) | b[2];
+
+	if (tipo == 2)
+		return ((int) b[0] * 60 + (int) b[1]) * 75 + (int) b[2];
+
+	return -1;
+}
+
 static void cmd_req_stat(const BYTE * p)
 {
-	BYTE stat[10];
+	BYTE	stat[10];
+	int		son = (cdda_estado() == CDDA_EST_SONANDO
+	            || cdda_estado() == CDDA_EST_PAUSADO);
+	int		fad = son ? cdda_fad() : iso_get_lba();
+	int		pis = son ? cdda_pista() : 1;
 
 	memset(stat, 0, sizeof(stat));
 
 	stat[0] = (BYTE) (gdrom.unidad & 0x0F);
 	stat[1] = (BYTE) (gdrom.formato << 4);
-	stat[2] = 0x04;						/* control de la pista: datos */
-	stat[3] = 0x01;						/* numero de pista */
+	/* Control de la pista: 4 es datos, 0 es audio de dos canales. */
+	stat[2] = son ? 0x00 : 0x04;
+	stat[3] = (BYTE) pis;				/* numero de pista */
 	stat[4] = 0x01;						/* indice */
 
-	/* Posicion actual del cabezal, en FAD. */
-	stat[5] = (BYTE) ((iso_get_lba() >> 16) & 0xFF);
-	stat[6] = (BYTE) ((iso_get_lba() >>  8) & 0xFF);
-	stat[7] = (BYTE) ( iso_get_lba()        & 0xFF);
+	/* Posicion actual del cabezal, en FAD. Con una pista de audio sonando es
+	   la de la aguja: es como un juego sigue su propia musica. */
+	stat[5] = (BYTE) ((fad >> 16) & 0xFF);
+	stat[6] = (BYTE) ((fad >>  8) & 0xFF);
+	stat[7] = (BYTE) ( fad        & 0xFF);
 
 	entregar(stat, (int) sizeof(stat), p[2], p[4]);
 }
@@ -859,8 +886,77 @@ static void ejecutar_paquete(void)
 			fin_comando();
 			break;
 
+		/*
+			El audio de CD por la via del paquete SPI. Es la que usa el boot ROM
+			cuando dcemu corre con --bios y la que usaria un guest que le hable a
+			la lectora directamente; con los hooks puestos --lo normal-- los
+			juegos llegan por el driver del ROM, en dcopcodes.c. Las dos tienen
+			que hacer lo mismo, y por eso las dos llaman a cdda.c.
+
+			El tipo de parametro va en los tres bits bajos del byte 1: 1 dice que
+			las posiciones son FAD y 2 que son MSF. La de arranque esta en los
+			bytes 2-4 y la de fin en los 8-10; las repeticiones, en los cuatro
+			bits bajos del byte 6.
+		*/
+		case SPI_CD_PLAY:
+		{
+			int tipo  = p[1] & 7;
+			int desde = spi_posicion(tipo, &p[2]);
+			int hasta = spi_posicion(tipo, &p[8]);
+
+			if (desde < 0 || hasta < 0)
+			{
+				/* 0x24: campo invalido en el paquete de comando. */
+				fallar(GD_SENTIDO_ILEGAL, 0x24, 0x00);
+				break;
+			}
+
+			cdda_reproducir_sectores(desde, hasta, p[6] & 0x0F);
+
+			gdrom.unidad = GD_PLAY;
+			fin_comando();
+		}
+		break;
+
 		case SPI_CD_SEEK:
-			gdrom.unidad = GD_PAUSE;
+		{
+			/*
+				SEEK tambien es como se para y como se pausa: los tipos 3 y 4 no
+				llevan posicion. Sin ellos un juego que llama "seek de parar"
+				para callar su musica no la callaba nunca, que es la forma de
+				falla del arbol.
+			*/
+			int tipo = p[1] & 7;
+
+			if (tipo == 3)					/* parar */
+			{
+				cdda_parar();
+				gdrom.unidad = GD_STANDBY;
+			}
+			else
+			if (tipo == 4)					/* pausar donde va */
+			{
+				cdda_pausar();
+				gdrom.unidad = GD_PAUSE;
+			}
+			else
+			{
+				int destino = spi_posicion(tipo, &p[2]);
+
+				if (destino >= 0)
+					cdda_buscar(destino);
+
+				gdrom.unidad = GD_PAUSE;
+			}
+
+			fin_comando();
+		}
+		break;
+
+		case SPI_CD_SCAN:
+			/* Avance y retroceso rapidos. No se emula la velocidad: se acepta y
+			   la reproduccion sigue donde estaba, que es lo que ve un juego que
+			   lo usa para adelantar y despues suelta. */
 			fin_comando();
 			break;
 
@@ -871,13 +967,44 @@ static void ejecutar_paquete(void)
 
 		case SPI_GET_SCD:
 		{
-			/* Subcodigo: el boot ROM lo pide para saber si hay audio sonando.
-			   Se devuelve un bloque en cero, que significa "nada". */
+			/*
+				Subcodigo: es como se pregunta si hay audio sonando y donde va la
+				aguja. El encabezado son cuatro bytes -- [0] formato pedido, [1]
+				estado del audio, [2..3] largo -- y detras el subcodigo.
+
+				Antes iba todo en cero salvo el estado de la unidad, y cero no es
+				ninguno de los codigos definidos. Ahora contesta lo mismo que el
+				camino del driver del ROM, que es la regla de la lectora en este
+				arbol: las dos vias dicen lo mismo.
+			*/
 			BYTE	scd[100];
-			int		largo = (p[3] << 8) | p[4];
+			int		largo   = (p[3] << 8) | p[4];
+			int		formato = p[1] & 0x0F;
+			int		son     = (cdda_estado() == CDDA_EST_SONANDO
+			                || cdda_estado() == CDDA_EST_PAUSADO);
+			int		fad     = son ? cdda_fad() : iso_get_lba();
+			int		pis     = son ? cdda_pista() : 1;
+			int		rel     = fad - (son ? iso_pista_fad(pis - 1) : 0);
+
+			if (rel < 0)
+				rel = 0;
 
 			memset(scd, 0, sizeof(scd));
-			scd[1] = (BYTE) (gdrom.unidad & 0x0F);
+			scd[0] = (BYTE) formato;
+			scd[1] = (BYTE) cdda_estado();
+			scd[2] = (BYTE) (sizeof(scd) >> 8);
+			scd[3] = (BYTE) (sizeof(scd) & 0xFF);
+
+			scd[4] = son ? 0x01 : 0x41;		/* control: audio o datos; ADR 1 */
+			scd[5] = (BYTE) pis;
+			scd[6] = 1;						/* indice */
+			scd[7]  = (BYTE) (rel >> 16);
+			scd[8]  = (BYTE) (rel >> 8);
+			scd[9]  = (BYTE)  rel;
+			scd[10] = 0;
+			scd[11] = (BYTE) (fad >> 16);
+			scd[12] = (BYTE) (fad >> 8);
+			scd[13] = (BYTE)  fad;
 
 			entregar(scd, (int) sizeof(scd), 0, largo);
 		}

@@ -70,6 +70,11 @@ static int iso_modo_pista = 1;
    antes de decidir que el disco es un juego. */
 static struct cdi_t iso_cdi;
 
+/* La ruta de la imagen. Hace falta despues del arranque para abrir una pista
+   de audio: min_iso_* solo conoce las de datos. En un .gdi cada pista es su
+   propio archivo y la ruta sale de gdi_ruta_de(). */
+static char iso_ruta[1024];
+
 #ifdef USE_LIBCDIO
 // variables libcdio
 CdIo * cdio;
@@ -82,6 +87,8 @@ int iso_init(char * sDevice)
 		formato_imagen = FORMATO_NULL;
 		return 0;
 	}
+
+	snprintf(iso_ruta, sizeof(iso_ruta), "%s", sDevice);
 
 	if (strncmp(&sDevice[strlen(sDevice) - 4], ".iso", 4) == 0) // si termina en .iso
 	{
@@ -417,6 +424,131 @@ int iso_pista_es_datos(int i)
 		return 0;
 
 	return iso_cdi.pistas[i].modo != 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Sectores de audio, para el CD-DA                                         */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Leer una pista de audio no se parece a leer una de datos y por eso no pasa
+	por min_iso_*: no hay volumen, ni sectores de 2048, ni encabezado -- los
+	2352 bytes del sector son muestras --, y sobre todo **el archivo ni siquiera
+	esta abierto**, porque iso_init() solo registra las pistas de datos.
+
+	El descriptor de la ultima pista tocada se guarda: una pista de CD-DA se
+	recorre de principio a fin, asi que abrirla una vez y seguir leyendo es el
+	caso normal y cambiar de pista es la excepcion.
+*/
+static FILE *	audio_fp = NULL;
+static int		audio_pista = -1;
+
+/* La pista que contiene ese FAD, o -1. */
+static int iso_pista_de_fad(int fad)
+{
+	int i;
+
+	if (!ES_MULTIPISTA(formato_imagen))
+		return -1;
+
+	for (i = 0; i < iso_cdi.n; i++)
+	{
+		unsigned int desde = iso_cdi.pistas[i].lba + ISO_DEFAULT_LBA;
+
+		if ((unsigned int) fad >= desde
+		 && (unsigned int) fad < desde + iso_cdi.pistas[i].sectores)
+			return i;
+	}
+
+	return -1;
+}
+
+int iso_leer_audio(void * destino, int fad, int n)
+{
+	const struct cdi_pista_t *	p;
+	const char *				ruta;
+	long long					pos;
+	int							cual, cabe;
+	size_t						leidos;
+
+	if (n <= 0)
+		return 0;
+
+	cual = iso_pista_de_fad(fad);
+
+	if (cual < 0)
+		return 0;
+
+	p = &iso_cdi.pistas[cual];
+
+	/* Una pista de datos no se reproduce. Devolver 0 hace que cdda.c entregue
+	   silencio y siga avanzando, que es mejor que inventar un error. */
+	if (p->modo != 0)
+		return 0;
+
+	/* Sin los 2352 bytes crudos no hay muestras que sacar: un .cdi con una
+	   pista de audio de 2048 no describe audio. */
+	if (p->sector_crudo != 2352)
+	{
+		static int avisado = 0;
+
+		if (!avisado)
+		{
+			avisado = 1;
+			fprintf(stderr, "iso_leer_audio: la pista %d dice audio pero sus "
+				"sectores miden %u bytes, no 2352; se entrega silencio\n",
+				cual + 1, p->sector_crudo);
+		}
+
+		return 0;
+	}
+
+	/* **La ruta depende del formato**: en un .gdi cada pista es su archivo, en
+	   un .cdi estan todas dentro del mismo y las separa el offset. Es la misma
+	   distincion que hace iso_init() y el unico sitio donde vuelve a importar. */
+	ruta = (formato_imagen == FORMATO_GDI) ? gdi_ruta_de(cual) : iso_ruta;
+
+	if (ruta == NULL)
+		return 0;
+
+	if (audio_fp == NULL || audio_pista != cual)
+	{
+		if (audio_fp != NULL)
+			fclose(audio_fp);
+
+		audio_fp = fopen(ruta, "rb");
+		audio_pista = cual;
+
+		if (audio_fp == NULL)
+		{
+			fprintf(stderr, "iso_leer_audio: no se pudo abrir %s\n", ruta);
+			audio_pista = -1;
+			return 0;
+		}
+	}
+
+	/* Lo que quede de pista: un rango de reproduccion puede cruzar el final. */
+	cabe = (int) (p->lba + ISO_DEFAULT_LBA + p->sectores) - fad;
+
+	if (n > cabe)
+		n = cabe;
+
+	pos = p->offset
+	    + (long long) (fad - (int) (p->lba + ISO_DEFAULT_LBA)) * 2352;
+
+	/* Una pista de audio puede estar a mas de 2 GB del principio de un .cdi:
+	   el mismo par que usa cdi.c. */
+#if defined(_MSC_VER)
+	if (_fseeki64(audio_fp, pos, SEEK_SET) != 0)
+		return 0;
+#else
+	if (fseeko(audio_fp, (off_t) pos, SEEK_SET) != 0)
+		return 0;
+#endif
+
+	leidos = fread(destino, 2352, (size_t) n, audio_fp);
+
+	return (int) leidos;
 }
 
 /*

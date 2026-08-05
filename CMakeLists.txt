@@ -210,6 +210,7 @@ set(DCEMU_SOURCES
 	graficos.c
 	intc.c
 	iso.c
+	cdda.c
 	iso9660_min.c
 	cdi.c
 	gdi.c

@@ -207,6 +207,17 @@ int iso_sesion_primera_pista(int n)
 	return 1;
 }
 
+/* El doble no tiene pistas de audio, asi que cdda.c --que se enlaza de verdad,
+   como aica.c-- se queda en silencio y no toca el sistema de archivos. */
+int iso_leer_audio(void * destino, int fad, int n)
+{
+	(void) destino;
+	(void) fad;
+	(void) n;
+
+	return 0;
+}
+
 /* Patron reproducible: el byte i del sector s vale (s * 7 + i) & 0xFF. Deja
    verificar en la prueba que se leyo el sector pedido y no otro. */
 int iso_read_sector(char * target, int secstart, int secnum)

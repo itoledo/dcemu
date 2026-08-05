@@ -45,6 +45,21 @@ int iso_sesion_primera_pista(int n);
 /* Sectores que ocupa el disco: la TOC lo necesita para el lead-out. */
 int iso_num_sectores();
 
+/*
+	Lee `n` sectores de audio crudos --2352 bytes cada uno, que son 588 cuadros
+	estereo-- desde el FAD `fad`, y devuelve cuantos leyo.
+
+	No pasa por min_iso_*: ese lector solo conoce las pistas de datos y habla en
+	sectores de 2048 con encabezado. Aqui no hay volumen ni encabezado, y en un
+	.gdi el archivo de la pista **ni siquiera esta abierto** hasta que alguien
+	pide su audio.
+
+	Devuelve 0 si el FAD no cae en ninguna pista o si cae en una de datos, que
+	no se reproduce. Quien llama decide que hacer con eso; cdda.c entrega
+	silencio y sigue.
+*/
+int iso_leer_audio(void * destino, int fad, int n);
+
 int iso_read_sector(char * target, int secstart, int secnum);
 int cargar_archivo( char * fname, void * target);
 int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos);

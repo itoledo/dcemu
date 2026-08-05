@@ -4,6 +4,7 @@
 #include <math.h>
 #include "intc.h"		/* el fin de DMA que levanta REQ_DMA_TRANS */
 #include "iso.h"
+#include "cdda.h"
 #include "gdrom.h"
 #include "sistema.h"
 #include "traza.h"
@@ -626,15 +627,61 @@ void hack_gdrom()
 				}
 				break;
 
+				/*
+					El audio de CD. Los cinco comandos que lo manejan por esta
+					via; el trabajo esta en cdda.c, que lo comparte con los
+					paquetes SPI de gdrom.c.
+
+					Los parametros de PLAY son {inicio, fin, repeticiones} --el
+					`cd_cmd_play_params_t` de KOS--, y la diferencia entre 20 y
+					21 es que el primero cuenta pistas y el segundo FAD.
+				*/
+				case 20: // PLAY_TRACKS
+				case 21: // PLAY_SECTORS
+				{
+					DWORD	par[3] = { 0, 0, 0 };
+					int		i;
+
+					for (i = 0; i < 3; i++)
+						memread(R(5) + i * 4, &par[i], sizeof(DWORD));
+
+					if (R(4) == 20)
+						cdda_reproducir_pistas((int) par[0], (int) par[1],
+							(int) par[2]);
+					else
+						cdda_reproducir_sectores((int) par[0], (int) par[1],
+							(int) par[2]);
+				}
+				break;
+
+				case 22: // PAUSE
+				cdda_pausar();
+				break;
+
+				case 23: // RELEASE
+				cdda_seguir();
+				break;
+
+				case 27: // SEEK
+				{
+					DWORD destino = 0;
+
+					memread(R(5), &destino, sizeof(DWORD));
+					cdda_buscar((int) destino);
+				}
+				break;
+
+				case 33: // STOP: deja de girar, y con eso deja de sonar
+				cdda_parar();
+				break;
+
 				case 34: // GETSCD: el subcodigo Q, como el paquete SPI GET_SCD
 				{
 					/* Parametros {formato, tamano, destino}, como los pasa el
 					   driver de la BIOS (y reicast los lee igual). La respuesta
 					   lleva el encabezado del SPI: [0] reservado, [1] estado de
 					   audio, [2..3] largo, y detras el subcodigo del formato
-					   pedido. Sin CD-DA sonando el estado es 0x15 --"sin
-					   informacion de audio"-- y la posicion es el track de
-					   datos. Contestar COMPLETED sin escribir el bufer dejaba
+					   pedido. Contestar COMPLETED sin escribir el bufer dejaba
 					   el estado en 0x00, que no es ningun codigo, y la capa de
 					   CRI de Capcom vs. SNK repetia el sondeo para siempre. */
 					DWORD	formato = 0, tam = 0, destino = 0;
@@ -649,21 +696,43 @@ void hack_gdrom()
 
 					memset(scd, 0, sizeof(scd));
 					scd[0] = (BYTE) formato;
-					scd[1] = 0x15;					/* sin estado de audio */
+					scd[1] = (BYTE) cdda_estado();
 					scd[2] = (BYTE) (tam >> 8);
 					scd[3] = (BYTE) tam;
 
 					if (formato == 1 && tam >= 14)
 					{
-						/* Solo la Q: control/ADR, track, indice, y las dos
-						   posiciones en FAD de 24 bits. Un track de datos
-						   parado al principio del area de programa. */
-						scd[4] = 0x41;				/* datos, ADR = posicion */
-						scd[5] = 1;					/* track */
+						/*
+							Solo la Q: control/ADR, track, indice, y las dos
+							posiciones en FAD de 24 bits.
+
+							**Con CD-DA sonando esto es la aguja del disco**, y
+							es como un juego sigue su propia musica: sondea la
+							posicion y cambia de tema cuando pasa cierto FAD.
+							Contestar siempre "pista 1 de datos, parado en el
+							150" es la forma de falla del arbol -- una respuesta
+							valida que no quiere decir nada.
+						*/
+						int son = (cdda_estado() == CDDA_EST_SONANDO
+						        || cdda_estado() == CDDA_EST_PAUSADO);
+						int fad = son ? cdda_fad() : 150;
+						int pis = son ? cdda_pista() : 1;
+						int rel = fad - iso_pista_fad(pis - 1);
+
+						if (rel < 0)
+							rel = 0;
+
+						scd[4] = son ? 0x01 : 0x41;	/* audio o datos; ADR = 1 */
+						scd[5] = (BYTE) pis;
 						scd[6] = 1;					/* indice */
-						scd[7] = 0; scd[8] = 0; scd[9] = 0;		/* transcurrido */
+						/* Transcurrido dentro de la pista, y absoluto. */
+						scd[7]  = (BYTE) (rel >> 16);
+						scd[8]  = (BYTE) (rel >> 8);
+						scd[9]  = (BYTE)  rel;
 						scd[10] = 0;
-						scd[11] = 0; scd[12] = 0; scd[13] = 150;	/* FAD absoluto */
+						scd[11] = (BYTE) (fad >> 16);
+						scd[12] = (BYTE) (fad >> 8);
+						scd[13] = (BYTE)  fad;
 					}
 
 					if (destino && tam)
@@ -727,18 +796,27 @@ void hack_gdrom()
 				{
 					/* {estado | repeticiones<<8, track, (adr<<28)|(ctrl<<24)|fad,
 					   indice}, cada uno a su puntero. Windows CE lo sondea
-					   periodicamente desde wsegacd. Mismos valores ficticios que
-					   GETSCD: parado al principio del area de programa. */
+					   periodicamente desde wsegacd. Con una pista de audio
+					   sonando dice donde va la cabeza, igual que GETSCD; sin
+					   ella, parado al principio del area de programa. */
 					DWORD	destino[4] = { 0, 0, 0, 0 };
 					DWORD	valores[4];
+					int		son = (cdda_estado() == CDDA_EST_SONANDO);
+					int		fad = son ? cdda_fad() : 150;
+					int		pis = son ? cdda_pista() : 1;
 					int		i;
 
 					for (i = 0; i < 4; i++)
 						memread(R(5) + i * 4, &destino[i], sizeof(DWORD));
 
-					valores[0] = (gdrom.unidad == 2) ? 1 : gdrom.unidad;
-					valores[1] = 1;								/* track */
-					valores[2] = (1u << 28) | (4u << 24) | 150;	/* adr|ctrl|fad */
+					/* Reproduciendo, el estado de la unidad es 3 --"playing"--
+					   y no el 1 de "pausada" que devuelve gdrom.unidad. */
+					valores[0] = son ? 3
+					           : ((gdrom.unidad == 2) ? 1 : gdrom.unidad);
+					valores[1] = (DWORD) pis;					/* track */
+					valores[2] = (1u << 28)
+					           | ((son ? 0u : 4u) << 24)
+					           | (DWORD) fad;					/* adr|ctrl|fad */
 					valores[3] = 1;								/* indice */
 
 					for (i = 0; i < 4; i++)

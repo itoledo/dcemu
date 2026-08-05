@@ -19,6 +19,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/floatgraph.c
 	${CMAKE_SOURCE_DIR}/floatsimple.c
 	${CMAKE_SOURCE_DIR}/aica.c
+	${CMAKE_SOURCE_DIR}/cdda.c
 	${CMAKE_SOURCE_DIR}/arm7.c
 	${CMAKE_SOURCE_DIR}/g2dma.c
 	${CMAKE_SOURCE_DIR}/gdrom.c

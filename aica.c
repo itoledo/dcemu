@@ -15,6 +15,7 @@
 #include "arm7.h"
 #include "opciones.h"
 #include "perf.h"
+#include "cdda.h"			/* el audio de CD, que se suma a la mezcla */
 
 unsigned char		aica_reg[AICA_REG_SIZE];
 
@@ -849,6 +850,31 @@ static void mezclar_una_muestra(void)
 
 		izq = (izq * g) >> 16;
 		der = (der * g) >> 16;
+	}
+
+	/*
+		Y el audio de CD, si la lectora esta reproduciendo una pista.
+
+		**Va despues de MVOL a proposito.** MVOL es el volumen maestro de las 64
+		voces del AICA; el CD-DA no es una voz -- entra al chip ya decodificado,
+		por una entrada aparte, y se suma en el mezclador del DSP con sus
+		propios registros de nivel. Como el DSP no se emula, sumarlo aqui, a
+		nivel fijo y fuera de MVOL, es lo mas parecido a "otra entrada del DAC":
+		un juego que baja MVOL para callar sus efectos no deberia quedarse
+		tambien sin musica.
+
+		El formato del CD es exactamente el de esta salida --44 100 Hz, estereo,
+		16 bits con signo-- asi que hay una muestra de CD por cada vuelta y no
+		hay remuestreo. El recorte de abajo es el que cubre la suma.
+	*/
+	{
+		int cd_izq, cd_der;
+
+		if (cdda_muestra(&cd_izq, &cd_der))
+		{
+			izq += cd_izq;
+			der += cd_der;
+		}
 	}
 
 	if (izq >  32767)	izq =  32767;
