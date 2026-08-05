@@ -38,6 +38,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/ta.c
 	${CMAKE_SOURCE_DIR}/tmu.c
 	${CMAKE_SOURCE_DIR}/ubc.c
+	${CMAKE_SOURCE_DIR}/vmu.c
 	${CMAKE_SOURCE_DIR}/vram.c
 	${CMAKE_SOURCE_DIR}/wdt.c
 )
@@ -69,6 +70,7 @@ set(DCEMU_PRUEBAS
 	test_ta.c
 	test_tmu.c
 	test_ubc.c
+	test_vmu.c
 	test_vram.c
 	test_wdt.c
 )
@@ -105,7 +107,7 @@ endforeach()
 
 # Las piezas del arranque por BIOS no son opcodes, asi que van con otro prefijo.
 # La MMU tampoco lo es: es la ventana de control P4 (docs/mmu-plan.md, fase 1).
-foreach(_suite sistema gdrom ta mmu wdt tmu vram ubc)
+foreach(_suite sistema gdrom ta mmu wdt tmu vram ubc vmu)
 	add_test(NAME dc.${_suite} COMMAND dcemu_tests ${_suite})
 endforeach()
 

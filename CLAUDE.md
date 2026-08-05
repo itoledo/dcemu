@@ -94,7 +94,8 @@ file, plus one for the dispatch-table expansion), plus suites that are not opcod
 driven exactly as the boot ROM drives it), `ta` (the TA parameter format — the
 classification table and the reassembly of the 64-byte parameters), `mmu`, `wdt`, `tmu`,
 `vram` (the two windows of PVR video RAM), `ubc` (the hardware breakpoint controller,
-driven with the same register sequences KOS's driver uses), and `aica`, `arm7` and `g2dma`.
+driven with the same register sequences KOS's driver uses), `vmu` (the memory card, driven with
+the exact frames KOS's `vmu.c` sends), and `aica`, `arm7` and `g2dma`.
 
 They link the real handlers and the real `opcodes.c`; `tests/memoria_prueba.c` replaces
 `mem.c` and `tests/dobles.c` replaces the `graficos.c` / `iso.c` / `intc.c` / `traza.c`
@@ -102,7 +103,7 @@ symbols the code references, which keeps SDL and OpenGL out of the link. SDL *he
 still needed to compile (`opcodes.h` pulls in `main.h`).
 
 **Several files are SDL-free on purpose so the suites can link them for real**: `sistema.c`,
-`vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`, `cdda.c`. Keep them that way. `cdda.c` is
+`vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`, `cdda.c`, `vmu.c`. Keep them that way. `cdda.c` is
 linked because `aica.c` calls it once per sample; `tests/dobles.c` supplies an `iso_leer_audio()`
 that reports no audio tracks, so it stays silent and never touches the filesystem.
 
@@ -147,6 +148,15 @@ measured on 2026-07-30 — which ones pass, which fail and why, and which fail b
 for hardware that is not emulated. It also documents how the sweep is run and the two ways it
 produces false negatives. Read it before concluding that a demo is broken.
 
+**The VMU's presence is part of the baseline configuration, not a detail.** A card on the bus
+adds maple traffic to every vblank, which moves the emulated frame boundary, so an animated demo
+lands on a different frame at the same `--salir-tras` — all seven PVR control demos changed hash
+when the VMU was added, and all seven came back byte-identical under `--sin-vmu`. Two
+consequences: a sweep is only comparable against another sweep with the same VMU setting, and
+**a run can write the card**, so an A/B has to start from the same image (delete
+`bios/vmu-a1.bin`, or point `--vmu=` at a scratch copy). DCDoom's end-to-end reference has one
+hash per configuration: `36578F59…` with `--sin-vmu`, `BB64A0B0…` with the card.
+
 **A KOS demo sweep cannot catch every regression, and this matters when judging a change.**
 Several paths are exercised only by commercial games: mipmapped textures, the TSP repeat
 modes, blend codes 2 and 3, the Offset Color, the texture environment's alpha rules, the
@@ -181,6 +191,8 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--captura-audio=ARCHIVO` | vuelca a un `.wav` lo que el mezclador del AICA produjo. Es **la medida** del sonido, no lo que hizo la tarjeta |
 | `--sin-audio` | no abrir la tarjeta de sonido. El AICA se emula igual y `--captura-audio` sigue funcionando |
 | `--sin-aica` | no emular el AICA: ni el ARM, ni los canales, ni los temporizadores. Para aislar una regresión |
+| `--vmu=ARCHIVO` | imagen de la Visual Memory de la ranura 1 (`bios/vmu-a1.bin` por omisión; se crea formateada si no existe) |
+| `--sin-vmu` | sin tarjeta en la ranura 1. Es el interruptor de aislamiento, y **el que reproduce la línea base anterior byte a byte** |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -773,11 +785,44 @@ whichever is not at rest, gamepad first. The `SDL_JOY*` handling in `main.c` is 
 behind an `#ifdef JOYSTICK` nobody defines.
 
 The Maple bus lives inside `pvr_write()`, in the `SB_MDST` case (`0x005F6C18`): writing 1 walks
-the command list at `SB_MDSTAR` and answers each transfer in place. Only port A has a device —
-a standard HKT-7700 controller — and the other ports get `0xFFFFFFFF`. Two commands are
-implemented: `Device Request` (1) and `GetCondition` (9). **The hardware trigger exists too**:
-with `SB_MDTSEL=1` and `SB_MDEN=1`, `maple_vblank()` synthesizes the `SB_MDST` write at each
-vblank, which is how Windows CE polls the pad.
+the command list at `SB_MDSTAR` and answers each transfer in place. Port A carries a standard
+HKT-7700 controller with a VMU in slot 1 (`vmu.c`, below); the other ports get `0xFFFFFFFF`. The
+controller answers `Device Request` (1) and `GetCondition` (9). **The hardware trigger exists
+too**: with `SB_MDTSEL=1` and `SB_MDEN=1`, `maple_vblank()` synthesizes the `SB_MDST` write at
+each vblank, which is how Windows CE polls the pad.
+
+Two rules of the list that each cost a game:
+
+- **The pattern field (bits 8-10) decides the shape of the instruction, and only START (0)
+  carries a receive address and a packet.** Occupy-SDCKB (2), RESET (3), release-SDCKB (4) and
+  NOP (7) are the descriptor alone, one word. Reading a receive address they do not have
+  desynchronizes the whole walk: the *next* descriptor is read as an address, fails the
+  "not RAM" guard and truncates the list. Katana's library puts a NOP in its enumeration list,
+  which is why Crazy Taxi 2 never got past the memory-card screen.
+- **The source byte of a reply is not just the device address: its low 5 bits are the bitmap of
+  connected subdevices** (`0x21` = controller with something in slot 1). It is the *only* way a
+  guest discovers the VMU — nobody sends a Device Request to a slot without seeing that bit
+  first.
+
+### The VMU (memory card)
+
+`vmu.c/h` is the Visual Memory in slot 1 of port A: 128 KB of flash in 256 blocks of 512 bytes,
+with the filesystem the boot ROM and games expect (root block 255, FAT 254, directory 253 down
+to 241, 200 user blocks). Implemented commands: `DEVINFO` (1), `GETCOND` (9), `GETMINFO` (10),
+`BREAD` (11), `BWRITE` (12), `BSYNC` (13), `SETCOND` (14). The formats come from KOS's driver
+(`maple/vmu.c`, `dc/vmufs.h`), which is the code that parses what dcemu answers.
+
+- **A read is one phase of 512 bytes; a write is four phases of 128 plus a `BSYNC`**, because
+  that is how the real flash is programmed. The `blkid` word is
+  `((block & 0xFF) << 24) | ((block >> 8) << 16) | (phase << 8) | partition`, and `BREAD` must
+  echo it — the driver compares.
+- **`GETMINFO` and the root block must say the same thing.** A guest reads whichever it prefers;
+  if they disagree the failure is silent.
+- **The LCD and clock functions are declared and accepted, not emulated.** Answering an error
+  makes the driver retry four times.
+- **The image persists like the flash** (`bios/vmu-a1.bin`, `--vmu=` to move it, `--sin-vmu` to
+  take the card off the bus), written at `BSYNC` and at exit. A missing file formats an empty
+  card; the format timestamp is fixed, not the host clock, so a run stays deterministic.
 
 ### Support modules
 
@@ -822,7 +867,7 @@ bitmap font renderer, driven by `DebugMode` (`DBG_STOP`/`DBG_RUN`/`DBG_STEP`). `
 | `docs/notas-tiempo.md` | interrupciones ASIC por nivel, `intc_sh4_reintentar`, relojes, TMU/WDT, DMAC |
 | `docs/notas-aica.md` | AICA, ARM7DI, G2-DMA, envolventes, KYONB, perfil del ARM |
 | `docs/notas-gdrom.md` | lectora, `.cdi`, TOC, qué imágenes arrancan, el rip dañado de Virtua Tennis |
-| `docs/notas-arranque.md` | boot ROM, dónde decide, hooks de syscall, bloque de región/SYSID, Windows CE, Maple, flash y RTC |
+| `docs/notas-arranque.md` | boot ROM, dónde decide, hooks de syscall, bloque de región/SYSID, Windows CE, Maple, la VMU, flash y RTC |
 
 Los `*-plan.md` son bitácoras de trabajo, no referencia: `bios-boot-plan.md`,
 `pendientes-plan.md` (los apartados A.x que citan las notas), `mmu-plan.md`, `aica-plan.md`,

@@ -72,6 +72,14 @@ struct opciones_t
 	int				sin_audio;		/* 1: no abrir la tarjeta de sonido */
 	int				sin_aica;		/* 1: no emular el AICA en absoluto */
 
+	/* La Visual Memory de la ranura 1 del mando. Presente por omision, con
+	   su imagen en vmu_archivo; --sin-vmu la saca del bus, que es el
+	   interruptor de aislamiento (los juegos toman otro camino cuando hay
+	   tarjeta). Ojo para medir: una corrida puede ESCRIBIRLA, asi que dos
+	   corridas comparables tienen que partir de la misma imagen. */
+	int				sin_vmu;
+	const char *	vmu_archivo;
+
 	/* 1: sacar el AICA y el ARM7 a su propio hilo (hilo_aica.c).
 
 	   **Apagado por omision, y no por precaucion sino por medicion**: cuesta

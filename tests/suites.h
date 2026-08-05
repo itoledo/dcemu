@@ -45,4 +45,7 @@ extern const dc_suite suite_aica;
 /* El ARM7DI que el AICA lleva adentro (arm7.h). */
 extern const dc_suite suite_arm7;
 
+/* La Visual Memory de la ranura 1 del mando (vmu.h). */
+extern const dc_suite suite_vmu;
+
 #endif /* _SUITES_H_ */

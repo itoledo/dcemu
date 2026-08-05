@@ -31,6 +31,9 @@ struct opciones_t opciones =
 	NULL,				/* captura_audio */
 	0,					/* sin_audio */
 	0,					/* sin_aica */
+	0,					/* sin_vmu */
+	"bios/vmu-a1.bin",	/* vmu_archivo: junto a la flash, que es el otro
+						   estado persistente de la consola */
 	0,					/* hilos: apagado por omision, ver opciones.h */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
@@ -68,6 +71,11 @@ void opciones_ayuda(const char * programa)
 		"                        emula, y --captura-audio sigue funcionando.\n"
 		"  --sin-aica            no emular el AICA: ni el ARM, ni los canales, ni\n"
 		"                        los temporizadores. Para aislar una regresion.\n"
+		"  --vmu=ARCHIVO         imagen de la Visual Memory (128 KB; se crea\n"
+		"                        formateada si no existe). Por omision,\n"
+		"                        bios/vmu-a1.bin.\n"
+		"  --sin-vmu             sin tarjeta en la ranura 1: el mando vuelve a\n"
+		"                        estar solo en el bus. Para aislar una regresion.\n"
 		"  --hilos               sacar el AICA y el ARM7 a su propio hilo. Hoy es\n"
 		"                        mas lento; ver docs/hilos-plan.md.\n"
 		"  --perf                al salir, desglosa en que se fue el tiempo real y\n"
@@ -234,6 +242,16 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-aica") == 0)
 		{
 			opciones.sin_aica = 1;
+		}
+		else
+		if (strncmp(arg, "--vmu=", 6) == 0)
+		{
+			opciones.vmu_archivo = arg + 6;
+		}
+		else
+		if (strcmp(arg, "--sin-vmu") == 0)
+		{
+			opciones.sin_vmu = 1;
 		}
 		else
 		if (strcmp(arg, "--hilos") == 0)

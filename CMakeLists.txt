@@ -235,6 +235,7 @@ set(DCEMU_SOURCES
 	ta.c
 	tmu.c
 	ubc.c
+	vmu.c
 	vram.c
 	aica.c
 	arm7.c

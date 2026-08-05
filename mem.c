@@ -22,6 +22,7 @@
 #include "ubc.h"			/* breakpoints por hardware */
 #include "g2dma.h"			/* los cuatro canales de DMA del bus G2 */
 #include "aica.h"			/* el chip de sonido */
+#include "vmu.h"			/* la Visual Memory de la ranura 1 del mando */
 
 
 #define DWREF(p) (*(DWORD *)(p))
@@ -1881,13 +1882,49 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					   dispara desde una escritura a registro, o sea dentro de
 					   una instruccion: nada de esto pasa por la MMU. */
 					memread_fisico(curaddr,  &td1, sizeof(DWORD));
+
+					/*
+						El patron (bits 8-10) decide la forma de la instruccion,
+						y **solo START (0) lleva direccion de respuesta y
+						paquete**. Las demas -- ocupar SDCKB (2), RESET (3),
+						soltar SDCKB (4), NOP (7) -- son el descriptor solo, una
+						palabra. Leerles una direccion de respuesta que no
+						tienen desalineaba el recorrido entero: la biblioteca de
+						Katana mete una de estas en sus listas de enumeracion, y
+						la palabra siguiente --el descriptor que viene-- caia en
+						la guarda de "no es RAM", que cortaba la lista. Por eso
+						Crazy Taxi 2 nunca terminaba de enumerar el bus.
+					*/
+					if (((td1 >> 8) & 0x7) != 0)
+					{
+						if (traza_activa)
+						{
+							static unsigned char patrones_vistos = 0;
+							unsigned patron = (td1 >> 8) & 0x7;
+
+							if (!(patrones_vistos & (1 << patron)))
+							{
+								patrones_vistos |= (unsigned char) (1 << patron);
+								fprintf(stderr, "traza: maple patron %u en la"
+									" lista (descriptor solo, sin paquete)\n",
+									patron);
+							}
+						}
+
+						last = (td1 & 0x80000000) ? true : false;
+						curaddr += 4;
+						palabras += 1;
+						i++;
+						continue;
+					}
+
 					memread_fisico(curaddr + 4, &td2, sizeof(DWORD));
 					/*
 						Cortar por la direccion de respuesta y no por el
 						descriptor.
 
 						El descriptor tiene la longitud en los bits 0-7, el
-						patron en 8-15, el puerto en 16-17 y el fin de lista en
+						patron en 8-10, el puerto en 16-17 y el fin de lista en
 						el 31; un marco de una sola palabra al puerto A que no
 						sea el ultimo de la lista los deja los cuatro en cero,
 						o sea que **cero es un descriptor perfectamente valido**.
@@ -1976,6 +2013,21 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							}
 						}
 
+						if (recadr == 0x01 && vmu_presente())
+						{
+							/*
+								La ranura 1 del mando: la VMU. El marco va entero
+								a vmu.c y la respuesta vuelve armada, encabezado
+								incluido. 132 palabras alcanzan para la mas larga
+								(BREAD: 3 + 128).
+							*/
+							static DWORD vmu_resp[132];
+							int vmu_n = vmu_maple(paquete, tam, vmu_resp, 132);
+
+							if (vmu_n > 0)
+								memwrite_fisico(td2, vmu_resp, (size_t) vmu_n * 4);
+						}
+						else
 						if (recadr != 0x20)
 						{
 							logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
@@ -2014,10 +2066,18 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 							devinfo.standby_power = 0x01AE;
 							devinfo.max_power = 0x01F4;
-							// a hacer el paquete de respuesta
+							/*
+								El byte de origen no es solo la direccion del
+								mando: sus 5 bits bajos son el bitmap de
+								subdispositivos conectados (0x21 = mando con
+								algo en la ranura 1). Es la UNICA via por la
+								que el boot ROM y Katana descubren la VMU --
+								nadie manda un Device Request a la ranura sin
+								ver antes este bit.
+							*/
 							paquete[0] = 0x05 | // device info (response)
 								((sendadr << 8) & 0xFF00) |
-								((((recadr == 0x20) ? 0x20 : 0) << 16) & 0xFF0000) |
+								(((0x20 | (vmu_presente() ? 1 : 0)) << 16) & 0xFF0000) |
 								(((sizeof(maple_devinfo_t)/4) << 24) & 0xFF000000);
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
 							memwrite_fisico(td2, &paquete[0], sizeof(DWORD));
@@ -2096,9 +2156,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							ct.joy2x = 128;
 							ct.joy2y = 128;
 
+							/* El mismo bitmap de subdispositivos que en el
+							   Device Info: el origen es 0x21 con VMU puesta. */
 							paquete[0] = 0x08 | // data transfer (response)
 								((sendadr << 8) & 0xFF00) |
-								((((recadr == 0x20) ? 0x20 : 1) << 16) & 0xFF0000) |
+								(((0x20 | (vmu_presente() ? 1 : 0)) << 16) & 0xFF0000) |
 								(((sizeof(cont_cond_t)/4 + 1) << 24) & 0xFF000000);
 								
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);

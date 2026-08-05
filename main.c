@@ -32,6 +32,7 @@
 #include "gdrom.h"
 #include "opciones.h"
 #include "sistema.h"
+#include "vmu.h"
 #include "traza.h"
 #include "perf.h"
 #ifdef DCEMU_BLOQUES
@@ -1771,6 +1772,11 @@ int main(int argc, char *argv[])
 	// Y la hora que el guest haya puesto en corridas anteriores.
 	sistema_rtc_cargar();
 
+	// La Visual Memory de la ranura 1: los guardados de corridas anteriores,
+	// o una tarjeta vacia formateada si el archivo no existe.
+	if (!opciones.sin_vmu && vmu_iniciar(opciones.vmu_archivo))
+		return 1;
+
 	// Arranque por el boot ROM: no se carga nada a mano, la imagen (si la hay)
 	// se monta para que la vea la lectora. Ver la fase 1.1 del plan.
 	if (opciones.arranque_bios)
@@ -2325,6 +2331,7 @@ int main(int argc, char *argv[])
 	   arranque, porque nunca consigue guardar que ya esta configurada. */
 	sistema_flash_guardar();
 	sistema_rtc_guardar();
+	vmu_guardar();		/* lo que el juego salvo en la tarjeta */
 	mando_terminar();
 
 	traza_resumen();

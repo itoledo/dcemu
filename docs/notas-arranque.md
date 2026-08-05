@@ -155,6 +155,77 @@ El descriptor de dispositivo también era casi todo ceros. `function_data[0]` es
 **qué botones y ejes tiene el mando**, y los campos de nombre se rellenan con espacios hasta su
 ancho completo en el bus, no terminan en NUL.
 
+### El patrón del descriptor: no todas las instrucciones llevan paquete (2026-08-05)
+
+Los bits 8-10 de la primera palabra son el **patrón**, y deciden la forma de la instrucción. Sólo
+**START (0)** lleva dirección de respuesta y paquete detrás; ocupar SDCKB (2), RESET (3), soltar
+SDCKB (4) y NOP (7) son el descriptor solo, **una palabra**.
+
+Leerles una dirección de respuesta que no tienen desalinea el recorrido entero: la palabra
+siguiente —que es el descriptor de la instrucción que viene— se interpreta como dirección, no cae
+en la RAM del sistema y la guarda de "`SB_MDSTAR` está mal" corta la lista. La biblioteca de
+Katana mete un NOP en su lista de enumeración, y eso es lo que dejaba a **Crazy Taxi 2** parado en
+la pantalla de la tarjeta de memoria: los comandos que venían detrás del NOP no se ejecutaban
+nunca. El síntoma en `--traza-mem` era literal y sostenido —`maple respuesta a 00000700, que no es
+RAM: se corta la lista`, una línea por vblank— y se leía como una tabla mal puesta del guest, que
+es la conclusión que el comentario del código invitaba a sacar.
+
+### El byte de origen lleva el mapa de subdispositivos
+
+En una respuesta, el byte 16-23 del encabezado no es sólo la dirección del que contesta: **sus 5
+bits bajos son el mapa de subdispositivos conectados** (`0x21` = mando con algo en la ranura 1).
+Es la única vía por la que el boot ROM y la biblioteca de Katana se enteran de que hay una VMU:
+nadie manda un `Device Request` a una ranura sin haber visto antes ese bit. Con el `0x20` fijo que
+había, una tarjeta perfectamente emulada seguía siendo invisible.
+
+---
+
+## La VMU: 128 KB de flash con sistema de archivos (2026-08-05)
+
+`vmu.c/h`. La tarjeta son 256 bloques de 512 bytes con la disposición que esperan el boot ROM y
+los juegos: bloque raíz en el 255, FAT en el 254, directorio del 253 al 241 y 200 bloques de
+usuario. Los formatos salen del driver de KOS (`maple/vmu.c`, `dc/vmufs.h`), que es el código que
+va a parsear lo que dcemu conteste, y la suite `vmu` lo maneja con **las mismas tramas que él
+manda**.
+
+Comandos: `DEVINFO` (1), `GETCOND` (9), `GETMINFO` (10), `BREAD` (11), `BWRITE` (12), `BSYNC`
+(13), `SETCOND` (14).
+
+Lo que hay que respetar, cada cosa por su motivo:
+
+- **La lectura es una fase de 512 bytes; la escritura son cuatro de 128 más un `BSYNC`.** No es
+  una convención de dcemu: es cómo se programa la flash de verdad, y es cómo manda los datos el
+  driver. El `blkid` es `((bloque & 0xFF) << 24) | ((bloque >> 8) << 16) | (fase << 8) |
+  partición`, y `BREAD` tiene que **devolverlo tal cual** — el driver lo compara contra el que
+  pidió y descarta la respuesta si difiere.
+- **`GETMINFO` y el bloque raíz tienen que decir lo mismo.** Un guest lee el que prefiere. Si
+  difieren, el fallo es de los que no avisan; por eso hay un caso de prueba que compara los dos
+  campo por campo.
+- **Las funciones de LCD y de reloj se declaran y se aceptan sin hacer nada.** Se declaran porque
+  `vmu_is_vmu()` de KOS exige las tres para considerarla una VMU oficial (y busca el
+  `0x403F7E7E` en la palabra del reloj); se aceptan contestando OK porque un error hace que el
+  driver reintente cuatro veces.
+- **La imagen persiste igual que la flash** (`bios/vmu-a1.bin`; `--vmu=` la mueve, `--sin-vmu`
+  saca la tarjeta del bus), se escribe en el `BSYNC` y al salir, y si el archivo no está se
+  formatea una vacía. **La fecha del formateo es fija** —1999-09-09— y no la del anfitrión: la
+  hora real es la clase de azar que ya partió las corridas del reproductor determinista en dos
+  líneas de tiempo cuando `SB_SBREV` contestaba basura del heap.
+
+La verificación de que esto sirve no es la suite: es que **Crazy Taxi guardó su `CRAZYTAXI_DC` de
+23 bloques él solo** durante la batería, que Crazy Taxi 2 crea su `C_TAXI02.SYS` y lo vuelve a
+encontrar en la corrida siguiente (200 → 180 bloques libres, y la leyenda "No Save File"
+desaparece), que Street Fighter III pasa de la pantalla de la tarjeta al título, y que el
+`vmu_pkg` de KOS escribe su `TESTFILE` con **su propio** sistema de archivos, no con el de dcemu.
+
+### Y la consecuencia para medir
+
+Una tarjeta en el bus agrega tráfico de Maple en cada vblank, y eso mueve la frontera del cuadro
+emulado: las siete demos de PVR de control cambiaron de hash al agregar la VMU y las siete
+volvieron a salir byte a byte iguales con `--sin-vmu`. O sea que **la configuración de la VMU es
+parte de la línea base**, no un detalle: un barrido sólo se compara contra otro con el mismo
+ajuste. Y como una corrida puede **escribir** la tarjeta, un A/B tiene que partir de la misma
+imagen — borrar `bios/vmu-a1.bin` o apuntar `--vmu=` a una copia de trabajo.
+
 ---
 
 ## Los hooks de syscall del BIOS
