@@ -515,3 +515,63 @@ sentido y con la pila en `0x45E34660`. **Ninguna de las dos formas es la correct
 pregunta que queda es qué transformación aplica el camino real. Las dos sondas
 —`DCEMU_SONDA_SIN_CE` y `DCEMU_SONDA_SIN_DESCIFRAR`— existen para poder separar esa pregunta
 de las demás, y son sondas y no arreglos justamente porque la respuesta todavía no se sabe.
+
+## El formato de carga de Windows CE, y por qué el bit del IP.BIN existe (2026-08-05)
+
+**Un título de Windows CE no trae un `1ST_READ.BIN` cifrado: trae una imagen con un sector de
+cabecera delante, sin cifrar.** Para eso sirve el bit 0 del campo de periféricos del IP.BIN, y
+con eso el círculo cierra entero.
+
+El formato salió de comparar el archivo en el disco con lo que el boot ROM de verdad deja en
+RAM. En `0WINCEOS.BIN`, sector 0, offset 0x10:
+
+```
+    +0x00  cuantas transferencias    1
+    +0x04  destino, en fisica        0x0C010000
+    +0x08  tamano de sector          0x800
+    +0x0C  largo                     0x0020D800
+```
+
+y a partir del sector 1, la imagen tal cual. `0x20D800` son exactamente 1051 sectores: uno
+menos que el archivo, que es la cabecera.
+
+**Esos bytes son idénticos, byte a byte, a los que el ROM escribe en `0x8CE01010`.** O sea que
+el cargador los copia de la cabecera, hace la transferencia que describen y la anota; y el
+bootstrap del IP.BIN después la verifica contra `SB_GDSTARD`. La cabecera describe, el cargador
+ejecuta y anota, el bootstrap comprueba.
+
+Y la prueba de que es eso y no otra cosa: el sector 1 del archivo empieza con
+`NOP NOP / MOV.L @(1,PC),R0 / JMP @R0` y el literal `0x8C0120C0` — **exactamente** lo que el
+ROM real deja en `0x8C010000`.
+
+Con eso implementado, **DCDoom arranca desde el `.gdi`**: 1127 escenas, 3936 colores en la
+captura, sin sondas y con el bit de CE puesto.
+
+### Las dos formas equivocadas, y por qué costaron
+
+- **descifrar** el archivo lo destroza — el bootstrap terminaba saltando a un epílogo de
+  función, o sea a un `RTS`, y volvía enseguida al `BRA` de «el juego devolvió el control»;
+- **cargarlo crudo sin quitar la cabecera** lo deja un sector corrido: ejecuta código variado
+  —de 1 instrucción distinta a 96— pero sin sentido, y con la pila en cualquier parte.
+
+Ninguna de las dos se parece a un fallo con nombre, y las dos se ven igual desde afuera: una
+pantalla negra.
+
+### La comprobación antes de creer la cabecera
+
+Se cree sólo si describe algo coherente: una transferencia, cuyo largo entra en lo que se leyó,
+y cuyo destino es el mismo sitio donde se cargó. Si no cuadra, se dice y se sigue como antes.
+Es lo mismo que hace `gdi_abrir()` con el modo de la pista: **preguntarle al dato en vez de
+suponerlo**.
+
+### Y una corrección de método, que casi manda por mal camino
+
+Comparé lo que el ROM dejaba en `0x8C010000` bajo `--bios` contra el archivo y no coincidía, de
+donde concluí que el ROM aplicaba una transformación desconocida. **Era un rastro falso**: el
+ROM, en esos 25 segundos, sólo había leído IP.BIN y el descriptor de volumen ISO9660 —
+`\x01CD001` en el FAD 45166 — y nunca llegó a cargar el juego. Lo que había en esa dirección
+era memoria de la BIOS. La búsqueda que después sí acertó fue contra el **segundo** sector del
+archivo, no el primero.
+
+Vale como regla: **antes de comparar dos volcados hay que demostrar que ambos contienen lo que
+uno cree**, y con `--bios` eso significa mirar qué sectores pidió la lectora.

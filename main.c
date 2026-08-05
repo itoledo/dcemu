@@ -1631,6 +1631,11 @@ int main(int argc, char *argv[])
 	   cargar y se aplican despues de gdrom_iniciar(), que borra el estado de la
 	   lectora -- ponerlos antes es escribirlos para nadie. */
 	DWORD boot_log_fin = 0, boot_log_largo = 0;
+
+	/* Si el IP.BIN marca el titulo como Windows CE (bit 0 del campo de
+	   perifericos, offset 0x3E) y si su cabecera resulto usable. Ver donde se
+	   carga el ejecutable. */
+	int ip_ce_bit = 0, es_ce = 0, ce_log_puesto = 0;
 //	short c;
 	WORD wvalor;
 	DWORD dwvalor;
@@ -1917,6 +1922,21 @@ int main(int argc, char *argv[])
 		}
 
 		/*
+			Y el bit, leido **despues** de la sonda para que la sonda sirva de
+			algo: es lo que decide como se carga el ejecutable. Ver mas abajo.
+		*/
+		{
+			const unsigned char *	ip = get_memory_pointer(mem_base + ip_offset);
+			unsigned char			d  = ip[0x3E];
+
+			int n = (d >= 'A') ? (d - 'A' + 10)
+			      : (d >= 'a') ? (d - 'a' + 10)
+			      : (d >= '0' && d <= '9') ? (d - '0') : 0;
+
+			ip_ce_bit = n & 1;
+		}
+
+		/*
 			Busquemos el ejecutable. El nombre no es siempre 1ST_READ.BIN: lo
 			declara el IP.BIN en su cabecera (offset 0x60, 16 bytes rellenos
 			con espacios), y es el mismo campo que usa el boot ROM -- deja el
@@ -1941,29 +1961,88 @@ int main(int argc, char *argv[])
 				strcpy(nombre_boot, "1st_read.bin");
 
 			/*
-				DCEMU_SONDA_SIN_DESCIFRAR=1: cargar el ejecutable tal cual.
+				**Un titulo de Windows CE no trae un 1ST_READ.BIN cifrado: trae
+				una imagen con un sector de cabecera delante, sin cifrar.**
 
-				dcemu descifra siempre, y hay imagenes donde eso lo destroza. En
-				el .gdi de DCDoom el archivo crudo **ya es codigo valido** -- un
-				lazo de copia y un JMP, `d006 d107 d207 6302 2232 7004 ...` -- y
-				el descifrado da basura; el bootstrap termina saltando a un
-				epilogo de funcion, o sea a un RTS, y vuelve enseguida.
+				El campo de perifericos del IP.BIN lo dice en su bit 0 (offset
+				0x3E), y eso es justamente para lo que sirve. El formato salio de
+				comparar el archivo en el disco con lo que el boot ROM de verdad
+				deja en RAM:
 
-				La sonda existe para separar "el ejecutable esta mal cargado" de
-				"el ejecutable esta bien y falla despues", que sin ella se
-				confunden. Que sea una sonda y no un arreglo es a proposito:
-				**todavia no se sabe como decide el sistema de verdad**, y
-				adivinarlo seria inventar. Ver docs/notas-arranque.md.
+					sector 0, en el offset 0x10:
+						+0x00  cuantas transferencias
+						+0x04  destino, en fisica
+						+0x08  tamano de sector
+						+0x0C  largo
+					sector 1 en adelante: la imagen, tal cual
+
+				Esos 24 bytes son **byte a byte** los que el ROM escribe en
+				BOOT_LOG_BASE, o sea que el cargador los copia de aqui; y el
+				bootstrap del IP.BIN despues los verifica contra SB_GDSTARD. Con
+				lo que el circulo cierra: la cabecera describe la transferencia,
+				el cargador la hace y la anota, y el bootstrap la comprueba.
+
+				Descifrar esto lo destroza -- el bootstrap terminaba saltando a un
+				epilogo de funcion y volviendo enseguida -- y cargarlo crudo pero
+				sin quitar la cabecera lo deja un sector corrido.
 			*/
+			es_ce = (ip_ce_bit != 0);
+
+			tam = cargar_archivo_iso(nombre_boot, !es_ce,
+				get_memory_pointer(mem_base + mem_offset));
+
+			if (tam > 0 && es_ce)
 			{
-				const char *	v  = getenv("DCEMU_SONDA_SIN_DESCIFRAR");
-				bool			ci = !(v != NULL && atoi(v) != 0);
+				unsigned char *	p = get_memory_pointer(mem_base + mem_offset);
+				DWORD			cab[6];
 
-				if (!ci)
-					fprintf(stderr, "sonda: el ejecutable se carga sin descifrar\n");
+				memcpy(cab, p + 0x10, sizeof(cab));
 
-				tam = cargar_archivo_iso(nombre_boot, ci,
-					get_memory_pointer(mem_base + mem_offset));
+				/* Se cree la cabecera solo si describe algo coherente: una
+				   transferencia, dentro de lo que se leyo y a la RAM. Si no,
+				   se deja como estaba y que se vea en la traza. */
+				if (cab[0] == 1 && cab[3] > 0
+				 && (long) (cab[3] + 0x800) <= tam
+				 && (cab[1] & 0x1FFFFFFF) == ((mem_base + mem_offset) & 0x1FFFFFFF))
+				{
+					fprintf(stderr, "arranque: imagen de Windows CE, %lu bytes a "
+						"%08lx (cabecera de un sector)\n",
+						(unsigned long) cab[3], (unsigned long) cab[1]);
+
+					/* La carga util empieza en el segundo sector. */
+					memmove(p, p + 0x800, cab[3]);
+					tam = (long) cab[3];
+
+					/*
+						Y el registro de transferencias sale de la cabecera. Se
+						arma campo por campo y no copiando los 24 bytes: los
+						cuatro primeros son de la cabecera, pero los dos ultimos
+						--la direccion de la entrada y su cero-- los pone el
+						cargador, y en el archivo esos bytes son otra cosa.
+					*/
+					{
+						DWORD tabla[6];
+
+						tabla[0] = cab[0];		/* cuantas */
+						tabla[1] = cab[1];		/* destino */
+						tabla[2] = cab[2];		/* tamano de sector */
+						tabla[3] = cab[3];		/* entrada[0]: largo */
+						tabla[4] = cab[1];		/*             direccion */
+						tabla[5] = 0;
+
+						memwrite(BOOT_LOG_BASE, tabla, sizeof(tabla));
+					}
+
+					boot_log_fin   = cab[1] + cab[3];
+					boot_log_largo = cab[3];
+					ce_log_puesto  = 1;
+				}
+				else
+					fprintf(stderr, "arranque: el titulo dice Windows CE pero su "
+						"cabecera no describe una transferencia usable "
+						"(%08lx %08lx %08lx)\n",
+						(unsigned long) cab[0], (unsigned long) cab[1],
+						(unsigned long) cab[3]);
 			}
 
 			if (tam <= 0)
@@ -2000,6 +2079,9 @@ int main(int argc, char *argv[])
 			la comprobacion pase por construccion y no por casualidad: la tabla
 			es un registro, no un valor magico que haya que adivinar.
 		*/
+		/* Salvo que ya lo haya puesto la cabecera de un titulo de Windows CE,
+		   que es la fuente de verdad cuando existe. */
+		if (!ce_log_puesto)
 		{
 			DWORD	fisica = (mem_base + mem_offset) & 0x1FFFFFFF;
 			DWORD	tabla[6];
