@@ -1398,6 +1398,19 @@ queda en el 12 % del perfil y su código se va al fondo. Medido así:
 perfil quedan parejas. Multiplicar sus segundos emulados por siete habría dado lo mismo y
 costado doce minutos de corrida instrumentada.
 
+**Y una tercera, encontrada el 2026-08-04 al reentrenar por primera vez.** `pgo.ps1` borraba
+los `.pgc` de la tanda anterior —su comentario dice, con razón, que «contaminarían el perfil
+con código que ya no existe»— pero **nunca limpiaba el `.pgd`**, y `pgomgr /merge` acumula
+sobre lo que la base ya tenía. Como el `.pgd` vive fuera de `build/` **a propósito** para
+sobrevivir a un borrado, cada reentrenamiento se fundía encima del anterior y el perfil pasaba
+a describir la suma de dos programas. Se arregló con `pgomgr /clear` antes de fundir.
+
+Vale anotar cómo terminó, porque el desenlace es la parte útil: la sospecha nació de una
+medición —tras reentrenar, DCDoom repetía su cifra y Crazy Taxi salía 5,5 % por debajo— y
+**resultó no ser la causa**. Con el `.pgd` limpio Crazy Taxi dio lo mismo (119 996 / 119 874 /
+119 785 ms). El error era real y valía arreglarlo; la explicación que lo motivó era falsa, y
+sólo alternar dos binarios en una tanda lo demostró.
+
 ### Lo que esto cambia para el resto del plan
 
 **Medir sin PGO ya no tiene sentido en este árbol.** Cualquier cambio que mueva el tamaño de
@@ -1453,3 +1466,104 @@ son MMU (la diferencia contra los 5,2 de un guest sin ella). Ahí adentro quedan
 de contexto —190 bytes por instrucción, ~1 ns— y la llamada a `mmu_traducir()` con sus
 comprobaciones de rango, que se podría meter en el macro de `memread`/`memwrite` para las
 0,37 traducciones por instrucción. Optimista, eso deja DCDoom cerca de **0,80× y 34 fps**.
+
+---
+
+# La alineación de `core`: 1,9-2,4 % en los guests sin MMU (2026-08-05)
+
+El detalle completo está en [`interprete-plan.md`](interprete-plan.md), «La alineación del
+contexto». Lo que le toca a este documento son el número y la lección de método.
+
+**El número.** Alinear a 64 la variable `core` —y la instantánea de excepciones, y los dos
+bancos de FPU, que dejaron `malloc()` por eso—:
+
+| banco | antes | después | |
+| --- | --- | --- | --- |
+| Crazy Taxi | 108 050 ms · 1,65× · 91,7 fps | **105 440 ms · 1,69× · 94,8 fps** | **−2,4 %** |
+| Virtua Tennis | 123 616 ms · 1,45× | **121 261 ms · 1,48×** | **−1,9 %** |
+| DCDoom (con MMU) | 47 520 ms · 0,74× | 47 370 ms · 0,74× | ≈0 |
+
+**Diez pares de diez** a favor en los dos guests sin MMU, con el orden dentro del par dado
+vuelta en los impares, y **rangos disjuntos** en las dos tandas finales: la peor corrida
+alineada es mejor que la mejor sin alinear. El guest con MMU no lo nota, que es al revés de lo
+esperable —es el que copia el contexto entero 5100 millones de veces— y la explicación
+probable está en el otro documento.
+
+**La lección.** En «lo que no valió» de la fase de Release está anotado que el trío ARM7 +
+`context_t` + `mem_base_directa` daba «1-2 % cada una en Debug y ≈0 en Release». Para
+`context_t` eso era cierto **y era media medida**: reordenar los campos para que lo caliente
+entre en dos líneas de caché no sirve de nada mientras el enlazador pueda dejar la estructura
+en cualquier frontera de 8 bytes, que es lo que pasaba —`sh4_cpu` no tenía alineación
+declarada—. El reordenamiento medía ≈0 porque **el enlazador decidía el resultado, no el
+código**. Las dos juntas valen 1,9-2,4 %.
+
+Vale como advertencia general en este árbol: **una optimización de disposición de datos medida
+sin fijar la disposición no mide lo que dice medir**, exactamente igual que las de código
+antes de PGO. Y por el mismo motivo, archivarla como «no rinde» puede estar archivando la
+mitad de un cambio.
+
+El corolario práctico es la fila que faltaba en la tabla de sondas: `DCEMU_SIN_ALINEAR`, de
+compilación porque lo que mide **es** la disposición y las dos ramas no caben en un binario.
+
+---
+
+# `/arch:AVX2`: cuesta 2,1 % (2026-08-05)
+
+Era el ítem 1.5 del plan de estado del arte, marcado «gratis o nada». Resultó **nada, con
+signo**: no hay ningún `/arch:` ni `/fp:` en el árbol y probar el más agresivo que la máquina
+soporta pierde.
+
+| Crazy Taxi (3 pares, orden alternado) | media | rango |
+| --- | --- | --- |
+| sin `/arch:` (SSE2, lo que trae MSVC) | **104 442 ms · 1,72×** | 103 826 - 105 145 |
+| `/arch:AVX2` | 106 619 ms · 1,68× | 105 224 - 107 988 |
+
+**+2,1 % más lento**, cuatro pares de cuatro en contra contando el descartado, y los rangos son
+disjuntos por poco (105 145 contra 105 224). Trabajo idéntico al dígito en las ocho corridas.
+
+**No es un problema de conformidad**, que era el riesgo que había que vigilar: `dcemu_sh4json`
+da **113 191 ok / 0 fallan bit a bit** con AVX2 puesto, o sea que MSVC no contrajo ningún
+`a*b+c` a FMA y el redondeo quedó igual. `/fp:precise` hizo su trabajo. Sencillamente pierde.
+
+**Por qué, casi seguro.** Es el mismo mecanismo que ya midió el experimento de inlinear
+manejadores, que costó 19 %: *en este árbol el tamaño del código caliente es un factor de
+primer orden*. Un intérprete de SH-4 es trabajo entero escalar y llamadas indirectas —no hay
+nada que vectorizar— y la codificación VEX es más larga, así que el bucle engorda sin ganar
+nada a cambio.
+
+Queda como `DCEMU_ARCH`, en `OFF`, para poder repetir el A/B sin rehacer el andamiaje. Si
+alguna vez se agrega trabajo vectorizable de verdad —los decodificadores de textura, el
+mezclador del AICA— conviene medirlo **por archivo** y no encendiéndolo para todo el árbol.
+
+---
+
+# El sondeo del ARM7, implementado: 0,5 % (2026-08-05)
+
+El detalle está en [`arm7-plan.md`](arm7-plan.md), «El camino 2, implementado». Aquí el número
+y lo que le hace al mapa.
+
+**El número.** Memoizar los barridos de sondeo del ARM elide **145 998 803 instrucciones de
+2 161 263 753** (6,8 %) y vale **−0,49 %** en Crazy Taxi: 106 069 ms contra 106 591, cuatro
+pares de cuatro a favor con rangos disjuntos. En DCDoom no elide nada. El A/B es el mismo
+binario en las dos ramas, elegido por `DCEMU_SIN_MEMO_ARM`.
+
+**Lo que le hace al mapa.** Era el mayor premio pendiente del plan de estado del arte —«hasta
+−7 % del total»— y resultó un séptimo de eso. La estimación suponía saltear la mitad de los
+pasos del ARM; se saltea el 6,8 %, y sobre un ARM que es el 15 % de la corrida eso son ~1 %
+teóricos y 0,5 % medidos.
+
+Con esto **las tres vías de velocidad del plan están medidas y ninguna dio un múltiplo**:
+
+| | esperado | medido |
+| --- | --- | --- |
+| intérprete de bloques | «la medida real del despacho» | 0 |
+| `/arch:AVX2` | «gratis o nada» | **−2,1 %** (cuesta) |
+| sondeo del ARM7 | hasta 7 % | **0,5 %** |
+| alineación de `core` | no estaba en el plan | **1,9-2,4 %** |
+| línea de barrido | no estaba en el plan | **2,3 %** |
+
+Las dos que rindieron no estaban en el plan, y las tres que estaban rindieron entre cero y
+negativo. Es el mismo patrón que la fase 6 dejó anotado —de cinco hipótesis razonadas, cuatro
+murieron— y a esta altura es la conclusión más sólida del árbol sobre sí mismo: **acá lo que
+rinde no se parece a lo que uno propondría en una pizarra**, y la única forma de saberlo es
+alternar dos binarios en una tanda.

@@ -206,15 +206,35 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_PERFIL_ARM=1` | histogramas del ARM7 por dirección y por fila de despacho |
 | `DCEMU_SIN_DIBUJO=1` / `DCEMU_SIN_VOLUMEN=1` / `DCEMU_SIN_FILTRO_MIP=1` | aíslan una etapa del render para medirla |
 | `DCEMU_SIN_CACHE_MMU=1` | apaga las tres cachés de traducción de la MMU. **Valen 1,8× en DCDoom**; es el interruptor del A/B y para aislar una regresión |
+| `DCEMU_FORMA=1` | forma de ejecución del guest: longitud de los bloques básicos, cuántos distintos y con qué reincidencia. **Sólo existe si se compiló con `-DDCEMU_FORMA=ON`**, porque el gancho cuesta 4,4 % (ver `docs/interprete-plan.md`) |
+| `DCEMU_INLINE` (compilación) | despacha en línea los diez manejadores más frecuentes, sin llamada indirecta. **Medido: cuesta 19 %** aunque cubra el 35,3 % de las instrucciones — el bucle caliente engorda más de lo que ahorran las llamadas |
+| `DCEMU_SONDA_BLOQUES=1` | caché de bloques predecodificados: saltea la búsqueda de la palabra y la de la tabla de 65536 punteros. **Medido y no sirve** — ruido en juego, −3,3 % en menús—, así que sólo existe con `-DDCEMU_BLOQUES=ON`. Queda para volver a correr el A/B sin rehacer la idea |
 | `DCEMU_MMU_DATOS=N` | entradas de la caché de traducciones resueltas (4096 por omisión, tope 8192). Para barrer el tamaño sin recompilar |
 | `DCEMU_SONDA_SETJMP_POR_INSTRUCCION=1` | vuelve a armar el salto de excepción una vez por instrucción, como era antes (13,5 % más lento) |
 | `DCEMU_SONDA_SIN_BANCOS_FPU=1` | la instantánea de excepciones no copia los bancos de coma flotante |
 | `DCEMU_SONDA_SIN_INSTANTANEA=1` | la instantánea no copia nada. **Rompe el guest a propósito**: sirve para saber que el mecanismo es portante, no para cronometrar |
+| `DCEMU_SIN_MEMO_ARM=1` | apaga la memoización de barridos de sondeo del ARM7. Encendida elide **6,8 % de los pasos del ARM** y vale **0,5 %** de la corrida; en DCDoom no elide nada. Ver `docs/arm7-plan.md` |
+| `DCEMU_SONDA_ONDA=1` | censo por páginas de 1 KB de la RAM de onda: lecturas de datos del ARM contra escrituras de quien sea. Es lo que contesta si el sondeo del ARM7 se puede saltear — ver `docs/arm7-plan.md` |
+| `DCEMU_ARCH` (compilación) | conjunto de instrucciones (`AVX2`, `AVX`, `SSE2`, `OFF`). **Medido: `AVX2` cuesta 2,1 %**, por tamaño del código caliente; viene en `OFF` |
+| `DCEMU_SIN_ALINEAR` (compilación) | apaga `DC_ALINEADO`, o sea la alineación a 64 de `core`, de la instantánea y de los bancos de FPU. Es el A/B de la alineación: **vale 2,4 % en Crazy Taxi y 1,9 % en Virtua Tennis, ≈0 en DCDoom**, ver `docs/interprete-plan.md` |
 | `DCEMU_LTCG` | construcción con LTCG (encendida por omisión) |
 
 Todas viven en el binario normal a propósito: comparar dos compilaciones mete el layout como
 variable, y este árbol ya perdió una sesión por eso. Se leen una vez al arrancar, nunca en el
 camino caliente. Ver `docs/rendimiento-plan.md`, fase 6.
+
+**Hay dos excepciones, y cada una lo es por su propio motivo.**
+
+`DCEMU_FORMA` está medida: su gancho es una rama por despacho y cuesta **4,4 %** en Crazy
+Taxi (1,50× contra 1,55-1,57×, alternando los dos binarios en una tanda). Se puede compilar
+aparte sin romper la regla porque **cuenta bloques del guest en vez de cronometrar al
+emulador**: las cuentas salen idénticas en cualquier compilación, y es el tiempo —no el
+conteo— lo que la disposición del binario contamina.
+
+`DCEMU_SIN_ALINEAR` no tiene alternativa: **lo que mide es la disposición de los datos**, así
+que las dos ramas no pueden convivir en un binario. Su A/B carga con esa contaminación por
+construcción, y por eso se corre alternando dentro de una tanda y mirando también la
+dispersión, no sólo la media.
 
 Keys: F1 fullscreen, F2 log window, **F5 dump the framebuffer**, **F6 dump the GL buffer**,
 F9 step, F10 stop, F11 run, F12 debug view, `p` pause, **`f` toggle the FPS counter**, arrows
@@ -239,7 +259,13 @@ how to believe a measurement of it.
   `--traza-mem` prints how many scenes rendered and the strip count of the last twelve — that
   is what separates "the demo stopped submitting" from "the capture is wrong".
 - **A silent `.wav` is a black BMP.** Measure `--captura-audio` the same way: non-zero
-  samples, distinct values, RMS and peak.
+  samples, distinct values, RMS and peak. Crazy Taxi's is silent for the whole run **unless the
+  bench's key presses are set** — without them the game sits before the title and never makes a
+  sound, so the file looks like a valid baseline and guards nothing.
+- **`--sin-audio` costs ~50%**: Crazy Taxi runs at 1.14× with it and 1.72× without. It is
+  needed to capture the `.wav`, so an A/B run with it measures a regime the bench never sees —
+  the ARM7 memoization read as −0.09% (noise) that way and −0.49% (consistent, disjoint ranges)
+  without it. Audio capture and the stopwatch cannot share a run, same as `--captura-gl`.
 - **`stdout.txt` and `stderr.txt` land next to the executable**, i.e. `build/Release/`, not in
   the working directory — SDL 1.2 builds the path from `GetModuleFileName`. Redirecting the
   process's output from the shell captures zero bytes. Two instances truncate each other's.
@@ -258,6 +284,20 @@ how to believe a measurement of it.
   `dcemu.exe` and 116 805 on the same code minutes later, with the instruction count identical
   to within 100 in 22 billion. That is a 13% error, larger than most things worth measuring.
   A table whose rows come from different batches cannot be read at all.
+- **An A/B proves nothing until you have hashed both binaries.** A swap script whose
+  `Copy-Item` failed measured the same binary ten times and produced a perfectly plausible
+  table — identical work, sane spread, a small difference between "A" and "B". And
+  `-DCMAKE_C_FLAGS=/DSOMETHING` configured without complaint and never reached the compiler;
+  what gave it away was the two binaries hashing the same. Verify the swap, both in the shell
+  and in the build.
+- **Alternate the order within the pair too, not just the binaries.** If the first run of each
+  pair pays anything for being first, "A always goes first" turns that cost into a difference
+  between binaries.
+- **A data-layout optimization measured without pinning the layout does not measure what it
+  says**, the same way code optimizations did not before PGO. Reordering `context_t` measured
+  ≈0 in Release because `core` had no declared alignment and the linker decided the outcome;
+  with the alignment the pair is worth 1.9-2.4% on the guests without MMU. Before filing one
+  as "no gain", check that something is holding the layout still.
 - **Demos that place geometry with `rand()`** (the modifier-volume ones) differ run to run. A
   two-colour BMP proves nothing; run them a few times.
 - **XInput is read globally, without window focus.** If anyone touches a gamepad during a
@@ -545,8 +585,13 @@ paths report the same disc. Data goes out either as chained DRQ blocks or throug
 (`SB_GDSTAR`/`SB_GDST`), depending on bit 0 of FEATURES at the `PACKET` command.
 
 `iso.c` picks a backend by extension: `.iso` is a flat ISO9660 read by `iso9660_min.c`, `.cdi`
-(DiscJuggler) goes through `cdi.c`, anything else needs `USE_LIBCDIO`, which this build does
-not have. `iso_init()` lists every track with its LBA, size, mode and file offset — that
+(DiscJuggler) goes through `cdi.c`, `.gdi` (a text index plus one raw file per track) through
+`gdi.c`, anything else needs `USE_LIBCDIO`, which this build does not have. **`.cdi` and `.gdi`
+share everything above the open** — the same track table, TOC, sessions and
+`min_iso_open_pista()`, selected by `ES_MULTIPISTA()`; the only line that differs is which file
+holds the data track. A `.gdi` does not record whether a 2352-byte data track is mode 1 or
+mode 2, and that decides where the 2048 user bytes start (16 or 24), so it is read from the
+sector's own header rather than assumed. `iso_init()` lists every track with its LBA, size, mode and file offset — that
 listing is the first thing to look at.
 
 Rules that cost a boot each:
