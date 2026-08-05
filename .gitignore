@@ -61,4 +61,6 @@ descrambled.bin
 # El reporte de xperf: 72 MB de HTML por corrida. Se regenera con
 # herramientas/perfil.ps1 y no va versionado.
 perfil.csv
+perfil-*.csv
+perfil-pmu.log
 perfil*.etl

@@ -28,7 +28,15 @@
 param(
 	[int]    $Segundos = 180,
 	[string] $Imagen   = "roms\Crazy Taxi (USA).cdi",
-	[string] $Exe      = "build-x64\Debug\dcemu.exe",
+	# **Release, no Debug.** El unico perfil que este arbol llego a tomar fue de
+	# Debug y desvio el plan entero: fpu_dn_s tenia el 9,6 % de las muestras y su
+	# optimizacion rindio 0,44 %, porque /Od desactiva __inline y Debug infla
+	# justo lo que el optimizador se lleva igual. Release deja PDB a proposito
+	# (CMakeLists.txt agrega /Zi). Ver docs/interprete-plan.md.
+	#
+	# Para los contadores de hardware --IPC, saltos fallados, fallos de cache--
+	# esta perfil-pmu.ps1, que es el paso 1.1 del plan.
+	[string] $Exe      = "build\Release\dcemu.exe",
 	[string] $Salida   = "perfil.csv"
 )
 

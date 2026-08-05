@@ -117,6 +117,22 @@ Remove-Item env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA Silen
 # se lo busca al lado del enlazador.
 $pgomgr = Join-Path $msvc "pgomgr.exe"
 
+# **El .pgd se limpia antes de fundir, o el entrenamiento se suma al anterior.**
+#
+# `pgomgr /merge` acumula sobre lo que el .pgd ya tenia. Como el .pgd vive fuera
+# de build/ a proposito --para sobrevivir a un borrado--, un segundo
+# entrenamiento quedaba fundido encima del primero: el perfil pasaba a describir
+# la suma de dos programas distintos, y el equilibrio entre los bancos --que es
+# justo lo que el peso 7 esta ajustando-- se corria sin que nadie lo pidiera.
+#
+# Se detecto midiendo: tras un reentrenamiento, DCDoom repetia su cifra y Crazy
+# Taxi salia 5,5 % por debajo de la documentada. Con el .pgd limpio los dos
+# vuelven a su lugar. Arriba ya se borraban los .pgc por esta misma razon, y el
+# comentario decia "contaminarian el perfil con codigo que ya no existe" -- solo
+# que la contaminacion entraba igual por el .pgd.
+& $pgomgr /clear $pgd | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "pgomgr /clear fallo con $LASTEXITCODE" }
+
 # Uno por uno y con su peso: pgomgr /merge:N multiplica las cuentas del .pgc
 # que funde. Fundir el directorio entero de una vez los pondera a todos igual.
 foreach ($b in $bancos) {
