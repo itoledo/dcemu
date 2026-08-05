@@ -285,6 +285,16 @@ extern void WriteMemoryF(unsigned long direccion, float * valor);
 /* Y donde deja la direccion en la que cargo el ejecutable. Medido igual. */
 #define EJECUTABLE_BASE	0x8C0000F8
 
+/*
+	El registro de transferencias del boot ROM: cuantas hizo, a donde y de que
+	largo. Direccion cableada en el bootstrap del IP.BIN --el codigo de Sega,
+	igual en todos los juegos-- y **verificada por los titulos de Windows CE**,
+	que suman direccion + largo de la ultima entrada y lo comparan contra
+	SB_GDSTARD antes de seguir. Medida contra el ROM real con --bios; el formato
+	esta en main.c, donde se arma. Ver docs/notas-arranque.md.
+*/
+#define BOOT_LOG_BASE	0x8CE01010
+
 #define SYSCALL_SYSINFO		0x8C0000B0
 #define SYSCALL_ROMFONT		0x8C0000B4
 #define SYSCALL_FLASHROM	0x8C0000B8

@@ -1625,6 +1625,12 @@ int main(int argc, char *argv[])
 {
 //	long idx, cnt = 0;
  	long tam; // , i, j;
+
+	/* Donde termino la carga del ejecutable y cuanto midio, para el registro de
+	   transferencias que verifican los titulos de Windows CE. Se calculan al
+	   cargar y se aplican despues de gdrom_iniciar(), que borra el estado de la
+	   lectora -- ponerlos antes es escribirlos para nadie. */
+	DWORD boot_log_fin = 0, boot_log_largo = 0;
 //	short c;
 	WORD wvalor;
 	DWORD dwvalor;
@@ -1934,7 +1940,33 @@ int main(int argc, char *argv[])
 			if (nombre_boot[0] == '\0')
 				strcpy(nombre_boot, "1st_read.bin");
 
-			if ((tam = cargar_archivo_iso(nombre_boot, true, get_memory_pointer(mem_base + mem_offset))) <= 0)
+			/*
+				DCEMU_SONDA_SIN_DESCIFRAR=1: cargar el ejecutable tal cual.
+
+				dcemu descifra siempre, y hay imagenes donde eso lo destroza. En
+				el .gdi de DCDoom el archivo crudo **ya es codigo valido** -- un
+				lazo de copia y un JMP, `d006 d107 d207 6302 2232 7004 ...` -- y
+				el descifrado da basura; el bootstrap termina saltando a un
+				epilogo de funcion, o sea a un RTS, y vuelve enseguida.
+
+				La sonda existe para separar "el ejecutable esta mal cargado" de
+				"el ejecutable esta bien y falla despues", que sin ella se
+				confunden. Que sea una sonda y no un arreglo es a proposito:
+				**todavia no se sabe como decide el sistema de verdad**, y
+				adivinarlo seria inventar. Ver docs/notas-arranque.md.
+			*/
+			{
+				const char *	v  = getenv("DCEMU_SONDA_SIN_DESCIFRAR");
+				bool			ci = !(v != NULL && atoi(v) != 0);
+
+				if (!ci)
+					fprintf(stderr, "sonda: el ejecutable se carga sin descifrar\n");
+
+				tam = cargar_archivo_iso(nombre_boot, ci,
+					get_memory_pointer(mem_base + mem_offset));
+			}
+
+			if (tam <= 0)
 			{
 				fprintf(stderr, "No se pudo abrir %s.\n", nombre_boot);
 				return 1;
@@ -1942,6 +1974,50 @@ int main(int argc, char *argv[])
 		}
 		
 		fprintf(stderr, "leidos %ld bytes\n", tam);
+
+		/*
+			El registro de transferencias del boot ROM, que el camino de hooks no
+			creaba porque carga el ejecutable leyendo el archivo y no por DMA.
+
+			El bootstrap del IP.BIN --el codigo de Sega que corre desde
+			0x8C008000, igual en todos los juegos-- lo lleva cableado en
+			0x8CE01010 y lo verifica cuando el titulo esta marcado como Windows
+			CE: toma la ultima entrada, suma direccion + largo y lo compara
+			contra SB_GDSTARD. Si no cuadra llama al syscall de reinicio, y por
+			eso DCDoom por .gdi se rendia al arrancar.
+
+			El formato salio de mirar lo que deja el ROM de verdad con --bios:
+
+				+0x00  cuantas entradas
+				+0x04  destino, en fisica
+				+0x08  0x800, el tamano de sector
+				+0x0C  entrada[0]: largo
+				+0x10               direccion, en fisica
+				+0x14               0
+				+0x18  entrada[1]...
+
+			Se anota **lo que de verdad se transfirio**, que es lo que hace que
+			la comprobacion pase por construccion y no por casualidad: la tabla
+			es un registro, no un valor magico que haya que adivinar.
+		*/
+		{
+			DWORD	fisica = (mem_base + mem_offset) & 0x1FFFFFFF;
+			DWORD	tabla[6];
+
+			tabla[0] = 1;						/* una transferencia */
+			tabla[1] = fisica;
+			tabla[2] = 0x800;
+			tabla[3] = (DWORD) tam;				/* largo */
+			tabla[4] = fisica;					/* direccion */
+			tabla[5] = 0;
+
+			memwrite(BOOT_LOG_BASE, tabla, sizeof(tabla));
+
+			/* Los contadores de la DMA se ponen **despues de gdrom_iniciar()**,
+			   que los borra. Aqui solo se anota que hay que ponerlos. */
+			boot_log_fin   = fisica + (DWORD) tam;
+			boot_log_largo = (DWORD) tam;
+		}
 	}
 
 	/*
@@ -2006,6 +2082,12 @@ int main(int argc, char *argv[])
 
 	// La lectora ya puede saber si hay disco.
 	gdrom_iniciar(opciones.bandeja);
+
+	/* Y recien ahora los contadores de la DMA con los que quedo la carga del
+	   ejecutable: gdrom_iniciar() acaba de dejar la lectora en cero. Ver
+	   BOOT_LOG_BASE. */
+	if (boot_log_largo)
+		gdrom_dma_contadores(boot_log_fin, boot_log_largo);
 
 	// we start the cpu
 	// allocating the current cpu

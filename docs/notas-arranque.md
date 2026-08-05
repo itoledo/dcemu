@@ -459,3 +459,59 @@ espacios de `"SE      "`.
 Pasados los dos anteriores, el bootstrap termina en `BRA 0xAC00E0B2`, un lazo a sí mismo con
 todos los registros en cero — el «parar aquí» deliberado, en la imagen sin caché de IP.BIN. Es
 por donde hay que seguir.
+
+### Portones 1 y 2, resueltos: el registro de transferencias del boot ROM
+
+**El portón 1 se cae solo cuando se entiende qué es `0x8CE01010`: el registro de
+transferencias del propio boot ROM.** Se leyó del ROM de verdad, corriendo el mismo `.gdi` con
+`--bios` y volcando esa dirección:
+
+```
+8ce01010: 01 00 00 00 | 00 00 01 0c | 00 08 00 00 | 00 d8 20 00
+8ce01020: 00 00 01 0c | 00 00 00 00
+```
+
+O sea:
+
+```
+    +0x00  cuantas entradas          1
+    +0x04  destino, en fisica        0x0C010000
+    +0x08  tamano de sector          0x800
+    +0x0C  entrada[0]: largo         0x0020D800
+    +0x10               direccion    0x0C010000
+    +0x14               0
+    +0x18  entrada[1]...
+```
+
+El camino de hooks nunca lo creaba porque carga el ejecutable **leyendo el archivo**, sin DMA y
+sin dejar rastro. Ahora lo arma `main()` con lo que de verdad transfirió (`BOOT_LOG_BASE` en
+`mem.h`), y pone `SB_GDSTARD` en `direccion + largo`, que es exactamente lo que el bootstrap
+compara. La tabla es un registro, no un valor mágico: por eso la comprobación pasa por
+construcción.
+
+Un detalle que costó una vuelta: **los contadores hay que ponerlos después de
+`gdrom_iniciar()`**, que deja la lectora en cero. Escritos antes se perdían en silencio.
+
+Con eso y el `REQ_MODE` del portón 2, **DCDoom por `.gdi` ya no llama al reinicio** — con el
+bit de CE puesto, sin sondas.
+
+### Portón 3 no era un portón: es el traspaso al juego
+
+`0x8C00E080` limpia R0-R14, pone pila, VBR y FPSCR, y llama al punto de entrada; el
+`BRA 0xAC00E0B2` de al lado es el «si el juego vuelve, parar aquí». El juego **volvía
+enseguida**, porque en `0x8C010000` había `MOV.L @R15+,R10 / MOV.L @R15+,R9 / RTS` — el
+epílogo de una función, no un punto de entrada.
+
+O sea que lo que está mal es **el ejecutable cargado**, y ahí hay una pregunta abierta:
+
+- el archivo **crudo** empieza con código SH-4 plausible (`d006 d107 d207 6302 2232 7004 …`);
+- **descifrado** por `scramble.c` da basura;
+- y el ROM real, con `--bios`, deja en `0x8C010000` una tercera cosa —
+  `NOP NOP / JMP 0x8C0120C0` — **que no aparece en ninguna parte del archivo crudo**.
+
+Cargarlo sin descifrar (`DCEMU_SONDA_SIN_DESCIFRAR=1`) lo hace ejecutar código variado en vez
+de girar en el sitio —de 1 instrucción distinta a 96— pero termina igual en instrucciones sin
+sentido y con la pila en `0x45E34660`. **Ninguna de las dos formas es la correcta**, y la
+pregunta que queda es qué transformación aplica el camino real. Las dos sondas
+—`DCEMU_SONDA_SIN_CE` y `DCEMU_SONDA_SIN_DESCIFRAR`— existen para poder separar esa pregunta
+de las demás, y son sondas y no arreglos justamente porque la respuesta todavía no se sabe.
