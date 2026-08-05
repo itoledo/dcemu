@@ -415,7 +415,8 @@ tables:
   `memread()` / `memwrite()` are macros that call straight through them.
 
 Regions: `0x0C-0x0F/0x8C-0x8F/0xAC-0xAF` system RAM (16 MB, mirrored 4× per window),
-`0x04/0x05/0xA4/0xA5` video RAM (8 MB) with `0x06/0x07` as their image areas, `0x11/0x13` the
+`0x04/0x05/0x84/0x85/0xA4/0xA5` video RAM (8 MB) with `0x06/0x07/0x86/0x87/0xA6/0xA7` as their
+image areas, `0x11/0x13` the
 TA texture FIFO (also video RAM), `0x00/0xA0` PVR/system control registers, `0x10` TA polygon
 FIFO (`0x10800000` up is the YUV converter, a different path), `0xE0-0xE3` store queues,
 `0x1F/0xFF/0xBF` SH-4 on-chip registers (`0xBF` is area 7 through P2 — Windows CE's HAL starts
@@ -428,6 +429,17 @@ dereferences NULL.
 physical memory through several windows and depends on them agreeing. Because
 `pvr_read`/`pvr_write` label their `switch` cases in P2 form (`0xa0...`), both switch on
 `fisica | 0xa0000000` so every window resolves identically.
+
+**A missing window is silent, and this tree has now paid for it four times**: system RAM
+through P1 (`0x8C`), area 7 through P2 (`0xBF`), the video-RAM image areas (`0x06/0x07`,
+`0xA6/0xA7`), and video RAM through P1 (`0x84-0x87`) — Sega Rally 2 wrote 16 KB to
+`0x85000000` from a single PC and all 4096 writes evaporated. `mem_zone[]` replicates every
+window automatically, so `get_memory_pointer()` always resolves; what has to be added by hand
+each time is the `mem_hash_read`/`mem_hash_write` entry. When a guest touches memory that
+should exist, check the handler table before anything else. And note the failure is *worse*
+than an error: `--traza-mem` reports an unmapped access, but a window wired to `ignore_write`
+reports nothing at all — `0xA6` was set to `video_write` and then overwritten with
+`ignore_write` a few lines later, and the second assignment won for years.
 
 SH-4 on-chip registers (TMU, DMA, SCIF, INTC, ports) are plain pointers into the `regmem`
 block, bound once in `regmem_setup()` and declared `extern` in `sh4emu.h`. So `*TCNT0`,

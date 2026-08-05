@@ -445,6 +445,24 @@ void mem_hash_setup(void)
 	mem_hash_read[0x07] = video_read;
 	mem_hash_read[0xA6] = video_read;
 	mem_hash_read[0xA7] = video_read;
+	/*
+		**Y la ventana P1, que faltaba entera.** La RAM de video estaba enlazada
+		en P0 (0x04-0x07) y en P2 (0xA4-0xA7) pero no en P1 (0x84-0x87), que es
+		la misma memoria vista con cache. Es la misma familia de agujeros que ya
+		costo la RAM del sistema (0x8C) y el area 7 por P2 (0xBF): mem_zone[] los
+		tenia como alias desde siempre -- la replicacion de mas arriba los cubre
+		-- y lo que faltaba era el manejador, asi que el acceso caia en
+		mem_write_error y **se perdia sin decir nada**.
+
+		No es teorico: Sega Rally 2 escribe 16 KB a 0x85000000-0x85003FFC desde
+		un solo PC, 4096 escrituras de 4 bytes, y las 4096 se evaporaban.
+		VRAM_VENTANA_64() ya enmascaraba con 0x1F, asi que la distincion entre la
+		ventana de 64 y la de 32 bits sale bien sola.
+	*/
+	mem_hash_read[0x84] = video_read;
+	mem_hash_read[0x85] = video_read;
+	mem_hash_read[0x86] = video_read;
+	mem_hash_read[0x87] = video_read;
 	mem_hash_read[0x0C] = ram_read;
  	mem_hash_read[0x1F] = regmap_read;
 	/* El area 7 fisica (0x1F000000) vista por la ventana P2: 0xBF000000. Es
@@ -469,6 +487,10 @@ void mem_hash_setup(void)
 	mem_hash_write[0x07] = video_write;
 	mem_hash_write[0xA6] = video_write;
 	mem_hash_write[0xA7] = video_write;
+	mem_hash_write[0x84] = video_write;		/* ver el bloque de lectura */
+	mem_hash_write[0x85] = video_write;
+	mem_hash_write[0x86] = video_write;
+	mem_hash_write[0x87] = video_write;
  	mem_hash_write[0x0C] = ram_write;
 	mem_hash_write[0x10] = ta_write;
 	// 0x11000000-0x11FFFFFF es la FIFO de texturas del TA: lo que se escribe
@@ -484,7 +506,14 @@ void mem_hash_setup(void)
  	mem_hash_write[0xA0] = pvr_write;
  	mem_hash_write[0xA4] = video_write;
 	mem_hash_write[0xA5] = video_write;
-	mem_hash_write[0xA6] = ignore_write;
+	/*
+		0xA6 NO va a ignore_write, y esto era un enlace que se pisaba a si mismo:
+		unas lineas mas arriba se le pone video_write --es el area imagen de la
+		ventana de 64 bits, y el comentario de alli explica por que-- y aqui se
+		lo volvia a poner en "descartar". Ganaba el segundo. Un area imagen que
+		acepta escrituras y no las guarda es la forma de falla de siempre, y ni
+		siquiera se veia en --traza-mem: ignore_write no reporta.
+	*/
  	mem_hash_write[0xAC] = ram_write;
  	mem_hash_read[0xE0] = sq_read;
  	mem_hash_read[0xE1] = sq_read;
