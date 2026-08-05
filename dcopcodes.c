@@ -418,16 +418,49 @@ void hack_gdrom()
 
 	logmsg("HACK_GDROM: r6=%x, r7=%x\r\n", R(6), R(7));
 
-	/* Con los hooks puestos el juego no le habla a la lectora emulada, asi que
-	   los paquetes SPI que reporta gdrom.c no dicen nada: lo que hay que ver es
-	   esto. Sin esta linea, "no lee del disco" y "lee por syscall" se parecen
-	   demasiado -- y ya costo confundirlos una vez. */
+	/*
+		Con los hooks puestos el juego no le habla a la lectora emulada, asi que
+		los paquetes SPI que reporta gdrom.c no dicen nada: lo que hay que ver es
+		esto. Sin esta linea, "no lee del disco" y "lee por syscall" se parecen
+		demasiado -- y ya costo confundirlos una vez.
+
+		**Se colapsan las repeticiones consecutivas identicas.** El driver de la
+		BIOS se bombea con MAINLOOP (r7=2), que no hace nada, y hay juegos que lo
+		llaman sin parar desde el mismo sitio: Sega Rally 2 dejo **1,77 millones
+		de lineas y 133 MB de stderr en 20 segundos emulados**, y lo que frenaba
+		la corrida era escribirlas. Suprimir el caso no serviria -- ver a quien
+		bombea, y desde donde, es justamente lo que dice si el guest esta
+		esperando algo --, asi que se imprime la primera y al cambiar la llamada
+		sale cuantas veces se repitio. No se pierde nada y no inunda.
+	*/
 	if (traza_activa)
-		fprintf(stderr, "hack: syscall GD-ROM r4=%lx r5=%lx r6=%lx r7=%lx "
-			"(PC=%08lx PR=%08lx)\n",
-			(unsigned long) R(4), (unsigned long) R(5),
-			(unsigned long) R(6), (unsigned long) R(7),
-			(unsigned long) PC, (unsigned long) PR);
+	{
+		static unsigned long	ult[6];
+		static int				hay = 0;
+		static unsigned long	repes = 0;
+
+		unsigned long ahora[6];
+
+		ahora[0] = (unsigned long) R(4);	ahora[1] = (unsigned long) R(5);
+		ahora[2] = (unsigned long) R(6);	ahora[3] = (unsigned long) R(7);
+		ahora[4] = (unsigned long) PC;		ahora[5] = (unsigned long) PR;
+
+		if (hay && memcmp(ult, ahora, sizeof(ahora)) == 0)
+			repes++;
+		else
+		{
+			if (repes > 0)
+				fprintf(stderr, "hack:   (la anterior, %lu veces mas)\n", repes);
+
+			fprintf(stderr, "hack: syscall GD-ROM r4=%lx r5=%lx r6=%lx r7=%lx "
+				"(PC=%08lx PR=%08lx)\n",
+				ahora[0], ahora[1], ahora[2], ahora[3], ahora[4], ahora[5]);
+
+			memcpy(ult, ahora, sizeof(ahora));
+			hay   = 1;
+			repes = 0;
+		}
+	}
 	if (R(6) == 0)
 	{
 		switch(R(7))
