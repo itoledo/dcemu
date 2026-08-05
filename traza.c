@@ -70,6 +70,76 @@ static void caida_informe(const char * causa, const char * detalle)
 
 #ifdef WIN32
 
+#include <dbghelp.h>
+
+/*
+	La pila del anfitrion en el momento de la caida, con nombres de funcion,
+	archivo y linea.
+
+	**Es lo que faltaba y costo una sesion.** El informe decia "acceso invalido
+	en 00007FF76CD11102", que sin la base del modulo y sin el PDB a mano no
+	nombra nada; lo unico accionable eran los interruptores de aislamiento, o
+	sea adivinar por bisección. Release se compila con /Zi (CMakeLists.txt) asi
+	que el PDB esta al lado del ejecutable y dbghelp lo encuentra solo.
+
+	Se resuelve dentro del manejador, con el proceso ya roto, y por eso todo
+	esta acotado: 32 cuadros, buffers en el marco, y si dbghelp falla se
+	imprimen las direcciones crudas. Las tres primeras entradas son el propio
+	manejador y no se saltan a proposito -- restarlas a ojo obliga a saber
+	cuantas son, y lo que importa esta abajo igual.
+*/
+static void volcar_pila_anfitrion(void)
+{
+	void *	marcos[32];
+	USHORT	n;
+	HANDLE	proc = GetCurrentProcess();
+	int		simbolos;
+	USHORT	i;
+
+	n = CaptureStackBackTrace(0, 32, marcos, NULL);
+
+	if (n == 0)
+		return;
+
+	simbolos = SymInitialize(proc, NULL, TRUE) ? 1 : 0;
+
+	fprintf(stderr, "    Pila del anfitrion (%u cuadros, de adentro hacia"
+		" afuera):\n", (unsigned) n);
+
+	for (i = 0; i < n; i++)
+	{
+		DWORD64	dir = (DWORD64) (ULONG_PTR) marcos[i];
+		char	buf[sizeof(SYMBOL_INFO) + MAX_SYM_NAME];
+		DWORD64	desplaz = 0;
+		DWORD	col = 0;
+
+		IMAGEHLP_LINE64	linea;
+		SYMBOL_INFO *	sim = (SYMBOL_INFO *) buf;
+
+		memset(buf, 0, sizeof(buf));
+		sim->SizeOfStruct = sizeof(SYMBOL_INFO);
+		sim->MaxNameLen   = MAX_SYM_NAME;
+
+		memset(&linea, 0, sizeof(linea));
+		linea.SizeOfStruct = sizeof(linea);
+
+		fprintf(stderr, "      %2u  %p", (unsigned) i, marcos[i]);
+
+		if (simbolos && SymFromAddr(proc, dir, &desplaz, sim))
+		{
+			fprintf(stderr, "  %s + %lu", sim->Name, (unsigned long) desplaz);
+
+			if (SymGetLineFromAddr64(proc, dir, &col, &linea))
+				fprintf(stderr, "  (%s:%lu)",
+					linea.FileName, (unsigned long) linea.LineNumber);
+		}
+
+		fprintf(stderr, "\n");
+	}
+
+	fflush(stderr);
+}
+
 static const char * caida_nombre(DWORD codigo)
 {
 	switch (codigo)
@@ -112,6 +182,10 @@ static LONG WINAPI caida_filtro(EXCEPTION_POINTERS * info)
 	}
 
 	caida_informe(causa, detalle[0] ? detalle : NULL);
+
+	/* Despues del informe del guest: si simbolizar cae, lo del emulado ya
+	   salio. Solo por este camino -- el de senal no tiene la pila del sitio. */
+	volcar_pila_anfitrion();
 
 	return EXCEPTION_EXECUTE_HANDLER;
 }

@@ -340,6 +340,9 @@ target_link_libraries(dcemu PRIVATE
 	"${SDL12_LIBDIR}/SDL.lib"
 	"${SDL12_LIBDIR}/SDLmain.lib"
 	opengl32
+	# dbghelp: la pila simbolizada del informe de caida (traza.c). Release lleva
+	# /Zi, asi que el PDB queda al lado del .exe y no hay nada mas que hacer.
+	dbghelp
 )
 
 # SDL_main.h hace "#define main SDL_main", asi que el punto de entrada real lo
