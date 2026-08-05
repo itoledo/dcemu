@@ -56,6 +56,10 @@ static unsigned int iso_lba_base = ISO_DEFAULT_LBA;
 #define GD_FAD_ARRANQUE			45150	/* donde el boot ROM busca el IP.BIN */
 #define GD_SECTORES_ARRANQUE	17		/* lo que lee de ahi */
 
+/* Donde empieza el area de alta densidad de un GD-ROM, en LBA. Es lo que
+   distingue un disco de dos densidades de un CD. */
+#define GD_LBA_ALTA_DENSIDAD	45000
+
 static int iso_gd_presentar = 0;
 
 /* Modo de la pista de datos del .cdi: lo pide iso_get_mode(). */
@@ -321,9 +325,23 @@ int iso_gd_presentando(void)
 
 	Queda DCEMU_COMO_GD para el experimento contrario, que fue como se descubrio
 	que la rama de GD-ROM no era el camino.
+
+	**Un `.gdi` es el caso opuesto y por eso si dice GD-ROM.** El formato existe
+	para describir un GD-ROM: dos areas de densidad, la de alta empezando en el
+	LBA 45000. Y la puerta que un `.cdi` no pasa, esta la pasa de sobra -- en el
+	rip de DCDoom el ejecutable esta en el FAD 548 098, contra los 0x6DDD0
+	(450 000) que el ROM exige --, que es justamente lo que distingue a un disco
+	prensado de una conversion a CD.
+
+	Se comprueba y no se supone: un `.gdi` mal armado, con su pista de datos
+	abajo del area de alta densidad, no es un GD-ROM por mas que la extension lo
+	diga, y mandarlo a esa rama lo dejaria sin arrancar por la misma puerta.
 */
 int iso_es_gdrom()
 {
+	if (formato_imagen == FORMATO_GDI)
+		return iso_lba_base >= GD_LBA_ALTA_DENSIDAD;
+
 	return ES_MULTIPISTA(formato_imagen) && iso_gd_presentar;
 }
 

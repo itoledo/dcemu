@@ -352,3 +352,51 @@ boot ROM pide antes que la lectora: el apretón de manos de cable PDTRA/PCTRA, l
 - **La escritura del RTC se guarda como un offset contra el reloj del anfitrión**, no como una
   marca de tiempo congelada, así que el tiempo sigue corriendo. Cae en `bios/rtc.txt` — un número,
   en texto, para poder leerlo y borrarlo a mano.
+
+---
+
+## El vector 0x8C0000E0 no es un syscall sin nombre: es la vuelta a la BIOS (2026-08-05)
+
+Este árbol lo llamaba `UNKNOWN` y lo atendía con `hack_mudo()` — devolver 0 y decirlo. Leído
+del propio boot ROM con `--bios`, resulta que sí se sabe qué hace, y saberlo cambia el
+diagnóstico de cualquier cuelgue que lo siga.
+
+**Cómo se leyó.** El ROM real instala su tabla de vectores en `0x8C0000B0`; con
+`--bios --volcar=8C0000B0:40` sale:
+
+| vector | destino |
+| --- | --- |
+| `8C0000B0` SYSINFO | `8C003C00` |
+| `8C0000B4` ROMFONT | `8C003B80` |
+| `8C0000B8` FLASHROM | `8C003D00` |
+| `8C0000BC` GD-ROM (ROM) | `8C001000` |
+| `8C0000C0` GD-ROM (juego) | `8C0010F0` |
+| **`8C0000E0`** | **`8C000800`** |
+
+`8C000800` es un trampolín — `BRA 8c000178` con `MOV R4,R2` en la ranura — hacia un
+despachador de **ocho entradas indexado por `R4+3`** y acotado a 7 con `CMP/HS`. La tabla, en
+`8C000190`, son desplazamientos de 16 bits relativos a ella misma; las entradas **2, 4 y 6**
+—o sea `R4` = −1, 1 y 3— apuntan todas a `8C0002C8`, que hace:
+
+```
+    salta a su propio alias sin cache (0xAC0002C8)
+    SR  = 0x700000F0        (MD=1, RB=1, BL=1, mascara 15: el SR de reset)
+    VBR = GBR = 0x8C000000
+    R15 = 0x8D000000        (la pila, tope de RAM)
+    y llama al ROM
+```
+
+**Es un reinicio.** Un guest que llega ahí no está pidiendo una función que falte: está
+abandonando y pidiendo volver a la BIOS.
+
+### Por qué importa
+
+Cambia dónde hay que buscar. Apareció con el `.gdi` de DCDoom, que lo llama dos veces
+(`R4=1`, una con `R7=0` y otra con `R7=1`) y después se va a ejecutar fuera de mapa — porque
+dcemu le contesta `RTS` y el guest sigue con el estado a medio desarmar. La pregunta no es qué
+hacía ese syscall sino **qué decidió el guest justo antes de llamarlo**, y el `PR` de cada
+llamada (`8C00D83A` y `8C00DB8E`) dice desde dónde.
+
+No se implementa el reinicio: sin `--bios` no hay ROM a donde volver, y fabricar uno sería
+inventar. Lo que sí se hace es nombrarlo — la traza dice ahora *«REINICIO (el guest pide volver
+a la BIOS)»* en vez de *«sin emular»*, que es la diferencia entre un síntoma y un diagnóstico.

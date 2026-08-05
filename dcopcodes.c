@@ -215,24 +215,39 @@ static void hack_romfont(void)
 }
 
 /*
-	El syscall que dcemu no atiende: el que el ROM deja en 0x8C0000E0, sin
-	nombre conocido.
+	El syscall de 0x8C0000E0, que este arbol llamaba "UNKNOWN" -- y ya no lo es.
 
-	Antes era RTS + NOP: volvia sin hacer nada y **sin decirlo**, que es la
-	forma que tuvo cada uno de los agujeros de este arbol -- algo que el guest
-	pide, que se le contesta sin querer decir nada, y que no deja rastro. Con
-	esto sigue sin hacer nada, pero se ve: un juego que se cuelgue despues de
-	llamarlo deja la linea en --traza-mem y ya no hay que sospecharlo.
+	**Es la vuelta a la BIOS.** Leido del propio boot ROM con --bios: el vector
+	apunta a 0x8C000800, que es un trampolin (`BRA 8c000178` con `MOV R4,R2` en
+	la ranura) hacia un despachador de ocho entradas indexado por **R4+3** y
+	acotado a 7. Las entradas 2, 4 y 6 -- o sea R4 = -1, 1 y 3 -- van todas a
+	0x8C0002C8, que hace esto:
 
-	R0 queda en 0 en vez de en lo que hubiera: un puntero de vuelta con basura
-	es peor que uno nulo, porque el guest lo sigue.
+		salta a su propio alias sin cache (0xAC0002C8),
+		SR  = 0x700000F0     (MD=1, RB=1, BL=1, mascara 15: el SR de reset)
+		VBR = GBR = 0x8C000000
+		R15 = 0x8D000000     (la pila, tope de RAM)
+		y llama al ROM.
+
+	O sea que **un guest que llega aca esta pidiendo reiniciar**, no una funcion
+	que falte. Eso cambia el diagnostico de cualquier cuelgue que lo siga: lo que
+	hay que buscar no es que hacia este syscall sino **que decidio el guest justo
+	antes de llamarlo**. Aparecio con el .gdi de DCDoom, que lo llama dos veces y
+	despues se va a ejecutar fuera de mapa -- porque aqui se le contesta RTS y
+	sigue con el estado a medio desarmar.
+
+	No se implementa el reinicio: sin --bios no hay ROM a donde volver, y
+	fabricar uno seria inventar. Lo que si se hace es **nombrarlo**, que es la
+	regla de este arbol -- lo que colgo tres veces fue contestar sin querer decir
+	nada --. R0 queda en 0: un puntero de vuelta con basura es peor que uno nulo,
+	porque el guest lo sigue.
 */
 static void hack_mudo(const char * nombre)
 {
 	logmsg("%s: llamado, func=%d\r\n", nombre, R(7));
 
 	if (traza_activa)
-		fprintf(stderr, "syscall %s sin emular: R4 %08lx R5 %08lx R6 %08lx"
+		fprintf(stderr, "syscall %s: R4 %08lx R5 %08lx R6 %08lx"
 			" R7 %08lx, PC %08lx, PR %08lx\n", nombre,
 			(unsigned long) R(4), (unsigned long) R(5),
 			(unsigned long) R(6), (unsigned long) R(7),
@@ -1303,7 +1318,13 @@ OPCODE(BIOS_HACK)
         case HACK_GDROM_FIJO:               hack_gdrom();   return;
         case HACK_BASE + HACK_FLASHROM + 2: hack_flashrom(); break;
         case HACK_BASE + HACK_SYSINFO + 2:  hack_sysinfo();  break;
-        case HACK_BASE + HACK_UNKNOWN + 2:  hack_mudo("UNKNOWN");   break;
+        /* 0x8C0000E0. Con R4 en {-1, 1, 3} el ROM real reinicia la maquina:
+           el guest que llega aca esta abandonando. Ver hack_mudo(). */
+        case HACK_BASE + HACK_UNKNOWN + 2:
+            hack_mudo(((int) R(4) == -1 || R(4) == 1 || R(4) == 3)
+                ? "REINICIO (el guest pide volver a la BIOS)"
+                : "0x8C0000E0");
+            break;
         default:	logmsg("bios_hack: error\n"); break;
     }
 
