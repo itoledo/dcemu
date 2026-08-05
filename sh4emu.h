@@ -188,7 +188,13 @@ typedef union FPR_BANK FPR_BANK;
 	double db;
 };
 
-union FPR_BANK
+/* Mide 64 bytes justos, o sea una linea de cache, y se copia entero cada vez
+   que la instantanea de la MMU cubre una instruccion de coma flotante. Aca si
+   la alineacion va en el tipo, porque ya media 64 y redondear no cambia nada.
+
+   Consecuencia: BANK0/BANK1 dejaron de salir de malloc(), que no respeta la
+   alineacion extendida. Ver initCpuSubSystem(). */
+union DC_ALINEADO(64) FPR_BANK
 {
   union
   {
@@ -196,12 +202,14 @@ union FPR_BANK
     float vector [4] [4];
     union u64 dreg [8];
   } FP;
-  union 
+  union
   {
     SIMDx86Matrix XMTRX;
     FLOAT pair [8][2];
   }XFP;
 };
+
+DC_ASSERT_SIZE(fpr_bank, FPR_BANK, 64);
 
 // some needed declarations
 
@@ -275,6 +283,25 @@ typedef struct context_t context_t;
 
 	Nada depende del orden: no hay serializacion del contexto ni acceso por
 	desplazamiento. Lo unico que lo copia entero es la instantanea de la MMU.
+
+	**Y por eso las variables de este tipo van alineadas a 64** (DC_ALINEADO en
+	`core` y en la instantanea de excepciones.c). Ordenar los campos no sirve de
+	nada si el enlazador puede poner la estructura en cualquier frontera de 8
+	bytes: los primeros 80 bytes caen en dos lineas de cache o en tres segun
+	donde haya quedado, y eso cambia en cada enlace.
+
+	Y no es cosmetico: **vale 2,4 % en Crazy Taxi** --de 1,65x a 1,69x, siete
+	pares de siete con las dos ordenaciones y rangos disjuntos-- contra ~0 en
+	DCDoom. El orden de los campos por si solo habia medido ~0 en Release, que
+	era cierto y enganoso: sin alinear, el reordenamiento queda a merced de
+	donde caiga la estructura ese enlace. Ver docs/interprete-plan.md, "La
+	alineacion del contexto".
+
+	La alineacion va en las **variables** y no en el tipo a proposito: alinear
+	el tipo redondearia sizeof de 176 a 192, y esos 16 bytes de mas los pagaria
+	la instantanea de la MMU 5100 millones de veces en los 35 segundos del banco
+	de DCDoom. Medido: alinear el tipo sale 0,7 % mas lento -- dentro del ruido,
+	pero es trabajo agregado a cambio de nada.
 */
 struct context_t
 {
@@ -307,6 +334,16 @@ struct context_t
 	FPR_BANK * FR_BANK;
 	FPR_BANK * XF_BANK;
 };
+
+/* Lo caliente --cycles, PC, SR, PR y R0-R15-- tiene que entrar en las dos
+   primeras lineas. Si alguien mete un campo frio adelante, esto no compila en
+   vez de costar un 1 % que nadie iba a atribuir a eso. */
+DC_ASSERT(context_caliente,
+	offsetof(context_t, registers) + 16 * sizeof(DWORD) <= 128);
+
+/* Lo copia la instantanea de la MMU una vez por instruccion, asi que su tamano
+   es parte del costo del guest con MMU. Si sube, que se note aca. */
+DC_ASSERT_SIZE(context, context_t, 176);
 
 // bool SH4_SLEEPING=false; // by default the processor is doing something
 
@@ -440,7 +477,11 @@ typedef struct
 // the sh4 context
 
 #define R_BANK(arg)(R(arg+16))
-extern sh4_cpu core;
+/* Alineado a 64: es lo que hace cierto el orden de campos de context_t -- los
+   primeros 80 bytes en dos lineas de cache y no en tres segun donde lo dejara
+   el enlazador esta vez. La alineacion va tambien en la declaracion, no solo en
+   la definicion, porque es aca donde la ven los sitios de uso. */
+extern DC_ALINEADO(64) sh4_cpu core;
 
 void initCpuSubSystem();
 

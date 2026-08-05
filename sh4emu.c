@@ -62,7 +62,7 @@ void fpu_aplicar_redondeo(void)
 		DC_REDONDEO_CERCANO();
 }
 
-sh4_cpu core;
+DC_ALINEADO(64) sh4_cpu core;		/* alineado: ver la declaracion en sh4emu.h */
 
 /* Registros de la MMU. Solo PTEL estaba enlazado; el resto se agrego en la
    fase 1 de docs/mmu-plan.md. Todavia nadie los obedece: son respaldo, para
@@ -143,9 +143,15 @@ unsigned long delayslot = 0;
 unsigned long NEXTPC = 0;
 
 
-// float register banks
-FPR_BANK * BANK0; // 1st register bank
-FPR_BANK * BANK1; // 2nd register bank
+/* float register banks. Estaticos y no de malloc(): FPR_BANK esta alineado a
+   64 --una linea justa, ver sh4emu.h-- y malloc() no garantiza alineacion
+   extendida. Los punteros quedan porque UpdateFPSCR() los intercambia y medio
+   arbol los usa asi. */
+static FPR_BANK banco_fp_0;
+static FPR_BANK banco_fp_1;
+
+FPR_BANK * BANK0 = &banco_fp_0; // 1st register bank
+FPR_BANK * BANK1 = &banco_fp_1; // 2nd register bank
 
 void reset()
 {
@@ -253,8 +259,6 @@ void runCache (WORD arg)
 
 void initCpuSubSystem()
 {
-  BANK0  =(FPR_BANK *) malloc (sizeof(FPR_BANK));
-  BANK1  =(FPR_BANK *) malloc (sizeof(FPR_BANK));
   // setting up the default pointers
  core.context.FR_BANK = BANK0;
  core.context.XF_BANK = BANK1;
