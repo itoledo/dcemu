@@ -310,6 +310,49 @@ Mirra con seis NOP y un JMP— y descifrarlo lo vuelve basura: el guest terminab
 `0x0000011C`, memoria baja. Es una regla de formato (`iso_ejecutable_cifrado()`), no una
 heurística sobre el contenido.
 
-Con las tres, Dave Mirra pasa de no montar a **ejecutar código del juego**. Todavía no dibuja
-—se le va en una lectura sin emular desde `0x8C08BF06`— pero eso ya es depuración de un juego,
-no del formato.
+Con las tres, Dave Mirra pasa de no montar a **ejecutar código del juego**. Lo que faltaba para
+que dibujara no era del formato sino del convertidor YUV del TA, y está en
+`docs/notas-graficos.md`: hoy el juego arranca, reproduce su FMV y se juega.
+
+Y la lectura sin emular desde `0x8C08BF06` —a la dirección `0x2d2d2d0a`, que en ASCII es
+`"\n---"`— **no era el problema**. ChuChu Rocket hace exactamente la misma lectura desde otro
+PC y anda perfecto: es una biblioteca compartida mirando un byte de una cadena que en una
+compilación de release no está inicializada. Anotarla aquí para que no vuelva a parecer una
+pista.
+
+---
+
+## El audio de CD
+
+`cdda.c/h`, y la lectora es su dueña: una pista de audio no pasa por el AICA como pasan las
+voces del juego, la decodifica la unidad y le entrega muestras al chip por una entrada aparte.
+El detalle del mecanismo y su verificación byte a byte están en `docs/notas-aica.md`.
+
+Lo que toca a este archivo son los comandos, y son dos juegos que tienen que contestar lo mismo:
+
+| paquete SPI (`gdrom.c`) | driver del boot ROM (`dcopcodes.c`) |
+| --- | --- |
+| `CD_PLAY` 0x20 | 20 PLAY_TRACKS, 21 PLAY_SECTORS |
+| `CD_SEEK` 0x21 | 27 SEEK, y 33 STOP / 22 PAUSE |
+| `CD_SCAN` 0x22 | — |
+| `GET_SCD` 0x40, `REQ_STAT` 0x10 | 34 GETSCD, 36 REQ_STAT |
+| — | 23 RELEASE |
+
+**Los juegos llegan por el syscall, no por el paquete.** Con los hooks puestos —lo normal— Dave
+Mirra pide el comando 20 y ChuChu Rocket también. La vía SPI existe para `--bios` y para un
+guest que le hable a la lectora directamente, y está mucho menos ejercitada.
+
+Dos cosas del paquete SPI que no son obvias:
+
+- **El tipo de parámetro va en los tres bits bajos del byte 1**: 1 dice que las posiciones son
+  FAD y 2 que son MSF (minuto, segundo, cuadro, 75 cuadros por segundo). La posición de arranque
+  está en los bytes 2-4 y la de fin en los 8-10; las repeticiones, en los cuatro bits bajos del
+  byte 6, donde 15 quiere decir «para siempre».
+- **`CD_SEEK` también es como se para y como se pausa**: los tipos 3 y 4 no llevan posición.
+  Sin ellos, un juego que calla su música con un seek de parar no la callaba nunca.
+
+`iso_leer_audio()` es la puerta de lectura, y es otra que la de los datos: entrega sectores
+crudos de 2352 bytes —sin volumen, sin encabezado, sin área de usuario de 2048— y abre el
+archivo de la pista él mismo, porque `iso_init()` solo registra las de datos en `min_iso_*`. En
+un `.gdi` cada pista de audio es su propio archivo y hasta que alguien pide su audio no se abre
+nunca.

@@ -107,6 +107,39 @@ intenta continuar, no es un cazador de bugs del anfitrión, y no cuesta nada mie
 Windows usa `SetUnhandledExceptionFilter` (SDL no lo pisa) y todo lo demás `signal()`,
 relanzando con el manejador por omisión para que igual se deje un core.
 
+### Y en Windows, la pila del anfitrión con nombres
+
+Detrás del informe del guest va la pila de dcemu, simbolizada con dbghelp: función,
+desplazamiento, archivo y línea. Release ya se compila con `/Zi`, así que el PDB queda al lado
+del ejecutable y no hay nada que configurar.
+
+**Faltaba y costó una sesión.** El informe decía «acceso inválido a memoria en
+`00007FF76CD11102` del anfitrión», que sin la base del módulo y sin el PDB a mano no nombra
+nada. Lo único accionable eran los interruptores de aislamiento —`DCEMU_SIN_DIBUJO`,
+`DCEMU_SIN_VOLUMEN`— o sea adivinar por bisección, una corrida por hipótesis; y en la caída que
+se estaba persiguiendo **ninguno de los dos la movió**, así que no dijeron nada. Con la pila, la
+misma caída sale así:
+
+```
+ 8  decodificar_yuv422 + 230  (graficos.c:876)
+ 9  get_texture + 139453      (graficos.c:1407)
+10  tira_estado + 332         (graficos.c:3229)
+11  dibujar_escena + 218      (graficos.c:3296)
+12  cb_tastart_cuerpo + 598   (graficos.c:2718)
+```
+
+Tres saltos hasta el sitio, en una corrida.
+
+Dos detalles del orden, los dos por la misma razón que el resto del informe: va **después** del
+informe del guest —si simbolizar cae con el proceso ya roto, lo del emulado ya salió— y está
+acotado a 32 cuadros con los buffers en el marco. Si dbghelp falla se imprimen las direcciones
+crudas, que es lo que se tenía antes. Las tres primeras entradas son el propio manejador y no
+se saltan a propósito: restarlas a ojo obliga a saber cuántas son.
+
+**La línea que sale puede no ser la exacta.** Con optimización el compilador mueve las cargas;
+en el ejemplo de arriba la línea 876 es la escritura y el acceso que falla es la lectura de dos
+líneas antes. Nombra la función y eso alcanza.
+
 ---
 
 ## Capturas de pantalla

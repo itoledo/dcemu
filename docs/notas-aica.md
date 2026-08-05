@@ -191,13 +191,83 @@ repiten al 0,1% mientras la línea base deriva a medida que la máquina se carga
 
 ---
 
+## El audio de CD suena, y no es del AICA
+
+`cdda.c/h`. La nota vieja decía que el CDDA no estaba emulado y anotaba que en el camino de KOS
+**llega como syscall y no como paquete SPI** — el comando 20 del vector de GD-ROM. Estaba bien
+visto: es exactamente por ahí que lo pide Dave Mirra Freestyle BMX, y también ChuChu Rocket.
+Hoy están las dos vías.
+
+Lo que hay que entender para que el resto se ordene solo: **una pista de audio no pasa por el
+AICA como pasan las voces del juego**. La lectora la decodifica ella y entrega muestras al chip
+por una entrada aparte; el guest no las ve nunca. Por eso el módulo es de la lectora, y por eso
+lo que el juego manda son órdenes de transporte —«toca del FAD tal al tal, N veces»— y después
+sondeos.
+
+Tres cosas lo dejan chico:
+
+- **El formato del CD es el de la salida del mezclador**: 44 100 Hz, estéreo, 16 bits con signo.
+  Sale una muestra de CD por cada vuelta de `mezclar_una_muestra()` y no hay remuestreo. Lo
+  único que hay que respetar es que el orden de bytes del CD es little endian **del disco**, no
+  del anfitrión: se arma explícito.
+- **Los sectores se leen crudos**, 2352 bytes, por `iso_leer_audio()`. No pasan por
+  `min_iso_*` — ese lector solo conoce pistas de datos y habla en sectores de 2048 con
+  encabezado — y en un `.gdi` el archivo de la pista **ni siquiera está abierto** hasta que
+  alguien pide su audio.
+- **La suma va después de MVOL.** MVOL es el volumen maestro de las 64 voces; el CD-DA no es una
+  voz. En el chip entra al mezclador del DSP con sus propios registros de atenuación, y el DSP
+  no está emulado, así que sumarlo fuera de MVOL a nivel fijo es lo más parecido a «otra entrada
+  del DAC». Un juego que baja MVOL para callar sus efectos no debería quedarse sin música.
+
+### La mitad que no es reproducir
+
+`GET_SCD` y `REQ_STAT`. **Así es como un juego sigue su propia música**: sondea la posición de
+la aguja y cambia de tema cuando pasa cierto FAD. Contestar siempre «pista 1, datos, parada en
+el 150» es la forma de falla de siempre — una respuesta válida que no quiere decir nada — y era
+literalmente lo que había: el estado de audio iba fijo en `0x15`, «sin información».
+
+Ahora los dos contestan el estado real (`0x11` sonando, `0x12` pausado, `0x13` terminado), la
+pista, el FAD absoluto y el transcurrido dentro de la pista, y el byte de control dice audio en
+vez de datos mientras suena.
+
+`SEEK` deja la cabeza puesta y **pausada**, que es lo que dice el protocolo y lo que espera
+quien encadena un SEEK con un RELEASE. Y por el paquete SPI los tipos 3 y 4 de `CD_SEEK` no
+llevan posición: son «parar» y «pausar». Sin ellos, un juego que calla su música con un seek de
+parar no la callaba nunca.
+
+### Cómo se verificó
+
+Byte a byte, que es lo que este árbol pide para el sonido. `--captura-audio` produce un `.wav`
+determinista; el archivo de la pista está ahí al lado en un `.gdi`. Se busca un pedazo de la
+pista dentro de la captura:
+
+| juego | pista | dónde aparece | cuánto coincide |
+| --- | --- | --- | --- |
+| Dave Mirra Freestyle BMX | `track06.raw` | cuadro 960 615 (21,78 s) | 893 760 bytes = 5,07 s |
+| ChuChu Rocket! | `track04.raw` | cuadro 273 442 (6,20 s) | 1 340 640 bytes = 7,60 s |
+
+Coincidencia **literal**, no parecido: eso valida de una vez la pista elegida, el offset del
+sector, el orden de bytes y que el mezclador no la toca. La coincidencia se corta cuando el
+AICA empieza a sonar encima, que es lo esperado.
+
+Dave Mirra pide `FAD 335723 a 345605`, que son exactamente los extremos de su pista 6
+(LBA 335573, y la 7 empieza en 345456); ChuChu pide `354902 a 362979`, la pista 4 completa. O
+sea que la conversión de número de pista a rango de FAD también está verificada contra la
+tabla del disco.
+
+**Trampa a la vista**: la música empieza cuando el juego llega a su menú. En Dave Mirra el
+`PLAY` cae a los 39,3 s de tiempo emulado, así que una corrida de 40 s captura 0,7 segundos y
+la comparación no encuentra nada. Hay que saltar el FMV con las teclas y correr lo suficiente.
+
 ## Lo que no está emulado
 
-CDDA, el DSP de audio, el LFO, el filtro FEG (el papel dice cómo dejarlo pasante: `Q = 4`,
-`FLV = 0x1FF8`, y el firmware de KOS simplemente lo apaga) y la interrupción de intervalo de
-muestra. `docs/aica-plan.md`, "Lo que sigue faltando", tiene el detalle — incluido que en el
-camino de KOS **el CDDA llega como syscall, no como paquete SPI**: el comando 20 del vector de
-GD-ROM, que `hack_gdrom()` en `dcopcodes.c` tendría que contestar.
+El DSP de audio —y con él el nivel de CD-DA, que queda fijo—, el LFO, el filtro FEG (el papel
+dice cómo dejarlo pasante: `Q = 4`, `FLV = 0x1FF8`, y el firmware de KOS simplemente lo apaga)
+y la interrupción de intervalo de muestra. `docs/aica-plan.md`, "Lo que sigue faltando", tiene
+el detalle.
+
+Del CD-DA falta el `CD_SCAN` de verdad: se acepta y la reproducción sigue donde estaba, que es
+lo que ve un juego que adelanta y después suelta.
 
 Dos valores se contestan sin una medición detrás, y están marcados como tales porque un registro
 de identificación contestado a la ligera ya colgó al guest dos veces (`REVISION` y `SB_G1SYSM`):

@@ -102,7 +102,9 @@ symbols the code references, which keeps SDL and OpenGL out of the link. SDL *he
 still needed to compile (`opcodes.h` pulls in `main.h`).
 
 **Several files are SDL-free on purpose so the suites can link them for real**: `sistema.c`,
-`vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`. Keep them that way.
+`vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`, `cdda.c`. Keep them that way. `cdda.c` is
+linked because `aica.c` calls it once per sample; `tests/dobles.c` supplies an `iso_leer_audio()`
+that reports no audio tracks, so it stays silent and never touches the filesystem.
 
 Every row of `opcodes[]` is implemented — the only one left on `NOIMP` is the catch-all
 covering bit patterns that are not SH-4 instructions. `tests/README.md` lists the 16
@@ -205,6 +207,7 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_COMO_GD=1` | presenta el disco como el GD-ROM del que se ripeó (rama equivocada, ver notas) |
 | `DCEMU_PERFIL_ARM=1` | histogramas del ARM7 por dirección y por fila de despacho |
 | `DCEMU_SIN_DIBUJO=1` / `DCEMU_SIN_VOLUMEN=1` / `DCEMU_SIN_FILTRO_MIP=1` | aíslan una etapa del render para medirla |
+| `DCEMU_SIN_CDDA=1` | la lectora contesta el audio de CD como siempre pero no entrega muestras. Calla la salida, no el mecanismo: apagarlo entero cambiaría el camino del guest que sondea su música |
 | `DCEMU_SIN_CACHE_MMU=1` | apaga las tres cachés de traducción de la MMU. **Valen 1,8× en DCDoom**; es el interruptor del A/B y para aislar una regresión |
 | `DCEMU_FORMA=1` | forma de ejecución del guest: longitud de los bloques básicos, cuántos distintos y con qué reincidencia. **Sólo existe si se compiló con `-DDCEMU_FORMA=ON`**, porque el gancho cuesta 4,4 % (ver `docs/interprete-plan.md`) |
 | `DCEMU_INLINE` (compilación) | despacha en línea los diez manejadores más frecuentes, sin llamada indirecta. **Medido: cuesta 19 %** aunque cubra el 35,3 % de las instrucciones — el bucle caliente engorda más de lo que ahorran las llamadas |
@@ -491,6 +494,18 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
 - **The two windows of video RAM interleave the banks differently.** `vram.c/h` owns the
   conversion; the block stays in 32-bit numbering and every 64-bit-window access converts.
   Which window the CH2 DMA uses comes from `SB_LMMODE0`/`SB_LMMODE1`, not from the address.
+- **The destination address names the path, and the store queue and the CH2 DMA must read it
+  the same way**: `0x10000000` polygon FIFO, `0x10800000` YUV converter, `0x11000000` direct
+  texture. They are two entrances to one chip and the guest picks whichever suits it. The DMA
+  knew only the first and copied the rest as memory — a video went in, the end-of-DMA was
+  reported on time and not one macroblock was converted.
+- **"End of Transferring YUV" (`SB_ISTNRM` bit 6) is not the end of the CH2 DMA (bit 19).** One
+  says the bytes arrived, the other that the texture is written, and a guest may wait on either.
+- **A video texture does not declare its own size**: the side is the power of two the chip
+  demands and the real width travels in the *stride*. In `get_texture()` one `paso_16` decides
+  both how many bytes are gathered from video RAM and how the decoder walks them — the two
+  counts that must never disagree, because when they do the one that gathers less wins and the
+  one that walks more leaves the buffer.
 
 The texture cache is persistent: 1024 entries across scenes, invalidated by a per-8 KB-page
 generation counter in `vram.c` plus a palette generation, looked up through a hash on the
@@ -570,8 +585,31 @@ is byte-addressable and the 4-byte restriction applies at the G2 entry. Timing d
 pending interrupt source with no mask stays pending. The ADPCM is done in integers and is
 deterministic.
 
-**What is not emulated**: CDDA, the audio DSP, the LFO, the FEG filter and the sample-interval
-interrupt. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a run.
+**CD audio plays** (`cdda.c/h`). It is a piece of the *drive*, not of the AICA: the GD-ROM
+decodes an audio track itself and hands the chip finished samples through a separate input.
+The guest never sees them — it says "play from here to here, N times" and then asks how it is
+going. Both command paths reach `cdda.c` and must answer alike: the SPI packets `CD_PLAY`
+(0x20), `CD_SEEK` (0x21) and `CD_SCAN` (0x22) in `gdrom.c`, and the boot ROM driver's 20
+PLAY_TRACKS, 21 PLAY_SECTORS, 22 PAUSE, 23 RELEASE, 27 SEEK, 33 STOP in `dcopcodes.c`.
+
+Three things make it small: the CD's format **is** the mixer's output format (44 100 Hz, 16-bit
+signed stereo), so it is one CD frame per `mezclar_una_muestra()` and there is no resampling;
+`iso_leer_audio()` reads the raw 2352-byte sectors straight from the track, which in a `.gdi` is
+its own file; and the sum happens **after MVOL**, because CDDA is not one of the 64 voices — a
+game that mutes its effects should keep its music.
+
+**`GET_SCD` and `REQ_STAT` are half of it.** A game follows its own music by polling the head
+position and switching tracks when it passes a FAD. Answering "track 1, data, parked at 150"
+forever is the tree's usual failure shape: a valid answer that means nothing.
+
+`DCEMU_SIN_CDDA=1` keeps the drive answering "playing, at such a FAD" and delivers no samples.
+Silencing the whole mechanism would not isolate anything — a guest that polls its music would
+take a different path, and the two runs would no longer be comparable.
+
+**What is not emulated**: the audio DSP (so the CDDA level is fixed — on the chip it goes
+through the DSP mixer with its own attenuation registers), the LFO, the FEG filter and the
+sample-interval interrupt. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a
+run.
 
 → `docs/notas-aica.md` and `docs/arm7-plan.md`.
 
@@ -593,6 +631,11 @@ holds the data track. A `.gdi` does not record whether a 2352-byte data track is
 mode 2, and that decides where the 2048 user bytes start (16 or 24), so it is read from the
 sector's own header rather than assumed. `iso_init()` lists every track with its LBA, size, mode and file offset — that
 listing is the first thing to look at.
+
+**Audio tracks are read by a different door.** `iso_leer_audio()` hands out raw 2352-byte
+sectors — no volume, no header, no 2048-byte user area — and opens the track's file itself,
+because `iso_init()` only registers the data tracks with `min_iso_*`. It is what `cdda.c`
+pulls from.
 
 Rules that cost a boot each:
 
@@ -739,7 +782,10 @@ bitmap font renderer, driven by `DebugMode` (`DBG_STOP`/`DBG_RUN`/`DBG_STEP`). `
 - Do not request `SDL_GL_DEPTH_SIZE` — asking for it alongside the stencil makes SDL pick a
   different pixel format, and the context grants 24 bits anyway.
 - A crash reports the guest's state instead of vanishing (`traza_caida_instalar()`, installed
-  first thing in `main()`).
+  first thing in `main()`), **and on Windows the host's stack with function, file and line**
+  (dbghelp; Release already carries `/Zi`, so the PDB sits next to the binary). Read it before
+  reaching for the isolation switches — bisecting with `DCEMU_SIN_*` costs a run per guess and
+  says nothing when none of them moves the crash.
 
 ## Where the deep notes live
 

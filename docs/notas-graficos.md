@@ -433,6 +433,64 @@ una con su propio U, V e Y. YUV420 tiene una pasada de croma para las 16 filas y
 mide 384 bytes; YUV422 tiene una por mitad y mide 512. Escribir `TA_YUV_TEX_BASE` o
 `TA_YUV_TEX_CTRL` reinicia la cuenta de macrobloques — el chip está empezando otra imagen.
 
+#### Cuatro cosas que faltaban, y el FMV de Dave Mirra las encontró a las cuatro
+
+El juego abre con un video de 320×240 y no pasaba de ahí. Cada fallo tapaba al siguiente, así
+que salieron de a uno.
+
+**1. El CH2 DMA no conocía el convertidor.** `pref142()` despacha los tres destinos de la zona
+`0x10`; `ch2_dma_ejecutar()` en `mem.c` solo el primero, y mandaba el resto a
+`memwrite_fisico()`. Son **las dos entradas al mismo chip** y el guest elige una u otra por
+conveniencia suya: el juego sube sus 115 200 bytes por DMA porque son 3600 bloques de 32 y
+vaciar colas de a uno costaría un mundo. Con la ruta faltando, el cuadro entraba a la zona
+`0x10` como si fuera memoria, el fin de DMA se informaba puntual, y no se convertía un solo
+macrobloque. Sin un aviso. La forma de falla de siempre.
+
+**2. Faltaba el fin de transferencia YUV**, `SB_ISTNRM` bit 6. **No es el fin del CH2 DMA**, que
+es el 19: uno dice que los bytes llegaron y el otro que la textura quedó escrita, y un guest
+puede esperar cualquiera de los dos. La biblioteca de DMA de Dave Mirra marca la transferencia
+como «en vuelo» y espera el bit 6 para sacarla de su cola; con el 19 solo, la cola se trababa en
+su primera entrada de tipo YUV y no volvía a moverse — 21 escenas con cero tiras, para siempre.
+Va con demora, como el fin del CH2 y por el mismo motivo: quien disparó la transferencia todavía
+tiene que volver y anotarla, y una interrupción instantánea le gana esa carrera y se lee como
+espuria.
+
+**3. La textura del video se declara 512×512 con stride 320.** Un video no se declara con su
+tamaño: el lado es la potencia de dos que exige el chip y el ancho real viaja en el stride.
+`get_texture()` ya lo sabía y juntaba `vsize*stride*2` bytes; `decodificar_yuv422()` no, y
+recorría `usize` por fila. **327 680 juntados contra 524 288 leídos**, y el emulador se caía. La
+rama de stride que ya existía trata bien las texturas de 16 bits, pero el YUV se decide antes en
+la cadena de `if` y nunca la veía.
+
+El arreglo no es restar en el decodificador: es que el paso se calcule **una vez** (`paso_16`) y
+mande sobre las dos cuentas. Son justo las dos que no pueden discrepar — cuando lo hacen, el que
+junta menos gana y el que recorre más se sale del buffer.
+
+**4. La mitad derecha del croma no se leía nunca**, y esto afecta a todo el que use el
+convertidor. El plano U de un macrobloque de 16×16 mide 8×8: una muestra cada dos píxeles a lo
+ancho. El bucle avanza de a dos píxeles, o sea una columna de croma por vuelta — `x/2` —, y
+estaba escrito `x/4`. El índice llegaba hasta 3 de 8: se descartaban 32 de los 64 bytes de U y
+otros tantos de V, y la mitad izquierda salía estirada al doble. En la rama de 422, el mismo
+error escrito distinto (`col/2` sobre `col = x % 8`).
+
+Lo delató la cuenta, no la mirada: las dos demos de KOS decodifican **la misma imagen** en los
+dos formatos, que solo se diferencian en la resolución vertical del croma, así que sus salidas
+tienen que parecerse mucho.
+
+| | 420 contra 422, media | máximo | colores distintos |
+| --- | --- | --- | --- |
+| antes | 2,560 | **28** | 80 632 / 81 585 |
+| después | 1,084 | **3** | 65 797 / 65 765 |
+
+El máximo de 28 era el estiramiento horizontal; el de 3 es la diferencia real entre los
+formatos. A ojo, sobre la pared de ladrillos de las demos, las dos versiones se parecen — por
+eso pasó.
+
+**Lo que queda abierto**: el FMV muestra rayas de croma de 16 píxeles de ancho y una fila de
+alto, iguales antes y después del arreglo del croma, así que no vienen del desempaquetado. O las
+produce el decodificador del propio juego, o algo del camino a la RAM de video. Es cosmético y
+no está perseguido.
+
 ---
 
 ## La caché de texturas
