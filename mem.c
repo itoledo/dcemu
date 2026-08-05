@@ -2511,6 +2511,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			if (fisica >= SOUND_BASE && fisica + size <= SOUND_BASE + SOUND_SIZE)
 			{
 				PERF_CONTAR(perf_onda_escr); PERF_SYNC();
+				PERF_ONDA_ESCR(fisica - SOUND_BASE, size);
+				onda_marcar_escritura(fisica - SOUND_BASE, size);
 				hilo_aica_entrar();
 				memcpy(&sound_mem[fisica - SOUND_BASE], p, size);
 				hilo_aica_salir();

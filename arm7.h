@@ -68,6 +68,50 @@
 enum { ARM7_B_USR, ARM7_B_FIQ, ARM7_B_IRQ, ARM7_B_SVC, ARM7_B_ABT, ARM7_B_UND,
        ARM7_BANCOS };
 
+/*
+	Memoizacion de los barridos de sondeo. El porque y las reglas estan en
+	arm7.c, junto al codigo; aca solo lo que cruza de archivo.
+
+	arm7_memo_fin es el centinela del camino caliente: vale ~0 cuando no se esta
+	grabando ningun barrido, y el PC del salto de atras cuando si.
+*/
+extern DWORD	arm7_memo_fin;
+extern int		arm7_memo_apagada;			/* DCEMU_SIN_MEMO_ARM */
+
+extern unsigned long long arm7_memo_aciertos;
+extern unsigned long long arm7_memo_pasos;		/* instrucciones no ejecutadas */
+extern unsigned long long arm7_memo_grabados;
+extern unsigned long long arm7_memo_abortados;
+extern unsigned long long arm7_memo_sucios;
+
+/* Por que se abandono una grabacion. Es diagnostico, no control: la primera
+   version de este mecanismo repuso **cero** barridos y sin este desglose no
+   habia forma de saber cual de los seis motivos lo estaba matando. */
+enum { ARM7_MEMO_ESCRITURA, ARM7_MEMO_REGISTRO, ARM7_MEMO_PC,
+       ARM7_MEMO_EXCEPCION, ARM7_MEMO_ANIDADO, ARM7_MEMO_LARGO,
+       ARM7_MEMO_PAGS, ARM7_MEMO_MOTIVOS };
+
+extern unsigned long long arm7_memo_motivo[ARM7_MEMO_MOTIVOS];
+extern const char * const arm7_memo_motivo_nombre[ARM7_MEMO_MOTIVOS];
+
+/*
+	El aborto se llama desde caminos calientes -- arm7_escribir() corre en cada
+	escritura del ARM, y son decenas de millones -- asi que el centinela se mira
+	**antes de llamar**. La primera version llamaba siempre y dejaba que la
+	funcion volviera enseguida: una llamada por escritura, pagada tambien con el
+	mecanismo apagado, o sea que ni siquiera aparecia en el A/B.
+*/
+void arm7_memo_abortar_real(int motivo);
+
+#define arm7_memo_abortar_por(motivo)								\
+	do {															\
+		if (arm7_memo_fin != ~0u)									\
+			arm7_memo_abortar_real(motivo);							\
+	} while (0)
+void arm7_memo_pagina(DWORD direccion);
+void arm7_memo_terminar(void);
+void arm7_memo_reset(void);
+
 struct arm7_estado
 {
 	DWORD	r[16];					/* el banco activo; r[15] es el PC */

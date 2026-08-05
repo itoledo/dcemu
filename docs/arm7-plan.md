@@ -253,3 +253,168 @@ Por eso la opción queda en OFF: el número está medido, la adopción no está 
 | LTCG | −10,0 % | −1,4 % |
 | la búsqueda de una palabra de una vez | −1,9 % | −0,28 % |
 | no ejecutar el sondeo (sin implementar) | hasta −50 % | hasta −7 % |
+
+---
+
+# El censo de la RAM de onda: el camino 2 es viable, pero no por donde parecía (2026-08-05)
+
+El camino 2 —no ejecutar el sondeo— tenía tres cosas que resolver **antes de escribir una
+línea**, y la primera era la que decidía: *«hay que demostrar que las tablas están en RAM de
+onda y no en el archivo de registros del AICA»*, y que quien escribe no pisa lo que el lazo
+lee. Ya está medido.
+
+## El instrumento
+
+`DCEMU_SONDA_ONDA=1`, un censo por páginas de 1 KB de los 2 MB de RAM de onda. Cuenta, por
+página, las **lecturas de datos del ARM** y las **escrituras de quien sea** — los tres que
+escriben están enganchados: el propio ARM, el SH-4 y el DMA del G2 (los dos por `mem.c`), y el
+DMA interno del AICA. Un `memcpy` que cruza páginas marca todas las que toca: contar de menos
+las páginas sucias es justamente el error que haría parecer segura una elisión que no lo es.
+
+Para que el censo signifique algo hubo que **separar la búsqueda de instrucción de la lectura
+de datos** (`arm7_buscar()`): el ARM ejecuta desde la misma RAM que sondea, así que mezclarlas
+tapaba exactamente la separación que se venía a buscar. Es de paso el camino corto que pedía
+el punto 1.4 de este documento.
+
+## Los números
+
+| | Crazy Taxi (60 s) | DCDoom (35 s) |
+| --- | --- | --- |
+| lecturas de datos del ARM | 141 261 596 | 93 122 054 |
+| ... en páginas **nunca** escritas | **0 (0,00 %)** | **0 (0,00 %)** |
+| ... **sin cambio desde la lectura anterior** | **110 905 948 (78,51 %)** | **70 115 839 (75,29 %)** |
+| lecturas del ARM a registros del AICA | 3 854 875 (2,65 %) | 71 592 (0,08 %) |
+| páginas leídas / escritas | 66 / 2031 | 57 / 1781 |
+
+## Lo que dicen, que no es lo que la pregunta original suponía
+
+**El sondeo no vive en el archivo de registros.** 97,4 % y 99,9 % de las lecturas de datos del
+ARM van a RAM de onda. Eso era lo que podía matar el camino 2 de entrada, y no pasa.
+
+**La pregunta pesimista da cero, y no significa nada.** Ninguna página que el ARM lee quedó
+sin escribir en toda la corrida — pero una página escrita una vez al cargar el juego cuenta
+como sucia para siempre bajo ese criterio. La pregunta que el mecanismo hace de verdad es otra
+—*¿la escribió alguien desde que la leí la vez pasada?*— y ahí da **75-79 %**.
+
+**Y el mapa por página es la evidencia fuerte.** El ARM lee 66 páginas de 2048; se escriben
+2031. Las tablas de sondeo se leen entre cientos y decenas de miles de veces por escritura:
+
+| página (Crazy Taxi) | lecturas | escrituras | proporción |
+| --- | --- | --- | --- |
+| `00B000` | 46 985 478 | 37 048 068 | **1,3 : 1** |
+| `00DC00` | 29 508 712 | 60 436 | 488 : 1 |
+| `000800` | 15 118 057 | 256 | **59 055 : 1** |
+| `00C800` / `00CC00` | 7 548 848 | 528 | 14 297 : 1 |
+
+En DCDoom la página `00AC00` tiene **33 909 390 lecturas y 33 909 391 escrituras** —una más que
+la otra— que es la firma de un lee-modifica-escribe sobre la misma posición, 34 millones de
+veces. Es el borrador del propio ARM, no una tabla, y no se va a poder limpiar nunca.
+
+## Consecuencia de diseño, que cambia lo que había que escribir
+
+**La invalidación tiene que ser por página, y una global sería inútil.** El borrador del ARM se
+escribe tanto como se lee; un solo contador de generación para toda la RAM de onda estaría
+sucio permanentemente y el mecanismo no dispararía jamás. Por página funciona porque el cuerpo
+del sondeo no toca el borrador: lee la tabla y nada más.
+
+## Lo que queda por resolver, y una salvedad honesta del instrumento
+
+**El 75-79 % es por lectura, no por barrido.** Un barrido sólo se puede saltear si **todas** las
+páginas que recorre están limpias, y el lazo A recorre una tabla de 48 bytes de paso que puede
+cruzar varias. Si cada página estuviera limpia con probabilidad independiente, cinco páginas
+darían 0,78⁵ ≈ 29 %, no 78 %. La cifra real está entre esos dos extremos y **no se puede
+separar sin detectar los barridos**, que es justo lo que falta implementar. O sea: esto
+demuestra que el mecanismo es viable y por dónde, no cuánto va a rendir.
+
+Siguen abiertas las otras dos preguntas del camino 2: **cómo se reconoce un lazo sin atarse a
+direcciones** —un salto hacia atrás corto cuyo cuerpo no escribió memoria ni cambió más
+registros que los del propio lazo— y la memoización en sí: clave `(PC de cabecera, estado de
+registros de entrada)`, validez `(generaciones de las páginas leídas)`, y de resultado el
+estado de salida más los ciclos. La baranda no hay que inventarla: el `.wav` de
+`--captura-audio` es determinista bit a bit.
+
+---
+
+# El camino 2, implementado: elide 6,8 % de los pasos del ARM y vale 0,5 % (2026-08-05)
+
+Está en el árbol, encendido, y `DCEMU_SIN_MEMO_ARM=1` lo apaga. **Rinde bastante menos de lo
+que este documento estimaba** —0,5 % contra «hasta un 7 %»— y el porqué está abajo, porque es
+más interesante que la cifra.
+
+## Qué hace
+
+Memoiza barridos enteros. Cuando el ARM toma un **salto hacia atrás** corto, lo que falta del
+barrido está determinado por (registros de entrada, memoria); si ya se vio ese mismo estado y
+nadie escribió las páginas que el barrido lee, se repone el estado de salida de una vez en vez
+de interpretar noventa instrucciones.
+
+**La clave es el borde de atrás y no la entrada al lazo.** Cuesta interpretar una vuelta y
+saltear las otras N-1, y a cambio la detección vive en un solo lugar —`op_salto()`— en vez de
+tener que reconocer cuándo se entra al lazo desde afuera.
+
+Aborta la grabación cualquier cosa que rompa la pureza: una escritura, un acceso al archivo de
+registros del AICA, un cambio de PC que no sea del lazo, una excepción, más de ocho páginas o
+más de 8192 instrucciones. Y para reponer hacen falta dos condiciones más: que no haya FIQ
+pendiente —reponer se saltea las comprobaciones de cada instrucción, y como el barrido no toca
+el AICA su estado no puede cambiar durante él— y que el barrido quepa en los ciclos que quedan.
+
+## Lo que rinde
+
+| Crazy Taxi, banco canónico (3 pares, orden alternado) | media | rango |
+| --- | --- | --- |
+| sin memoización | 106 591 ms · 1,68× | 106 366 - 106 773 |
+| **con memoización** | **106 069 ms · 1,69×** | 105 877 - 106 294 |
+
+**−0,49 %**, cuatro pares de cuatro a favor contando el descartado, y rangos disjuntos por poco.
+El A/B es **el mismo binario en las dos ramas** —la elige una variable de entorno— así que por
+una vez la disposición del binario no es una variable.
+
+Elide **145 998 803 instrucciones del ARM de 2 161 263 753**, o sea el 6,8 %, a 91,7
+instrucciones por reposición. En DCDoom elide **cero**: sus lazos escriben, y un barrido que
+escribe no se puede reponer.
+
+## Por qué 0,5 % y no 7 %
+
+La estimación de este documento suponía saltear **la mitad** de los pasos del ARM. Se saltea un
+séptimo de eso, y el ARM es el 15 % de la corrida: 6,8 % × 15 % ≈ 1 %, y medido sale 0,5 %.
+
+Lo que come la diferencia son los **222 296 barridos sucios contra 561 969 repuestos**: casi un
+tercio de las veces que la clave coincide, alguien escribió una página que el barrido lee. El
+censo por páginas ya lo anticipaba —75-79 % por lectura, pero un barrido necesita **todas** sus
+páginas limpias a la vez— y esa era la salvedad que quedó anotada.
+
+## Los tres errores, que son lo que hay que leer de todo esto
+
+**Un ciclo de más por reposición cambiaba el audio.** `memo_ciclos` empieza a contar en el mismo
+salto hacia atrás que dispara la grabación, así que ya incluye sus tres ciclos; sumarle el 1 con
+el que `arm7_paso()` arranca cobraba uno de más. Con 4603 reposiciones son 4603 ciclos en tres
+minutos de emulación —nada— y alcanzaba para correr una frontera de muestra y cambiar el `.wav`
+entero. **Ninguna otra baranda del árbol lo habría visto**: las 21 suites pasaban, los 113 191
+casos de SingleStepTests pasaban, la captura de GL era idéntica y el juego se veía igual.
+
+**El filtro de cabeceras se anulaba a sí mismo.** Al dejar que cualquier cabecera nueva se
+quedara con su ranura, dos lazos separados por 4 KB se reseteaban el contador mutuamente y
+ninguno llegaba nunca al umbral: la elisión cayó de 8,3 % a **0,03 %** sin que nada más
+cambiara. Ahora una cabecera que ya sirvió no se deja desplazar. El filtro sigue haciendo falta:
+sin él se intentaba grabar en cada salto hacia atrás y los abortos eran **4 989 019**; con el
+envenenamiento de las cabeceras que abortan ocho veces son 284 198.
+
+**Una llamada por escritura del ARM, pagada también con el mecanismo apagado.**
+`arm7_escribir()` llamaba a `arm7_memo_abortar()` y a `onda_marcar_escritura()` siempre, y esas
+son decenas de millones de llamadas que **no aparecen en el A/B** porque las pagan las dos
+ramas. Ahora el centinela se mira antes de llamar y la escritura de una sola página es un
+incremento en línea.
+
+## Y una trampa de medición nueva
+
+**`--sin-audio` mueve la corrida de 1,72× a 1,14×**, un 50 %. Se puso para poder capturar el
+`.wav` y con eso el primer A/B quedó midiendo en un régimen que no es el del banco — dio −0,09 %,
+o sea ruido, contra el −0,49 % consistente del régimen normal. La captura de audio y el
+cronómetro **no pueden ir en la misma corrida**, igual que `--captura-gl`.
+
+## Barandas
+
+`.wav` de `--captura-audio` bit a bit en los dos guests, verificado además contra el mismo
+binario con `DCEMU_SIN_MEMO_ARM=1` —que es lo que prueba que la comparación aísla el mecanismo—;
+`ctest` 21/21; `dcemu_sh4json` 113 191 ok / 0 fallan; y la captura de GL de DCDoom en
+`36578F59…`.

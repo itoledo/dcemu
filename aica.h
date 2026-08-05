@@ -112,6 +112,57 @@ extern unsigned char aica_reg[AICA_REG_SIZE];
    comparten el ARM, el sintetizador y el DMA. */
 extern unsigned char * sound_mem;
 
+/*
+	Generaciones por pagina de la RAM de onda.
+
+	Es lo que hace posible saltear los barridos de sondeo del ARM7 (ver
+	arm7_memo_* en arm7.c y docs/arm7-plan.md): si nadie escribio una pagina
+	desde que el ARM la leyo, releerla da lo mismo por construccion.
+
+	**Por pagina y no global, y eso esta medido**: el ARM escribe su propio
+	borrador tanto como lo lee --en DCDoom una pagina tiene 33 909 390 lecturas
+	y 33 909 391 escrituras, un lee-modifica-escribe sobre la misma posicion--
+	asi que un contador unico para los 2 MB estaria sucio siempre y no serviria
+	de nada. Las tablas que el sondeo recorre, en cambio, se leen entre 488 y
+	59 055 veces por escritura.
+
+	Los tres que escriben RAM de onda tienen que llamar a onda_marcar_escritura():
+	el propio ARM (arm7_escribir), el SH-4 y el DMA del G2 --los dos por mem.c--
+	y el DMA interno del AICA. Olvidarse de uno no rompe nada visible: deja una
+	pagina sucia haciendose pasar por limpia, y el ARM se saltea un barrido que
+	debia rehacer. Es la clase de error que este arbol llama "algo que no hace
+	nada y no avisa", asi que la baranda es el .wav de --captura-audio.
+*/
+#define ONDA_PAG_BITS	10							/* paginas de 1 KB */
+#define ONDA_PAG		(1u << ONDA_PAG_BITS)
+#define ONDA_PAGS		(AICA_ONDA_SIZE >> ONDA_PAG_BITS)
+
+extern unsigned long onda_gen[ONDA_PAGS];
+
+void onda_marcar_escritura_larga(unsigned long dir, unsigned long n);
+
+/*
+	Casi todas las escrituras son de 1, 2 o 4 bytes y caen enteras dentro de una
+	pagina: eso es un incremento y nada mas. Solo los bloques del DMA cruzan, y
+	esos van a la funcion.
+
+	La distincion importa porque esto corre en **cada escritura del ARM** --
+	decenas de millones por corrida -- y una llamada por escritura se paga
+	tambien cuando la memoizacion esta apagada, o sea que ni siquiera aparece en
+	su A/B.
+*/
+#define onda_marcar_escritura(dir, n)									\
+	do {																\
+		unsigned long onda_a_ = (unsigned long) (dir)					\
+		                        & (AICA_ONDA_SIZE - 1);					\
+																		\
+		if (((onda_a_ & (ONDA_PAG - 1)) + (unsigned long) (n))			\
+		     <= ONDA_PAG)												\
+			onda_gen[onda_a_ >> ONDA_PAG_BITS]++;						\
+		else															\
+			onda_marcar_escritura_larga(onda_a_, (unsigned long) (n));	\
+	} while (0)
+
 void aica_reset(void);
 
 /* Accesos desde el SH-4, por el bus G2. La direccion es la fisica completa. */

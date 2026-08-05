@@ -17,6 +17,28 @@
 #include "perf.h"
 
 unsigned char		aica_reg[AICA_REG_SIZE];
+
+/* Generaciones por pagina de la RAM de onda. Ver aica.h por que existen y por
+   que son por pagina. Viven aca --y no en arm7.c, que es quien las consulta--
+   porque quienes las ensucian son los tres caminos que escriben la RAM, y este
+   es el archivo que manda sobre ella. */
+unsigned long		onda_gen[ONDA_PAGS];
+
+void onda_marcar_escritura_larga(unsigned long dir, unsigned long n)
+{
+	unsigned long a = dir & (AICA_ONDA_SIZE - 1);
+	unsigned long p = a >> ONDA_PAG_BITS;
+	unsigned long u = (a + (n ? n - 1 : 0)) >> ONDA_PAG_BITS;
+
+	/* Un bloque del DMA cruza paginas: se ensucian todas las que toca. Marcar
+	   solo la del principio dejaria paginas sucias pareciendo limpias, que es
+	   el unico error de este mecanismo que el guest no denuncia. */
+	if (u >= ONDA_PAGS)
+		u = ONDA_PAGS - 1;
+
+	while (p <= u)
+		onda_gen[p++]++;
+}
 unsigned long long	aica_muestras;
 
 /*
@@ -212,6 +234,9 @@ static void dma_interno_ejecutar(void)
 		if (dir)
 		{
 			/* 1: de los registros a la RAM de onda. */
+			PERF_ONDA_ESCR(onda + i, 4);
+			onda_marcar_escritura(onda + i, 4);
+
 			if (gate)
 				memset(&sound_mem[onda + i], 0, 4);
 			else

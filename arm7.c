@@ -116,12 +116,48 @@ static DWORD onda_leer16(DWORD a)
 	}
 }
 
+/*
+	La busqueda de instruccion, separada de arm7_leer() a proposito.
+
+	El ARM ejecuta desde la misma RAM de onda que sondea, asi que si el censo de
+	paginas contara tambien las busquedas taparia justo lo que se busca separar:
+	que paginas se leen como **dato** y cuales se escriben. Ver perf.h.
+
+	De paso es el camino corto que docs/arm7-plan.md pide en su punto 1.4: la
+	busqueda siempre son 4 bytes y casi siempre en RAM de onda.
+*/
+static DWORD arm7_buscar(DWORD direccion)
+{
+	direccion &= ARM7_BUS;
+
+	if (direccion & 0x00800000)
+		return aica_arm_leer(direccion & (AICA_REG_SIZE - 1), 4);
+
+	return onda_leer32(direccion & (AICA_ONDA_SIZE - 1));
+}
+
 DWORD arm7_leer(DWORD direccion, int tam)
 {
 	direccion &= ARM7_BUS;
 
 	if (direccion & 0x00800000)
+	{
+		/* Un lazo que sondee el archivo de registros no se puede saltear: eso
+		   cambia con cada muestra sin que nadie lo escriba, asi que ninguna
+		   generacion lo cubre. Se cuenta aparte para saber si pasa. */
+		if (perf_sonda_onda)
+			perf_onda_arm_reg_lect++;
+
+		arm7_memo_abortar_por(ARM7_MEMO_REGISTRO);
+
 		return aica_arm_leer(direccion & (AICA_REG_SIZE - 1), tam);
+	}
+
+	PERF_ONDA_LECT(direccion);
+
+	/* Lo que el barrido lee es lo que hay que vigilar para poder reponerlo. */
+	if (arm7_memo_fin != ~0u)
+		arm7_memo_pagina(direccion);
 
 	{
 		DWORD a = direccion & (AICA_ONDA_SIZE - 1);
@@ -139,11 +175,18 @@ void arm7_escribir(DWORD direccion, int tam, DWORD valor)
 {
 	direccion &= ARM7_BUS;
 
+	/* Un barrido que escribe no es un barrido: reponerlo se saltearia la
+	   escritura. Y si es al archivo de registros, ademas cambia el AICA. */
+	arm7_memo_abortar_por(ARM7_MEMO_ESCRITURA);
+
 	if (direccion & 0x00800000)
 	{
 		aica_arm_escribir(direccion & (AICA_REG_SIZE - 1), tam, valor);
 		return;
 	}
+
+	PERF_ONDA_ESCR(direccion, tam);
+	onda_marcar_escritura(direccion, tam);
 
 	{
 		DWORD a = direccion & (AICA_ONDA_SIZE - 1);
@@ -245,6 +288,11 @@ static void excepcion(DWORD vector, DWORD modo, DWORD retorno, int mascara_f)
 {
 	DWORD viejo = arm7.cpsr;
 
+	/* Una excepcion en medio de un barrido lo parte: ni el estado de salida ni
+	   los ciclos serian los del barrido. Se declara aca arriba (arm7.h) porque
+	   esto esta antes que el modulo de memoizacion. */
+	arm7_memo_abortar_por(ARM7_MEMO_EXCEPCION);
+
 	poner_cpsr((arm7.cpsr & ~ARM7_MODO) | modo);
 
 	arm7.spsr  = viejo;
@@ -277,6 +325,11 @@ static void poner_r(int n, DWORD v)
 {
 	if (n == 15)
 	{
+		/* El unico camino por el que el PC se mueve fuera de op_salto() y de
+		   excepcion(). Un barrido que salga por aca no es el barrido que se
+		   estaba grabando, asi que la grabacion se tira. */
+		arm7_memo_abortar_por(ARM7_MEMO_PC);
+
 		arm7.r[15] = v & ~3u & ARM7_BUS;
 		pc_cambio  = 1;
 	}
@@ -798,6 +851,400 @@ static void op_bloque(DWORD op)
 	ciclos_op += n + (carga ? 1 : 0);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Memoizacion de los barridos de sondeo                                    */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Cerca de la mitad de los 2161 millones de pasos del ARM son barridos de
+	sondeo que casi nunca encuentran nada: recorrer una tabla mirando un byte por
+	entrada. El lazo mas caro de DCDoom da 94 439 120 vueltas y **su cuerpo no se
+	ejecuta ni una vez** en toda la corrida. Ver docs/arm7-plan.md.
+
+	Un barrido asi es una funcion pura de (registros de entrada, memoria). Si el
+	ARM vuelve a hacer el mismo barrido con los mismos registros y nadie escribio
+	las paginas que el barrido lee, el resultado es identico por construccion y
+	se puede reponer de una sola vez en vez de interpretar miles de
+	instrucciones.
+
+	**La clave es el salto hacia atras, no la entrada al lazo.** Se memoiza desde
+	el borde de atras: cuando el ARM salta hacia atras a `cabecera` con un estado
+	de registros que ya se vio, lo que falta del barrido esta determinado. Cuesta
+	interpretar una vuelta y saltear las otras N-1, y a cambio la deteccion es un
+	solo lugar --op_salto-- en vez de tener que reconocer cuando se entra al lazo
+	desde afuera.
+
+	Lo que **aborta** la grabacion, todo por el mismo motivo -- si la vuelta no es
+	una funcion pura de la memoria que se vigila, no se puede reponer:
+
+	  - cualquier escritura del ARM (arm7_escribir);
+	  - cualquier acceso al archivo de registros del AICA, que cambia con cada
+	    muestra sin que nadie lo "escriba", asi que ninguna generacion lo cubre;
+	  - cualquier cambio de PC que no sea del propio lazo (poner_r sobre R15) y
+	    cualquier excepcion, FIQ incluida;
+	  - leer mas de MEMO_PAGS paginas distintas, o pasarse de MEMO_INSTR
+	    instrucciones: las dos son barandas contra memoizar algo que no es un
+	    barrido.
+
+	Y dos condiciones mas en el momento de reponer:
+
+	  - **no puede haber FIQ pendiente.** Reponer se salta las comprobaciones de
+	    FIQ de cada instruccion; como el barrido no toca registros del AICA ni
+	    escribe, el estado del AICA no puede cambiar durante el, asi que alcanza
+	    con mirar una vez al principio;
+	  - **el barrido tiene que caber en los ciclos que quedan.** Si no, el ARM se
+	    adelantaria dentro de la muestra de audio y cambiaria la granularidad con
+	    la que llegan las interrupciones.
+
+	La baranda es el .wav de --captura-audio, determinista bit a bit. Y
+	DCEMU_SIN_MEMO_ARM=1 lo apaga entero, que es el A/B.
+*/
+#define MEMO_RANURAS	512					/* directa, potencia de dos */
+#define MEMO_PAGS		8					/* paginas distintas por barrido */
+#define MEMO_INSTR		8192				/* tope de instrucciones grabadas */
+#define MEMO_CUERPO		1024				/* tamano maximo del cuerpo, bytes */
+
+typedef struct
+{
+	DWORD			cabecera;				/* destino del salto hacia atras */
+	DWORD			r_ent[15];				/* R0-R14 al tomarlo */
+	DWORD			cpsr_ent;
+	DWORD			r_sal[15];
+	DWORD			cpsr_sal;
+	DWORD			pc_sal;
+	long			ciclos;
+	unsigned long	instr;
+	int				banco;
+	int				n_pags;
+	unsigned short	pag[MEMO_PAGS];
+	unsigned long	gen[MEMO_PAGS];
+	int				lista;
+} memo_t;
+
+static memo_t	memo[MEMO_RANURAS];
+
+/*
+	El filtro de cabeceras, y **es lo que hace que el mecanismo pueda rendir**.
+
+	Sin el, cada salto hacia atras del ARM --decenas de millones por corrida--
+	pagaba mezclar quince registros para buscar en la tabla y, si no encontraba,
+	copiar quince mas para empezar a grabar. Casi todos esos saltos son lazos
+	comunes que escriben y que van a abortar la grabacion tres instrucciones
+	despues: 4 989 019 grabaciones abortadas contra 664 130 reposiciones utiles
+	en Crazy Taxi.
+
+	El filtro es directo por PC de cabecera y cuesta dos cargas y una
+	comparacion:
+
+	  - una cabecera que se ve por primera vez solo se anota;
+	  - recien despues de MEMO_UMBRAL vueltas se paga la busqueda cara;
+	  - y una que aborto MEMO_FALLOS veces seguidas se envenena y no se vuelve a
+	    intentar. Un lazo que escribe no va a dejar de escribir.
+
+	El envenenamiento se levanta solo cuando la ranura la reclama otra cabecera,
+	que es lo que hace que el filtro se adapte si el firmware cambia de fase.
+*/
+#define MEMO_CABS		1024				/* potencia de dos */
+#define MEMO_UMBRAL		2					/* vueltas antes de grabar */
+#define MEMO_FALLOS		8					/* abortos antes de envenenar */
+#define MEMO_LISTO		254					/* ya grabo un barrido util */
+#define MEMO_VENENO		255
+
+static DWORD			memo_cab[MEMO_CABS];
+static unsigned char	memo_cab_n[MEMO_CABS];
+static unsigned char	memo_cab_fallos[MEMO_CABS];
+
+int				arm7_memo_apagada = 0;		/* DCEMU_SIN_MEMO_ARM */
+
+/* Estado de la grabacion en curso. */
+static int		memo_grabando = 0;
+static int		memo_ranura;
+static int		memo_cab_ranura;			/* la del filtro, para castigarla */
+static DWORD	memo_cabecera;
+static DWORD	memo_r_ent[15];
+static DWORD	memo_cpsr_ent;
+static int		memo_banco;
+static long		memo_ciclos;
+static unsigned long memo_instr;
+static int		memo_n_pags;
+static unsigned short memo_pag[MEMO_PAGS];
+static unsigned long  memo_gen[MEMO_PAGS];
+
+/*
+	El PC del salto hacia atras mientras se graba, y ~0 cuando no.
+
+	El centinela existe para que arm7_paso() no tenga que preguntar si se esta
+	grabando: la comprobacion de fin de barrido es una comparacion contra este
+	valor, metida **dentro del if de pc_cambio que ya estaba**. Es la misma
+	leccion que costo 8,5 % en intc_sh4_reintentar: una rama propia en el camino
+	caliente se paga, doblada dentro de una que ya existe no.
+*/
+DWORD			arm7_memo_fin = ~0u;
+
+unsigned long long arm7_memo_aciertos    = 0;
+unsigned long long arm7_memo_pasos       = 0;	/* instrucciones no ejecutadas */
+unsigned long long arm7_memo_grabados    = 0;
+unsigned long long arm7_memo_abortados   = 0;
+unsigned long long arm7_memo_sucios      = 0;
+
+unsigned long long arm7_memo_motivo[ARM7_MEMO_MOTIVOS];
+
+const char * const arm7_memo_motivo_nombre[ARM7_MEMO_MOTIVOS] =
+{
+	"escritura", "registro del AICA", "PC fuera del lazo", "excepcion",
+	"lazo anidado", "demasiado largo", "demasiadas paginas"
+};
+
+void arm7_memo_abortar_real(int motivo)
+{
+	if (!memo_grabando)
+		return;
+
+	memo_grabando  = 0;
+	arm7_memo_fin  = ~0u;
+	arm7_memo_abortados++;
+	arm7_memo_motivo[motivo]++;
+
+	/* Un lazo que aborta seguido no va a dejar de hacerlo: el que escribe
+	   escribe siempre. Se lo castiga hasta envenenarlo. */
+	if (memo_cab_n[memo_cab_ranura] != MEMO_VENENO
+	 && ++memo_cab_fallos[memo_cab_ranura] >= MEMO_FALLOS)
+		memo_cab_n[memo_cab_ranura] = MEMO_VENENO;
+}
+
+/* Una pagina de RAM de onda que la vuelta leyo. Se guarda con la generacion que
+   tenia: reponer solo vale si sigue siendo esa. */
+void arm7_memo_pagina(DWORD direccion)
+{
+	unsigned long p = (direccion & (AICA_ONDA_SIZE - 1)) >> ONDA_PAG_BITS;
+	int i;
+
+	for (i = 0; i < memo_n_pags; i++)
+		if (memo_pag[i] == (unsigned short) p)
+			return;
+
+	if (memo_n_pags >= MEMO_PAGS)
+	{
+		arm7_memo_abortar_por(ARM7_MEMO_PAGS);
+		return;
+	}
+
+	memo_pag[memo_n_pags] = (unsigned short) p;
+	memo_gen[memo_n_pags] = onda_gen[p];
+	memo_n_pags++;
+}
+
+static unsigned arm7_memo_ranura(DWORD cabecera, const DWORD * r)
+{
+	/* Mezcla barata: la cabecera identifica el lazo y R0-R14 el punto del
+	   barrido. No decide correccion --la entrada se compara entera antes de
+	   reponer-- solo en que ranura cae. */
+	unsigned h = (unsigned) (cabecera >> 2) * 2654435761u;
+	int i;
+
+	for (i = 0; i < 15; i++)
+		h = h * 16777619u + (unsigned) r[i];
+
+	return h & (MEMO_RANURAS - 1);
+}
+
+/* Cierra la grabacion: la vuelta salio del cuerpo del lazo por donde debia. */
+void arm7_memo_terminar(void)
+{
+	memo_t * m = &memo[memo_ranura];
+	int      i;
+
+	memo_grabando = 0;
+	arm7_memo_fin = ~0u;
+
+	/* El barrido tiene que haber terminado en el mismo banco en que empezo: si
+	   cambio de modo, los registros que se repondrian no son los mismos. */
+	if (arm7.banco != memo_banco || (arm7.cpsr & ARM7_MODO) != (memo_cpsr_ent & ARM7_MODO))
+	{
+		arm7_memo_abortados++;
+		return;
+	}
+
+	m->cabecera = memo_cabecera;
+	memcpy(m->r_ent, memo_r_ent, sizeof(m->r_ent));
+	m->cpsr_ent = memo_cpsr_ent;
+
+	for (i = 0; i < 15; i++)
+		m->r_sal[i] = arm7.r[i];
+
+	m->cpsr_sal = arm7.cpsr;
+	m->pc_sal   = arm7.r[15];
+	m->ciclos   = memo_ciclos;
+	m->instr    = memo_instr;
+	m->banco    = memo_banco;
+	m->n_pags   = memo_n_pags;
+	memcpy(m->pag, memo_pag, sizeof(m->pag));
+	memcpy(m->gen, memo_gen, sizeof(m->gen));
+	m->lista    = 1;
+
+	/* La cabecera demostro servir: se le da la ranura del filtro en propiedad y
+	   se le perdonan los abortos acumulados. */
+	memo_cab_n[memo_cab_ranura]      = MEMO_LISTO;
+	memo_cab_fallos[memo_cab_ranura] = 0;
+
+	arm7_memo_grabados++;
+}
+
+/* 1 si se pudo reponer un barrido entero desde `cabecera`. */
+static int arm7_memo_reponer(DWORD cabecera)
+{
+	unsigned  ran = arm7_memo_ranura(cabecera, arm7.r);
+	memo_t *  m   = &memo[ran];
+	int       i;
+
+	if (!m->lista || m->cabecera != cabecera || m->banco != arm7.banco
+	 || m->cpsr_ent != arm7.cpsr)
+		return 0;
+
+	for (i = 0; i < 15; i++)
+		if (m->r_ent[i] != arm7.r[i])
+			return 0;
+
+	/* Que no se haya escrito ninguna de las paginas que el barrido leyo. */
+	for (i = 0; i < m->n_pags; i++)
+		if (onda_gen[m->pag[i]] != m->gen[i])
+		{
+			arm7_memo_sucios++;
+			return 0;
+		}
+
+	/* Las dos condiciones de tiempo. Ver el comentario de arriba. */
+	if (m->ciclos > arm7.ciclos)
+		return 0;
+
+	if (!(arm7.cpsr & ARM7_F) && aica_fiq_pendiente())
+		return 0;
+
+	for (i = 0; i < 15; i++)
+		arm7.r[i] = m->r_sal[i];
+
+	arm7.cpsr   = m->cpsr_sal;
+	arm7.r[15]  = m->pc_sal;
+	pc_cambio   = 1;
+
+	/*
+		**Asignacion y no suma, y esto costo la primera version del mecanismo.**
+
+		memo_ciclos empezo a contar en este mismo salto hacia atras, o sea que
+		m->ciclos ya incluye los 3 ciclos que el salto cuesta. Sumarle el 1 con
+		el que arm7_paso() arranco cobraba un ciclo de mas por reposicion. Con
+		4603 reposiciones son 4603 ciclos en una corrida de tres minutos --nada--
+		y sin embargo alcanzaba para correr una frontera de muestra y **cambiar
+		el .wav**. La baranda de --captura-audio lo agarro; ninguna otra lo
+		habria hecho.
+
+		El salto de atras que cierra el barrido no entra en m->ciclos y se vuelve
+		a ejecutar de verdad, porque pc_sal es su propia direccion: cobra su
+		ciclo por su cuenta.
+	*/
+	ciclos_op   = (int) m->ciclos;
+
+	arm7.instrucciones += m->instr;
+	arm7_memo_aciertos++;
+	arm7_memo_pasos    += m->instr;
+
+	return 1;
+}
+
+/*
+	El salto hacia atras: donde se decide todo. Devuelve 1 si repuso un barrido
+	entero, y entonces op_salto() no tiene nada mas que hacer.
+*/
+static int arm7_memo_borde(DWORD destino, DWORD pc_salto)
+{
+	unsigned c;
+	int      i;
+
+	if (memo_grabando)
+	{
+		/* Otra vuelta del mismo lazo: se sigue grabando. Un salto hacia atras a
+		   otra cabecera es un lazo anidado, y eso no se memoiza. */
+		if (destino != memo_cabecera)
+			arm7_memo_abortar_por(ARM7_MEMO_ANIDADO);
+		else if (memo_instr > MEMO_INSTR)
+			arm7_memo_abortar_por(ARM7_MEMO_LARGO);
+
+		return 0;
+	}
+
+	if (arm7_memo_apagada || pc_salto - destino > MEMO_CUERPO)
+		return 0;
+
+	/* El filtro barato. Todo lo caro de aqui abajo pasa por el. */
+	c = (destino >> 2) & (MEMO_CABS - 1);
+
+	if (memo_cab[c] != destino)
+	{
+		/*
+			**Una cabecera que ya sirvio no se deja desplazar**, y esto costo la
+			ganancia entera una vez: con la ranura cediendosela a cualquier
+			cabecera nueva, dos lazos separados por 4 KB se anulaban --cada uno
+			reseteaba el contador del otro-- y ninguno llegaba nunca al umbral.
+			La elision cayo de 8,3 % de los pasos del ARM a 0,03 % sin que nada
+			mas cambiara.
+		*/
+		if (memo_cab_n[c] >= MEMO_LISTO)
+			return 0;
+
+		memo_cab[c]        = destino;
+		memo_cab_n[c]      = 1;
+		memo_cab_fallos[c] = 0;
+		return 0;
+	}
+
+	if (memo_cab_n[c] == MEMO_VENENO)
+		return 0;
+
+	if (memo_cab_n[c] < MEMO_UMBRAL)
+	{
+		memo_cab_n[c]++;
+		return 0;
+	}
+
+	if (arm7_memo_reponer(destino))
+		return 1;
+
+	/* No estaba: se graba este barrido desde aca. */
+	memo_cab_ranura = (int) c;
+	memo_cabecera = destino;
+	memo_ranura   = (int) arm7_memo_ranura(destino, arm7.r);
+	memo_cpsr_ent = arm7.cpsr;
+	memo_banco    = arm7.banco;
+	memo_ciclos   = 0;
+	memo_instr    = 0;
+	memo_n_pags   = 0;
+	memo_grabando = 1;
+	arm7_memo_fin = pc_salto;
+
+	for (i = 0; i < 15; i++)
+		memo_r_ent[i] = arm7.r[i];
+
+	/* El cuerpo del lazo vive en la misma RAM de onda que el ARM sondea. Es
+	   improbable que alguien lo reescriba, pero si pasara la reposicion seria
+	   una instruccion vieja: se vigilan las dos puntas como cualquier otra
+	   lectura. */
+	arm7_memo_pagina(destino);
+	arm7_memo_pagina(pc_salto);
+
+	return 0;
+}
+
+void arm7_memo_reset(void)
+{
+	memset(memo, 0, sizeof(memo));
+	memset(memo_cab, 0, sizeof(memo_cab));
+	memset(memo_cab_n, 0, sizeof(memo_cab_n));
+	memset(memo_cab_fallos, 0, sizeof(memo_cab_fallos));
+	memo_grabando   = 0;
+	memo_cab_ranura = 0;
+	arm7_memo_fin   = ~0u;
+}
+
 /* B y BL. */
 static void op_salto(DWORD op)
 {
@@ -809,7 +1256,20 @@ static void op_salto(DWORD op)
 	if (op & 0x01000000)						/* BL: guarda el retorno */
 		arm7.r[14] = arm7.r[15] + 4;
 
-	arm7.r[15] = (DWORD) (arm7.r[15] + 8 + (desp << 2)) & ARM7_BUS;
+	{
+		DWORD pc_salto = arm7.r[15];
+		DWORD destino  = (DWORD) (arm7.r[15] + 8 + (desp << 2)) & ARM7_BUS;
+
+		/* Salto hacia atras corto: el borde de un lazo. Un BL nunca lo es --
+		   guarda retorno, o sea que es una llamada -- y memoizar a traves de una
+		   llamada seria memoizar lo que hay del otro lado. */
+		if (destino < pc_salto && !(op & 0x01000000)
+		 && arm7_memo_borde(destino, pc_salto))
+			return;								/* repuesto: PC y ciclos ya estan */
+
+		arm7.r[15] = destino;
+	}
+
 	pc_cambio  = 1;
 	ciclos_op += 2;
 }
@@ -1073,11 +1533,22 @@ void arm7_perfil_resumen(void)
 
 void arm7_reset(void)
 {
+	const char * e;
+
 	memset(&arm7, 0, sizeof(arm7));
 
 	arm7.banco = ARM7_B_SVC;
 	arm7.cpsr  = ARM7_MODO_SVC | ARM7_I | ARM7_F;
 	arm7.r[15] = ARM7_VEC_RESET;
+
+	/* Los barridos grabados valen para el estado que habia: soltar el reset del
+	   ARM puede dejar otro firmware. */
+	arm7_memo_reset();
+
+	/* Una vez al arrancar y nunca en el camino caliente, como el resto de las
+	   sondas del arbol. */
+	e = getenv("DCEMU_SIN_MEMO_ARM");
+	arm7_memo_apagada = (e != NULL && atoi(e) != 0);
 }
 
 int arm7_paso(void)
@@ -1100,7 +1571,7 @@ int arm7_paso(void)
 		return 3;
 	}
 
-	op = arm7_leer(arm7.r[15], 4);
+	op = arm7_buscar(arm7.r[15]);
 	arm7.instrucciones++;
 
 	if (arm7_perfil)
@@ -1146,7 +1617,28 @@ int arm7_paso(void)
 	}
 
 	if (!pc_cambio)
+	{
+		/*
+			Fin del barrido: el salto de atras del lazo se ejecuto y **no**
+			salto, o sea que el lazo termino y cayo a la instruccion siguiente.
+
+			La comparacion va doblada dentro de este `if`, que ya estaba, y
+			contra un centinela que vale ~0 cuando no se graba -- asi no hace
+			falta preguntar antes si se estaba grabando. Ver el comentario de
+			arm7_memo_fin: una rama propia en el camino caliente se paga.
+		*/
+		if (arm7.r[15] == arm7_memo_fin)
+			arm7_memo_terminar();
+
 		arm7.r[15] += 4;
+	}
+
+	/* La contabilidad del barrido en curso. Cuelga del mismo centinela. */
+	if (arm7_memo_fin != ~0u)
+	{
+		memo_ciclos += ciclos_op;
+		memo_instr++;
+	}
 
 	return ciclos_op;
 }
