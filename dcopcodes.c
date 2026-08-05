@@ -81,6 +81,12 @@ static DWORD pio_destino = 0;
 static DWORD pio_tam = 0;
 static int   pio_pedido = 0;
 
+/* Bytes del pedazo ya copiados. **Vive fuera de la instantanea de excepciones a
+   proposito**: si una escritura traducida falla por TLB, el longjmp repone el
+   contexto del SH-4 y el guest reejecuta el stub, pero esto no se repone y la
+   copia sigue donde quedo. Ver el bloque del MAINLOOP. */
+static DWORD pio_hecho = 0;
+
 /*
 	Escritura traducida por pedazos que no cruzan pagina. memwrite() traduce
 	UNA vez por llamada y escribe fisico contiguo desde ahi, lo que para las
@@ -599,6 +605,7 @@ void hack_gdrom()
 				multi_restante = 0;
 				multi_callback = 0;
 				pio_pedido     = 0;
+				pio_hecho      = 0;
 				multi_completo = 0;
 				break;
 
@@ -1225,6 +1232,7 @@ void hack_gdrom()
 				pio_destino = destino;
 				pio_tam     = tam;
 				pio_pedido  = 1;
+				pio_hecho   = 0;
 
 				if (traza_activa)
 				{
@@ -1275,6 +1283,7 @@ void hack_gdrom()
 					multi_id       = 0;
 					multi_restante = 0;
 					pio_pedido     = 0;
+					pio_hecho      = 0;
 					multi_completo = 0;
 				}
 
@@ -1340,55 +1349,59 @@ void hack_gdrom()
 	*/
 	if (R(6) == 0 && R(7) == 2 && pio_pedido && multi_id != 0)
 	{
-		/* Transaccional: el memwrite traducido puede fallar por TLB y abortar
-		   la instruccion entera -- el guest recarga y reejecuta este MAINLOOP,
-		   o sea esto desde cero --, asi que el estado del flujo se toca solo
-		   con la copia completa hecha. Reescribir los mismos bytes en la
-		   reejecucion es inocuo. */
-		char	sector[2048];
-		DWORD	hecho    = 0;
-		DWORD	sect     = multi_sector;
-		DWORD	desplaz  = multi_desplaz;
-
 		/*
-			Tocar el destino ANTES de mover nada. El buffer del llamador es
-			una direccion virtual de otra ranura de CE y su pagina puede no
-			estar en la TLB: la escritura fallaria a mitad de la copia,
-			abortaria la instruccion y el guest reejecutaria este stub -- con
-			la bomba del driver ya a mitad de camino, que es lo que le hacia
-			informar "only read 0 of 17544" con los bytes ya en su buffer.
-			Leyendo primero, el fallo ocurre aca, con el estado del flujo
-			todavia intacto: CE recarga la TLB, reejecuta el stub y la copia
-			entera pasa de una.
+			**La copia se REANUDA, no se rehace.**
+
+			El destino es virtual y sus paginas pueden no estar en la TLB, asi
+			que una escritura traducida puede fallar a mitad de camino: la
+			excepcion aborta la instruccion entera, CE recarga y el guest
+			reejecuta este stub. El estado del flujo (multi_sector, restante,
+			transferido) se toca solo con el pedazo completo, que es lo que
+			evita que el guest cobre un conteo a medias -- eso era el
+			"only read 0 of 17544" de DCDoom.
+
+			Lo que **no** puede rehacerse es la copia: `pio_hecho` cuenta lo ya
+			escrito y sobrevive al longjmp -- vive fuera de la instantanea de
+			excepciones a proposito --, asi que la reejecucion sigue donde
+			quedo. Cada pagina falla una vez y el pedazo avanza.
+
+			Antes esto se resolvia leyendo el destino entero por adelantado,
+			para que el fallo ocurriera con el estado intacto. **Y no puede
+			funcionar para un pedazo grande**: la TLB del SH-4 tiene 64
+			entradas, asi que un destino de mas de 64 paginas no puede estar
+			residente a la vez. Sega Rally 2 pide 580 488 bytes de una -- 567
+			paginas -- y medido: el recorrido fallaba en 0x0C011000, 0x0C012000,
+			... hasta 0x0C050000, o sea **63 paginas, justo el tamano de la
+			TLB**, y al reempezar la primera ya estaba desalojada. 4 428 508
+			excepciones por segundo emulado, para siempre, y el juego en negro.
+			DCDoom pedia pedazos de 36 KB y por eso entraba.
 		*/
+		char	sector[2048];
+		DWORD	sect, desplaz, total;
+
+		total   = multi_desplaz + pio_hecho;
+		sect    = multi_sector + total / 2048;
+		desplaz = total % 2048;
+
+		while (pio_hecho < pio_tam)
 		{
-			DWORD p;
+			/* De a una pagina del SH-4, que es la unidad en la que puede
+			   fallar: asi lo escrito y lo contado no se separan nunca. */
+			DWORD trozo = 0x400 - ((pio_destino + pio_hecho) & 0x3FF);
 
-			for (p = 0; p < pio_tam; p += 0x400)
-			{
-				BYTE b;
-				memread(pio_destino + p, &b, 1);
-			}
+			if (trozo > 2048 - desplaz)
+				trozo = 2048 - desplaz;
 
-			if (pio_tam > 0)
-			{
-				BYTE b;
-				memread(pio_destino + pio_tam - 1, &b, 1);
-			}
-		}
-
-		while (hecho < pio_tam)
-		{
-			DWORD trozo = 2048 - desplaz;
-
-			if (trozo > pio_tam - hecho)
-				trozo = pio_tam - hecho;
+			if (trozo > pio_tam - pio_hecho)
+				trozo = pio_tam - pio_hecho;
 
 			iso_read_sector(sector, sect, 1);
-			memwrite_paginado(pio_destino + hecho, &sector[desplaz], trozo);
 
-			hecho   += trozo;
-			desplaz += trozo;
+			/* Si esto aborta, pio_hecho no avanza y el pedazo se retoma aqui. */
+			memwrite(pio_destino + pio_hecho, &sector[desplaz], trozo);
+
+			pio_hecho += trozo;
+			desplaz   += trozo;
 
 			if (desplaz >= 2048)
 			{
@@ -1400,6 +1413,7 @@ void hack_gdrom()
 		multi_sector    = sect;
 		multi_desplaz   = desplaz;
 		multi_restante -= pio_tam;
+		pio_hecho       = 0;
 		com_transferido = multi_total - multi_restante;
 		pio_pedido      = 0;
 

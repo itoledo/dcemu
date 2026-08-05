@@ -154,7 +154,8 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 	*/
 	if (traza_activa)
 	{
-		static DWORD vistos[16];
+		/* Pares (codigo, SPC): 31 sitios distintos. Ver el reporte de abajo. */
+		static DWORD vistos[64];
 		static int   n = 0;
 		int          i;
 
@@ -356,16 +357,63 @@ void excepcion_entrar(DWORD codigo, DWORD vector)
 			}
 		}
 
-		for (i = 0; i < n; i++)
-			if (vistos[i] == codigo)
+		/*
+			**Una linea por (codigo, PC), no por codigo, y con la direccion que
+			fallo.**
+
+			Deduplicar solo por codigo callaba todos los sitios menos el
+			primero: en Sega Rally 2 el primer fallo de TLB salia con el PC de
+			una lectura normal del juego y los 4 428 508 por segundo que venian
+			despues -- de otro PC, y el problema de verdad -- no se veian. Y sin
+			la direccion no se puede decir si el guest no la mapeo o si dcemu la
+			esta pidiendo mal, que es justo la pregunta.
+
+			TEA vale para las excepciones de la MMU, que son las que la usan;
+			para el resto no dice nada y por eso no se imprime.
+		*/
+		{
+			int es_mmu = (codigo == 0x040 || codigo == 0x060
+			           || codigo == 0x0A0 || codigo == 0x0C0
+			           || codigo == 0x080 || codigo == 0x0E0 || codigo == 0x100);
+
+			for (i = 0; i < n; i += 2)
+				if (vistos[i] == codigo && vistos[i + 1] == SPC)
+					return;
+
+			/*
+				**Y se calla al llenarse.** Deduplicar por sitio y no por codigo
+				acota mal sola: un guest con MMU tiene decenas de sitios de
+				recarga y Sega Rally 2 dejo 227 446 lineas en ocho segundos con
+				la tabla desbordada. El tope va aqui y no en el numero de
+				sitios, porque los primeros son los que sirven.
+			*/
+			if (n >= 62)
+			{
+				static int avisado = 0;
+
+				if (!avisado)
+				{
+					avisado = 1;
+					fprintf(stderr, "traza: 31 sitios de excepcion distintos;"
+						" no se informan mas\n");
+				}
+
 				return;
+			}
 
-		if (n < 16)
 			vistos[n++] = codigo;
+			vistos[n++] = SPC;
 
-		fprintf(stderr, "traza: excepcion EXPEVT %03lx desde PC %08lx,"
-			" salta a %08lx\n",
-			(unsigned long) codigo, (unsigned long) SPC, (unsigned long) PC);
+			fprintf(stderr, "traza: excepcion EXPEVT %03lx desde PC %08lx,"
+				" salta a %08lx",
+				(unsigned long) codigo, (unsigned long) SPC,
+				(unsigned long) PC);
+
+			if (es_mmu)
+				fprintf(stderr, ", sobre %08lx", (unsigned long) *TEA);
+
+			fprintf(stderr, "\n");
+		}
 	}
 }
 
