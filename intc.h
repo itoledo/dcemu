@@ -64,6 +64,19 @@ extern DWORD	intc_queuemask_ext;
 #define ASIC_EVT_PVR_SCANINT1           (1 << 0x0003)
 #define ASIC_EVT_PVR_SCANINT2           (1 << 0x0004)
 #define ASIC_EVT_PVR_VBLINT             (1 << 0x0005)
+/*
+	Fin de transferencia del convertidor YUV: lo levanta el chip cuando entraron
+	los macrobloques de la imagen entera que describe TA_YUV_TEX_CTRL, no cuando
+	termina el DMA que los trajo. Son dos avisos distintos y un guest puede
+	esperar cualquiera de los dos -- el CH2 acarrea los bytes, este dice que la
+	textura quedo escrita.
+
+	Faltaba, y era el segundo de los dos motivos por los que Dave Mirra
+	Freestyle BMX no pasaba de su FMV de arranque: su biblioteca de DMA marca la
+	transferencia como "en vuelo" y espera a este bit para sacarla de la cola.
+	Con el fin de CH2 solo, la cola se traba en la primera entrada de tipo YUV.
+*/
+#define ASIC_EVT_PVR_YUVDONE            (1 << 0x0006)
 #define ASIC_EVT_PVR_OPAQUEDONE         (1 << 0x0007)
 #define ASIC_EVT_PVR_OPAQUEMODDONE      (1 << 0x0008)
 #define ASIC_EVT_PVR_TRANSDONE          (1 << 0x0009)

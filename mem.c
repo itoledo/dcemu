@@ -1252,8 +1252,20 @@ void ta_write(unsigned long direccion, void * p, size_t size)
 	  - 0x10000000-0x107FFFFF es la FIFO de poligonos: cada bloque de 32 bytes
 	    va al decodificador del TA, igual que si lo hubiera vaciado una store
 	    queue;
+	  - 0x10800000-0x10FFFFFF es la entrada del convertidor YUV, y tambien va
+	    de a 32 bytes;
 	  - cualquier otro destino (FIFO de texturas en 0x11xxxxxx, RAM de video)
 	    es una copia y ya.
+
+	**Los tres destinos los decide la direccion, y tienen que decidirse igual
+	que en el camino de la store queue** (pref142(), syscontrol.c): son las dos
+	entradas al mismo chip y el guest elige una u otra por conveniencia suya.
+	Que el YUV faltara aqui es la forma de falla de siempre -- la transferencia
+	se aceptaba, se copiaba a la zona 0x10 como si fuera memoria, el fin de DMA
+	se informaba puntualmente y no se convertia un solo macrobloque, sin una
+	linea de aviso. Dave Mirra Freestyle BMX abre con un FMV de 320x240: sube
+	sus 115 200 bytes por aca, espera a que el contador de macrobloques llegue a
+	300 y no llegaba nunca.
 */
 static void ch2_dma_ejecutar(void)
 {
@@ -1275,6 +1287,20 @@ static void ch2_dma_ejecutar(void)
 
 			memread_fisico(origen + i, bloque, 32);
 			ta_procesar_bloque(bloque);
+		}
+	}
+	else
+	if ((destino & 0xFF800000) == 0x10800000)
+	{
+		/* El convertidor YUV junta los macrobloques el mismo --384 bytes en
+		   420, 512 en 422-- y lleva la cuenta en TA_YUV_TEX_CNT, asi que aqui
+		   solo hay que entregarle los bloques en orden. */
+		for (i = 0; i + 32 <= largo; i += 32)
+		{
+			BYTE bloque[32];
+
+			memread_fisico(origen + i, bloque, 32);
+			pvr_yuv_bloque(bloque);
 		}
 	}
 	else

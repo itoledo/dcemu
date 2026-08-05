@@ -539,6 +539,18 @@ static void yuv_convertir_macrobloque(int es422)
 
 	pvr_yuv_convertidos++;
 
+	/*
+		La imagen entera esta adentro: el chip levanta aqui su fin de
+		transferencia (SB_ISTNRM bit 6). Va con demora, como el fin del CH2 DMA
+		y por el mismo motivo -- quien dispara la transferencia todavia tiene
+		que volver y anotarla como "en vuelo", y una interrupcion instantanea le
+		gana esa carrera y se lee como espuria. La cuenta es la del CH2: los
+		bytes del macrobloque sobre 200, o sea ~4 por ciclo.
+	*/
+	if (pvr_yuv_convertidos == (DWORD) (ancho_mb * alto_mb))
+		intc_add(ASIC_EVT_PVR_YUVDONE,
+			(ancho_mb * alto_mb * (es422 ? 512 : 384)) / 200 + 10);
+
 	if (mby >= alto_mb)
 		return;					/* imagen completa: el resto se descarta */
 
