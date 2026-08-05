@@ -438,6 +438,23 @@ static BYTE modo[32] =
 };
 
 /*
+	Los contadores de la DMA del G1, para el hook de syscall.
+
+	El hook copia los sectores por su cuenta y no pasa por el camino de hardware
+	de aqui abajo, asi que sin esto SB_GDSTARD y SB_GDLEND se quedaban con lo que
+	hubiera. Un guest que verifique la transferencia -- DCDoom lo hace -- ve una
+	DMA que no llego a donde tenia que llegar.
+
+	Va aca y no en dcopcodes.c por lo mismo que gdrom_construir_toc(): el estado
+	de la lectora es de este archivo, y dos sitios escribiendolo se separan.
+*/
+void gdrom_dma_contadores(DWORD fin, DWORD movido)
+{
+	gdrom.dma_stard = fin;
+	gdrom.dma_lend  = movido;
+}
+
+/*
 	Los mismos 32 bytes, para el hook de syscall.
 
 	El hook se saltea el driver del boot ROM entero, asi que sin esto tendria que

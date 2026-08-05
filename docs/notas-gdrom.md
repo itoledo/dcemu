@@ -245,3 +245,33 @@ archivo, y **lo que colgaba no era no aplicar el modo sino no contestar**.
 
 Ninguna: `ctest` 21/21, la captura de DCDoom por `.cdi` sigue en `36578F59…` byte a byte, y
 Crazy Taxi, Virtua Tennis y Capcom vs. SNK siguen dibujando.
+
+### Por qué el `.gdi` de DCDoom todavía se rinde, hasta donde se llegó
+
+El guest llama al syscall `0x8C0000E0`, que es el reinicio (ver `notas-arranque.md`), desde una
+secuencia de cinco llamadas en `0x8C00D820`. La cuarta, en `0x8C00DAE0`, es una **verificación
+de transferencia**:
+
+```
+    llama a 0x8C00D8C6; si devuelve 0, sale bien
+    R1 = 0x8CE01010                  ; tabla de bloques pedidos
+    R0 = [R1]                        ; cuantos
+    si R0 == 0            -> reinicio
+    si R0 > 168           -> reinicio
+    ultima = R1 + 0xC + 12*(R0-1)    ; entradas de 12 bytes
+    si ultima.inicio + ultima.largo != [0xA05F74F4]  -> reinicio
+```
+
+`0xA05F74F4` es **`SB_GDSTARD`**, el contador de dirección de la DMA del G1. O sea: el juego
+lleva su propia lista de bloques pedidos y comprueba que la DMA haya terminado donde debía.
+
+Eso destapó un agujero real —**el hook de syscall movía los datos y no los contadores**,
+porque copia los sectores por su cuenta sin pasar por el camino de hardware de `gdrom.c`— y va
+arreglado (`gdrom_dma_contadores()`). Es la forma de falla de siempre: los datos llegaban y el
+rastro no.
+
+**Pero no era la rama que falla.** Volcada la memoria, la tabla de `0x8CE01010` está **en
+cero**: el contador es 0 y la comprobación se va por su primera rama, antes de mirar
+`SB_GDSTARD`. El juego nunca llegó a pedir esos bloques, así que el fallo está más atrás — en
+alguna de las tres llamadas anteriores de la secuencia (`0x8C00D940`, `0x8C00D900`,
+`0x8C00D888`), que es por donde hay que seguir.

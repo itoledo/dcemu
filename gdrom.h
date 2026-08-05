@@ -219,4 +219,8 @@ void gdrom_construir_toc_area(struct TOC * toc, int area);
    el paquete SPI. Misma razon que gdrom_construir_toc(). */
 void gdrom_copiar_modo(DWORD destino);
 
+/* SB_GDSTARD y SB_GDLEND despues de una lectura por DMA hecha por el hook de
+   syscall, que no pasa por el camino de hardware. Hay guests que los verifican. */
+void gdrom_dma_contadores(DWORD fin, DWORD movido);
+
 #endif /* _GDROM_H_ */

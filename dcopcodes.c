@@ -507,6 +507,28 @@ void hack_gdrom()
 					com_lectura = com;
 					com_transferido = 2048 * (DWORD) secnum;
 					com_lectura_bytes = 2048 * (DWORD) secnum;
+
+					/*
+						Y los contadores de la DMA del G1, que el hook se saltaba.
+
+						Este camino copia los sectores el mismo y no pasa por
+						gdrom.c, asi que SB_GDSTARD y SB_GDLEND se quedaban donde
+						hubieran quedado. **Los datos llegaban y el rastro no**, que
+						es la forma de falla de siempre en este arbol.
+
+						No es teorico: DCDoom por .gdi verifica la transferencia --
+						recorre su lista de bloques pedidos hasta el ultimo, suma
+						inicio + largo y lo compara contra SB_GDSTARD-- y si no
+						coincide llama al syscall 0x8C0000E0, que es el reinicio.
+						O sea que se rendia sin decir por que. Ver
+						docs/notas-arranque.md y notas-gdrom.md.
+
+						Solo la 17: la 16 es la escritura por CPU del driver, que en
+						la consola tampoco mueve la DMA.
+					*/
+					if (R(4) == 17)
+						gdrom_dma_contadores(targetaddr + 2048 * (DWORD) secnum,
+							2048 * (DWORD) secnum);
 				}
 				break;
 
