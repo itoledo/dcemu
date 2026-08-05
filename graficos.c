@@ -570,20 +570,31 @@ static void yuv_convertir_macrobloque(int es422)
 
 			int	off_y, off_c, u, v, y0, y1;
 
+			/*
+				**La columna de croma es x/2, no x/4.** El plano U de un
+				macrobloque de 16x16 mide 8x8: una muestra cada dos pixeles a lo
+				ancho, y este bucle avanza de a dos pixeles, asi que avanza una
+				columna de croma por vuelta. Con x/4 --y con col/2 en 422, que es
+				el mismo error escrito distinto-- el indice llegaba solo hasta 3:
+				**la mitad derecha de los dos planos de croma no se leia nunca**
+				y la izquierda salia estirada al doble.
+			*/
+			int	col_c = x / 2;
+
 			if (es422)
 			{
 				/* 64 U + 64 V + 128 Y por cada mitad de 16x8. */
 				off_c = mitad * 256;
 				off_y = mitad * 256 + 128 + (sub % 2) * 64 + fila * 8;
-				u = yuv_buffer[off_c + fila * 8 + col / 2];
-				v = yuv_buffer[off_c + 64 + fila * 8 + col / 2];
+				u = yuv_buffer[off_c + fila * 8 + col_c];
+				v = yuv_buffer[off_c + 64 + fila * 8 + col_c];
 			}
 			else
 			{
 				/* 64 U + 64 V para las 16 filas, y despues 256 de Y. */
 				off_y = 128 + sub * 64 + fila * 8;
-				u = yuv_buffer[(y / 2) * 8 + x / 4];
-				v = yuv_buffer[64 + (y / 2) * 8 + x / 4];
+				u = yuv_buffer[(y / 2) * 8 + col_c];
+				v = yuv_buffer[64 + (y / 2) * 8 + col_c];
 			}
 
 			y0 = yuv_buffer[off_y + col];
