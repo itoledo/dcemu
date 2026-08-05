@@ -1866,6 +1866,51 @@ int main(int argc, char *argv[])
 		}
 
 		/*
+			DCEMU_SONDA_SIN_CE=1: apaga el bit "usa Windows CE" del IP.BIN.
+
+			**Es una sonda de diagnostico, no un arreglo**, y aisla una frontera
+			concreta. El campo de perifericos del IP.BIN son siete digitos hex en
+			el offset 0x38, y el bit 0 --el de menor peso del ultimo digito, en
+			0x3E-- dice que el titulo es de Windows CE. El bootstrap de Sega que
+			corre desde el propio IP.BIN lo mira y, si esta puesto, verifica una
+			tabla de bloques transferidos en 0x8CE01010; si no cuadra llama al
+			syscall 0x8C0000E0, que es el reinicio.
+
+			Con eso se explica por que DCDoom arranca por .cdi y no por .gdi: el
+			rip en .cdi lleva el bit **apagado** --la conversion a selfboot lo
+			limpio-- y el .gdi, que es el original, lo lleva puesto. O sea que
+			este arbol nunca ejecuto el arranque de CE de verdad: la imagen que
+			funciona lo esquiva.
+
+			La sonda existe para contestar si esa verificacion es lo unico que
+			falta o si detras hay mas. Ver docs/notas-arranque.md.
+		*/
+		{
+			const char * v = getenv("DCEMU_SONDA_SIN_CE");
+
+			if (v != NULL && atoi(v) != 0)
+			{
+				unsigned char *	ip = get_memory_pointer(mem_base + ip_offset);
+				unsigned char	d  = ip[0x3E];
+
+				/* Digito hexadecimal a valor, y de vuelta sin el bit 0. */
+				int n = (d >= 'A') ? (d - 'A' + 10)
+				      : (d >= 'a') ? (d - 'a' + 10)
+				      : (d >= '0' && d <= '9') ? (d - '0') : -1;
+
+				if (n >= 0)
+				{
+					n &= ~1;
+					ip[0x3E] = (unsigned char) ((n < 10) ? ('0' + n)
+					                                     : ('A' + n - 10));
+
+					fprintf(stderr, "sonda: bit de Windows CE del IP.BIN "
+						"apagado (%c -> %c)\n", d, ip[0x3E]);
+				}
+			}
+		}
+
+		/*
 			Busquemos el ejecutable. El nombre no es siempre 1ST_READ.BIN: lo
 			declara el IP.BIN en su cabecera (offset 0x60, 16 bytes rellenos
 			con espacios), y es el mismo campo que usa el boot ROM -- deja el

@@ -400,3 +400,62 @@ llamada (`8C00D83A` y `8C00DB8E`) dice desde dónde.
 No se implementa el reinicio: sin `--bios` no hay ROM a donde volver, y fabricar uno sería
 inventar. Lo que sí se hace es nombrarlo — la traza dice ahora *«REINICIO (el guest pide volver
 a la BIOS)»* en vez de *«sin emular»*, que es la diferencia entre un síntoma y un diagnóstico.
+
+## Por qué DCDoom arranca por `.cdi` y no por `.gdi`: el bit de Windows CE (2026-08-05)
+
+**El rip en `.cdi` que este árbol da por bueno lleva el bit de Windows CE apagado en su
+IP.BIN.** El `.gdi`, que es el original prensado, lo lleva puesto. O sea que **dcemu nunca
+ejecutó el arranque de CE de verdad**: la imagen que funciona lo esquiva.
+
+El campo de periféricos del IP.BIN son siete dígitos hexadecimales en el offset 0x38, y el
+**bit 0** —el de menor peso del último dígito, en 0x3E— dice que el título es de Windows CE:
+
+| imagen | 0x38..0x3F | dígito en 0x3E |
+| --- | --- | --- |
+| DCDoom `.cdi` | `01BBE10 ` | **`0`** |
+| DCDoom `.gdi` | `0799A11 ` | **`1`** |
+
+El bootstrap de Sega que corre desde el propio IP.BIN —está en `0x8C008000` y su código llega
+hasta `0x8C010000`— lo mira en `0x8C00DAE6` y, si está puesto, hace una secuencia de cinco
+llamadas desde `0x8C00D820` con **tres portones**, cada uno de los cuales llama al syscall de
+reinicio si no pasa.
+
+`DCEMU_SONDA_SIN_CE=1` apaga el bit en el IP.BIN ya cargado. Es una sonda de diagnóstico, no un
+arreglo: sirve para separar «esto falla por ser CE» de «esto falla por otra cosa», y fue lo que
+permitió aislar los portones uno por uno.
+
+### Portón 1 — la tabla de bloques transferidos (sin resolver)
+
+`0x8C00DAE0`: si el título es CE, recorre una tabla en `0x8CE01010` de entradas de 12 bytes
+hasta la última, suma `inicio + largo` y lo compara contra **`SB_GDSTARD`** (`0xA05F74F4`).
+
+Eso destapó un agujero real —el hook de syscall movía los datos de la DMA y no sus contadores,
+arreglado con `gdrom_dma_contadores()`— pero **no era la rama que falla**: la tabla está en
+cero y con un watchpoint se comprueba que *nadie la escribe nunca*. El juego no llega a pedir
+esos bloques. Sigue abierto.
+
+### Portón 2 — `REQ_MODE`, y el formato del syscall no es el del SPI
+
+`0x8C00DB40` hace `SEND_COMMAND(30 = REQ_MODE)`, `MAINLOOP`, `CHECK_COMMAND`, y después:
+
+```
+    R4 = [bufer + 4]
+    si R4 > 0xFFFF  -> reinicio
+```
+
+Implementar `REQ_MODE` devolviendo el bloque de 32 bytes del paquete SPI **está mal y lo
+demuestra el guest**: sus bytes 4..7 son `00 B4 19 00`, o sea `0x0019B400`. El formato del
+syscall son DWORD. Los valores están reconstruidos de dos evidencias —la cota que el guest
+impone y lo que él mismo tenía en el búfer antes (`{0, 0xE10, …}`, sus valores por omisión)— y
+no de un manual.
+
+**Y son cuatro DWORD y no más**: el búfer que el guest reserva son 20 bytes (`ADD #ec,R15`
+sobre una pila que arranca en `0x8D000000`), así que escribir 32 pisa el `PR` guardado. Se
+comprobó por accidente y de la peor manera: el `RTS` volvía a `0x20202020`, que son los
+espacios de `"SE      "`.
+
+### Portón 3 — el bootstrap para igual (sin resolver)
+
+Pasados los dos anteriores, el bootstrap termina en `BRA 0xAC00E0B2`, un lazo a sí mismo con
+todos los registros en cero — el «parar aquí» deliberado, en la imagen sin caché de IP.BIN. Es
+por donde hay que seguir.

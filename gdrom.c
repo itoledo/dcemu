@@ -455,16 +455,42 @@ void gdrom_dma_contadores(DWORD fin, DWORD movido)
 }
 
 /*
-	Los mismos 32 bytes, para el hook de syscall.
+	REQ_MODE por el syscall, que **no devuelve el bloque del paquete SPI**.
 
-	El hook se saltea el driver del boot ROM entero, asi que sin esto tendria que
-	llevar su propia copia -- y dos copias del mismo bloque se separan. Ya paso
-	con la TOC: `gdrom_construir_toc()` existe justo para que las dos rutas
-	contesten lo mismo.
+	Reusar `modo[]` aqui era lo natural y esta medido que esta mal: el bootstrap
+	del IP.BIN lee el DWORD del offset 4 y exige que sea <= 0xFFFF (`CMP/HI`
+	contra 0x0000FFFF en 0x8C00DB66), y los bytes 4..7 del bloque SPI son
+	00 B4 19 00, o sea 0x0019B400. Con eso llamaba al reinicio.
+
+	El formato del syscall son **DWORD**, no los campos empaquetados del SPI. Los
+	valores estan reconstruidos de dos evidencias, no de un manual:
+
+	  - la cota que el propio guest impone (<= 0xFFFF en el offset 4);
+	  - lo que el guest tenia en ese bufer antes de que REQ_MODE existiera --
+	    {0, 0xE10, ...} --, que son sus valores por omision y por lo tanto los
+	    que espera ver de vuelta. 0xE10 son 3600, el tiempo de espera de siempre.
+
+	**Y son cuatro y no mas**: el bufer que el guest reserva son 20 bytes -- su
+	marco es `ADD #ec,R15` sobre una pila que arranca en 0x8D000000 --, asi que
+	escribir los 32 del bloque SPI, o los 16 mas la identificacion del firmware,
+	pisa el PR guardado. Se probo: el RTS volvia a 0x20202020, que son los
+	espacios de "SE      ". Los datos de identificacion los pide GET_VERS, que es
+	otro comando y tiene su propio destino.
+
+	Que quede claro para el que venga: **esto es una reconstruccion**, y lo que
+	la sostiene es que el guest la acepta. Si aparece el manual del driver y dice
+	otra cosa, gana el manual.
 */
 void gdrom_copiar_modo(DWORD destino)
 {
-	memwrite(destino, modo, sizeof(modo));
+	DWORD m[4];
+
+	m[0] = 0;			/* velocidad */
+	m[1] = 0x00000E10;	/* tiempo de espera: 3600 */
+	m[2] = 0;			/* banderas de lectura */
+	m[3] = 0x00000008;	/* reintentos, como el bloque del SPI */
+
+	memwrite(destino, m, sizeof(m));
 }
 
 /*
