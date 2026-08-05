@@ -81,6 +81,44 @@ option(DCEMU_INLINE "Despachar en linea los manejadores mas frecuentes" OFF)
 # para lo que existe la opcion.
 option(DCEMU_LTCG "Optimizacion de todo el programa (/GL + /LTCG) en Release" ON)
 
+# Conjunto de instrucciones del anfitrion. Sin esto MSVC compila para SSE2, que
+# es de 2001 -- y **medido, eso es lo que conviene**.
+#
+# /arch:AVX2 cuesta 2,1 % en Crazy Taxi: 106 619 ms contra 104 442, cuatro pares
+# de cuatro en contra con las dos ordenaciones y rangos disjuntos. La conformidad
+# no se rompe --113 191 ok / 0 fallan bit a bit, o sea que no hubo contraccion a
+# FMA-- asi que no es un problema de correccion: sencillamente pierde.
+#
+# El motivo mas probable es el mismo que ya midio el experimento de inlinear
+# manejadores (19 % de costo, docs/interprete-plan.md): **en este arbol el tamano
+# del codigo caliente es un factor de primer orden**. Un interprete de SH-4 es
+# trabajo entero escalar y llamadas indirectas -- no hay nada que vectorizar --
+# y la codificacion VEX es mas larga, asi que el bucle engorda sin ganar nada.
+#
+# Queda como opcion, no como flag borrado, para que el A/B se pueda repetir sin
+# rehacer el andamiaje. Y si alguna vez se agrega trabajo vectorizable de verdad
+# --decodificadores de textura, el mezclador del AICA-- conviene medirlo por
+# archivo y no encendiendolo para todo el arbol.
+#
+# **/fp:precise se mantiene y no es negociable**: fpu_aplicar_redondeo() toca el
+# modo de redondeo del anfitrion en tiempo de ejecucion y la conformidad del
+# nucleo se compara bit a bit contra SingleStepTests. /fp:fast rompe las dos.
+#
+# El otro precio de encenderlo seria portabilidad: un binario AVX2 no arranca en
+# un procesador anterior a Haswell (2013).
+set(DCEMU_ARCH "OFF" CACHE STRING
+	"Conjunto de instrucciones: AVX2, AVX, SSE2 u OFF (lo que traiga el compilador). Medido: AVX2 cuesta 2,1 %")
+set_property(CACHE DCEMU_ARCH PROPERTY STRINGS OFF SSE2 AVX AVX2)
+
+# add_compile_options y no target_compile_options, y **aca arriba y no junto al
+# resto de las banderas del target**: solo alcanza a los objetivos creados
+# despues, y tienen que quedar adentro tanto dcemu como tests/, que compara
+# resultados de coma flotante bit a bit contra los del binario que se mide. Si
+# solo lo llevara uno de los dos, la baranda estaria validando otro codigo.
+if(MSVC AND NOT DCEMU_ARCH STREQUAL "OFF")
+	add_compile_options(/arch:${DCEMU_ARCH})
+	message(STATUS "dcemu: /arch:${DCEMU_ARCH}")
+endif()
 
 # Optimizacion guiada por perfil. Tres estados, y el orden importa:
 #
