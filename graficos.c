@@ -831,10 +831,24 @@ static DWORD * decodificar_bump(const Uint16 * origen, int usize, int vsize,
 	croma: U, Y0, V, Y1. La matriz es BT.601 en rango completo, que es la que
 	usa el PVR -- Y no se escala, asi que un Y de 0 sale negro y uno de 255
 	blanco.
+
+	`paso` son los texels que separan dos filas EN MEMORIA, que no es el ancho
+	declarado en cuanto la textura lleva stride -- el caso normal de un video,
+	que sale del convertidor YUV con su ancho real dentro de una textura de lado
+	potencia de dos. La rama de stride que hay mas abajo en get_texture() ya
+	trataba asi las texturas de 16 bits, pero el YUV se decide antes en la
+	cadena de `if` y nunca la veia: leia `usize` por fila sobre un bloque
+	juntado con `stride`, y con eso se iba del buffer.
+
+	Lo que sobra a la derecha cuando el paso es menor que el ancho queda en
+	cero, igual que en esa rama: es lo unico honesto, porque esos texels no
+	estan en la RAM de video.
 */
-static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
+static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize,
+                                  int paso)
 {
-	DWORD *	destino = (DWORD *) malloc(sizeof(DWORD) * usize * vsize);
+	DWORD *	destino = (DWORD *) calloc((size_t) usize * vsize, sizeof(DWORD));
+	int		copiar  = (paso < usize) ? paso : usize;
 	int		i, j;
 
 	if (destino == NULL)
@@ -847,16 +861,17 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
 		if (!visto)
 		{
 			visto = 1;
-			fprintf(stderr, "traza: textura YUV422 de %dx%d\n", usize, vsize);
+			fprintf(stderr, "traza: textura YUV422 de %dx%d, paso %d\n",
+				usize, vsize, paso);
 		}
 	}
 
 
 	for (i = 0; i < vsize; i++)
 	{
-		for (j = 0; j < usize; j += 2)
+		for (j = 0; j < copiar; j += 2)
 		{
-			DWORD	par = origen[(i * usize + j) / 2];
+			DWORD	par = origen[((size_t) i * paso + j) / 2];
 			int		u  = (int) ( par        & 0xFF);
 			int		y0 = (int) ((par >>  8) & 0xFF);
 			int		v  = (int) ((par >> 16) & 0xFF);
@@ -873,7 +888,7 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize)
 				BYTE	b = recortar(y + ((11 * du) >> 3));
 
 				/* GL_RGBA/GL_UNSIGNED_BYTE: R en el byte 0. */
-				destino[i * usize + j + k] =
+				destino[(size_t) i * usize + j + k] =
 					(DWORD) r | ((DWORD) g << 8) | ((DWORD) b << 16) | 0xFF000000;
 			}
 		}
@@ -1159,6 +1174,21 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	DWORD paleta = TriangleStrip[strip].texture.pvr_texture_paleta;
 	DWORD stride = TriangleStrip[strip].texture.pvr_texture_stride;
 
+	/*
+		Cuantos texels de 16 bits separan una fila de la siguiente EN MEMORIA.
+		Es `usize` salvo que la textura declare stride, y entonces las filas
+		miden `stride` y el ancho declarado es otra cosa.
+
+		**Se calcula una sola vez porque manda sobre dos cuentas que no pueden
+		discrepar**: cuantos bytes se juntan de la RAM de video y como los
+		recorre el decodificador. Cuando discrepan, el que junta menos gana y el
+		que recorre mas se sale del buffer. Es lo que tiraba a Dave Mirra
+		Freestyle BMX en cuanto empezaba su FMV: 512x512 declarados con stride
+		320, o sea 327 680 bytes juntados y 524 288 leidos.
+	*/
+	int paso_16 = (!twiddled && stride != 0 && stride != (DWORD) usize)
+		? (int) stride : usize;
+
 	if (!volcado_fb_armado)
 		armar_volcado_si_muestrea_framebuffer(memorypos);
 
@@ -1206,8 +1236,8 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	}
 	else if (bpp != 0)
 		plano_bytes = (size_t) usize * vsize * bpp / 8;
-	else if (!twiddled && stride != 0 && stride != (DWORD) usize)
-		plano_bytes = (size_t) vsize * stride * 2;
+	else if (paso_16 != usize)
+		plano_bytes = (size_t) vsize * paso_16 * 2;
 	else
 		plano_bytes = (size_t) usize * vsize * 2;
 
@@ -1405,7 +1435,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	if (TriangleStrip[strip].texture.pvr_texture_yuv)
 	{
 		cached_textures[cur_tex_count].data =
-			decodificar_yuv422((const DWORD *) v, usize, vsize);
+			decodificar_yuv422((const DWORD *) v, usize, vsize, paso_16);
 
 		cached_textures[cur_tex_count].twiddled = true;
 	}
@@ -1466,7 +1496,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
     	cached_textures[cur_tex_count].twiddled = true;
 	}
 	else
-	if (stride != 0 && stride != (DWORD) usize)
+	if (paso_16 != usize)
 	{
 		/*
 			Textura rectangular: en memoria las filas miden `stride` texels y no
@@ -1477,9 +1507,12 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 			excluyentes en el chip --, y si el stride es menor que el ancho
 			declarado lo que sobra queda en cero en vez de leerse de la fila
 			siguiente.
+
+			La condicion es `paso_16`, la misma variable con la que se calculo
+			cuanto juntar de la RAM de video: ver arriba.
 		*/
 		Uint16 *	d;
-		int			copiar = (stride < (DWORD) usize) ? (int) stride : usize;
+		int			copiar = (paso_16 < usize) ? paso_16 : usize;
 
 		cached_textures[cur_tex_count].data =
 			(void *) calloc((size_t) usize * vsize, sizeof(Uint16));
@@ -1488,7 +1521,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 		if (d != NULL)
 			for (i = 0; i < vsize; i++)
-				memcpy(&d[(size_t) i * usize], &v[(size_t) i * stride],
+				memcpy(&d[(size_t) i * usize], &v[(size_t) i * paso_16],
 					(size_t) copiar * sizeof(Uint16));
 
 		cached_textures[cur_tex_count].twiddled = true;	/* hay que liberarlo */
