@@ -203,6 +203,7 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_TRAZA_EN_MS=N[:M]` | puntos de control por milisegundo de PC y registros |
 | `DCEMU_TRAZA_ESCENA=N[:M]` / `=+K[:M]` | vuelca una escena entera tira por tira, por número o por peso |
 | `DCEMU_TRAZA_ATA=cmd:N` | traza lo que hace el driver con lo que la lectora contestó |
+| `DCEMU_TRAZA_TLB=D` | informa (hex, como `DCEMU_TRAZA_SYSCALL`) a qué física traduce cada `LDTLB` la dirección virtual `D`. **Los watchpoints comparan direcciones físicas**: vigilar la virtual tal cual ya produjo una conclusión falsa |
 | `DCEMU_WATCHPOINT_MAX=N` | sube el tope de informes del watchpoint (200 por omisión) |
 | `DCEMU_COMO_GD=1` | presenta el disco como el GD-ROM del que se ripeó (rama equivocada, ver notas) |
 | `DCEMU_PERFIL_ARM=1` | histogramas del ARM7 por dirección y por fila de despacho |
@@ -342,9 +343,12 @@ Rules a wrong edit anywhere in the tree would violate.
   is 0. That is the rule for *writing SR*, not for one instruction, so it belongs in
   `UpdateSR()` and not at the call sites.
 - **A register read with no case of its own must answer its reset value, not the heap's
-  history.** Every block in `inicializar_memoria()` is calloc for this reason. An
-  identification register answered casually has hung the guest three times (`REVISION`,
-  `SB_G1SYSM`, `SB_SBREV`). `--traza-mem` reports each such read once — check it.
+  history.** Every block in `inicializar_memoria()` is calloc for this reason. A read-only
+  register answered casually has hung the guest four times (`REVISION`, `SB_G1SYSM`,
+  `SB_SBREV`, `SB_TFREM` — whose idle value is 8, "TA FIFO empty", so the calloc's 0 reads as
+  "full forever"). `--traza-mem` reports each such read once — check it. And with the MMU on,
+  first translate the address the guest polls (`DCEMU_TRAZA_TLB`): Sega Rally 2's "own counter
+  at 0x00446880" was this register, mapped into user space.
 - **`reloj_total` only ever rises and lives outside `core.context`**, because the MMU
   re-execution snapshot restores the context and the clock must not rewind. Periodic consumers
   keep their own mark and compare, rather than accumulating and subtracting.

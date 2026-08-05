@@ -284,9 +284,69 @@ void mmu_p4_write(unsigned long direccion, void * p, size_t size)
 /* LDTLB                                                                    */
 /* ------------------------------------------------------------------------ */
 
+static DWORD mascara_de_pagina(DWORD dat1);
+
+/*
+	DCEMU_TRAZA_TLB=DIR (hex, como DCEMU_TRAZA_SYSCALL): informa cada vez que
+	un LDTLB instala una pagina que contiene esa direccion virtual, con la
+	fisica a la que queda traducida.
+
+	Existe porque los watchpoints comparan direcciones fisicas --su gancho esta
+	en memread_fisico/memwrite_fisico, despues de la MMU-- asi que con un guest
+	con MMU la unica manera de vigilar una direccion virtual es averiguar
+	primero a que fisica va. Vigilar la virtual tal cual ya produjo una
+	conclusion falsa: "nadie escribe 0x00446880" con la fisica 0x00446880
+	apuntando a los registros del PVR.
+*/
+static void ldtlb_trazar(DWORD pteh, DWORD ptel)
+{
+	static int		leida = 0;
+	static DWORD	vigilada = 0;
+	static DWORD	ultima = 0xFFFFFFFF;
+
+	DWORD	mascara;
+	DWORD	fisica;
+
+	if (!leida)
+	{
+		const char * v = getenv("DCEMU_TRAZA_TLB");
+
+		leida = 1;
+
+		if (v != NULL)
+			vigilada = (DWORD) strtoul(v, NULL, 16);
+	}
+
+	if (vigilada == 0)
+		return;
+
+	mascara = mascara_de_pagina(ptel);
+
+	if (((vigilada ^ pteh) & 0xFFFFFC00 & ~mascara) != 0)
+		return;
+
+	fisica = (ptel & 0x1FFFFC00 & ~mascara) | (vigilada & mascara);
+
+	/* La misma pagina se reinstala en cada falta de TLB; solo interesa cuando
+	   la traduccion cambia. */
+	if (fisica == ultima)
+		return;
+
+	ultima = fisica;
+
+	fprintf(stderr, "tlb: %08lx -> fisica %08lx (ASID %02lx%s%s)\n",
+		(unsigned long) vigilada,
+		(unsigned long) fisica,
+		(unsigned long) (pteh & 0xFF),
+		(ptel & BIT_V) ? "" : ", !V",
+		(ptel & BIT_D_DAT) ? "" : ", !D");
+}
+
 void mmu_ldtlb(DWORD pteh, DWORD ptel, DWORD ptea, int urc)
 {
 	int e = urc & (MMU_UTLB_ENTRADAS - 1);
+
+	ldtlb_trazar(pteh, ptel);
 
 	/*
 		**Solo la entrada que se reemplaza.** LDTLB toca una de 64, asi que

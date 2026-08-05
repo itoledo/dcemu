@@ -789,6 +789,26 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		}
 		break;
 
+		case 0xa05f6880: // SB_TFREM, espacio libre del FIFO de entrada del TA
+		{
+			/*
+				En unidades de 32 bytes, maximo 8: el FIFO fisico tiene 256
+				bytes y el software sondea "TFREM == 8" para saber que el TA ya
+				trago todo antes de mandarle mas. dcemu procesa cada bloque
+				dentro de la escritura que lo entrega, asi que el FIFO esta
+				siempre vacio y la respuesta es la constante 8.
+
+				Sin este caso la lectura caia al respaldo calloc del bloque de
+				control y contestaba 0 -- "FIFO lleno para siempre" -- y Sega
+				Rally 2 se quedaba sondeandolo antes de su primera escena. La
+				misma familia que SB_SBREV: un registro de solo lectura debe
+				contestar su valor de reposo, no la historia del heap.
+			*/
+			dw = 8;
+			memcpy(p, &dw, size);
+		}
+		break;
+
 		/*** CH2 DMA. SB_C2DST siempre se lee 0: la transferencia se hace
 		     entera dentro de la escritura que la arranca. ***/
 		case 0xa05f6800: // SB_C2DSTAT

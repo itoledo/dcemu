@@ -64,6 +64,23 @@ Su gemelo, y contesta la otra mitad. Cuelga de `memread_fisico()` y reporta una 
 distinto — una comparación de cadenas pasa por la misma instrucción cien veces. Es lo que
 identifica, en una corrida, el código que evalúa algo que la lectora acaba de entregar.
 
+### Los watchpoints comparan direcciones **físicas** — `DCEMU_TRAZA_TLB` traduce primero
+
+Los dos ganchos están en `memread_fisico`/`memwrite_fisico`, **después** de la MMU. Con un
+guest sin MMU da igual (la máscara `0x1FFFFFFF` colapsa P0/P1/P2 sola), pero con Windows CE la
+dirección que el guest sondea es virtual y vigilar ese número es vigilar otra cosa. Ya costó
+una conclusión falsa entera: «Sega Rally 2 espera a que un contador suyo en `0x00446880`
+llegue a 8 y nadie lo escribe nunca». El watchpoint vigilaba la física `0x00446880` —
+registros del PVR — mientras el guest leía su virtual, que la MMU mandaba a `0x005F6880`:
+**`SB_TFREM`**, el espacio libre del FIFO del TA, un registro de sólo lectura cuyo valor de
+reposo es 8 y que dcemu contestaba con el 0 del calloc. No era un contador, no era del juego,
+y nadie tenía que escribirlo.
+
+`DCEMU_TRAZA_TLB=DIR` (hex) es la traducción que faltaba: informa por stderr cada vez que un
+`LDTLB` instala una página que contiene esa dirección virtual, con la física resultante y el
+ASID — una línea por traducción distinta, no por reinstalación. Primero se traduce, después se
+vigila la física.
+
 ## `--traza-desde=PC[:N[:K]]` — cómo se lee una decisión
 
 Desensambla las N instrucciones posteriores a que el guest llegue a PC — saltándose las K

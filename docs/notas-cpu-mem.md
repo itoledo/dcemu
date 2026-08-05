@@ -109,6 +109,16 @@ su camino de inicialización, y en el lado que lee < 8 la fase de subida de text
 juego nunca arranca — el "mundo blanco" intermitente de `docs/pendientes-plan.md` A.5 era esta
 moneda al aire al arrancar el proceso, no una carrera de la lectora.
 
+**`0x005F6880` es `SB_TFREM`, el espacio libre del FIFO de entrada del TA, y en reposo contesta
+8** — unidades de 32 bytes, un FIFO físico de 256. Cuarto de la familia, y el primero que no es de
+identificación sino de estado: Sega Rally 2 sondea «¿TFREM == 8?» —«¿el TA ya tragó todo?»— antes
+de mandar su primera escena, el respaldo calloc contestaba 0 —«lleno para siempre»— y el juego
+cargaba entero, subía sus texturas y se quedaba negro sondeando. dcemu procesa cada bloque del TA
+dentro de la escritura que lo entrega, así que el FIFO está siempre vacío y la respuesta es la
+constante 8. Costó doble encontrarlo porque el juego lo lee por una **virtual** (`0x00446880`,
+Windows CE se lo mapea a espacio de usuario) y el watchpoint compara físicas — la historia
+completa, y la herramienta que faltaba (`DCEMU_TRAZA_TLB`), están en `docs/notas-herramientas.md`.
+
 **Cada bloque de `inicializar_memoria()` es calloc ahora**: un registro sin case tiene que
 contestar su valor de reset, no la historia del heap, y el respaldo en cero es también lo que hace
 que dos corridas del reproductor determinista salgan byte a byte idénticas (la única línea que
