@@ -10,6 +10,22 @@ int iso_hay_disco();
    densidad. Lo mira la lectora para decir de que tipo es el disco. */
 int iso_es_gdrom();
 
+/*
+	1 si el ejecutable de arranque de esta imagen esta cifrado.
+
+	**Depende del formato, y esta medido en las dos direcciones.** Un selfboot en
+	.cdi lo trae cifrado -- es lo que espera su bootstrap -- y por eso dcemu
+	descifraba siempre. Un rip en .gdi no: en los dos que hay a mano, el archivo
+	en el disco **ya es codigo SH-4 valido** (DCDoom empieza con un cargador
+	auto-relocalizante, Dave Mirra con seis NOP y un JMP) y descifrarlo lo
+	convierte en basura, con lo que el bootstrap salta a cualquier parte.
+
+	No es una heuristica sobre el contenido: es de que formato salio la imagen.
+	Si aparece un .gdi con el ejecutable cifrado, esto se entera por el mismo
+	sintoma -- el guest saltando a memoria baja -- y habra que mirarlo de nuevo.
+*/
+int iso_ejecutable_cifrado(void);
+
 /* EXPERIMENTO: 1 si el selfboot se esta presentando como GD-ROM. */
 int iso_gd_presentando(void);
 

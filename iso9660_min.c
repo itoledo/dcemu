@@ -26,7 +26,8 @@
 
 struct min_iso_s
 {
-	FILE *			fp;
+	FILE *			fp;			/* la pista del volumen: es la que se cierra */
+	FILE *			fp_activo;	/* la que eligio posicionar() */
 	unsigned int	root_lba;
 	unsigned int	root_size;		/* en bytes */
 	unsigned int	sectores;		/* tamano del volumen */
@@ -44,6 +45,32 @@ struct min_iso_s
 	long long		base;			/* su byte en el archivo */
 	unsigned int	sector_crudo;	/* 2048, 2336 o 2352 */
 	unsigned int	desplazamiento;	/* donde empiezan los 2048 dentro del sector */
+
+	/*
+		Y las **otras** pistas de datos, que en un GD-ROM son un archivo cada
+		una.
+
+		Esto no hacia falta ni para un .iso ni para un .cdi de juego: los dos
+		tienen una sola pista de datos y todo el volumen adentro. Un GD-ROM
+		prensado no. Dave Mirra Freestyle BMX tiene el sistema de archivos en la
+		pista 3 --LBA 45000-315894-- y **su 1ST_READ.BIN en el LBA 547102**, que
+		cae en la pista 14, otro archivo. Con una sola pista abierta, leerlo era
+		buscar mas alla del fin del archivo: ni datos ni error, el emulador
+		colgado.
+
+		Las entradas se ordenan por LBA y posicionar() elige la que contiene el
+		sector pedido. Un sector que no cae en ninguna se informa una vez y
+		falla; lo que no puede volver a pasar es que se quede en silencio.
+	*/
+	struct
+	{
+		FILE *			fp;
+		unsigned int	lba_desde, lba_hasta;	/* inclusive */
+		long long		base;
+		unsigned int	sector_crudo, desplazamiento;
+	}				pista[MIN_ISO_PISTAS_MAX];
+	int				n_pistas;
+	int				aviso_fuera;	/* ya se informo un sector sin pista */
 };
 
 static unsigned int leer_le32(const unsigned char * p)
@@ -61,15 +88,63 @@ static long long posicion_de(const min_iso_t * iso, unsigned int lba)
 	     + iso->desplazamiento;
 }
 
+/* Cual de las pistas registradas contiene ese sector, o -1. */
+static int pista_de(const min_iso_t * iso, unsigned int lba)
+{
+	int i;
+
+	for (i = 0; i < iso->n_pistas; i++)
+		if (lba >= iso->pista[i].lba_desde && lba <= iso->pista[i].lba_hasta)
+			return i;
+
+	return -1;
+}
+
 static int posicionar(min_iso_t * iso, unsigned int lba)
 {
+	FILE *		fp  = iso->fp;
+	long long	pos = posicion_de(iso, lba);
+
+	/* Con pistas registradas manda la tabla; sin ellas --un .iso, un .cdi-- el
+	   camino es el de siempre y no cuesta nada. */
+	if (iso->n_pistas > 0)
+	{
+		int i = pista_de(iso, lba);
+
+		if (i < 0)
+		{
+			if (!iso->aviso_fuera)
+			{
+				iso->aviso_fuera = 1;
+				fprintf(stderr, "min_iso: el sector %u no cae en ninguna pista "
+					"de datos de la imagen\n", lba);
+			}
+
+			return -1;
+		}
+
+		fp  = iso->pista[i].fp;
+		pos = iso->pista[i].base
+		    + (long long) (lba - iso->pista[i].lba_desde)
+		      * iso->pista[i].sector_crudo
+		    + iso->pista[i].desplazamiento;
+	}
+
 	/* Un .cdi de dos capas pasa de 2 GB con facilidad, asi que aca el cast a
 	   64 bits ya no es solo higiene. */
 #if defined(_MSC_VER)
-	return _fseeki64(iso->fp, posicion_de(iso, lba), SEEK_SET);
+	if (_fseeki64(fp, pos, SEEK_SET) != 0)
+		return -1;
 #else
-	return fseeko(iso->fp, (off_t) posicion_de(iso, lba), SEEK_SET);
+	if (fseeko(fp, (off_t) pos, SEEK_SET) != 0)
+		return -1;
 #endif
+
+	/* La pista elegida pasa a ser la activa. `fp` se deja quieto: es la del
+	   volumen, es la que se cierra, y pisarla perderia el descriptor. */
+	iso->fp_activo = fp;
+
+	return 0;
 }
 
 void min_iso_name_translate(const char * src, char * dst)
@@ -118,7 +193,7 @@ min_iso_t * min_iso_open_pista(const char * path, unsigned int lba_base,
 	}
 
 	if (posicionar(iso, lba_base + PVD_LBA) != 0 ||
-	    fread(pvd, 1, MIN_ISO_BLOCKSIZE, iso->fp) != MIN_ISO_BLOCKSIZE)
+	    fread(pvd, 1, MIN_ISO_BLOCKSIZE, iso->fp_activo) != MIN_ISO_BLOCKSIZE)
 	{
 		fprintf(stderr, "min_iso_open: no se pudo leer el descriptor de volumen\n");
 		min_iso_close(iso);
@@ -155,7 +230,56 @@ void min_iso_close(min_iso_t * iso)
 	if (iso->fp != NULL)
 		fclose(iso->fp);
 
+	/* Las pistas extra tienen su propio descriptor. La primera entrada de la
+	   tabla es la del volumen y comparte el de arriba, asi que no se cierra dos
+	   veces. */
+	{
+		int i;
+
+		for (i = 0; i < iso->n_pistas; i++)
+			if (iso->pista[i].fp != NULL && iso->pista[i].fp != iso->fp)
+				fclose(iso->pista[i].fp);
+	}
+
 	free(iso);
+}
+
+int min_iso_agregar_pista(min_iso_t * iso, const char * path,
+                          unsigned int lba_desde, unsigned int sectores,
+                          long long base, unsigned int sector_crudo,
+                          unsigned int desplazamiento)
+{
+	FILE * fp;
+
+	if (iso == NULL || sectores == 0)
+		return 1;
+
+	if (iso->n_pistas >= MIN_ISO_PISTAS_MAX)
+	{
+		fprintf(stderr, "min_iso: no caben mas de %d pistas de datos\n",
+			MIN_ISO_PISTAS_MAX);
+		return 1;
+	}
+
+	/* La pista del volumen ya esta abierta: se reusa su descriptor en vez de
+	   abrir el mismo archivo dos veces. */
+	if (lba_desde == iso->lba_base)
+		fp = iso->fp;
+	else if ((fp = fopen(path, "rb")) == NULL)
+	{
+		fprintf(stderr, "min_iso: no se pudo abrir la pista %s\n", path);
+		return 1;
+	}
+
+	iso->pista[iso->n_pistas].fp             = fp;
+	iso->pista[iso->n_pistas].lba_desde      = lba_desde;
+	iso->pista[iso->n_pistas].lba_hasta      = lba_desde + sectores - 1;
+	iso->pista[iso->n_pistas].base           = base;
+	iso->pista[iso->n_pistas].sector_crudo   = sector_crudo;
+	iso->pista[iso->n_pistas].desplazamiento = desplazamiento;
+	iso->n_pistas++;
+
+	return 0;
 }
 
 long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned int nblocks)
@@ -175,7 +299,7 @@ long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned i
 		if (posicionar(iso, lba) != 0)
 			return -1;
 
-		return (long) fread(buf, 1, (size_t) nblocks * MIN_ISO_BLOCKSIZE, iso->fp);
+		return (long) fread(buf, 1, (size_t) nblocks * MIN_ISO_BLOCKSIZE, iso->fp_activo);
 	}
 
 	for (i = 0; i < nblocks; i++)
@@ -185,7 +309,7 @@ long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned i
 		if (posicionar(iso, lba + i) != 0)
 			break;
 
-		leidos = fread(p, 1, MIN_ISO_BLOCKSIZE, iso->fp);
+		leidos = fread(p, 1, MIN_ISO_BLOCKSIZE, iso->fp_activo);
 		total += (long) leidos;
 		p += MIN_ISO_BLOCKSIZE;
 

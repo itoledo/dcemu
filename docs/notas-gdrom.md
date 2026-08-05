@@ -275,3 +275,41 @@ cero**: el contador es 0 y la comprobación se va por su primera rama, antes de 
 `SB_GDSTARD`. El juego nunca llegó a pedir esos bloques, así que el fallo está más atrás — en
 alguna de las tres llamadas anteriores de la secuencia (`0x8C00D940`, `0x8C00D900`,
 `0x8C00D888`), que es por donde hay que seguir.
+
+### Lo que destapó un GD-ROM de verdad, con catorce pistas (2026-08-05)
+
+`Dave Mirra Freestyle BMX` tiene 14 pistas y encontró tres cosas que el rip de DCDoom —tres
+pistas, una sola de datos arriba— no podía encontrar:
+
+```
+14
+1  0      4 2352 track01.bin 0      <- datos, area de densidad simple
+2  756    0 2352 track02.raw 0      <- audio
+3  45000  4 2352 track03.bin 0      <- **el ISO9660**, LBA 45000..315894
+4..13     0 2352 ...                <- diez pistas de audio CDDA
+14 414528 4 2352 track14.bin 0      <- **mas datos**, LBA 414528..549149
+```
+
+**1. La pista del volumen no es la de LBA más alto.** `cdi_pista_de_datos()` toma esa, que es
+correcto para un `.cdi` —una sola pista de datos, arriba de todo— y aquí elegía la 14. La regla
+buena es **la primera pista de datos del área de alta densidad**, que es donde el GD-ROM pone
+su ISO9660 y donde el boot ROM da por sentado que está el IP.BIN. Verificado: `CD001` en el
+sector 16 de la pista 3.
+
+**2. Los datos se reparten entre pistas, y cada una es un archivo.** El `1ST_READ.BIN` de este
+juego está en el **LBA 547102**, que cae en la pista 14 — mientras que el sistema de archivos
+que lo describe está en la 3. Con una sola pista abierta, leerlo era buscar más allá del fin
+del archivo: **ni datos ni error, el emulador colgado**. `min_iso_agregar_pista()` registra
+todas las pistas de datos y `posicionar()` enruta cada sector a la suya; un sector que no cae
+en ninguna informa y falla, que es lo que no pasaba antes.
+
+**3. El ejecutable de un rip en `.gdi` no está cifrado.** dcemu descifraba siempre, heredado
+del `.cdi`, donde un selfboot sí lo trae cifrado. En los dos `.gdi` a mano el archivo en el
+disco **ya es código SH-4 válido** —DCDoom empieza con un cargador auto-relocalizante, Dave
+Mirra con seis NOP y un JMP— y descifrarlo lo vuelve basura: el guest terminaba girando en
+`0x0000011C`, memoria baja. Es una regla de formato (`iso_ejecutable_cifrado()`), no una
+heurística sobre el contenido.
+
+Con las tres, Dave Mirra pasa de no montar a **ejecutar código del juego**. Todavía no dibuja
+—se le va en una lectura sin emular desde `0x8C08BF06`— pero eso ya es depuración de un juego,
+no del formato.

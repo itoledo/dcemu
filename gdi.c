@@ -77,6 +77,21 @@ static const char * gdi_nombre(const char * s, char * dest, size_t n)
 	return i ? s : NULL;
 }
 
+/*
+	Las rutas de las pistas de la ultima imagen abierta.
+
+	Es estado de modulo y no parte de `struct cdi_t` a proposito: esa estructura
+	la comparten los dos formatos y un .cdi no tiene un archivo por pista. Vive
+	lo que vive la imagen montada, que es toda la corrida.
+*/
+static char gdi_rutas[CDI_PISTAS_MAX][1024];
+static int  gdi_n_rutas = 0;
+
+const char * gdi_ruta_de(int i)
+{
+	return (i >= 0 && i < gdi_n_rutas) ? gdi_rutas[i] : NULL;
+}
+
 static long long gdi_tamano(const char * ruta)
 {
 	FILE *    f = fopen(ruta, "rb");
@@ -135,13 +150,14 @@ static unsigned int gdi_modo_de_pista(const char * ruta, long long offset)
 }
 
 int gdi_abrir(const char * ruta, struct cdi_t * dest,
-              char * ruta_datos, size_t ruta_datos_n)
+              char * ruta_datos, size_t ruta_datos_n, int * cual)
 {
 	FILE * f = fopen(ruta, "r");
 	char   linea[1024];
 	int    n_pistas = 0;
 	int    i;
-	int    mejor = -1;
+	int    mejor = -1, respaldo = -1;
+	char   ruta_respaldo[1024];
 
 	if (f == NULL)
 	{
@@ -150,6 +166,7 @@ int gdi_abrir(const char * ruta, struct cdi_t * dest,
 	}
 
 	memset(dest, 0, sizeof(*dest));
+	gdi_n_rutas = 0;
 
 	if (fgets(linea, sizeof(linea), f) == NULL
 	 || (n_pistas = atoi(linea)) <= 0 || n_pistas > CDI_PISTAS_MAX)
@@ -209,6 +226,9 @@ int gdi_abrir(const char * ruta, struct cdi_t * dest,
 
 		gdi_ruta_pista(ruta, archivo, completa, sizeof(completa));
 
+		snprintf(gdi_rutas[dest->n], sizeof(gdi_rutas[0]), "%s", completa);
+		gdi_n_rutas = dest->n + 1;
+
 		tamano = gdi_tamano(completa);
 
 		if (tamano < 0)
@@ -242,13 +262,25 @@ int gdi_abrir(const char * ruta, struct cdi_t * dest,
 			p->desplazamiento = (p->modo == 2) ? 24 : 16;
 		}
 
-		/* La pista de datos de mas arriba es el area de alta densidad: la que
-		   trae el IP.BIN y el juego. Misma regla que cdi_pista_de_datos(). */
-		if (p->modo != 0
-		 && (mejor < 0 || p->lba > dest->pistas[mejor].lba))
+		/*
+			**La primera pista de datos del area de alta densidad**, que es la
+			que trae el IP.BIN y el sistema de archivos. Ver gdi.h: no es la de
+			LBA mas alto, que es la regla de los .cdi y elegia mal en cuanto la
+			imagen tiene mas de una pista de datos arriba.
+		*/
+		if (p->modo != 0 && p->lba >= GDI_LBA_ALTA_DENSIDAD
+		 && (mejor < 0 || p->lba < dest->pistas[mejor].lba))
 		{
 			mejor = dest->n;
 			snprintf(ruta_datos, ruta_datos_n, "%s", completa);
+		}
+
+		/* Y por si no hay ninguna ahi arriba: la de datos de mas abajo, que es
+		   lo unico que se puede intentar en un .gdi que no describa un GD-ROM. */
+		if (p->modo != 0 && (respaldo < 0 || p->lba < dest->pistas[respaldo].lba))
+		{
+			respaldo = dest->n;
+			snprintf(ruta_respaldo, sizeof(ruta_respaldo), "%s", completa);
 		}
 
 		dest->n++;
@@ -256,11 +288,23 @@ int gdi_abrir(const char * ruta, struct cdi_t * dest,
 
 	fclose(f);
 
+	if (mejor < 0 && respaldo >= 0)
+	{
+		fprintf(stderr, "gdi_abrir: %s no tiene pistas de datos en el area de "
+			"alta densidad; se intenta con la pista %d, en el LBA %u\n",
+			ruta, respaldo + 1, dest->pistas[respaldo].lba);
+
+		mejor = respaldo;
+		snprintf(ruta_datos, ruta_datos_n, "%s", ruta_respaldo);
+	}
+
 	if (mejor < 0)
 	{
 		fprintf(stderr, "gdi_abrir: %s no tiene pistas de datos\n", ruta);
 		return 1;
 	}
+
+	*cual = mejor;
 
 	return 0;
 }

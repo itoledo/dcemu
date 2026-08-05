@@ -1988,7 +1988,10 @@ int main(int argc, char *argv[])
 			*/
 			es_ce = (ip_ce_bit != 0);
 
-			tam = cargar_archivo_iso(nombre_boot, !es_ce,
+			/* Cifrado: lo decide el formato de la imagen (ver iso.h), y una
+			   imagen de Windows CE nunca lo esta -- lo suyo es la cabecera. */
+			tam = cargar_archivo_iso(nombre_boot,
+				!es_ce && iso_ejecutable_cifrado(),
 				get_memory_pointer(mem_base + mem_offset));
 
 			if (tam > 0 && es_ce)

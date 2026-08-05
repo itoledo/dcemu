@@ -37,6 +37,31 @@ min_iso_t * min_iso_open_pista(const char * path, unsigned int lba_base,
                                long long base, unsigned int sector_crudo,
                                unsigned int desplazamiento);
 
+/* Cuantas pistas de datos puede tener una imagen. Un GD-ROM prensado llega a
+   catorce pistas, de las que solo unas pocas son de datos. */
+#define MIN_ISO_PISTAS_MAX	16
+
+/*
+	Registra otra pista de datos, en su propio archivo.
+
+	Hace falta porque **un GD-ROM reparte sus datos entre varias pistas** y un
+	.gdi las trae en archivos separados: el sistema de archivos puede estar en
+	una y los archivos que describe en otra. Dave Mirra Freestyle BMX tiene el
+	ISO9660 en la pista 3 (LBA 45000-315894) y su 1ST_READ.BIN en el LBA 547102,
+	que cae en la pista 14.
+
+	Se registran **todas** las pistas de datos, la del volumen incluida; a partir
+	de la primera llamada, toda lectura se enruta por esta tabla y un sector que
+	no caiga en ninguna pista falla informandolo, en vez de leer del archivo
+	equivocado o de mas alla de su fin.
+
+	Un .iso o un .cdi no llaman a esto nunca y siguen por el camino de siempre.
+*/
+int min_iso_agregar_pista(min_iso_t * iso, const char * path,
+                          unsigned int lba_desde, unsigned int sectores,
+                          long long base, unsigned int sector_crudo,
+                          unsigned int desplazamiento);
+
 /* El LBA del primer sector de la pista, en la numeracion de arriba. */
 unsigned int min_iso_lba_base(min_iso_t * iso);
 

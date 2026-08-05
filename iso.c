@@ -175,10 +175,13 @@ int iso_init(char * sDevice)
 		char						datos[1024];
 		int							cual;
 
-		if (gdi_abrir(sDevice, &gdi, datos, sizeof(datos)) != 0)
+		/* El indice lo elige gdi_abrir(): la regla no es la de cdi.c. Ver
+		   gdi.h -- un GD-ROM puede traer varias pistas de datos y la del
+		   volumen es la primera del area de alta densidad, no la de mas
+		   arriba. */
+		if (gdi_abrir(sDevice, &gdi, datos, sizeof(datos), &cual) != 0)
 			return 1;
 
-		cual  = cdi_pista_de_datos(&gdi);
 		pista = &gdi.pistas[cual];
 
 		fprintf(stderr, "iso_init: usando %s, %d pista%s; la de datos empieza en"
@@ -206,6 +209,22 @@ int iso_init(char * sDevice)
 
 		if (iso == NULL)
 			return 1;
+
+		/*
+			Y **todas** las pistas de datos, no solo la del volumen.
+
+			Un GD-ROM reparte sus datos: en Dave Mirra Freestyle BMX el ISO9660
+			esta en la pista 3 y su 1ST_READ.BIN en el LBA 547102, que cae en la
+			pista 14 -- otro archivo --. Con una sola registrada el lector
+			buscaba mas alla del fin de la pista 3 y el emulador se colgaba sin
+			decir nada.
+		*/
+		for (cual = 0; cual < gdi.n; cual++)
+			if (gdi.pistas[cual].modo != 0)
+				min_iso_agregar_pista(iso, gdi_ruta_de(cual),
+					gdi.pistas[cual].lba, gdi.pistas[cual].sectores,
+					gdi.pistas[cual].offset, gdi.pistas[cual].sector_crudo,
+					gdi.pistas[cual].desplazamiento);
 	}
 	else
 	{
@@ -337,6 +356,12 @@ int iso_gd_presentando(void)
 	abajo del area de alta densidad, no es un GD-ROM por mas que la extension lo
 	diga, y mandarlo a esa rama lo dejaria sin arrancar por la misma puerta.
 */
+int iso_ejecutable_cifrado(void)
+{
+	/* Ver iso.h: es una regla de formato, no del contenido. */
+	return formato_imagen != FORMATO_GDI;
+}
+
 int iso_es_gdrom()
 {
 	if (formato_imagen == FORMATO_GDI)
