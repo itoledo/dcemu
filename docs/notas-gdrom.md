@@ -172,7 +172,9 @@ apretado — así que cada dirección mantenida dispara como una pulsación nuev
 ARRIBA sola (o cualquier diagonal con ARRIBA) repite a los 7,5/s de diseño, que es la huella.
 
 El rip `Virtua Tennis (2000)(Sega)(US)[cr DCRES][f PAL 60Hz][repack].cdi` tiene los bytes
-correctos y repite a 7,5/s — **usar ese**. flycast y Deecy reproducen la ametralladora idéntica con
+correctos y repite a 7,5/s. **Y el `.gdi` USA de tres pistas también** (comprobado el 2026-08-05,
+jugado): el daño es de *ese archivo `.cdi`*, no de la versión USA ni de la estirpe del volcado, así
+que la regla no es «evitar la USA» sino «cambiar de rip». flycast y Deecy reproducen la ametralladora idéntica con
 el archivo dañado (los tres emuladores contestan el Maple byte por byte igual, verificado contra
 ambas fuentes), que es lo que probó que era el archivo y no el emulador: cuando un juego se
 comporta igual de mal en emuladores independientes, hay que comparar el rip contra otra estirpe

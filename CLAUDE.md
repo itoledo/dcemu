@@ -689,8 +689,12 @@ Rules that cost a boot each:
 - `SB_GDSTARD`/`SB_GDLEND` (`0x005F74F4`/`0x005F74F8`) are the DMA's counters and the ROM's
   driver reads them.
 
-All four commercial images that parse now run, on both paths. `docs/notas-gdrom.md` has the
-layout table, the `.cdi` format, the five drive bugs and the damaged Virtua Tennis rip.
+Every commercial image in `roms/` runs, on both paths — nine of them as of 2026-08-05: Crazy
+Taxi, Crazy Taxi 2, Virtua Tennis, Capcom vs. SNK, Street Fighter III, Sega Rally 2, Dave Mirra,
+ChuChu Rocket and DCDoom. `docs/notas-gdrom.md` has the layout table, the `.cdi` format, the five
+drive bugs and the damaged Virtua Tennis rip — **damaged rip, not damaged region**: the same USA
+version off a three-track `.gdi` plays fine, so the rule is "try another rip", not "avoid the USA
+release".
 
 ### BIOS syscall emulation
 
