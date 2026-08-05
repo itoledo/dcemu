@@ -144,6 +144,12 @@ extern unsigned long long perf_cuadros;
 */
 extern unsigned long long perf_instrucciones;
 
+/* Cuantas atendio el despacho en linea de main.c y cuantas fueron a la tabla.
+   La fraccion es lo que permite extrapolar el costo de la llamada indirecta a
+   todas las instrucciones. Solo con -DDCEMU_INLINE. */
+extern unsigned long long perf_inline_si;
+extern unsigned long long perf_inline_no;
+
 /*
 	La cache de texturas, que es el bloque grande que queda sin explicar:
 	get_texture() se lleva el 32 % del tiempo real en un binario optimizado, con
@@ -232,6 +238,83 @@ extern unsigned long long perf_instantaneas;		/* instantaneas tomadas */
 extern unsigned long long perf_instantaneas_usadas;	/* ... y restauradas */
 
 /*
+	La forma de ejecucion del guest: lo que decide si un cache de bloques --o un
+	recompilador-- puede pagar, y que hasta ahora nadie midio en este arbol.
+
+	Un cache de bloques amortiza su costo de entrada entre las instrucciones de
+	la corrida, asi que **la longitud media de corrida es el factor de
+	amortizacion** y sin ella cualquier expectativa es una cita de otro
+	proyecto. Con corridas de 3 el sobrecosto por bloque se divide por 3, no por
+	30.
+
+	Y el tamano del cache lo decide la otra mitad: cuantos bloques distintos hay
+	y con que reincidencia. Si cada bloque se ejecuta una vez, traducirlo es
+	trabajo perdido por definicion.
+
+	Dos precisiones sobre que es una "corrida" aqui:
+
+	 - Se cuentan **despachos del bucle exterior**, que es exactamente la unidad
+	   que un cache de bloques iteraria. Una ranura de retardo se ejecuta
+	   anidada dentro del manejador del salto (branch.c) y no da una vuelta del
+	   bucle, asi que un bloque terminado en salto con retardo tiene una
+	   instruccion mas de las que se cuentan aqui.
+	 - Una falta de MMU sale por longjmp sin cerrar la corrida; la siguiente
+	   vuelta la cierra igual porque el PC ya es el del manejador. Son 4
+	   millones sobre 5433, o sea ruido.
+
+	**La volatilidad del codigo -- escrituras sobre paginas desde las que ya se
+	ejecuto -- no se mide aqui a proposito.** Medirla exige un gancho en el
+	macro de memwrite, que es el camino mas caliente del arbol y esta expandido
+	en cientos de sitios: agrandarlo moveria la propia cifra de ns por
+	instruccion que --perf informa, y este arbol ya perdio tres mediciones por
+	cambios de disposicion del binario. Cuando exista el cache de bloques la
+	invalidacion sera suya y contarla ahi sale gratis.
+*/
+extern unsigned long long perf_bloques;			/* corridas secuenciales cerradas */
+extern unsigned long long perf_bloques_instr;	/* despachos dentro de ellas */
+extern unsigned long      perf_bloques_max;		/* la corrida mas larga */
+extern unsigned long long perf_bloques_perdidos;/* no cupieron en la tabla */
+
+/*
+	**El gancho se compila aparte: -DDCEMU_FORMA, apagado por omision.** Es la
+	unica sonda del arbol que no vive en el binario normal, y la excepcion esta
+	justificada por las dos mitades de la razon:
+
+	 - **Cuesta 4,4 % y esta medido.** Una rama por despacho sobre 22 280
+	   millones de instrucciones a ~25 ciclos cada una da exactamente esa
+	   magnitud. Alternando los dos binarios en una tanda: 115 688 / 114 142 ms
+	   sin el gancho contra 119 854 / 119 935 con el, o sea 1,55-1,57x contra
+	   1,50x en Crazy Taxi. Una instrumentacion inerte no puede costar eso en el
+	   banco insignia.
+	 - **Y no necesita estar, porque esto cuenta al guest, no cronometra al
+	   emulador.** La regla de "las sondas van en el mismo binario" --
+	   excepciones.c:413 -- existe porque comparar dos compilaciones mete la
+	   disposicion del binario como variable en una medida de TIEMPO. Aca la
+	   medida son cuentas de bloques del programa emulado, que son las mismas en
+	   cualquier compilacion: la corrida con este binario reproduce las
+	   22 279 918 813 instrucciones y las 9994 escenas de siempre.
+
+	Compilado adentro, DCEMU_FORMA=1 lo enciende en tiempo de ejecucion, asi que
+	el binario de medicion todavia puede hacer A/B contra si mismo. Hacen falta
+	las dos cosas: la variable para contar y --perf para que el resumen salga.
+
+	  cmake -S . -B build-forma -DDCEMU_FORMA=ON
+	  cmake --build build-forma --config Release --target dcemu
+	  set DCEMU_FORMA=1 && dcemu --perf --salir-tras=180 ...
+*/
+extern int perf_forma;
+
+/* Se llama **despues** de despachar, con el PC resultante. Ver perf.c. */
+void perf_bloque_paso(unsigned long pc);
+
+#ifdef DCEMU_FORMA
+#define PERF_BLOQUE(pc)													\
+	do { if (perf_forma) perf_bloque_paso((unsigned long) (pc)); } while (0)
+#else
+#define PERF_BLOQUE(pc)		((void) 0)
+#endif
+
+/*
 	Y cuanto cuestan las dos piezas que quedan del sobrecosto de un guest con
 	MMU. **No creerles: el instrumento no llega a esta escala.**
 
@@ -248,6 +331,88 @@ extern unsigned long long perf_instantaneas_usadas;	/* ... y restauradas */
 */
 extern unsigned long long perf_ns_traducir;		/* mmu_traducir() entera */
 extern unsigned long long perf_ns_instantanea;	/* excepcion_instantanea_tomar() */
+
+/*
+	El censo por paginas de la RAM de onda: DCEMU_SONDA_ONDA=1.
+
+	Existe para contestar **la pregunta que decide** si se puede saltear el
+	sondeo del ARM7 (docs/arm7-plan.md, camino 2). Cerca de la mitad de los 2161
+	millones de pasos del ARM son barridos sobre tablas que casi nunca cambian
+	--el lazo A recorre 94 millones de entradas y su cuerpo no se ejecuta ni una
+	vez--, y el diseno propuesto es un contador de generacion: si nadie escribio
+	lo que el lazo lee, el barrido da lo mismo que la vuelta anterior y se puede
+	saltar entero.
+
+	Eso solo funciona si **las paginas que el ARM sondea y las que alguien
+	escribe son disjuntas**. Y no es obvio que lo sean: el SH-4 escribe RAM de
+	onda unos 7,5 millones de veces por corrida, que es mas veces que barridos
+	hay. Si escribiera en cualquier parte, un contador global de generacion
+	estaria siempre sucio y la idea no arranca; si escribe muestras en unas
+	paginas y las tablas de control viven en otras, funciona y hay que hacerlo
+	por pagina, como la cache de texturas.
+
+	Por eso se cuenta por pagina y de los dos lados:
+
+	  - lecturas de **datos** del ARM (no las busquedas de instruccion: el ARM
+	    ejecuta desde la misma RAM y mezclarlas taparia justo la separacion que
+	    se busca);
+	  - escrituras de quien sea. Son tres los que escriben RAM de onda y estan
+	    los tres enganchados: el propio ARM (arm7_escribir), el SH-4 y el DMA
+	    del G2 --que pasan los dos por mem.c-- y el DMA interno del AICA.
+
+	Tambien se cuentan aparte las lecturas del ARM que van al archivo de
+	registros del AICA en vez de a la RAM de onda: eso **cambia con cada
+	muestra** sin que nadie lo "escriba", asi que un lazo que sondee ahi no se
+	puede saltear con este mecanismo. Si los lazos calientes leyeran registros,
+	el camino 2 estaria muerto y conviene saberlo antes y no despues.
+*/
+#define PERF_ONDA_PAG_BITS	10						/* paginas de 1 KB */
+#define PERF_ONDA_PAGS		(0x00200000 >> PERF_ONDA_PAG_BITS)	/* 2048 */
+
+extern int					perf_sonda_onda;
+extern unsigned long long	perf_onda_pag_lect[PERF_ONDA_PAGS];
+extern unsigned long long	perf_onda_pag_escr[PERF_ONDA_PAGS];
+extern unsigned long long	perf_onda_arm_reg_lect;
+extern unsigned long long	perf_onda_arm_dato_lect;
+
+/*
+	Y la simulacion del mecanismo, que es la cifra que decide de verdad.
+
+	"En paginas nunca escritas" es la pregunta pesimista: una pagina que se
+	escribio una vez al cargar el juego cuenta como sucia para siempre, y con eso
+	da 0 % aunque la elision funcionaria perfecto. Lo que el contador de
+	generacion pregunta es otra cosa: **desde la vez anterior que el ARM leyo
+	esta pagina, la escribio alguien?** Si no, el resultado de releerla es el
+	mismo por construccion.
+
+	perf_onda_pag_gen sube con cada escritura; perf_onda_pag_gen_lect guarda la
+	generacion que tenia la pagina la ultima vez que el ARM la leyo. Comparar las
+	dos da directamente la tasa de acierto que tendria el mecanismo, sin haber
+	implementado todavia ni la deteccion de lazos ni la memoizacion.
+*/
+extern unsigned long		perf_onda_pag_gen[PERF_ONDA_PAGS];
+extern unsigned long		perf_onda_pag_gen_lect[PERF_ONDA_PAGS];
+extern unsigned long long	perf_onda_lect_sin_cambio;
+
+#define PERF_ONDA_LECT(dir)												\
+	do {																\
+		if (perf_sonda_onda)											\
+			perf_onda_marcar_lectura((unsigned long) (dir));			\
+	} while (0)
+
+#define PERF_ONDA_ESCR(dir, n)											\
+	do {																\
+		if (perf_sonda_onda)											\
+			perf_onda_marcar_escritura((unsigned long) (dir),			\
+			                           (unsigned long) (n));			\
+	} while (0)
+
+/* unsigned long y no DWORD: perf.h no incluye los tipos del arbol a proposito
+   --lo incluyen unidades que no ven main.h-- y el resto del archivo hace lo
+   mismo con sus contadores. */
+void perf_onda_marcar_escritura(unsigned long dir, unsigned long n);
+void perf_onda_marcar_lectura(unsigned long dir);
+void perf_onda_censo(void);
 
 void perf_inicio(void);
 void perf_resumen(void);

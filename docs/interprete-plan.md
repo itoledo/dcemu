@@ -668,9 +668,14 @@ en la línea caliente del contexto se lee gratis con el `PC` que ya se cargó.
 | 0.2 | `fpu_dn_s` en línea | hasta 9,6 % | bajo |
 | 0.3 | `/GL /LTCG` | 7 % largo, a medir | bajo, pero toca la FPU |
 | 1.1-1.4 | ARM7 | de 19,6 % a la mitad, a medir | bajo |
-| 2.1 | `mem_base_directa` | parte del 38,6 % | medio: el gancho del watchpoint |
-| 3.1 | reordenar `context_t` | a medir | bajo |
+| 2.1 | `mem_base_directa` | ~~parte del 38,6 %~~ **hecha y ≈0 en Release** | medio: el gancho del watchpoint |
+| 3.1 | reordenar `context_t` | ~~a medir~~ **hecha (d029a1d) y ≈0 en Release** | bajo |
 | 3.2 | caché del puntero de búsqueda | a medir | medio: invalidación |
+
+**Ojo con esta tabla**: es la propuesta de la fase 3, no el estado. 2.1 y 3.1 se
+implementaron y se midieron —`rendimiento-plan.md`, «lo que no valió»: 1-2 % cada una en
+Debug y **≈0 en Release**— y la tabla nunca se actualizó. Leerla como pendientes costó
+media sesión: ver «La alineación del contexto» al final de este documento.
 
 Las de siempre, y una que ahora pesa más: **`dcemu_sh4json` bit a bit**, porque 0.2, 0.3 y
 todo lo de la FPU cambian el código generado de los flotantes. Después `ctest`, el barrido
@@ -701,3 +706,626 @@ El baseline de los tres bancos y el desglose de la MMU están en
   1,54× y 1,36× de la consola. El 71 % que se lleva es de un total que ya sobra, y por eso
   los candidatos B, C y D de este plan valen menos que antes de medir. El guest que sí está
   lento es el de MMU, y lo que le pesa no es el despacho.
+
+---
+
+# La forma de ejecución del guest, medida (2026-08-04)
+
+Es el paso 1.2 de `docs/rendimiento-plan.md`, "llevar dcemu al estado del arte": **medir antes
+de decidir si un caché de bloques o un recompilador pueden pagar**. Hasta aquí este árbol no
+tenía ninguna de estas cifras, y sin ellas «un dynarec da 3×» es una cita de otro proyecto.
+
+Los contadores viven en `perf.c` y `PERF_BLOQUE` se engancha en los tres caminos de despacho
+de `main_loop()`. **Se compilan aparte** —`cmake -DDCEMU_FORMA=ON`— y se encienden con
+`DCEMU_FORMA=1`; el resumen sale con `--perf`. El porqué de que no vengan en el binario
+normal está abajo, y costó una tanda de A/B averiguarlo:
+
+```sh
+cmake -S . -B build -DDCEMU_FORMA=ON && cmake --build build --config Release --target dcemu
+DCEMU_FORMA=1 dcemu --perf --salir-tras=180 "roms/Crazy Taxi (USA).cdi"
+```
+
+## Los números
+
+Release + PGO, i9-13900, los bancos canónicos. Las dos corridas reproducen su cuenta de
+instrucciones **al dígito** contra lo documentado en la fase 6, así que son la misma
+ejecución: 22 279 918 813 y 9994 escenas en Crazy Taxi, 5 433 052 826 en DCDoom.
+
+| | Crazy Taxi (Katana, sin MMU) | DCDoom (Windows CE, con MMU) |
+| --- | --- | --- |
+| corridas secuenciales | 3 451 875 808 | 443 413 460 |
+| despachos por corrida | 5,91 | 11,52 |
+| **instrucciones por bloque** (con las ranuras) | **6,45** | **12,25** |
+| la corrida más larga | 213 | 161 |
+| bloques distintos | 10 318 | 18 358 |
+| ejecuciones por bloque | **334 549** | **24 154** |
+| bloques que cubren el 50 % de las instrucciones | 5 | 9 |
+| **... el 90 %** | **168** | **91** |
+| ... el 99 % | 1285 | 696 |
+
+Reparto de longitudes:
+
+| | 1 | 2 | 3 | 4 | 5-8 | 9-16 | 17-32 | 33+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Crazy Taxi | 16,4 % | 4,3 % | 27,2 % | 21,7 % | 4,9 % | 20,7 % | 2,9 % | 1,5 % |
+| DCDoom | 6,4 % | 4,3 % | 14,1 % | 8,0 % | 29,7 % | 25,3 % | 2,9 % | 9,3 % |
+
+Cero corridas perdidas por la tabla en las dos, así que los bloques distintos no están
+subestimados.
+
+## Qué dicen
+
+**La forma acompaña, y por los dos lados.**
+
+- **La amortización es de 6,45× y 12,25×.** Todo lo que un caché de bloques saca del camino
+  —la búsqueda en la tabla de 65536 entradas, la búsqueda de la instrucción, y las ocho
+  comprobaciones del cuerpo del bucle— se paga una vez por bloque en vez de una vez por
+  instrucción. No es el 30× de un guest con lazos largos, pero tampoco el 1,5× que haría
+  descartarlo.
+- **El caché de código es diminuto: 168 y 91 bloques cubren el 90 %**, y menos de 1300 cubren
+  el 99 %. Cabe entero en caché de la máquina anfitriona, que es justamente lo que la tabla de
+  despacho de 512 KB no hace.
+- **La traducción se amortiza sola**: 334 549 ejecuciones por bloque en Crazy Taxi y 24 154 en
+  DCDoom. Traducir un bloque puede costar mil veces lo que ejecutarlo y seguir siendo gratis.
+- **El guest con MMU tiene la mejor forma de los dos** —12,25 contra 6,45—, que es el que está
+  lento. Windows CE compila con bloques más largos que el SDK de Katana.
+
+## El error de denominador que casi se publica
+
+La primera versión pesaba la cobertura **por veces ejecutado** y reportaba que **4 bloques
+cubren el 50 %** en Crazy Taxi. Es una cifra sobre el sondeo, no sobre el trabajo: un lazo de
+espera de una sola instrucción —un `bra` a sí mismo, un `SLEEP`— se ejecuta millones de veces
+y no es donde se va el tiempo. Con el peso correcto —**instrucciones ejecutadas**, que es lo
+que un caché de código tiene que servir— el corte del 90 % pasó de 113 a 168 bloques y el del
+50 % de 4 a 5.
+
+Es el mismo error que costó tres hipótesis en la fase 6 de `rendimiento-plan.md`, donde
+`datos_acierto` usaba como denominador traducciones que nunca miraban la caché. Queda anotado
+en `bloque_cmp()` junto al comparador, para que la próxima persona lo lea antes de cambiarlo.
+
+## Lo que estas cifras **no** contestan
+
+**Cuánto de los 5,0 ns por instrucción es sobrecosto del bucle.** La forma dice que la
+amortización sirve; no dice sobre qué. Eso lo contesta el paso 1.1 —el perfil de Release con
+contadores de hardware, que nunca se tomó— o directamente el prototipo de 1.3.
+
+Y hay una advertencia en contra que sigue en pie, de este mismo documento: **la tabla compacta
+perdió 1,2-2,5 % tres veces de tres**, y el mismo despacho cuesta 8,4 ns en los menús contra
+14,4 en juego. El costo por instrucción no está dominado por el despacho sino por el conjunto
+de trabajo del guest, y un caché de bloques no mejora la localidad de los datos del guest.
+
+## Lo que no se midió, y por qué
+
+**La volatilidad del código** —escrituras sobre páginas desde las que ya se ejecutó, o sea lo
+que obligaría a invalidar código traducido—. Medirla exige un gancho en el macro de
+`memwrite`, que está expandido en cientos de sitios y es el camino más caliente del árbol.
+Cuando exista el caché de bloques la invalidación será suya y contarla ahí sale gratis.
+
+## El instrumento cuesta 4,4 %, así que no viene en el binario normal
+
+Es la única sonda del árbol que se compila aparte (`-DDCEMU_FORMA`, apagada por omisión), y
+la excepción se ganó midiendo.
+
+La primera versión colgaba de `--perf`. Eso ya estaba mal por una razón que se vio antes de
+medir nada: `--perf` es el instrumento cuyos ns por instrucción se comparan contra todo el
+historial de `rendimiento-plan.md`, y agregarle trabajo por despacho lo habría hecho medir
+otra cosa en silencio. Pasó a `DCEMU_FORMA=1`, una variable leída una vez al arrancar como el
+resto de las sondas.
+
+**Y con eso seguía costando 4,4 %.** Alternando los dos binarios en una misma tanda, que es lo
+único que este árbol acepta:
+
+| | ms reales | velocidad |
+| --- | --- | --- |
+| HEAD | 115 688 / 114 142 | 1,55× / 1,57× |
+| con el gancho en el binario | 119 854 / 119 935 | **1,50×** |
+| **con el gancho compilado fuera** | **116 314 / 115 875** | **1,54× / 1,55×** |
+
+Una rama por despacho sobre 22 280 millones de instrucciones a ~25 ciclos cada una da
+exactamente esa magnitud. Compilada fuera, la diferencia contra HEAD queda en **0,3 %**, con
+las cuatro corridas haciendo el mismo trabajo al dígito: 22 279 918 813 instrucciones, 9994
+escenas, 1183 tiras.
+
+(Esas seis corridas están todas con el perfil de PGO al 67 %, que es lo que quedaba tras
+entrenar sobre la otra variante; por eso las dos columnas salen ~4 % por debajo de lo que da
+el árbol reentrenado. No importa para el A/B —los dos binarios cargan el mismo handicap—,
+pero sí para no leer 1,55× como la cifra del árbol.)
+
+### El estado final, con el perfil reentrenado
+
+| banco | ms reales | velocidad | fps | documentado |
+| --- | --- | --- | --- | --- |
+| **Crazy Taxi** | 111 836 / 111 962 / 111 863 | **1,60×** | **89,4** | 1,59× · 88,5 |
+| **DCDoom** | 46 840 / 46 941 | **0,75×** | **31,6** | 0,73× · 31,1 |
+
+Tres vueltas dentro del 0,1 % y dos dentro del 0,2 %, con el trabajo idéntico al dígito.
+Los dos bancos quedan **apenas por encima** de su línea documentada.
+
+Ese margen es tentador de atribuir al `.pgd` limpio —la línea documentada pudo haberse
+construido con el entrenamiento sin ponderar todavía fundido dentro—, pero es una comparación
+entre tandas y **por la regla de este árbol eso no se puede leer**. Queda como coincidencia
+anotada, no como resultado.
+
+### Por qué compilarla aparte es legítimo aquí, y no lo sería para otra sonda
+
+La regla del árbol —`excepciones.c:413`— es que las sondas viven en el binario normal y se
+eligen con una variable de entorno, **porque comparar dos compilaciones mete la disposición
+del binario como variable en una medida de tiempo**. Esta rama ya costó una sesión.
+
+Esta sonda es la excepción porque **no mide tiempo: cuenta bloques del guest**. La corrida con
+el binario que la lleva reproduce las mismas 5 433 052 826 instrucciones y las mismas 443 413 460
+corridas que cualquier otra, y los cortes del 50/90/99 % salen idénticos. Una cuenta del
+programa emulado no depende de cómo se compiló el emulador; un cronómetro sí.
+
+### Y una hipótesis que la medición mató por el camino
+
+Antes del A/B, la sospecha era el perfil de PGO: `herramientas/pgo.ps1` borraba los `.pgc`
+viejos pero **nunca limpiaba el `.pgd`**, y `pgomgr /merge` acumula sobre lo que ya había, así
+que cada reentrenamiento se fundía encima del anterior. Como el `.pgd` vive fuera de `build/`
+a propósito para sobrevivir a un borrado, el perfil pasaba a describir la suma de dos
+programas.
+
+**El error era real y está arreglado** (`pgomgr /clear` antes de fundir), pero **no era la
+causa**: con el `.pgd` limpio Crazy Taxi dio 119 996 / 119 874 / 119 785 ms, o sea lo mismo. La
+causa era el gancho, y sólo apareció al alternar dos binarios.
+
+También murió una segunda lectura por el camino: el ARM7 parecía 12,6 % más lento que en la
+sesión documentada, sobre código que este cambio no toca, y eso apuntaba a deriva de la
+máquina. En la tanda alternada el ARM7 de los dos binarios es comparable. **Un porcentaje
+contra una cifra de otra tanda no es un dato**, ni siquiera cuando la conclusión que sugiere
+es cómoda.
+
+
+---
+
+# El cache de bloques predecodificados: implementado, medido, y no sirve (2026-08-04)
+
+Es el paso 1.3 del plan. La forma de ejecucion lo justificaba —6,45 instrucciones por bloque en
+Crazy Taxi, 12,25 en DCDoom, menos de 1300 bloques cubriendo el 99 %— y la pregunta que venia a
+contestar era **cuanto vale de verdad el despacho**: la busqueda de la palabra por
+`get_memory_pointer()` (dos cargas dependientes) y la del manejador en una tabla de 65536
+punteros.
+
+La respuesta es **nada**.
+
+## El A/B
+
+Mismo binario, `DCEMU_SONDA_BLOQUES` en 0 y en 1, alternados en una tanda. Trabajo identico al
+digito en las cuatro corridas del banco: 22 279 918 813 instrucciones, 9994 escenas, 1183 tiras.
+
+| banco | sin bloques | con bloques | |
+| --- | --- | --- | --- |
+| **Crazy Taxi, en juego (180 s)** | 125 148 / 125 234 ms | 125 634 / 125 353 ms | **+0,1 a +0,4 %** |
+| Crazy Taxi, menus (20 s) | 11 506 / 11 564 ms | 11 884 / 11 946 ms | **+3,3 %** |
+
+En juego es ruido; en los menus pierde. **Sacar del camino la busqueda de la palabra y la de la
+tabla de 512 KB no devuelve tiempo medible.**
+
+## Por que, y por que era predecible
+
+No contradice nada de lo que este documento ya tenia; lo confirma desde el cuarto lado:
+
+- la tabla **compacta** —128 KB en vez de 512— perdio 1,2-2,5 %, tres veces de tres;
+- quitar las cuatro comprobaciones por instruccion del bucle dio **cero**;
+- el mismo despacho cuesta **8,4 ns en los menus y 14,4 en juego**, con la misma tabla;
+- y ahora, quitar el despacho entero: **cero**.
+
+Las cuatro dicen lo mismo. El codigo caliente del guest es chico —168 bloques cubren el 90 % de
+las instrucciones—, asi que la tabla de 512 KB **esta en cache**: indexarla no cuesta lo que
+parece. Lo que cuesta es el cuerpo de los manejadores y el conjunto de trabajo de datos del
+guest, que un cache de bloques no toca.
+
+## Lo que esto le hace al recompilador dinamico (1.4)
+
+**Le saca su argumento principal.** La expectativa de 2-2,5x del plan salia de suponer que el
+despacho y la busqueda eran el impuesto del interprete. Estan medidos y valen cero.
+
+Lo que a un recompilador le quedaria por ganar es otra cosa, y mas dificil de estimar: mantener
+registros del SH-4 en registros del anfitrion entre instrucciones, no actualizar `PC` ni el
+contador de ciclos en cada una, plegar constantes, eliminar banderas muertas. Puede ser real,
+pero **ya no hay una cifra en este arbol que lo respalde**, y el proyecto es de meses y cambia
+el modelo de ejecucion. Antes de entrar ahi hace falta el paso 1.1 —el perfil de Release con
+contadores de hardware— que diga en que se van los ~25 ciclos por instruccion, porque ahora
+sabemos que **no es en llegar al manejador**.
+
+## Tres errores de implementacion, y lo que ensena cada uno
+
+Valen anotados porque los tres estaban ocultos y los tres los encontro una medicion, no una
+lectura del codigo.
+
+**1. La entrega de una interrupcion mueve el PC despues del despacho.** La primera version
+verificaba la continuidad del PC justo despues del manejador. Pero el manejador no es el unico
+que mueve el PC: el bloque periodico corre **despues**, y `intc_revisar_sh4()` entra a la
+excepcion. El cursor quedaba vivo apuntando a la instruccion siguiente del bloque y la
+reproducia en el PC del manejador de interrupcion. El guest se desbarrancaba y la corrida no
+terminaba: 20 segundos emulados no salieron en 400 reales. La verificacion tiene que estar **al
+principio de la vuelta**, donde cubre cualquier desvio venga de donde venga.
+
+**2. Un cursor global cuesta 11,4 %; el mismo cursor en una local, 3,3 %.** El compilador no
+puede probar que un manejador no toca un global, asi que lo recarga alrededor de cada llamada;
+una local cuya direccion nunca se toma se queda en un registro salvado. La primera medicion
+—11,4 % de perdida— era en buena parte del instrumento, no de la idea. Lo unico que quedo
+global es `bloques_esperado`, porque hay que poder envenenarlo desde adentro de un manejador
+cuando `UpdateFPSCR()` repunta la tabla de despacho.
+
+**3. Una grabacion abandonada tiene que devolver sus entradas.** Sin eso, cada corte filtraba lo
+que llevaba escrito: la sonda informaba **86 bloques con 82 536 entradas** —960 por bloque,
+cuando el bloque real tiene doce—. La cifra absurda fue lo que delato el error, igual que el
+235,9 % de la instantanea en la fase 6.
+
+## Y una limitacion que conviene saber
+
+**El cache no puede servir al guest con MMU, que es justo el que esta lento.** Con la MMU
+encendida la busqueda de una instruccion puede levantar una falta de TLB, y un bloque grabado se
+la saltearia: el bloque trae la palabra ya decodificada y no vuelve a traducir. Por eso el
+camino solo corre con `excepcion_vigilar` en cero, y DCDoom apenas graba 86 bloques antes de
+encender la MMU.
+
+## Donde queda
+
+Detras de `-DDCEMU_BLOQUES=ON`, **apagado por omision**, igual que `--hilos`: el codigo es
+correcto, esta medido, y la proxima persona que crea que el despacho es el costo puede volver a
+correr el A/B sin reconstruir la idea. Compilado fuera no cuesta nada — el binario normal
+vuelve a **1,60-1,61x y 89,4 fps**, con 21/21 en `ctest` y 113 191 ok / 0 fallan en
+`dcemu_sh4json`.
+
+
+---
+
+# El perfil de Release, por fin (2026-08-04)
+
+Es el paso 1.1. El unico perfil de muestreo que este arbol habia tomado era de **Debug**, y el
+propio documento registra que desvio el plan entero. Este es de Release + PGO, con los
+simbolos del PDB que `CMakeLists.txt` deja a proposito, y **grabando solo la parte en juego**:
+el script arranca el emulador y espera 80 segundos reales antes de encender la traza, porque a
+los 120 segundos emulados Crazy Taxi todavia esta en MODE SELECTION y un perfil de la corrida
+entera serian dos tercios de menu.
+
+`herramientas/perfil-pmu.ps1`, modo `tiempo`. Muestras del proceso, en porcentaje de las de
+dcemu:
+
+| | DCDoom (con MMU) | Crazy Taxi | Virtua Tennis |
+| --- | --- | --- | --- |
+| **`main_loop`** | **61,5 %** | **38,7 %** | **36,6 %** |
+| `mmu_traducir` | 9,0 % | — | — |
+| ARM7 completo | ~5 % | ~10 % | ~10 % |
+| driver de GL | 0,0 % | 6,2 % | 3,3 % |
+| `utlb_buscar` | 0,9 % | — | — |
+| el mayor manejador suelto | 0,5 % | 1,5 % (`movl21`) | 2,0 % (`fmul195`) |
+
+**El tiempo esta en el cuerpo del bucle, no en los manejadores.** Ninguno pasa del 2 %;
+`main_loop` se lleva de un tercio a dos tercios. Es la primera vez que este arbol tiene esa
+cifra sobre un binario optimizado.
+
+Y un dato de metodo que salio de rebote: **`perf_ahora` es el 1,3-1,6 % de las muestras**. El
+propio `--perf` se cobra eso, y toda corrida con el puesto lo lleva.
+
+## Lo que esto le hace al reparto de main_loop
+
+Dentro de ese 38,7 % (Crazy Taxi, sin MMU) las piezas estan casi todas ya medidas, y **casi
+todas dieron cero**:
+
+| pieza | cuanto vale |
+| --- | --- |
+| las cuatro banderas por instruccion | **0** (fase 2.4) |
+| la busqueda de la palabra y la tabla de 65536 punteros | **~0** (el cache de bloques) |
+| la condicion del bloque periodico | medido con el grano |
+| **la linea de barrido** | **2,3 %** — ver abajo |
+| **la llamada indirecta al manejador** | **sin medir** |
+
+Queda una sola candidata grande, y es la que el cache de bloques **no** toco: aquel reemplazo
+saco la busqueda y la tabla pero seguia haciendo **una llamada indirecta por instruccion**
+(`cur->f(cur->instr)`). O sea que lo que queda adentro de `main_loop` es, en buena parte, la
+llamada en si: su costo de entrada y salida y su prediccion.
+
+**Eso rehabilita en parte el caso del recompilador dinamico**, que es justo lo que elimina esa
+llamada inlineando el cuerpo del manejador. Lo que el cache de bloques refuto fue que el
+*despacho* --encontrar el manejador-- costara algo; no dijo nada sobre *llamarlo*.
+
+## Los contadores de hardware no se pudieron tomar
+
+Los modos `cuentas` y `fallos` salieron vacios: cabecera sin filas y un informe de pilas con
+todas las tablas en blanco.
+
+**La causa es del sistema, no del script: VBS esta corriendo** —`VirtualizationBasedSecurityStatus`
+en 2, con integridad de memoria, y `HypervisorPresent` verdadero—. Con VBS activo el hipervisor
+es dueno del PMU y la programacion de contadores desde ETW **falla en silencio**; la ayuda de
+`xperf -Pmc` lo dice sin nombrarlo: *"failures while programing the counters will not result in
+trace start failure, unless 'strict' is specified"*. `xperf -pmcsources` sigue listando las
+fuentes porque esa lista es una capacidad estatica del procesador, no una prueba de que se
+puedan programar.
+
+Para tomarlos hay que apagar VBS y reiniciar, que es bajar una proteccion del sistema. Instalar
+VTune probablemente no alcance: el bloqueo es el mismo. **Mientras tanto, la via es la de
+siempre en este arbol: medir por delecion**, que es lo que dio el 2,3 % de abajo.
+
+## La linea de barrido salia de ese perfil, y vale 2,3 %
+
+`if (reloj_total - marca_linea >= pvr_ciclos_linea)` se evaluaba **por instruccion**: tres
+cargas de globales y una comparacion para descubrir, mil veces de cada mil, que el reloj no se
+habia movido.
+
+Y no podia haberse movido: **`reloj_total` solo avanza dentro del bloque periodico**, que es el
+unico sitio del arbol que lo toca. Asi que la comprobacion se movio ahi adentro.
+
+| | ms reales | velocidad | fps | ns/instr |
+| --- | --- | --- | --- | --- |
+| antes | 111 836 / 111 962 / 111 863 | 1,60× | 89,4 | 5,0 |
+| **despues** | **109 424 / 109 203** | **1,64×** | **91,4** | **4,9** |
+
+**2,3 %**, con la ejecucion identica al digito: 22 279 918 813 instrucciones, 10 001 cuadros,
+9994 escenas, 1183 tiras.
+
+Lo unico que puede volver cierta la condicion sin que `reloj_total` avance es que el guest
+escriba SPG_LOAD o SPG_CONTROL y cambie `pvr_ciclos_linea`; en ese caso la linea sale hasta
+RELOJ_GRANO ciclos mas tarde, que es la misma granularidad con la que ya corren el TMU, el WDT
+y el AICA.
+
+Barandas, que aqui no son opcionales porque el cambio mueve **cuando** se cuenta una linea:
+`ctest` **21/21**, `dcemu_sh4json` **113 191 ok / 0 fallan** bit a bit, y **DCDoom con
+`--captura-gl` en el mismo SHA-256 de siempre (`36578f59…`)** con sus 1482 cuadros y 977
+escenas.
+
+
+---
+
+# La llamada indirecta: medida, y cuesta menos que su codigo (2026-08-04)
+
+Era lo unico del cuerpo de `main_loop` que quedaba sin medir, y lo que decidia si un
+recompilador dinamico tiene de donde sacar su ganancia. El cache de bloques habia quitado la
+busqueda de la palabra y la tabla de 65536 punteros sin ganar nada, pero **seguia haciendo una
+llamada indirecta por instruccion**. Esto la quita.
+
+## El experimento
+
+Los **diez manejadores mas frecuentes en linea dentro del bucle** (`despacho_inline()` en
+`main.c`, detras de `-DDCEMU_INLINE=ON`): `MOV Rm,Rn`, `MOV #imm,Rn`, `ADD Rm,Rn`,
+`ADD #imm,Rn`, `MOV.L @(disp,Rm),Rn`, `MOV.L Rm,@(disp,Rn)`, `MOV.L @Rm,Rn`, `MOV.L Rm,@Rn`,
+`TST Rm,Rn` y `CMP/EQ Rm,Rn`. Cuerpos copiados **literalmente**, rarezas incluidas: `MOV Rm,Rn`
+no suma ciclos en su manejador y aqui tampoco.
+
+Se escribio como optimizacion y no como sonda a proposito: si rendia, se quedaba; y rindiera o
+no, la fraccion cubierta permite extrapolar a todas las instrucciones.
+
+**Cubre el 35,3 %** — 7 207 962 747 de 20 416 265 135 instrucciones.
+
+## El resultado
+
+Los dos binarios con su **propio** perfil de PGO al 100 %, para que la comparacion no arrastre
+un perfil desalineado:
+
+| | ms reales | velocidad | fps |
+| --- | --- | --- | --- |
+| **sin inline** | 109 017 / 109 122 / 108 454 | **1,65×** | **91,8** |
+| con inline, 35,3 % cubierto | 130 018 / 129 735 / 129 684 | **1,38×** | 77,0 |
+
+**Cuesta 19 %.** Tres vueltas de cada uno dentro del 0,5 %, y la prueba de que las copias de
+los manejadores son exactas es que las seis corridas dan **22 279 918 813 instrucciones,
+10 001 cuadros, 9994 escenas y 1183 tiras**, idénticas al digito.
+
+## Por que, y lo que ensena
+
+No es la logica: es el **tamano del codigo caliente**. `main_loop` engorda con 120 lineas
+forzadas en linea y eso se paga en cache de instrucciones mas de lo que ahorran las llamadas.
+
+Dos senales lo confirman:
+
+- **Con el perfil viejo iba mejor que con el fresco** (122 298 contra 129 700 ms). Un perfil
+  desalineado normalmente cuesta; aqui compensaba, porque dejaba parte del codigo nuevo fuera
+  del camino caliente.
+- **Sin forzar el inline sale 20 % peor todavia** (131 376 ms). `DC_INLINE` es `__inline`, que
+  es una *pista*, y MSVC la ignora en una funcion de este tamano: la primera version quedo como
+  llamada de verdad y agregaba una llamada encima de la que ya habia. **Sin `__forceinline`
+  este experimento no medía lo que decía medir**, y habría dado la respuesta correcta por la
+  razon equivocada.
+
+## Con esto, el cuerpo del bucle esta agotado
+
+| pieza de `main_loop` | cuanto vale |
+| --- | --- |
+| las cuatro banderas por instruccion | **0** (fase 2.4) |
+| la busqueda de la palabra y la tabla de 65536 punteros | **0** (cache de bloques) |
+| **la llamada indirecta al manejador** | **negativo** (esto) |
+| **la linea de barrido** | **+2,3 %**, cobrado |
+
+Las cuatro piezas que se pueden atacar sin cambiar el modelo de ejecucion estan medidas y solo
+una rindio.
+
+## Y lo que le hace al recompilador dinamico
+
+Le quita el ultimo argumento que le quedaba en este arbol, y le agrega uno en contra.
+
+El que le quedaba era que la llamada por instruccion fuera el impuesto. **No lo es**: quitarla
+para un tercio de las instrucciones sale 19 % mas caro. Un recompilador seguiria teniendo de
+donde ganar --mantener registros del SH-4 en registros del anfitrion entre instrucciones, no
+actualizar `PC` ni el contador de ciclos una por una, plegar constantes--, pero eso ya no es
+"quitar el sobrecosto del interprete": es otra cosa, mas dificil de estimar y sin ninguna cifra
+de este arbol que la respalde.
+
+Y el argumento nuevo en contra es el propio resultado: **el tamano del codigo caliente es un
+factor de primer orden aqui**, y un recompilador genera muchisimo mas codigo que 120 lineas.
+Con 168 bloques cubriendo el 90 % de las instrucciones el codigo traducido seria chico en
+bloques pero grande en bytes, y este experimento dice que eso importa.
+
+## Donde queda
+
+Detras de `-DDCEMU_INLINE=ON`, **apagado**, como el cache de bloques y como `--hilos`: el
+codigo es correcto, esta medido, y la proxima persona que quiera atacar la llamada indirecta
+puede correr el A/B sin rehacer el experimento.
+
+---
+
+# La alineación del contexto, medida (2026-08-05)
+
+## La fase 3.1 ya estaba hecha, y la tabla decía que no
+
+Este trabajo empezó por un error de lectura que conviene dejar anotado, porque la trampa
+sigue puesta para el que venga: **la tabla de «Orden y barandas» de este documento es la
+propuesta original de la fase 3, no un estado**, y su fila 3.1 decía «a medir». Reordenar
+`context_t` está hecho desde el commit `d029a1d` y medido en `rendimiento-plan.md` junto al
+ARM7 y `mem_base_directa`: **1-2 % cada una en Debug y ≈0 en Release**.
+
+O sea que la recomendación de «atacar el layout de datos» se apoyaba en una fila vencida.
+La tabla queda corregida arriba.
+
+## Lo que sí faltaba: la alineación
+
+Lo que el reordenamiento no podía garantizar por sí solo es dónde empieza la estructura.
+`sh4_cpu` no tenía alineación declarada, así que su alineación natural son 8 bytes —el mayor
+miembro es un puntero— y **el enlazador puede dejar `core` en cualquier frontera de 8**. Los
+primeros 80 bytes calientes caen en dos líneas de caché o en tres según cómo haya quedado, y
+eso vuelve a sortearse en cada enlace. Es la misma lotería de disposición que PGO existe para
+cerrar, salvo que PGO ordena **código** y esto es un dato.
+
+Lo mismo del otro lado del `memcpy` más caro del árbol: `excepcion_instantanea_tomar()` copia
+`core.context` a `instantanea_contexto` **una vez por instrucción** en el guest con MMU —
+5 105 400 739 veces en los 35 segundos del banco de DCDoom, 0,94 por instrucción—. Y los dos
+bancos de coma flotante, de 64 bytes justos, salían de `malloc()`, que no respeta alineación
+extendida: caían en dos líneas tres de cada cuatro veces.
+
+## Dos variantes, porque la primera se pagaba sola
+
+**Alinear el tipo** (`struct DC_ALINEADO(64) context_t`) es lo obvio y tiene un efecto que no
+lo es: redondea `sizeof` hacia arriba, de **176 a 192**. Esos 16 bytes de más los copia la
+instantánea 5100 millones de veces.
+
+**Alinear las variables** —`core`, `instantanea_contexto`— coloca los objetos igual de bien y
+deja `sizeof` en 176. Los bancos sí llevan la alineación en el tipo, porque ya medían 64 y
+redondear no cambia nada; a cambio `BANK0`/`BANK1` dejaron de salir de `malloc()` y son dos
+objetos estáticos.
+
+## Los números en DCDoom: nada
+
+Banco de DCDoom, `--perf --salir-tras=35`, Release + PGO, i9-13900. Alternando los dos
+binarios dentro de una misma tanda y descartando la primera pasada de cada uno, cuatro pares
+por tanda. Trabajo idéntico verificado en las tres: **5 433 052 826 instrucciones, 1482
+cuadros y 5 105 400 739 instantáneas**, al dígito.
+
+| | media | rango | contra su propio A |
+| --- | --- | --- | --- |
+| base (sin alinear) | 48 242 ms | 47 861 - 48 992 | — |
+| **alineando el tipo** (sizeof 192) | 48 601 ms | 48 051 - 49 142 | **+0,7 % más lento** |
+| base (sin alinear), segunda tanda | 47 520 ms | 47 321 - 47 672 | — |
+| **alineando las variables** (sizeof 176) | 47 370 ms | 47 332 - 47 402 | **−0,32 %** |
+
+**Las dos son ruido**, y el piso de ruido salió medido por accidente: una tanda de diez
+corridas que creí que alternaba binarios y en realidad corrió **el mismo diez veces** dio
+47 842 - 48 991 ms, o sea **2,4 % de dispersión sin que nada cambiara**. Ni el 0,7 % ni el
+0,32 % salen de ahí.
+
+Un detalle que sí dice algo: **la dispersión de la variante alineada es 70 ms contra los 351
+de la base** (0,15 % contra 0,74 %) en la misma tanda. Es exactamente la forma que tendría el
+efecto si existiera —no correr más rápido, correr más parejo—, y con lo que viene abajo se
+entiende mejor.
+
+Y de paso: **la misma base midió 48 242 ms en una tanda y 47 520 en la siguiente**, un 1,5 %
+de deriva entre tandas separadas por veinte minutos. Vuelve a confirmar que sólo se puede
+comparar dentro de una tanda, que es la regla que este árbol ya pagó tres veces.
+
+## Los números en los guests sin MMU: −2,4 % y −1,9 %
+
+Y aquí está lo que DCDoom escondía. Mismo par de binarios, bancos canónicos de 180 segundos,
+con **el orden dado vuelta dentro de los pares impares** por si el primero de cada par pagaba
+algo por serlo.
+
+| Crazy Taxi (4 pares) | media | rango |
+| --- | --- | --- |
+| base | 108 050 ms | 107 194 - 108 683 |
+| **alineado** | **105 440 ms** | 104 885 - 106 556 |
+
+| Virtua Tennis (3 pares) | media | rango |
+| --- | --- | --- |
+| base | 123 616 ms | 123 364 - 123 757 |
+| **alineado** | **121 261 ms** | 120 600 - 121 606 |
+
+**−2,4 % en Crazy Taxi** (de 1,65× a 1,69×, o 91,7 a 94,8 fps) y **−1,9 % en Virtua Tennis**
+(de 1,45× a 1,48×). En las dos, los rangos son **disjuntos**: la peor corrida alineada es
+mejor que la mejor sin alinear. Contando la tanda anterior de Crazy Taxi son **diez pares de
+diez** a favor, con las dos ordenaciones.
+
+Y el trabajo es idéntico al dígito en las veintidós corridas: **22 279 918 813 instrucciones,
+10 001 cuadros, 9994 escenas y 1183 tiras** en Crazy Taxi; **23 611 808 332, 10 551, 10 542 y
+1925** en Virtua Tennis.
+
+## Por qué el guest más lento es el que menos lo nota
+
+Es al revés de lo que uno esperaría, porque DCDoom es el que copia el contexto entero cinco
+mil millones de veces. La explicación más simple que encaja con las tres cifras:
+
+**el efecto es de residencia, no de volumen.** En los guests Katana `core` se toca varias
+veces por instrucción y nada lo desaloja, así que si sus 80 bytes calientes cruzan a una
+tercera línea el costo se paga siempre. En DCDoom el conjunto activo es mucho más grande —la
+UTLB, las tres cachés de traducción, `mmu_datos` con sus 4096 entradas, el guest de Windows
+CE— y `core` compite por L1 con todo eso; además la instantánea ya recorre 176 bytes de
+corrido, que es tráfico de líneas enteras al que la alineación le cambia poco.
+
+Dicho de otra forma: **la alineación ayuda donde la estructura vive en caché, y DCDoom es
+justamente el guest donde no termina de vivir**. Es una hipótesis, no una medición: lo
+medido son los dos números, y confirmarla pediría contadores de hardware, que en esta máquina
+están cerrados por VBS.
+
+## Qué queda en el árbol y por qué
+
+Queda la variante de variables, ahora con dos motivos y no uno: **vale 1,9-2,4 % en los guests
+sin MMU** y **hace cierto lo que el reordenamiento suponía**, sin costar nada —mismo `sizeof`,
+mismo trabajo, dos `malloc()` menos—. Con ella entran dos comprobaciones de compilación:
+
+```c
+DC_ASSERT(context_caliente,
+    offsetof(context_t, registers) + 16 * sizeof(DWORD) <= 128);
+DC_ASSERT_SIZE(context, context_t, 176);
+```
+
+La primera falla si alguien mete un campo frío adelante y empuja los registros fuera de las
+dos primeras líneas; la segunda, si el contexto engorda —lo que la instantánea pagaría por
+instrucción—. Las dos convierten en error de compilación algo que si no cuesta un 1 % que
+nadie iba a atribuir a eso.
+
+`DCEMU_SIN_ALINEAR` deja el A/B corrible. Es de compilación y no una variable de entorno como
+el resto de las sondas, y esta vez la excepción es forzosa: lo que se mide **es** la
+disposición de los datos, así que no hay forma de tener las dos en un binario.
+
+## Las dos trampas de esta tanda
+
+**El intercambio de binarios falló en silencio.** La primera versión del script tenía un `if`
+dentro de un `Join-Path` —PowerShell exige `$(...)`—, `$src` salía nulo, `Copy-Item` fallaba
+con un error que se perdía entre la salida, y **las diez corridas midieron el mismo binario**.
+Los números se veían perfectos: trabajo idéntico, dispersión razonable, una diferencia
+pequeña entre «A» y «B». Es otra vez la forma de falla de siempre en este árbol —algo que no
+hace nada y no avisa— y ahora el script verifica el hash del ejecutable después de copiarlo.
+
+**`-DCMAKE_C_FLAGS=/DDCEMU_SIN_ALINEAR` no llegó al compilador.** Configuró sin quejarse y el
+binario salió byte a byte idéntico al de la rama contraria, que es lo único que lo delató. El
+A/B terminó haciéndose con un `#define` temporal en `lnxdefs.h`. No se investigó más: lo que
+importa es que **el hash de los dos binarios es la única prueba de que un A/B compara dos
+cosas**, y vale para el compilador tanto como para el script.
+
+## Y lo que esto le agrega al mapa
+
+El cuerpo del bucle ya estaba agotado; ahora también lo está su lado de datos, al menos en lo
+que es colocación:
+
+| pieza | cuánto vale |
+| --- | --- |
+| las cuatro banderas por instrucción | 0 (fase 2.4) |
+| la búsqueda de la palabra y la tabla de 65536 punteros | 0 (caché de bloques) |
+| la llamada indirecta al manejador | negativo |
+| **el orden de los campos de `context_t`** | **≈0 en Release** (fase 3.1, ya medido) |
+| **la alineación de `core` y de la instantánea** | **−2,4 % y −1,9 % sin MMU, ≈0 en DCDoom** (esto) |
+| la línea de barrido | +2,3 %, cobrado |
+
+Es la segunda cosa que rinde de las seis, y la primera que rinde **sin tocar una sola línea
+del camino de ejecución**: no se quitó trabajo, se cambió dónde viven 176 bytes.
+
+Eso corrige de paso la lectura que la fase 3.1 había dejado. «Reordenar `context_t` da ≈0 en
+Release» era cierto **y engañoso**: el reordenamiento sin alineación es media medida, porque
+deja el resultado a lo que el enlazador haga esa vez. Las dos juntas valen 2,4 %; medida cada
+una por su lado, ninguna valía nada. Vale la pena tenerlo presente antes de archivar otra
+optimización de disposición como «no rinde».
+
+Lo que sigue abierto es la observación que abrió esta línea: **8,4 ns por instrucción en los
+menús contra 14,4 en juego, con la misma tabla de despacho**. Sigue sin explicación, y esto
+no la da —si acaso la refuerza, porque el mismo cambio rinde donde el conjunto activo es
+chico y no rinde donde es grande—. Si la diferencia es de conjunto de trabajo, el que crece
+es el **del guest** —su código, sus datos, sus texturas—, y eso no se arregla ordenando
+estructuras del anfitrión.

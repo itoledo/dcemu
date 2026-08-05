@@ -12,6 +12,11 @@
 #include <string.h>
 
 #include "excepciones.h"
+#ifdef DCEMU_BLOQUES
+#include "bloques.h"
+#else
+#define BLOQUES_ROMPER()	((void) 0)
+#endif
 #include "log.h"
 #include "mem.h"		/* memread_fisico: el directorio de proceso del censo */
 #include "mmu.h"
@@ -402,8 +407,17 @@ void excepcion_actualizar_vigilancia(void)
 	FMOV.S @Rm+,FRn que falla por MMU dejaria FRn escrito, y sobre todo la
 	trampa de FPU no podria cumplir lo que pide el manual -- que el registro
 	destino no se actualice.
+
+	Los tres destinos van alineados a 64, y eso importa aca mas que en ningun
+	otro lado: este es el unico memcpy del arbol que corre **una vez por
+	instruccion**, y con los dos extremos alineados el compilador lo emite como
+	movimientos alineados en vez de partir lineas. Ver sh4emu.h.
+
+	Los dos bancos la heredan del tipo, que ya media una linea justa; el
+	contexto la lleva en la variable, porque ponerla en el tipo subiria su
+	sizeof de 176 a 192 y esos 16 bytes se copiarian 5100 millones de veces.
 */
-static context_t	instantanea_contexto;
+static DC_ALINEADO(64) context_t	instantanea_contexto;
 static FPR_BANK		instantanea_fr;
 static FPR_BANK		instantanea_xf;
 

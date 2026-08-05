@@ -34,6 +34,9 @@
 #include "sistema.h"
 #include "traza.h"
 #include "perf.h"
+#ifdef DCEMU_BLOQUES
+#include "bloques.h"
+#endif
 #include "hilo_aica.h"
 #include "ubc.h"
 #include "wdt.h"
@@ -490,6 +493,11 @@ static unsigned long real_inicio = 0;
 */
 static void falta_reponer(void)
 {
+	/* El longjmp salteo el resto del bloque en reproduccion. Ver bloques.h. */
+#ifdef DCEMU_BLOQUES
+	bloques_cortar();
+#endif
+
 	excepcion_salto_armado = 0;
 	en_ranura_retardo = 0;
 	excepcion_instantanea_restaurar();
@@ -500,6 +508,162 @@ static void falta_reponer(void)
 
 	excepcion_entrar(excepcion_codigo, excepcion_vector);
 }
+
+
+#ifdef DCEMU_INLINE
+/*
+	Los diez manejadores mas frecuentes, **en linea dentro del bucle**.
+
+	Es lo unico del cuerpo de main_loop() que quedaba sin medir. El perfil de
+	Release del 2026-08-04 pone a `main_loop` en el 38,7 % de las muestras de
+	Crazy Taxi con ningun manejador por encima del 2 %, y de las piezas que hay
+	ahi adentro casi todas ya dieron cero: las cuatro banderas por instruccion
+	(fase 2.4), la busqueda de la palabra y la tabla de 65536 punteros (el cache
+	de bloques). Lo que el cache de bloques **no** quito fue la llamada indirecta
+	en si -- seguia haciendo una por instruccion --, y esto la quita para las
+	codificaciones que cubre.
+
+	Sirve para dos cosas a la vez, y por eso se escribio asi y no como sonda: si
+	rinde, es la optimizacion; y rinda o no, la fraccion cubierta
+	(`perf_inline_si` contra `perf_inline_no`) permite extrapolar cuanto vale la
+	llamada para **todas** las instrucciones, que es el numero que decide si un
+	recompilador dinamico tiene de donde sacar su ganancia.
+
+	Los cuerpos son **copias literales** de los manejadores, con sus rarezas:
+	`mov3` (MOV Rm,Rn) **no suma ciclos** y aca tampoco, porque si no el guest
+	diverge. Ninguna de estas diez filas de `opcodes[]` lleva restriccion de
+	PR/SZ, asi que resuelven al mismo manejador en las cuatro tablas y meterlas
+	en linea es seguro sin mirar FPSCR.
+
+	Devuelve 1 si la atendio; 0 manda a la tabla de siempre.
+
+	**Va forzada en linea, no sugerida.** El `__inline` de DC_INLINE es una
+	pista y MSVC la ignora en una funcion de este tamano: la primera version
+	quedo como llamada de verdad y la corrida salio **20 % mas lenta** que el
+	camino normal -- para las codificaciones que cubre reemplazaba una llamada
+	por otra, y para el resto agregaba una encima de la que ya habia. Sin forzar
+	el inline esto no mide lo que dice medir.
+*/
+#if defined(_MSC_VER)
+#define DESPACHO_EN_LINEA	__forceinline
+#elif defined(__GNUC__)
+#define DESPACHO_EN_LINEA	__attribute__((always_inline)) __inline__
+#else
+#define DESPACHO_EN_LINEA	DC_INLINE
+#endif
+
+static DESPACHO_EN_LINEA int despacho_inline(WORD arg)
+{
+	short n = (arg >> 8) & 0x0F;
+	short m = (arg >> 4) & 0x0F;
+
+	switch (arg >> 12)
+	{
+	case 0x1:					/* movl18: MOV.L Rm,@(disp,Rn) */
+		{
+			DWORD m_disp = arg & 0x0F;
+			DWORD valor  = R(m);
+
+			m_disp <<= 2;
+			m_disp += R(n);
+
+			WriteMemoryL(m_disp, &valor);
+			PC += 2;
+			core.context.cycles += 1;
+		}
+		return 1;
+
+	case 0x2:
+		if ((arg & 0x0F) == 0x2)			/* movl6: MOV.L Rm,@Rn */
+		{
+			WriteMemoryL(R(n), (DWORD *) &R(m));
+			PC += 2;
+			core.context.cycles += 2;
+			return 1;
+		}
+		if ((arg & 0x0F) == 0x8)			/* tst80: TST Rm,Rn */
+		{
+			if (R(n) & R(m))
+				UNSET_T
+			else
+				SET_T
+			PC += 2;
+			core.context.cycles += 1;
+			return 1;
+		}
+		return 0;
+
+	case 0x3:
+		if ((arg & 0x0F) == 0xC)			/* add39: ADD Rm,Rn */
+		{
+			R(n) += R(m);
+			PC += 2;
+			core.context.cycles += 1;
+			return 1;
+		}
+		if ((arg & 0x0F) == 0x0)			/* cmpeq44: CMP/EQ Rm,Rn */
+		{
+			if ((signed) R(m) == (signed) R(n))
+				SET_T
+			else
+				UNSET_T
+			PC += 2;
+			core.context.cycles += 1;
+			return 1;
+		}
+		return 0;
+
+	case 0x5:					/* movl21: MOV.L @(disp,Rm),Rn */
+		{
+			DWORD m_disp = (arg & 0x0F);
+
+			ReadMemoryL(R(m) + m_disp * 4, &R(n));
+			PC += 2;
+			core.context.cycles += 1;
+		}
+		return 1;
+
+	case 0x6:
+		if ((arg & 0x0F) == 0x3)			/* mov3: MOV Rm,Rn */
+		{
+			R(n) = R(m);
+			PC += 2;
+			/* Sin ciclos: el manejador tampoco los suma. Ver arriba. */
+			return 1;
+		}
+		if ((arg & 0x0F) == 0x2)			/* movl9: MOV.L @Rm,Rn */
+		{
+			ReadMemoryL(R(m), (DWORD *) &R(n));
+			PC += 2;
+			core.context.cycles += 2;
+			return 1;
+		}
+		return 0;
+
+	case 0x7:					/* add40: ADD #imm,Rn */
+		{
+			signed long s = SignExtend8(arg & 0xFF);
+
+			R(n) += s;
+			PC += 2;
+			core.context.cycles += 1;
+		}
+		return 1;
+
+	case 0xE:					/* mov0: MOV #imm,Rn */
+		{
+			DWORD m_disp = SignExtend8(arg & 0xFF);
+
+			R(n) = m_disp;
+			PC += 2;
+			core.context.cycles += 1;
+		}
+		return 1;
+	}
+
+	return 0;
+}
+#endif /* DCEMU_INLINE */
 
 void main_loop(void)
 {
@@ -539,6 +703,28 @@ void main_loop(void)
 		if (setjmp(excepcion_salto) != 0)
 			falta_reponer();
 
+#ifdef DCEMU_BLOQUES
+		/*
+			El cursor del bloque en reproduccion, **local y no global**.
+
+			Un global tiene que recargarse alrededor de cada llamada a manejador
+			--el compilador no puede probar que el manejador no lo toca--; una
+			local cuya direccion nunca se toma se queda en un registro salvado.
+			Medido: con los tres en globales la sonda perdia 11,4 %.
+
+			Va **despues** del setjmp a proposito: el comentario de arriba avisa
+			que ninguna local de main_loop() puede sobrevivir al salto, y un
+			cursor que sobreviviera apuntaria a media entrada de otro bloque.
+			Declarada aca, el longjmp la repone.
+
+			Lo unico que queda global es `bloques_esperado`, porque hay que poder
+			envenenarlo desde adentro de un manejador --UpdateFPSCR() repuntando
+			la tabla de despacho-- y desde el bloque periodico. Con el envenenado,
+			la comprobacion de arriba anula el cursor sola.
+		*/
+		const struct bloque_e * cur = NULL, * cur_fin = NULL;
+#endif
+
 		for (;;)
 		{
 			if (DebugMode == DBG_STOP)
@@ -558,8 +744,83 @@ void main_loop(void)
 			   instruccion sobre este PC. Si entro a la excepcion, PC ya es el
 			   manejador y no hay nada que ejecutar en esta vuelta. */
 			if (ubc_activa && ubc_revisar_instruccion())
+			{
+#ifdef DCEMU_BLOQUES
+				/* Entro a la excepcion: el PC ya es el del manejador. El cursor
+				   lo anula la comprobacion de arriba, porque el PC dejo de ser
+				   el esperado; aca solo hay que soltar la grabacion. */
+				bloques_cortar();
+#endif
 				continue;
+			}
 
+#ifdef DCEMU_BLOQUES
+			if (!excepcion_vigilar && bloques_sonda)
+			{
+				/*
+					La sonda de bloques predecodificados (DCEMU_SONDA_BLOQUES=1).
+					Ver bloques.h: reemplaza la busqueda de la palabra y la de la
+					tabla de 65536 punteros por un recorrido secuencial de lo que
+					ya se ejecuto una vez.
+
+					**El selector lo pagan las dos ramas**, asi que el A/B entre
+					la sonda encendida y apagada mide el despacho y nada mas. Lo
+					unico que subestima es el beneficio absoluto: una version de
+					verdad no llevaria este `if`.
+				*/
+				/*
+					**La verificacion va al principio de la vuelta, no despues
+					del manejador.** El manejador no es el unico que mueve el
+					PC: el bloque periodico de mas abajo entrega interrupciones,
+					y `intc_revisar_sh4()` entra a la excepcion cambiando el PC
+					**despues** de que el despacho termino. Comprobando aca se
+					cubre cualquier desvio venga de donde venga, incluida la
+					invalidacion por cambio de tabla de despacho, que envenena
+					`bloques_esperado` desde adentro de un manejador.
+
+					Comprobar despues del manejador costo una corrida entera:
+					el cursor seguia vivo tras una interrupcion y reproducia la
+					instruccion siguiente del bloque en el PC del manejador.
+				*/
+				if (PC != bloques_esperado)
+				{
+					if (bloques_grabando)
+						bloques_cerrar();
+
+					cur = NULL;
+				}
+
+				/* La consulta va **solo al empezar un bloque**: mientras se
+				   graba no hay nada que buscar. */
+				if (cur == NULL && !bloques_grabando)
+					cur = bloques_buscar(PC, (const void *) oplist, &cur_fin);
+
+				bloques_esperado = PC + 2;
+
+				if (cur != NULL)
+				{
+					PERF_CONTAR(perf_instrucciones);
+					cur->f(cur->instr);
+
+					if (++cur == cur_fin)
+						cur = NULL;
+				}
+				else
+				{
+					/* Grabar: el camino de siempre, anotando antes de ejecutar
+					   porque el manejador mueve el PC. */
+					WORD		instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
+					opcode_f *	f     = OP_HANDLER(oplist, instr);
+
+					bloques_anotar(PC, (const void *) oplist, instr, f);
+
+					PERF_CONTAR(perf_instrucciones);
+					f(instr);
+				}
+
+				PERF_BLOQUE(PC);
+			}
+#endif
 			if (!excepcion_vigilar)
 			{
 				// Camino rapido: sin MMU, sin SR.FD y sin bits de Enable en
@@ -587,7 +848,21 @@ void main_loop(void)
 					WORD instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
 
 					PERF_CONTAR(perf_instrucciones);
+#ifdef DCEMU_INLINE
+					if (despacho_inline(instr))
+						PERF_CONTAR(perf_inline_si);
+					else
+					{
+						PERF_CONTAR(perf_inline_no);
+						OP_DESPACHAR(instr);
+					}
+#else
 					OP_DESPACHAR(instr);
+#endif
+
+					/* La forma de ejecucion: si el PC quedo donde seguia, la
+					   corrida sigue; si no, se cierra. Ver perf.h. */
+					PERF_BLOQUE(PC);
 				}
 			}
 			else if (excepcion_sonda_setjmp_instr)
@@ -601,6 +876,8 @@ void main_loop(void)
 					excepcion_salto_armado = 1;
 					core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));
 					excepcion_salto_armado = 0;
+
+					PERF_BLOQUE(PC);
 				}
 				else
 					falta_reponer();
@@ -630,6 +907,10 @@ void main_loop(void)
 				excepcion_salto_armado = 1;
 				core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));
 				excepcion_salto_armado = 0;
+
+				/* Este es el camino del unico guest con MMU del arbol, asi que
+				   sin esto la forma de ejecucion de DCDoom saldria en cero. */
+				PERF_BLOQUE(PC);
 			}
 
 	//			(*PC_func) ();
@@ -726,7 +1007,47 @@ void main_loop(void)
 				dma_check();
 
 				PERF_SUMAR_MUESTRA(t_serv, perf_ns_servicio);
-			}
+
+				/*
+					**La linea de barrido se evalua aqui adentro, no por
+					instruccion.**
+
+					La condicion es `reloj_total - marca_linea >= pvr_ciclos_linea`
+					y `reloj_total` **solo avanza dos lineas mas arriba**, dentro de
+					este mismo bloque: es el unico sitio del arbol que lo mueve
+					(CLAUDE.md: "reloj_total only ever rises"). Evaluarla por
+					instruccion eran tres cargas de globales y una comparacion para
+					descubrir, mil veces de cada mil, que el reloj no se habia
+					movido.
+
+					Lo unico que puede volverla cierta sin que `reloj_total` avance
+					es que el guest escriba SPG_LOAD o SPG_CONTROL y cambie
+					`pvr_ciclos_linea`. En ese caso la linea sale hasta RELOJ_GRANO
+					ciclos mas tarde, que es la misma granularidad con la que ya
+					corren el TMU, el WDT y el AICA.
+
+					Sale del perfil de Release del 2026-08-04: `main_loop` es el
+					38,7 % de las muestras en Crazy Taxi y ningun manejador pasa del
+					2 %, asi que lo que quede en el cuerpo del bucle vale mirarlo
+					una por una.
+				*/
+			if (reloj_total - marca_linea >= pvr_ciclos_linea)
+			{
+				pvr_scanline++;
+
+				marca_linea += pvr_ciclos_linea;
+
+				if (pvr_scanline == pvr_spg_vblank_int_out)
+				{
+	        			logxmsg(LOG_PVR, "llamando SCANINT1\n");
+	    				intc_add(ASIC_EVT_PVR_SCANINT1, 0);
+				}
+				else
+				if (pvr_scanline == pvr_spg_vblank_int_in)
+				{
+	        			logxmsg(LOG_PVR, "llamando SCANINT2\n");
+	    				intc_add(ASIC_EVT_PVR_SCANINT2, 0);
+					}
 
 	/*			if (PC == BreakPoint)
 				DebugMode = DBG_STOP; */
@@ -747,23 +1068,7 @@ void main_loop(void)
 			//
 			// Y la cuenta va contra una marca del contador monotono, no contra
 			// un acumulador que se suma y se resta (fase 2).
-			if (reloj_total - marca_linea >= pvr_ciclos_linea)
-			{
-				pvr_scanline++;
-
-				marca_linea += pvr_ciclos_linea;
-
-				if (pvr_scanline == pvr_spg_vblank_int_out)
-				{
-	        			logxmsg(LOG_PVR, "llamando SCANINT1\n");
-	    				intc_add(ASIC_EVT_PVR_SCANINT1, 0);
-				}
-				else
-				if (pvr_scanline == pvr_spg_vblank_int_in)
-				{
-	        			logxmsg(LOG_PVR, "llamando SCANINT2\n");
-	    				intc_add(ASIC_EVT_PVR_SCANINT2, 0);
-				}
+		}
 
 	//				if ((++cnt) == 500000)
 				if (pvr_scanline >= pvr_spg_load_vcount) // valor m�ximo que puede tomar
@@ -1789,6 +2094,9 @@ int main(int argc, char *argv[])
 	perf_inicio();
 	arm7_perfil_inicio();
 	excepcion_sondas_iniciar();
+#ifdef DCEMU_BLOQUES
+	bloques_iniciar();
+#endif
 	mmu_sondas_iniciar();
 
 	/* El AICA y el ARM7 a su propio hilo. Va justo antes del bucle: hasta aqui

@@ -33,6 +33,37 @@ option(DCEMU_BUILD_TESTS "Compilar las pruebas unitarias de opcodes (tests/)" ON
 # la misma tanda, y para eso tienen que poder existir a la vez.
 option(DCEMU_DESPACHO_COMPACTO "Despachar por indice de 16 bits en vez de por puntero" OFF)
 
+# La sonda de forma de ejecucion del guest: longitud de los bloques basicos,
+# cuantos distintos hay y con que reincidencia. Es lo que decide si un cache de
+# bloques o un recompilador pueden pagar (docs/interprete-plan.md).
+#
+# **Es la unica sonda del arbol que no vive en el binario normal**, y la
+# excepcion esta medida: el gancho es una rama por despacho y cuesta 4,4 % en
+# Crazy Taxi -- 1,50x contra 1,55-1,57x, alternando los dos binarios en una
+# tanda. Puede compilarse aparte sin romper nada porque lo que mide son cuentas
+# de bloques **del guest**, iguales en cualquier compilacion; la regla de
+# mantener las sondas en un solo binario existe para las medidas de tiempo, que
+# es donde la disposicion del binario entra como variable. Ver perf.h.
+option(DCEMU_FORMA "Compilar la sonda de forma de ejecucion (cuesta 4,4 %)" OFF)
+
+# El cache de bloques predecodificados (bloques.c). Es el paso 1.3 del plan y
+# **ya dio su respuesta: no sirve**. Reemplaza la busqueda de la palabra y la de
+# la tabla de 65536 punteros por un recorrido secuencial, y en el banco de Crazy
+# Taxi en juego da 125 634 / 125 353 ms contra 125 148 / 125 234 del camino de
+# siempre, o sea ruido; en los menus pierde 3,3 %.
+#
+# Se queda en el arbol, apagado, por lo mismo que se quedo --hilos: el codigo es
+# correcto, esta medido y la proxima persona que crea que el despacho es el
+# costo puede volver a correr el A/B sin reconstruir la idea. Compilado fuera no
+# cuesta nada; compilado adentro, DCEMU_SONDA_BLOQUES=1 lo enciende y el A/B se
+# hace contra el mismo binario con la variable en 0.
+option(DCEMU_BLOQUES "Compilar el cache de bloques predecodificados (medido: no sirve)" OFF)
+
+# Los diez manejadores mas frecuentes en linea dentro del bucle, sin llamada
+# indirecta. Ver despacho_inline() en main.c: es lo unico del cuerpo de
+# main_loop() que quedaba sin medir, y a la vez la optimizacion si rinde.
+option(DCEMU_INLINE "Despachar en linea los manejadores mas frecuentes" OFF)
+
 # Optimizacion de todo el programa (/GL al compilar, /LTCG al enlazar). Es la
 # fase 1.2 de docs/rendimiento-plan.md y aqui importa mas de lo normal: este
 # arbol tiene los bucles calientes en una unidad de traduccion y las funciones
@@ -49,6 +80,7 @@ option(DCEMU_DESPACHO_COMPACTO "Despachar por indice de 16 bits en vez de por pu
 # con la salida identica byte a byte. Sigue siendo alternable con OFF, que es
 # para lo que existe la opcion.
 option(DCEMU_LTCG "Optimizacion de todo el programa (/GL + /LTCG) en Release" ON)
+
 
 # Optimizacion guiada por perfil. Tres estados, y el orden importa:
 #
@@ -201,6 +233,19 @@ endif()
 
 if(DCEMU_DESPACHO_COMPACTO)
 	target_compile_definitions(dcemu PRIVATE DESPACHO_COMPACTO)
+endif()
+
+if(DCEMU_FORMA)
+	target_compile_definitions(dcemu PRIVATE DCEMU_FORMA)
+endif()
+
+if(DCEMU_BLOQUES)
+	target_compile_definitions(dcemu PRIVATE DCEMU_BLOQUES)
+	target_sources(dcemu PRIVATE bloques.c)
+endif()
+
+if(DCEMU_INLINE)
+	target_compile_definitions(dcemu PRIVATE DCEMU_INLINE)
 endif()
 
 # Release con simbolos. Los flags por omision de CMake para Release son
