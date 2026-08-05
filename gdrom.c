@@ -438,6 +438,19 @@ static BYTE modo[32] =
 };
 
 /*
+	Los mismos 32 bytes, para el hook de syscall.
+
+	El hook se saltea el driver del boot ROM entero, asi que sin esto tendria que
+	llevar su propia copia -- y dos copias del mismo bloque se separan. Ya paso
+	con la TOC: `gdrom_construir_toc()` existe justo para que las dos rutas
+	contesten lo mismo.
+*/
+void gdrom_copiar_modo(DWORD destino)
+{
+	memwrite(destino, modo, sizeof(modo));
+}
+
+/*
 	IDENTIFY DEVICE. El boot ROM no lo usa -- lo usan los sistemas operativos
 	que hablan ATAPI generico, como Linux --, asi que alcanza con el nombre del
 	fabricante y del modelo en las posiciones donde ATA los pone.

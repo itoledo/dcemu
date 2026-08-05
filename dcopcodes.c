@@ -531,6 +531,47 @@ void hack_gdrom()
 				multi_completo = 0;
 				break;
 
+				case 30: // REQ_MODE: los parametros de la lectora, 32 bytes
+				{
+					/*
+						El driver hace REQ_MODE, retoca el bloque y lo devuelve con
+						SET_MODE. Es la primera cosa que pide Windows CE cuando el
+						disco es un **GD-ROM de verdad**: con un selfboot en CD no
+						aparece, y por eso el camino del .cdi nunca lo necesito.
+
+						Sin esto el guest se llevaba lo que hubiera en la pila y se
+						quedaba dando vueltas: la forma de falla de siempre, salvo
+						que aqui el "sin implementar" del default si lo decia.
+
+						Los 32 bytes son los mismos que contesta el paquete SPI --
+						gdrom.c, `modo[]` --, o sea que las dos rutas dicen lo
+						mismo, que es la regla del arbol para la lectora.
+					*/
+					DWORD destino = 0;
+
+					memread(R(5), &destino, sizeof(DWORD));
+
+					if (destino)
+						gdrom_copiar_modo(destino);
+
+					logmsg("GDROM_REQ_MODE: a %x\r\n", destino);
+				}
+				break;
+
+				case 31: // SET_MODE: el guest devuelve el bloque retocado
+				/*
+					Velocidad, tiempo de espera y reintentos de lectura: nada de
+					eso existe cuando los sectores salen de un archivo, asi que se
+					acepta y no se guarda. **Contestar que salio bien es el punto**
+					-- lo que colgaba no era no aplicar el modo sino no contestar.
+
+					A diferencia del resto de los comandos, R(5) apunta al bloque
+					de 32 bytes en si y no a un arreglo de parametros: el driver
+					pasa el mismo bufer que le lleno REQ_MODE.
+				*/
+				logmsg("GDROM_SET_MODE\r\n");
+				break;
+
 				case 40: // GET_VERS: la version del driver del GD-ROM
 				{
 					/* Los 32 bytes que trae el boot ROM en bios.bin+0x3b60,

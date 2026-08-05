@@ -179,3 +179,69 @@ comporta igual de mal en emuladores independientes, hay que comparar el rip cont
 antes de culpar a la emulación — la búsqueda de aguja-ancla + geometría de sector en los bytes de
 este archivo es como se establecieron ambos hechos (el daño, y su extensión exacta: 3 bytes en
 ±1KB) sin arrancar nada.
+
+---
+
+## El backend `.gdi` (2026-08-05)
+
+`gdi.c`/`gdi.h`. Es, con `.chd`, uno de los dos formatos en que está preservada la biblioteca
+de Dreamcast, y el único de los dos que no exige una dependencia nueva: un `.gdi` es **texto
+plano** y las pistas son archivos crudos al lado.
+
+```
+3
+1 0     4 2048 track01.iso 0
+2 1860  0 2352 track02.raw 0
+3 45000 4 2352 track03.bin 0
+```
+
+Primera línea el número de pistas; después `numero LBA tipo tamaño_de_sector archivo offset`.
+`tipo` es 4 para datos y 0 para audio —son los bits de control del subcanal Q, no un modo— y
+el LBA es el del disco, o sea FAD menos 150.
+
+**Lo que el `.gdi` no dice es si una pista de datos de 2352 es modo 1 o modo 2**, y de eso
+depende dónde empiezan los 2048 de usuario (16 o 24). Se lee del propio sector: byte 15,
+detrás de los 12 de sincronismo y los 3 de dirección, y sólo si el sincronismo está donde
+tiene que estar. Suponerlo desplaza cada lectura y el volumen no se monta.
+
+De ahí para arriba **no se distingue de un `.cdi`**: la misma tabla de pistas (`struct cdi_t`,
+reusada a propósito), la misma TOC, las mismas sesiones y el mismo `min_iso_open_pista()`. La
+única línea propia del formato es cuál archivo se abre — la pista de datos vive en el suyo, no
+dentro del índice—. Por eso `iso.c` distingue con `ES_MULTIPISTA()` en vez de repetir seis
+accesores.
+
+### Qué se logró y qué no
+
+Con el `.gdi` de DCDoom, verificado:
+
+- las tres pistas se leen con su geometría exacta (LBA 45000, 504 150 sectores de 2352, modo 1
+  detectado del sector);
+- la lectora reporta **2 sesiones y 3 pistas**, que es lo que un GD-ROM tiene;
+- el sistema de archivos monta, y `0WINCEOS.BIN` se encuentra, se lee y se descifra
+  —2 154 496 bytes—.
+
+**Y no arranca.** El guest corre de verdad —el ritmo cae de 1,49× a 0,44 %, que es la firma de
+trabajo real y no de un lazo de espera— pero termina ejecutando fuera de mapa. Le falta el
+vector de syscall sin nombre, que este camino llama **con parámetros** (`R4=1 R5=8cffffc8
+R7=1`) mientras que en el camino del `.cdi` nunca se usa.
+
+Eso **no es del formato**: es que un GD-ROM prensado ejerce caminos del boot que un selfboot
+en CD no. El primero ya apareció y está resuelto:
+
+### REQ_MODE y SET_MODE, que sólo pide un GD-ROM de verdad
+
+Los comandos 30 y 31 del syscall del GD-ROM. El driver hace `REQ_MODE`, retoca los 32 bytes de
+parámetros de la lectora y los devuelve con `SET_MODE`. **Con un selfboot en CD no aparecen**,
+y por eso el camino del `.cdi` nunca los necesitó.
+
+Sin ellos el guest se llevaba lo que hubiera en la pila y se quedaba dando vueltas en un lazo
+de una instrucción. `REQ_MODE` contesta ahora los mismos 32 bytes que el paquete SPI
+—`gdrom_copiar_modo()` sobre el `modo[]` de `gdrom.c`, misma razón que
+`gdrom_construir_toc()`: dos copias del mismo bloque se separan—. `SET_MODE` acepta y no
+guarda: velocidad, tiempo de espera y reintentos no existen cuando los sectores salen de un
+archivo, y **lo que colgaba no era no aplicar el modo sino no contestar**.
+
+### Regresión
+
+Ninguna: `ctest` 21/21, la captura de DCDoom por `.cdi` sigue en `36578F59…` byte a byte, y
+Crazy Taxi, Virtua Tennis y Capcom vs. SNK siguen dibujando.

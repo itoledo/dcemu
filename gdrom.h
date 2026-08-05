@@ -215,4 +215,8 @@ void gdrom_construir_toc(struct TOC * toc);
    GD-ROM son dos discos logicos distintos y el boot ROM pregunta por los dos. */
 void gdrom_construir_toc_area(struct TOC * toc, int area);
 
+/* Los 32 bytes de REQ_MODE, para que el hook de syscall conteste lo mismo que
+   el paquete SPI. Misma razon que gdrom_construir_toc(). */
+void gdrom_copiar_modo(DWORD destino);
+
 #endif /* _GDROM_H_ */

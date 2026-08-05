@@ -19,6 +19,7 @@
 #include "lnxdefs.h"
 #include "iso9660_min.h"
 #include "cdi.h"
+#include "gdi.h"
 #include "iso.h"
 #include "scramble.h"
 
@@ -28,8 +29,21 @@
 #endif
 
 // formatos
-enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDI, FORMATO_CDIO } formato_imagen;
+enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDI, FORMATO_GDI,
+                  FORMATO_CDIO } formato_imagen;
 #define ISO_DEFAULT_LBA 150
+
+/*
+	.cdi y .gdi describen lo mismo -- un disco con varias pistas, de las cuales
+	una es el area de datos que hay que montar -- y de ahi para arriba el arbol
+	no los distingue: la TOC, las sesiones y las lecturas salen todas de la misma
+	tabla de pistas y del mismo min_iso_open_pista().
+
+	La unica diferencia real esta en donde viven los bytes: un .cdi los tiene
+	todos en un archivo, un .gdi uno por pista. Eso se resuelve al abrir y no
+	vuelve a importar.
+*/
+#define ES_MULTIPISTA(f)	((f) == FORMATO_CDI || (f) == FORMATO_GDI)
 
 // variables iso9660
 min_iso_t * iso;
@@ -141,6 +155,55 @@ int iso_init(char * sDevice)
 			return 1;
 	}
 	else
+	if (strncmp(&sDevice[strlen(sDevice) - 4], ".gdi", 4) == 0)
+	{
+		/*
+			GD-ROM: un indice de texto y las pistas en archivos crudos al lado.
+			Es el formato en que esta preservada la biblioteca, junto con .chd.
+
+			De aqui para arriba no se distingue de un .cdi -- misma tabla de
+			pistas, misma TOC, mismo min_iso_open_pista() --; lo unico propio es
+			que la pista de datos vive en **su** archivo y no dentro del indice,
+			asi que lo que se abre es esa ruta y no sDevice.
+		*/
+		struct cdi_t				gdi;
+		const struct cdi_pista_t *	pista;
+		char						datos[1024];
+		int							cual;
+
+		if (gdi_abrir(sDevice, &gdi, datos, sizeof(datos)) != 0)
+			return 1;
+
+		cual  = cdi_pista_de_datos(&gdi);
+		pista = &gdi.pistas[cual];
+
+		fprintf(stderr, "iso_init: usando %s, %d pista%s; la de datos empieza en"
+			" el LBA %u, %u sectores de %u bytes en modo %u, en %s\n",
+			sDevice, gdi.n, (gdi.n == 1) ? "" : "s",
+			pista->lba, pista->sectores, pista->sector_crudo, pista->modo,
+			datos);
+
+		for (cual = 0; cual < gdi.n; cual++)
+			fprintf(stderr, "iso_init:   pista %d: LBA %u, %u sectores de %u, "
+				"modo %u (%s)\n", cual + 1,
+				gdi.pistas[cual].lba, gdi.pistas[cual].sectores,
+				gdi.pistas[cual].sector_crudo, gdi.pistas[cual].modo,
+				gdi.pistas[cual].modo ? "datos" : "audio");
+
+		formato_imagen = FORMATO_GDI;
+		iso_lba_base   = pista->lba;
+		iso_modo_pista = (int) pista->modo;
+		iso_cdi        = gdi;
+
+		/* **La ruta de la pista, no la del .gdi**: el indice no tiene sectores
+		   adentro. Es la unica linea en que los dos formatos difieren. */
+		iso = min_iso_open_pista(datos, pista->lba, pista->offset,
+			pista->sector_crudo, pista->desplazamiento);
+
+		if (iso == NULL)
+			return 1;
+	}
+	else
 	{
 #ifdef USE_LIBCDIO
 	    char * s;
@@ -211,6 +274,7 @@ int iso_get_lba()
 		   los 150 del pregap. Para un .iso plano el volumen esta en el LBA 0 y
 		   esto son los 150 de siempre. */
 		case FORMATO_ISO9660:	return ISO_DEFAULT_LBA;
+		case FORMATO_GDI:
 		case FORMATO_CDI:		return (int) (iso_lba_base + ISO_DEFAULT_LBA);
 #ifdef USE_LIBCDIO
 		case FORMATO_CDIO:		return cdio_get_track_lba(cdio, 1);
@@ -260,7 +324,7 @@ int iso_gd_presentando(void)
 */
 int iso_es_gdrom()
 {
-	return formato_imagen == FORMATO_CDI && iso_gd_presentar;
+	return ES_MULTIPISTA(formato_imagen) && iso_gd_presentar;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -269,13 +333,13 @@ int iso_es_gdrom()
 
 int iso_num_pistas(void)
 {
-	return (formato_imagen == FORMATO_CDI) ? iso_cdi.n : 1;
+	return ES_MULTIPISTA(formato_imagen) ? iso_cdi.n : 1;
 }
 
 /* Todo lo que sale de aca va en FAD, que es lo que lleva la TOC. */
 int iso_pista_fad(int i)
 {
-	if (formato_imagen != FORMATO_CDI)
+	if (!ES_MULTIPISTA(formato_imagen))
 		return ISO_DEFAULT_LBA;
 
 	if (i < 0 || i >= iso_cdi.n)
@@ -292,7 +356,7 @@ int iso_pista_fad(int i)
 
 int iso_pista_sectores(int i)
 {
-	if (formato_imagen != FORMATO_CDI)
+	if (!ES_MULTIPISTA(formato_imagen))
 		return iso_num_sectores();
 
 	if (i < 0 || i >= iso_cdi.n)
@@ -303,7 +367,7 @@ int iso_pista_sectores(int i)
 
 int iso_pista_es_datos(int i)
 {
-	if (formato_imagen != FORMATO_CDI)
+	if (!ES_MULTIPISTA(formato_imagen))
 		return 1;
 
 	if (i < 0 || i >= iso_cdi.n)
@@ -339,7 +403,7 @@ static int iso_pista_segunda_sesion(void)
 {
 	int i, audio_visto = 0;
 
-	if (formato_imagen != FORMATO_CDI)
+	if (!ES_MULTIPISTA(formato_imagen))
 		return -1;
 
 	for (i = 0; i < iso_cdi.n; i++)
@@ -393,6 +457,7 @@ int iso_num_sectores()
 	switch(formato_imagen)
 	{
 		case FORMATO_ISO9660:
+		case FORMATO_GDI:
 		case FORMATO_CDI:		return (int) min_iso_sectores(iso);
 #ifdef USE_LIBCDIO
 		/* cdio_get_track_lsn de la pista de lead-out (0xAA) da donde termina
@@ -414,7 +479,7 @@ int iso_get_mode()
 		return 1; // TRACK_FORMAT_DATA
 
 	/* El .cdi trae el modo real de la pista; casi siempre 2 (XA). */
-	if (formato_imagen == FORMATO_CDI)
+	if (ES_MULTIPISTA(formato_imagen))
 		return (int) iso_modo_pista;
 
 #ifdef USE_LIBCDIO
@@ -473,6 +538,7 @@ int iso_read_sector(char * target, int secstart, int secnum)
 #endif
 
 		case FORMATO_ISO9660:
+		case FORMATO_GDI:
 		case FORMATO_CDI:
 		{
 			/*
@@ -596,6 +662,7 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 #endif
 
 		case FORMATO_ISO9660:
+		case FORMATO_GDI:
 		case FORMATO_CDI:
 		{
 			if (!min_iso_stat_root(iso, fname, &lsn, &size, &secsize))
@@ -626,6 +693,7 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 			   inicializar, y de ahi que un .cdi terminara siempre en el menu
 			   de la BIOS. */
 			case FORMATO_ISO9660:
+			case FORMATO_GDI:
 			case FORMATO_CDI:
 				if (min_iso_seek_read(iso, mempos, lsn, secsize) > 0)
 					fprintf(stderr, "archivo leido exitosamente.\n");
@@ -669,6 +737,7 @@ int cargar_ip_bin(unsigned char * mempos)
 #endif
 
 		case FORMATO_ISO9660:
+		case FORMATO_GDI:
 		case FORMATO_CDI:
 		{
 			/* IP.BIN no es un archivo del sistema de archivos: son los 16

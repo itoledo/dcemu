@@ -212,6 +212,7 @@ set(DCEMU_SOURCES
 	iso.c
 	iso9660_min.c
 	cdi.c
+	gdi.c
 	mando.c
 	log.c
 	logic.c
