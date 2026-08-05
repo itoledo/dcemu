@@ -295,6 +295,23 @@ extern volatile unsigned aica_salida_cabeza;
 extern volatile unsigned aica_salida_cola;
 extern short             aica_salida[AICA_SALIDA_CUADROS * 2];
 
+/*
+	Cuadros que el anillo tiro porque el consumidor no llegaba a vaciarlo, y
+	cuantas veces se lleno.
+
+	**Existe porque descartar en silencio es la forma de falla de este arbol.**
+	Sin --limitar el tiempo del guest corre mas rapido que el real, y el AICA
+	produce muestras a ese ritmo: a 1,15x son 50 700 por segundo real contra las
+	44 100 que consume la tarjeta, o sea que uno de cada ocho cuadros se pierde
+	y el sonido se entrecorta. Es correcto tirarlos --pisar lo que el otro hilo
+	esta leyendo seria peor-- pero no decirlo convierte "el emulador va rapido"
+	en "el sonido de dcemu esta mal", que son dos problemas distintos.
+
+	traza_resumen() los informa al salir, con --traza-mem.
+*/
+extern unsigned long long aica_salida_perdidas;
+extern unsigned long      aica_salida_llenadas;
+
 /* Saca hasta `cuadros` cuadros al buffer dado. Devuelve cuantos entrego. */
 unsigned aica_salida_leer(short * destino, unsigned cuadros);
 

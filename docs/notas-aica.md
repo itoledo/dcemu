@@ -259,6 +259,41 @@ tabla del disco.
 `PLAY` cae a los 39,3 s de tiempo emulado, así que una corrida de 40 s captura 0,7 segundos y
 la comparación no encuentra nada. Hay que saltar el FMV con las teclas y correr lo suficiente.
 
+### Para escucharlo hace falta `--limitar`, y el emulador ahora lo dice
+
+Primer reporte de uso real: «se escuchó la música, pero el juego estaba algo acelerado así que
+no se escuchaba perfecto». Las dos mitades de esa frase son **el mismo hecho**.
+
+El AICA produce muestras al ritmo del **tiempo emulado** —735 cada 3 324 992 ciclos de CPU— y la
+tarjeta consume 44 100 por segundo de **tiempo real**. Si el emulador corre a 1,33×, el chip
+genera unas 58 200 por segundo real y el anillo de salida descarta lo que sobra. No se oye como
+un cambio de tono: se oye como cortes.
+
+Medido en Dave Mirra, 30 segundos emulados:
+
+| | velocidad | cuadros tirados | rachas | audio perdido |
+| --- | --- | --- | --- | --- |
+| sin `--limitar` | 1,33× | 348 690 | 622 | **7,9 s de 30** |
+| con `--limitar` | 0,99× | 2 919 | 5 | 0,1 s |
+
+Las cinco rachas que quedan con el limitador son del arranque, mientras la referencia de tiempo
+real se asienta.
+
+Tirar es lo correcto —pisar lo que el hilo de SDL está leyendo sería peor— pero **hacerlo en
+silencio convierte «el emulador va rápido» en «el sonido de dcemu está mal»**, que son dos
+problemas distintos. Ahora `traza_resumen()` cuenta los cuadros y las rachas y lo informa al
+salir.
+
+**El aviso NO está detrás de `--traza-mem`, y ese detalle es la parte interesante**: la traza
+cuesta lo bastante como para frenar el emulador por debajo del tiempo real —0,73× contra
+1,33×—, o sea que el síntoma desaparece justo cuando se enciende lo que lo reportaría. Un
+diagnóstico que solo existe cuando el problema no ocurre no sirve de nada. Es una línea, y solo
+si de verdad se perdió algo.
+
+`--captura-audio` no se ve afectado por nada de esto: el `.wav` lo escribe el emulador desde el
+anillo, no la tarjeta. Por eso la verificación byte a byte de arriba salió limpia aunque la
+corrida fuera rápida.
+
 ## Lo que no está emulado
 
 El DSP de audio —y con él el nivel de CD-DA, que queda fijo—, el LFO, el filtro FEG (el papel

@@ -276,6 +276,15 @@ how to believe a measurement of it.
   `traza_resumen()`. Killing the process from outside loses them.
 - **Guest time runs ~2.5× fast without `--limitar`**, so a guest-side delay elapses sooner in
   wall-clock than the source suggests.
+- **Running fast throws sound away, and that is not a sound bug.** The AICA produces samples at
+  the pace of *emulated* time and the card consumes 44 100 a second of *real* time; the ring
+  discards the excess. Dave Mirra at 1.33× dropped **7.9 s of a 30 s run** (348 690 frames in
+  622 bursts); with `--limitar` it runs 0.99× and drops 0.1 s. `traza_resumen()` now prints the
+  count whenever anything was lost — **not gated on `--traza-mem`**, because the trace itself
+  costs enough to drag the emulator below real time (0.73× against 1.33×) and the symptom
+  disappears exactly when the flag that would report it is on. To *listen* to a game, use
+  `--limitar`; `--captura-audio` is unaffected either way, since the `.wav` is written from the
+  ring by the emulator, not by the card.
 - **Before any A/B: kill stray `dcemu.exe` processes and `git reset --hard`.** An orphaned
   process eating a core, and `git checkout -- <file>` restoring from the *index*, between them
   cost three wrong numbers in the timing work.

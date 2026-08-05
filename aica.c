@@ -42,6 +42,10 @@ void onda_marcar_escritura_larga(unsigned long dir, unsigned long n)
 }
 unsigned long long	aica_muestras;
 
+/* Lo que el anillo de salida tuvo que tirar. Ver aica.h. */
+unsigned long long	aica_salida_perdidas = 0;
+unsigned long		aica_salida_llenadas = 0;
+
 /*
 	La linea del AICA hacia el ASIC (SB_ISTEXT, G2AICINT). El chip solo la sube
 	y la baja; **la entrega no se hace aqui**, la cobra quien atienda el ASIC.
@@ -822,6 +826,11 @@ static void mezclar_una_muestra(void)
 	int   mvol  = (int) (r2800 & 0xF);
 	unsigned proxima;
 
+	/* 1 mientras se esta tirando: separa una racha larga de muchas cortas, que
+	   es la diferencia entre "el emulador va rapido" y "el consumidor tuvo un
+	   tropiezo". */
+	static int perdiendo = 0;
+
 	for (i = 0; i < AICA_CANALES; i++)
 	{
 		int l, r;
@@ -883,11 +892,22 @@ static void mezclar_una_muestra(void)
 	if (der < -32768)	der = -32768;
 
 	/* Al anillo. Si el consumidor no vacia se descarta lo nuevo: perder audio
-	   es mejor que pisar lo que el otro hilo esta leyendo. */
+	   es mejor que pisar lo que el otro hilo esta leyendo. **Pero se cuenta**:
+	   ver aica.h -- descartar en silencio hace pasar "el emulador corre rapido"
+	   por "el sonido esta mal". */
 	proxima = (aica_salida_cabeza + 1) % AICA_SALIDA_CUADROS;
 
 	if (proxima == aica_salida_cola)
+	{
+		if (aica_salida_perdidas == 0 || perdiendo == 0)
+			aica_salida_llenadas++;
+
+		perdiendo = 1;
+		aica_salida_perdidas++;
 		return;
+	}
+
+	perdiendo = 0;
 
 	aica_salida[aica_salida_cabeza * 2]     = (short) izq;
 	aica_salida[aica_salida_cabeza * 2 + 1] = (short) der;

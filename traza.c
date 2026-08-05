@@ -17,6 +17,7 @@
 #include "traza.h"
 #include "audio.h"
 #include "tmu.h"
+#include "aica.h"			/* los cuadros que el anillo de salida tuvo que tirar */
 #include "opciones.h"
 #include "mem.h"
 
@@ -390,6 +391,29 @@ void traza_resumen(void)
 	audio_volcar();
 	audio_terminar();
 
+	/*
+		El sonido que no llego a la tarjeta. **Va antes del corte por
+		traza_activa, y a proposito**: el AICA produce a ritmo de tiempo emulado
+		y la tarjeta consume a ritmo real, asi que correr rapido no solo adelanta
+		el juego -- tira audio, y se oye como cortes. Verlo es lo que separa
+		"dcemu suena mal" de "dcemu va rapido, falta --limitar".
+
+		Ademas, --traza-mem cuesta lo bastante como para frenar el emulador por
+		debajo del tiempo real: el sintoma desaparece justo cuando se enciende lo
+		que lo reportaria. Medido en Dave Mirra: 1,32x sin traza y 0,73x con
+		ella. Una sola linea, y solo si de verdad se perdio algo.
+	*/
+	if (aica_salida_perdidas > 0)
+		fprintf(stderr, "audio: el anillo tiro %llu cuadros en %lu rachas"
+			" (%.1f s de sonido).%s\n",
+			aica_salida_perdidas, aica_salida_llenadas,
+			(double) aica_salida_perdidas / 44100.0,
+			opciones.limitar
+				? " Con --limitar puesto, unas pocas rachas al arrancar son"
+				  " normales: la referencia de tiempo real tarda en asentarse."
+				: " El emulador corre mas rapido que el tiempo real y el AICA"
+				  " produce a ese ritmo: conviene usar --limitar.");
+
 	if (!traza_activa)
 		return;
 
@@ -411,6 +435,7 @@ void traza_resumen(void)
 			fprintf(stderr, "traza: %llu ms emulados en %lu ms reales (%.2fx)\n",
 				emulado, real, (double) emulado / (double) real);
 	}
+
 
 	traza_volcar("al salir");
 }
