@@ -1929,3 +1929,50 @@ las doce demos y de los seis juegos, contados columna por columna, iguales a los
 cambio. **`DCEMU_SIN_MEDIO_PIXEL=1` reproduce el SHA de DCDoom anterior (`36578F59…`) byte a byte**,
 que es lo que prueba que el interruptor aísla el cambio y que no se movió nada más. Las referencias
 nuevas son `198B396F…` con `--sin-vmu` y `68F7C61A…` con la tarjeta.
+
+---
+
+## 2026-08-06 — Se cierran los dos puntos que quedaban de la vía 2.c
+
+### Volúmenes modificadores por píxel
+
+Hecho, y con las tres pérdidas anotadas cerradas o medidas. La cuenta de caras va a una imagen que el
+fragment shader lee, así que el polígono elige entre sus dos juegos de parámetros **dentro del
+shader** y de un solo dibujo; el juego 1 viaja en las unidades de textura 1, 2 y 3. La pasada de
+marcado sigue existiendo —la máscara se cuenta contra la profundidad ya resuelta, que es el orden del
+chip—; lo que desaparece es la segunda pasada de *geometría*. La instrucción 2 («cerrar excluyendo»)
+deja de ser una aproximación.
+
+Tres fallas silenciosas en el camino, todas de la misma familia: `glFrontFace` sin fijar (lo lee
+`gl_FrontFacing` y `gl_cull()` lo cambia por tira), una guarda que se protegía de lo que ella misma
+tenía que crear, y los uniformes de imagen que no tomaron por `glProgramUniform*`. Detalle en
+`docs/notas-graficos.md`.
+
+### El buffer de acumulación secundario del TSP
+
+Hecho también, como segundo adjunto de color del FBO. **Pero lo que más valía era el censo**: sobre
+1,16 millones de tiras de Crazy Taxi en juego, las doce demos de control y los nueve juegos, **no hay
+una sola tira que seleccione el secundario, ni un solo triángulo de volumen con la instrucción 2**.
+Eso contesta dos cosas de un tiro: que las dos aproximaciones no le costaban nada al parque actual, y
+que el secundario **no puede ser la causa de la sombra de Virtua Tennis 2** —5581 tiras, todas 0/0—,
+donde `notas-graficos.md` lo tenía anotado como uno de los dos sospechosos abiertos. Queda uno.
+
+### Y lo que costó de verdad: fabricar el contenido
+
+Ninguno de los dos se podía verificar con lo que había en el árbol, así que se escribieron dos demos
+de KOS, y las dos están hechas para **verificarse solas, sin imagen de referencia** — que es la forma
+de prueba que este árbol ya había encontrado con `pvr-fb_tex`:
+
+- `demos/volumen-excluir/`: incluir y excluir son complementos exactos, así que las dos capturas
+  tienen que ser una el negativo de la otra. Lo son en **307 200 de 307 200 píxeles**.
+- `demos/acumulador/`: sumar sobre negro es asociativo, así que acumular en el secundario y componer
+  tiene que dar lo mismo que sumar directo. Da lo mismo byte a byte, y las tres formas de equivocarse
+  producen imágenes distintas y reconocibles.
+
+### Barandas
+
+`ctest` 22/22. Las doce demos de control y los seis juegos byte a byte iguales a antes del buffer
+secundario. Contra el camino de plantilla: dos de las tres demos de volúmenes byte a byte iguales y la
+tercera a 5 píxeles de ±1; cuatro de los seis juegos byte a byte iguales, Virtua Tennis a 2 píxeles y
+Crazy Taxi —39 677 grupos de volumen— a 315 píxeles sueltos de mediana 1, que son la cuantización del
+camino viejo y no del nuevo. DCDoom sigue en `198B396F…` por el camino de omisión.

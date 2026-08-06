@@ -1115,3 +1115,55 @@ complementos exactos, así que las dos capturas tienen que ser una el negativo d
 **307 200 de 307 200 píxeles**, cero fallas, y el rectángulo afectado sale exactamente en
 x 160..479, y 120..359. El camino de plantilla, con la misma demo, da 38 640 píxeles en vez de
 230 400 — que es la aproximación, medida.
+
+---
+
+## El buffer de acumulación secundario del TSP
+
+El chip lleva **dos buffers de acumulación por píxel**, y dos bits de la palabra TSP eligen cuál usa
+cada tira: el 24 (`blend_dst_acc2`, «blend to the 2nd accumulation buffer») como destino de la mezcla
+y el 25 (`blend_src_acc2`, «blend from») como origen. Existe —DevBox 3.4.6.1— para tratar el
+resultado de superponer varios polígonos **como si fuera uno solo**: se acumula el grupo en el
+secundario y después se compone de una vez sobre el primario, en vez de mezclar cada polígono contra
+la escena.
+
+dcemu los registraba desde siempre en `TriangleStrip[]` y **no los consultaba nunca**. Se pudo vivir
+así porque no hay contenido que los use, y eso ahora está medido y no supuesto: sobre **1,16 millones
+de tiras de Crazy Taxi en juego**, las doce demos de control y los nueve juegos del árbol, no hay una
+sola tira que seleccione el secundario. Ni siquiera Virtua Tennis 2 —5581 tiras, todas 0/0—, **lo que
+lo saca de la lista de sospechosos de su sombra**, donde `notas-graficos.md` lo tenía anotado.
+
+La implementación es el segundo adjunto de color del FBO:
+
+- **el destino** se elige con `glDrawBuffer(GL_COLOR_ATTACHMENT0 + n)`;
+- **el origen** leyendo el secundario como textura desde el fragment shader, que es lo único de los
+  dos que la función fija no sabe hacer. Con el bit puesto, `dc_pixel()` devuelve el texel del
+  acumulado directamente: ni textura, ni entorno, ni offset — lo que se mezcla es el grupo tal cual;
+- el secundario **se limpia en cada escena**, como el primario. Si no, un grupo que se acumule ahí
+  empieza sobre lo que dejó el cuadro anterior, y como se compone de una vez el fantasma sale entero.
+
+Los dos bits se aplican juntos o ninguno. Aplicar sólo el destino sería peor que no aplicar nada: el
+grupo se acumularía en un buffer que después nadie compone, o sea que desaparecería.
+
+### La demo, que también se verifica sola
+
+`demos/acumulador/` dibuja dos cuadrados superpuestos con mezcla **aditiva** sobre negro, en dos
+sabores: uno los suma al primario como cualquier polígono, y el otro los suma al **secundario** y
+después compone el secundario entero con un cuadrilátero de pantalla completa que lleva el bit 25.
+Sumar sobre negro es asociativo, así que **las dos capturas tienen que salir byte a byte iguales**, y
+salen: las dos en `334919C1`, con el solapamiento en `E0C0E0` = la suma exacta de `4060A0` y `A06040`.
+
+Lo que hace que la prueba sirva es que las tres formas de equivocarse dan imágenes distintas. Si se
+ignora el bit 24 los cuadrados van al primario *y además* se compone encima; si se ignora el 25, el
+cuadrilátero aporta su propio color —verde oscuro a propósito— y tiñe la pantalla entera; si el
+secundario no se limpia o está aliasado con el primario, sale doble. La segunda no es hipotética:
+`--render=fbo`, que no implementa los bits, devuelve exactamente eso —`008000` de fondo y los
+cuadrados teñidos—, o sea que la demo mide el efecto y no sólo lo ilustra.
+
+### Con `--render=oit` no se aplica, y lo dice
+
+Con transparencia ordenada el fragmento se apila en la lista de su píxel en vez de dibujarse, así que
+el redirigido del destino no ocurre y el grupo nunca llega al secundario. La demo **igual sale bien**
+bajo `--render=oit` —sumar sobre negro es asociativo y la composición aporta cero—, que es justo la
+clase de acierto por casualidad que en este árbol hay que no dejar pasar por implementación. Una tira
+que pida el secundario con la OIT puesta produce un aviso, una vez.

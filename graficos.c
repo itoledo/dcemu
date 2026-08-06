@@ -3587,6 +3587,48 @@ static void gl_bump(int on, DWORD param)
 
 static void tira_estado(DWORD i)
 {
+			/*
+				Los dos bits del buffer de acumulacion secundario. Van primero
+				porque cambian ADONDE se dibuja, no como.
+
+				Se aplican solo con el camino programable y el destino propio:
+				el origen secundario se lee como textura desde el shader, que es
+				lo unico de los dos que la funcion fija no sabe hacer, y sin el
+				aplicar solo el destino dejaria la mitad del efecto -- que es
+				peor que no aplicar ninguno, porque el grupo se acumularia en un
+				buffer que despues nadie compone.
+			*/
+			if (glmoderno_hay_acumulador())
+			{
+				glmoderno_acum_destino((int) TriangleStrip[i].dstselect);
+				glmoderno_acum_fuente((int) TriangleStrip[i].srcselect);
+
+				/*
+					**Con transparencia ordenada esto no se aplica**, y hay que
+					decirlo. El fragmento se apila en la lista del pixel en vez
+					de dibujarse, asi que el redirigido del destino no ocurre:
+					el grupo nunca llega al secundario. La demo de
+					demos/acumulador/ igual sale bien bajo --render=oit, pero
+					por casualidad --sumar sobre negro es asociativo y la
+					composicion aporta cero--, que es exactamente la clase de
+					acierto que no hay que dejar pasar por implementacion.
+				*/
+				if (oit_activa()
+				&& (TriangleStrip[i].srcselect || TriangleStrip[i].dstselect))
+				{
+					static int dicho = 0;
+
+					if (!dicho)
+					{
+						dicho = 1;
+						fprintf(stderr, "gl: una tira pide el buffer de"
+							" acumulacion secundario y la transparencia"
+							" ordenada esta puesta; con --render=oit ese bit"
+							" no se aplica\n");
+					}
+				}
+			}
+
 			gl_depth_func(TriangleStrip[i].depthmode);
 
 			/* Iban indexadas con strip_count, que en este bucle ya es la
@@ -3821,6 +3863,7 @@ static void dibujar_escena(void)
 	   funcion fija y no tienen nada que decirle a los uniformes. */
 	glmoderno_shader_usar(shader_activo());
 	niebla_al_shader();
+	glmoderno_acum_limpiar();
 
 	DWORD i;
 	int vol_opaca, vol_trans;
@@ -4045,6 +4088,11 @@ static void dibujar_escena(void)
 	   arreglos de coordenadas vivos les cambiarian lo que reciben. */
 	juego1_arreglos(0);
 	glmoderno_u_volumen(0);
+
+	/* Y el dibujo vuelve al primario: lo que sigue --presentar, el volcado,
+	   la vista de depuracion-- espera encontrarlo ahi. */
+	glmoderno_acum_destino(0);
+	glmoderno_acum_fuente(0);
 
 	PERF_SUMAR(t_escena, perf_ns_escena);
 }

@@ -664,6 +664,15 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
   TSP secondary accumulation buffer either — which also **removes it as a suspect for the Virtua
   Tennis 2 shadow**. The demo checks itself without a reference image: include and exclude are exact
   complements, and the two captures come out complementary on 307 200 of 307 200 pixels.
+- **The TSP secondary accumulation buffer (bits 25/24) is implemented**, as the FBO's second colour
+  attachment: the destination is picked with `glDrawBuffer`, and the source by reading that attachment
+  as a texture in the fragment shader — the half fixed function cannot do. Both bits apply together or
+  neither, because applying only the destination would accumulate a group into a buffer nobody then
+  composites, i.e. it would vanish. `demos/acumulador/` is the only content that selects it, and it too
+  checks itself: two additive squares over black, summed straight into the primary in one flavour and
+  through the secondary in the other, must come out byte-identical — they do, and `--render=fbo`, which
+  does not implement the bits, fails it in the predicted way. **With `--render=oit` the bits do not
+  apply** (the fragment stacks instead of being redirected) and a strip that asks for them says so once.
 - **The stacking pass needs its own program, with `layout(early_fragment_tests)`.** A shader
   containing `discard` forces the depth test *after* it runs, so the OIT epilogue — stack, then
   discard — stacked the fragments depth was about to reject: **translucent geometry hidden behind

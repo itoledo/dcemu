@@ -69,6 +69,8 @@ static int		version = 0;
 
 static GLuint	fbo = 0;
 static GLuint	fbo_color = 0;		/* textura, no renderbuffer: ver abajo */
+static GLuint	fbo_sec = 0;		/* el buffer de acumulacion secundario */
+static int		acum_sec = 0;		/* se esta dibujando en el secundario? */
 static GLuint	fbo_prof = 0;
 static int		fbo_w = 0;
 static int		fbo_h = 0;
@@ -168,6 +170,7 @@ int glmoderno_fbo_ligado(void) { return ligado; }
 static void fbo_soltar(void)
 {
 	if (fbo_color)	{ glDeleteTextures(1, &fbo_color); fbo_color = 0; }
+	if (fbo_sec)	{ glDeleteTextures(1, &fbo_sec); fbo_sec = 0; }
 	if (fbo_prof)	{ p_glDeleteRenderbuffers(1, &fbo_prof); fbo_prof = 0; }
 	if (fbo)		{ p_glDeleteFramebuffers(1, &fbo); fbo = 0; }
 
@@ -207,6 +210,20 @@ int glmoderno_fbo_asegurar(int ancho, int alto)
 	glBindTexture(GL_TEXTURE_2D, 0);
 
 	/*
+		El BUFFER DE ACUMULACION SECUNDARIO del TSP (bits 25 y 24), como segundo
+		adjunto de color. Existe en el chip para tratar el resultado de
+		superponer varios poligonos como si fuera uno solo: se acumula el grupo
+		ahi y despues se compone de una vez sobre el primario.
+	*/
+	glGenTextures(1, &fbo_sec);
+	glBindTexture(GL_TEXTURE_2D, fbo_sec);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ancho, alto, 0,
+		GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	/*
 		Profundidad y plantilla en un solo adjunto empaquetado. **Las dos hacen
 		falta**: la plantilla lleva los volumenes modificadores, y la
 		profundidad tiene que ser de 24 porque profundidad_ta() comprime las z
@@ -223,8 +240,14 @@ int glmoderno_fbo_asegurar(int ancho, int alto)
 	p_glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 	p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
 		GL_TEXTURE_2D, fbo_color, 0);
+	p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1,
+		GL_TEXTURE_2D, fbo_sec, 0);
 	p_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
 		GL_RENDERBUFFER, fbo_prof);
+
+	/* Se dibuja en el primario salvo que una tira pida lo contrario. Sin este
+	   glDrawBuffer el adjunto 1 quedaria recibiendo copias de todo. */
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
 	estado = p_glCheckFramebufferStatus(GL_FRAMEBUFFER);
 
@@ -351,6 +374,7 @@ typedef struct {
 	GLint	bump, bump_param;
 	GLint	oit, oit_max, oit_mezcla;
 	GLint	volumen, vol_mascara;
+	GLint	acum_src, acum_muestra;
 } locs_t;
 
 static locs_t	u_n;	/* las del programa normal */
@@ -524,6 +548,15 @@ static const char * fuente_fs_cuerpo =
 	"uniform vec2 niebla_tabla[128];\n"
 	"uniform int usa_bump;\n"
 	"uniform vec4 bump_param;\n"		/* K1, K2, K3, Q ya en radianes */
+	/*
+		El buffer de acumulacion secundario como ORIGEN de la mezcla (bit 25 del
+		TSP). Con el puesto, la tira no aporta el color que calculo: aporta lo
+		que el secundario tiene en ese pixel. Es la mitad que compone de una vez
+		el grupo acumulado, y por eso el secundario tiene que ser una textura y
+		no un renderbuffer.
+	*/
+	"uniform int acum_src;\n"
+	"uniform sampler2D acum_muestra;\n"
 	"\n"
 	"float niebla_alfa(float q)\n"
 	"{\n"
@@ -552,6 +585,11 @@ static const char * fuente_fs_cuerpo =
 	"vec4 dc_pixel(vec4 col, vec4 uv, vec3 off)\n"
 	"{\n"
 	"	vec4 pix;\n"
+	"\n"
+	/* El origen secundario reemplaza todo el camino del pixel: ni textura, ni
+	   offset, ni entorno. Lo que se mezcla es el acumulado tal cual. */
+	"	if (acum_src != 0)\n"
+	"		return texelFetch(acum_muestra, ivec2(gl_FragCoord.xy), 0);\n"
 	"\n"
 	"	if (usa_textura != 0)\n"
 	"	{\n"
@@ -1092,6 +1130,8 @@ static void ubicar(GLuint p, locs_t * l)
 	l->oit_mezcla = p_glGetUniformLocation(p, "oit_mezcla");
 	l->volumen	= p_glGetUniformLocation(p, "usa_volumen");
 	l->vol_mascara = p_glGetUniformLocation(p, "vol_mascara");
+	l->acum_src	= p_glGetUniformLocation(p, "acum_src");
+	l->acum_muestra = p_glGetUniformLocation(p, "acum_muestra");
 }
 
 /*
@@ -1296,9 +1336,11 @@ int glmoderno_shader_iniciar(void)
 	ubicar(programa, &u_n);
 	ubicar(programa_ez, &u_z);
 
-	/* La unidad de textura 0, una vez: el arbol no usa multitextura. */
+	/* La unidad 0 para las texturas del guest y la 1 para el acumulador
+	   secundario, una vez: el arbol no usa multitextura para dibujar. */
 	p_glUseProgram(programa);
 	pu_1i(u_n.muestra, u_z.muestra, 0);
+	pu_1i(u_n.acum_muestra, u_z.acum_muestra, 1);
 	pu_1i(u_n.oit, u_z.oit, 0);
 	p_glUseProgram(0);
 
@@ -1716,6 +1758,69 @@ static int vol_armar(void)
 	}
 
 	return 1;
+}
+
+/* ------------------------------------------------------------------------ */
+/* El buffer de acumulacion secundario del TSP (bits 25 y 24)               */
+/* ------------------------------------------------------------------------ */
+
+int glmoderno_hay_acumulador(void)
+{
+	return hay_fbo && hay_shader && fbo_sec != 0 && ligado;
+}
+
+void glmoderno_acum_limpiar(void)
+{
+	GLfloat antes[4];
+
+	if (!glmoderno_hay_acumulador())
+		return;
+
+	/*
+		El secundario arranca en cero en cada escena, como el primario. Si no,
+		un grupo que se acumule ahi empieza sobre lo que dejo el cuadro
+		anterior -- y como se compone de una vez, el fantasma sale entero.
+	*/
+	glGetFloatv(GL_COLOR_CLEAR_VALUE, antes);
+
+	glDrawBuffer(GL_COLOR_ATTACHMENT0 + 1);
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	glClearColor(antes[0], antes[1], antes[2], antes[3]);
+	acum_sec = 0;
+}
+
+void glmoderno_acum_destino(int secundario)
+{
+	if (!glmoderno_hay_acumulador() || acum_sec == (secundario ? 1 : 0))
+		return;
+
+	acum_sec = secundario ? 1 : 0;
+	glDrawBuffer(GL_COLOR_ATTACHMENT0 + acum_sec);
+}
+
+/*
+	La fuente de la mezcla: el fragmento (0) o el buffer secundario (1).
+
+	Con 1 el shader NO usa el color que calculo la tira: toma el pixel que el
+	secundario tiene en esa posicion. Es la mitad que compone el grupo acumulado
+	sobre el primario, y la que obliga a que el secundario sea una textura.
+*/
+void glmoderno_acum_fuente(int secundario)
+{
+	if (!hay_shader)
+		return;
+
+	pu_1i(u_n.acum_src, u_z.acum_src, secundario ? 1 : 0);
+
+	if (secundario && fbo_sec != 0)
+	{
+		p_glActiveTexture(0x84C1 /* GL_TEXTURE1 */);
+		glBindTexture(GL_TEXTURE_2D, fbo_sec);
+		p_glActiveTexture(0x84C0);
+	}
 }
 
 int glmoderno_hay_volumen_px(void) { return hay_vol; }

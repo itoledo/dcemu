@@ -226,4 +226,38 @@ void glmoderno_vol_listo(void);
 /* Si la tira que viene consulta la mascara. */
 void glmoderno_u_volumen(int on);
 
+/* ------------------------------------------------------------------------ */
+/* El buffer de acumulacion secundario del TSP (bits 25 y 24)               */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El chip lleva DOS buffers de acumulacion por pixel, y cada tira dice con dos
+	bits del TSP cual usa como origen y cual como destino de la mezcla. Existe
+	--DevBox 3.4.6.1-- para tratar el resultado de superponer varios poligonos
+	como si fuera uno solo: se acumula el grupo en el secundario y despues se
+	compone de una vez sobre el primario, en vez de mezclar cada poligono contra
+	la escena.
+
+	dcemu los registraba desde siempre y **no los consultaba nunca**. El censo
+	dice por que se podia: sobre 1,16 millones de tiras de Crazy Taxi en juego,
+	las doce demos de control y los nueve juegos, no hay UNA sola tira que
+	seleccione el secundario. O sea que no habia con que verificarlo, y por eso
+	`demos/acumulador/` existe.
+
+	El secundario es el segundo adjunto de color del FBO. El destino se elige con
+	glDrawBuffer y el origen leyendolo como textura desde el shader, que es lo
+	unico que la funcion fija no puede hacer.
+*/
+int  glmoderno_hay_acumulador(void);
+
+/* El secundario arranca en cero en cada escena, como el primario. */
+void glmoderno_acum_limpiar(void);
+
+/* Adonde va lo que se dibuja: primario (0) o secundario (1). */
+void glmoderno_acum_destino(int secundario);
+
+/* De donde sale el termino "origen" de la mezcla: el fragmento (0) o el
+   secundario (1). */
+void glmoderno_acum_fuente(int secundario);
+
 #endif /* _GLMODERNO_H_ */
