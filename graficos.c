@@ -2182,6 +2182,7 @@ static struct
 	DWORD	bump_param;
 	int		mezcla_cod;	/* idem: los dos codigos de mezcla sin traducir */
 	int		estencil;
+	int		tijera;		/* el recorte de usuario: GL_SCISSOR_TEST */
 	GLuint	ligada;		/* la textura de GL ligada; 0 es "ninguna o no se" */
 
 	/* Cuantas llamadas a GL emitio la sombra. No se lee su valor: se compara
@@ -2737,6 +2738,15 @@ static void juego_de_parametros(int juego)
 	camino caliente; se informan en traza_ta_resumen().
 */
 static long censo_sel[4];			/* (srcselect << 1) | dstselect */
+static long censo_clip_modo[4];		/* pcw_user_clip: 0 apagado, 2 dentro, 3 fuera */
+static long censo_clip_param;		/* parametros de User Tile Clip recibidos */
+
+/*
+	El rectangulo de recorte de usuario vigente, ya en pixeles. Lo deja el
+	parametro User Tile Clip y vale para los encabezados que vengan detras.
+	De partida, la pantalla entera, que es lo mismo que no recortar.
+*/
+static DWORD clip_x0 = 0, clip_y0 = 0, clip_x1 = 640, clip_y1 = 480;
 static long censo_vol_instr[4];		/* bits 30-29 de la palabra ISP/TSP */
 static long censo_vol_grupos;		/* triangulos que cierran un volumen */
 
@@ -2775,6 +2785,12 @@ void traza_ta_resumen(void)
 	fprintf(stderr, "traza: censo del buffer secundario (src/dst): 0/0 %ld,"
 		" 0/1 %ld, 1/0 %ld, 1/1 %ld\n",
 		censo_sel[0], censo_sel[1], censo_sel[2], censo_sel[3]);
+
+	fprintf(stderr, "traza: censo de recorte de usuario: %ld parametros;"
+		" encabezados 0 (apagado) %ld, 1 (reservado) %ld, 2 (dentro) %ld,"
+		" 3 (fuera) %ld\n",
+		censo_clip_param, censo_clip_modo[0], censo_clip_modo[1],
+		censo_clip_modo[2], censo_clip_modo[3]);
 
 	fprintf(stderr, "traza: censo de tipos de color: 0 (empaquetado) %ld,"
 		" 1 (flotante) %ld, 2 (intensidad) %ld, 3 (intensidad heredada) %ld\n",
@@ -3410,6 +3426,7 @@ static void gl_estado_olvidar(void)
 	gl_e.bump_param = 0xFFFFFFFFu;
 	gl_e.mezcla_cod = -1;
 	gl_e.estencil   = -1;
+	gl_e.tijera     = -1;
 	gl_e.ligada     = 0;
 
 	/* El olvido cuenta como cambio: quien venia agrupando tiene que cortar. */
@@ -3435,6 +3452,66 @@ static void gl_estencil(int on)
 	{
 		if (on) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
 		gl_e.estencil = on;
+		gl_e.cambios++;
+	}
+}
+
+/*
+	El recorte de usuario, que en GL es la tijera.
+
+	El rectangulo llega en coordenadas del guest --y hacia abajo-- y hay que
+	darlo en coordenadas de ventana del destino, o sea con la y invertida y
+	escalado por el tamano de lo que se esta rasterizando: con --render=ventana
+	el destino es 800x600 y con --escala es un multiplo de la pantalla emulada.
+	Hacerlo con las coordenadas del guest tal cual recorta el rectangulo
+	equivocado en cuanto los dos tamanos no coinciden, que es siempre salvo en
+	un caso.
+
+	El modo 3 ("fuera") no tiene tijera que lo exprese --GL no sabe recortar por
+	el complemento de un rectangulo-- y ningun juego del arbol lo usa: se avisa
+	una vez y se dibuja entero, que es lo que se hacia con los dos modos.
+*/
+static void gl_tijera(DWORD modo, DWORD x0, DWORD y0, DWORD x1, DWORD y1)
+{
+	int on = (modo == 2);
+
+	if (modo == 3)
+	{
+		static int dicho = 0;
+
+		if (!dicho)
+		{
+			dicho = 1;
+			fprintf(stderr, "gl: una tira pide recorte de usuario \"fuera\" y"
+				" eso no esta implementado; se dibuja entera\n");
+		}
+	}
+
+	if (on)
+	{
+		int	dw = render_ancho(), dh = render_alto();
+		int	sx, sy, sw, sh;
+
+		if (screenancho <= 0 || screenheight <= 0)
+			on = 0;
+		else
+		{
+			sx = (int) ((long long) x0 * dw / screenancho);
+			sw = (int) ((long long) (x1 - x0) * dw / screenancho);
+			sh = (int) ((long long) (y1 - y0) * dh / screenheight);
+			sy = dh - (int) ((long long) y1 * dh / screenheight);
+
+			if (sw < 0) sw = 0;
+			if (sh < 0) sh = 0;
+
+			glScissor(sx, sy, sw, sh);
+		}
+	}
+
+	if (gl_e.tijera != on)
+	{
+		if (on) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+		gl_e.tijera = on;
 		gl_e.cambios++;
 	}
 }
@@ -3603,6 +3680,10 @@ static void tira_estado(DWORD i)
 				peor que no aplicar ninguno, porque el grupo se acumularia en un
 				buffer que despues nadie compone.
 			*/
+			gl_tijera(TriangleStrip[i].clip_modo,
+				TriangleStrip[i].clip_x0, TriangleStrip[i].clip_y0,
+				TriangleStrip[i].clip_x1, TriangleStrip[i].clip_y1);
+
 			if (glmoderno_hay_acumulador())
 			{
 				glmoderno_acum_destino((int) TriangleStrip[i].dstselect);
@@ -4093,6 +4174,11 @@ static void dibujar_escena(void)
 	   arreglos de coordenadas vivos les cambiarian lo que reciben. */
 	juego1_arreglos(0);
 	glmoderno_u_volumen(0);
+
+	/* La tijera se apaga SIEMPRE al salir. Un glClear con ella puesta limpia
+	   solo el rectangulo, y lo que sigue --presentar, el volcado, la vista de
+	   depuracion-- no tiene nada que ver con el recorte del guest. */
+	gl_tijera(0, 0, 0, 0, 0);
 
 	/* Y el dibujo vuelve al primario: lo que sigue --presentar, el volcado,
 	   la vista de depuracion-- espera encontrarlo ahi. */
@@ -4727,7 +4813,18 @@ void doUserClip()
 	logxmsg(LOG_PVR, "USER_CLIP: Ymin: %x\n", ta_address_pointer[5]);
 	logxmsg(LOG_PVR, "USER_CLIP: Xmax: %x\n", ta_address_pointer[6]);
 	logxmsg(LOG_PVR, "USER_CLIP: Ymax: %x\n", ta_address_pointer[7]);
-	logxmsg(LOG_PVR, "USER_CLIP: NO IMPLEMENTADO\n");
+	/*
+		El rectangulo viene en fichas de 32x32 y es INCLUSIVE en las cuatro
+		puntas, asi que el maximo se convierte con un +1 antes de multiplicar.
+		Vale hasta que llegue otro parametro, y lo usan --o no-- los
+		encabezados que vengan detras segun sus bits 17-16.
+	*/
+	clip_x0 = (ta_address_pointer[4] & 0x3F) * 32;
+	clip_y0 = (ta_address_pointer[5] & 0x0F) * 32;
+	clip_x1 = ((ta_address_pointer[6] & 0x3F) + 1) * 32;
+	clip_y1 = ((ta_address_pointer[7] & 0x0F) + 1) * 32;
+
+	censo_clip_param++;
 }
 
 void objectListSet()
@@ -4885,6 +4982,8 @@ void taPolyModifier()
 			case 2: logxmsg(LOG_PVR, "pcw: strip_len: 4\n");	break;
 			case 3: logxmsg(LOG_PVR, "pcw: strip_len: 6\n");	break;
 		}
+		censo_clip_modo[TA.registers.pcw_user_clip & 3]++;
+
 		switch(TA.registers.pcw_user_clip)
 		{
 			case 0: logxmsg(LOG_PVR, "pcw: user_clip: disable\n");	break;
@@ -5029,6 +5128,15 @@ void taPolyModifier()
 	TriangleStrip[strip_count].dstselect = pvr_dstblendmode;
 
 	censo_sel[(pvr_srcblendmode << 1) | pvr_dstblendmode]++;
+
+	/* El recorte de usuario: el modo lo dice este encabezado y el rectangulo
+	   es el que dejo vigente el ultimo parametro User Tile Clip. Se guarda por
+	   tira porque entre una y otra puede haber llegado otro. */
+	TriangleStrip[strip_count].clip_modo = TA.registers.pcw_user_clip;
+	TriangleStrip[strip_count].clip_x0 = clip_x0;
+	TriangleStrip[strip_count].clip_y0 = clip_y0;
+	TriangleStrip[strip_count].clip_x1 = clip_x1;
+	TriangleStrip[strip_count].clip_y1 = clip_y1;
 
 	if (pvr_srcblendmode)
 		logxmsg(LOG_PVR, "srcblend: src select\n");
@@ -6667,7 +6775,43 @@ int screeninit(void)
 		break;
 	}
 
-	screenancho = screenwidth * ((screenbits == 32) ? 1 : 2);
+	/*
+		`screenwidth` viene de FB_R_SIZE en **unidades de 32 bits**, o sea de 4
+		bytes, asi que el ancho en pixeles es `unidades * 4 / bytes por pixel`.
+
+		Estaba escrito como `* (screenbits == 32 ? 1 : 2)`, que sale bien para 16
+		y para 32 bits y **se olvida de los 24**: ahi da 4/2 en vez de 4/3, o sea
+		un ancho vez y media el real. Quake III usa framebuffer de 24 bits y la
+		pantalla le salia de 960 en vez de 640, con lo cual su geometria --que
+		sigue siendo de 640-- ocupaba los dos tercios izquierdos del glOrtho y
+		todo se veia pegado a la izquierda. Es la unica de las catorce imagenes
+		que pide 24 bits, por eso aparecio recien ahora.
+	*/
+	screenancho = (screenbits > 0) ? (screenwidth * 4) / (screenbits / 8)
+								   : screenwidth * 2;
+
+	/*
+		Y se dice cuando cambia. El tamano de la pantalla emulada sale de dos
+		registros distintos --FB_R_SIZE da el ancho en unidades de 32 bits y
+		FB_R_CTRL los bits por pixel-- que el guest escribe en el orden que
+		quiere, y screeninit() no corre en los dos: desde FB_R_CTRL solo si
+		ademas esta el bit de "bitmap display enable". O sea que un ancho mal
+		calculado no viene de la formula sino del momento en que se aplico, y
+		sin esta linea eso no se ve por ningun lado.
+	*/
+	if (traza_activa)
+	{
+		static int ult_a = -1, ult_h = -1, ult_b = -1;
+
+		if (screenancho != ult_a || screenheight != ult_h || screenbits != ult_b)
+		{
+			ult_a = screenancho; ult_h = screenheight; ult_b = screenbits;
+
+			fprintf(stderr, "traza: pantalla %dx%d, %d bits (FB_R_SIZE dio %d"
+				" unidades de 32 bits)\n",
+				screenancho, screenheight, screenbits, screenwidth);
+		}
+	}
 
 	// definamos el tama�o de la textura
 	if (screenancho > 512)

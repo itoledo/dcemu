@@ -539,7 +539,26 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
 - **The TA's z is 1/w, larger means nearer**, stored through `profundidad_ta()` as `log2(1+z)`
   — monotonic, so every compare mode holds. `glOrtho` carries near/far inverted because GL
   negates eye z. z = 0 is legal and means infinitely far.
-- **`glClear` of the depth buffer is masked by `glDepthMask`.**
+- **`glClear` of the depth buffer is masked by `glDepthMask`.** And by the scissor, which is why the
+  user clip is turned off at the end of every scene.
+- **The screen width comes from two registers that the guest writes in whatever order it likes.**
+  `FB_R_SIZE` gives the width in **32-bit units** and `FB_R_CTRL` the bits per pixel, so the pixel
+  width is `units * 4 / bytes-per-pixel`. Two things were wrong and each one alone was enough: the
+  formula read `units * (bits == 32 ? 1 : 2)`, which is right for 16 and 32 and **silently wrong for
+  24**; and `screeninit()` only re-ran from `FB_R_CTRL` when the write also set "bitmap display
+  enable", so a guest that changed the format on its own kept a width computed from the previous
+  depth. Quake III is the only one of the fourteen images that asks for a 24-bit framebuffer: its
+  screen came out 960 wide instead of 640, so its 640-wide geometry filled the left two thirds of the
+  `glOrtho` and **its intro screens were pinned to the left with a black third on the right**. It
+  fixes itself on reaching the menu, which is why it looked like a problem with the intros.
+- **The user tile clip is implemented** (`doUserClip()` was a stub that only logged). The rectangle
+  arrives in 32×32 tiles, inclusive on all four corners, and each header's bits 17-16 say whether it
+  applies: 0 no, 2 inside, 3 outside. Mode 2 is `glScissor`, and **the rectangle has to be converted
+  to the render target's coordinates** — y flipped and scaled — or it clips the wrong region as soon
+  as the target is not the emulated size, which is always except in one case. Mode 3 has no scissor
+  that expresses it (GL cannot clip to the complement of a rectangle) and nothing in the park uses
+  it: it warns once and draws whole. Dead or Alive 2 is the one that exercises this — 3465 clip
+  parameters and 2310 headers in mode 2 per 40-second run — and no other image asks for it at all.
 - **The chip samples a pixel at its integer coordinate; OpenGL samples at the centre.** So the same
   geometry interpolates texture coordinates half a pixel apart in the two, and `screeninit()`'s
   `glOrtho` carries the correction (`medio_pixel()`). Three things about it, each one a bug that was

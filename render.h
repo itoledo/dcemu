@@ -256,6 +256,21 @@ typedef struct TriangleStripInfo
 	DWORD volumen;
 
 	/*
+		El RECORTE DE USUARIO vigente cuando llego el encabezado.
+
+		El TA lleva un rectangulo --en fichas de 32x32, inclusive-- que un
+		parametro propio (User Tile Clip) fija, y cada encabezado dice en los
+		bits 17-16 de su palabra de control si lo usa: 0 no, 2 "dentro" (dibuja
+		solo adentro) y 3 "fuera" (solo afuera). El rectangulo sobrevive al
+		encabezado, asi que hay que guardarlo POR TIRA: entre una y otra puede
+		haber llegado otro parametro.
+
+		`clip_modo` es ese campo tal cual; el rectangulo ya viene en pixeles.
+	*/
+	DWORD clip_modo;
+	DWORD clip_x0, clip_y0, clip_x1, clip_y1;
+
+	/*
 		La z mas cercana de la tira (el maximo, porque z es 1/w), ya pasada por
 		profundidad_ta(). Es la llave del autosort de la lista translucida:
 		el chip la ordena por profundidad por pixel, y dcemu aproxima por

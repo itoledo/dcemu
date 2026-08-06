@@ -2359,11 +2359,30 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			{
 				logxmsg(LOG_PVR, "bitmap display enable\r\n");
 				pvr_framebufferdisplay = true;
-				if (reinit)
-					screeninit();
 			}
 			else
 				pvr_framebufferdisplay = false;
+
+			/*
+				**El reinit va fuera del bit de "bitmap display enable".**
+
+				Este registro trae los bits por pixel, y de ellos sale el ancho
+				de la pantalla: FB_R_SIZE da el ancho en unidades de 32 BITS, o
+				sea que los pixeles son `unidades * 4 / bytes por pixel`. Con el
+				reinit adentro del `if`, un guest que cambia el formato sin
+				encender el bitmap deja el ancho calculado con los bits
+				ANTERIORES, y no hay nada que lo corrija despues.
+
+				Quake III lo hace: pasa a RGB888 y pide 480 unidades, que son
+				640 pixeles a 24 bits y 960 a 16. Se quedaba en 960, o sea que
+				su geometria de 640 ocupaba dos tercios del glOrtho y sus
+				pantallas de presentacion salian pegadas a la izquierda con un
+				tercio negro a la derecha. Al llegar al menu el juego vuelve a
+				16 bits y se arregla solo, que es por que parecia cosa de las
+				intros.
+			*/
+			if (reinit)
+				screeninit();
 		}
 		break;
 
