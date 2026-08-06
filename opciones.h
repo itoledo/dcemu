@@ -80,6 +80,18 @@ struct opciones_t
 	int				sin_vmu;
 	const char *	vmu_archivo;
 
+	/* Camino de render: 0 la ventana (el de siempre), 1 un FBO propio.
+	   `escala` multiplica la resolucion interna con la que se rasteriza, y
+	   solo tiene sentido con el FBO. Ver glmoderno.h y la etapa 2.a de
+	   docs/rendimiento-plan.md.
+
+	   El de la ventana sigue siendo el de omision **como referencia**: es lo
+	   unico contra lo que se puede comparar el camino nuevo, y cambiar la
+	   resolucion de rasterizado cambia hasta el ultimo pixel de las 150
+	   capturas de la linea base. */
+	int				render_fbo;
+	int				escala;
+
 	/* 1: sacar el AICA y el ARM7 a su propio hilo (hilo_aica.c).
 
 	   **Apagado por omision, y no por precaucion sino por medicion**: cuesta

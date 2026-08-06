@@ -10,6 +10,7 @@
 #include "opciones.h"		/* --captura-gl */
 #include "ta.h"				/* clasificacion de los parametros del TA */
 #include "vram.h"			/* las dos ventanas de la RAM de video */
+#include "glmoderno.h"		/* el destino de render propio (--render=fbo) */
 #include <math.h>			/* log2f, profundidad_ta() */
 //#include "glops.h"
 #include "render.h"
@@ -1861,6 +1862,65 @@ static void color_de_fondo(float * r, float * g, float * b)
    la adelanta para las funciones que tocan el estado a mano y estan antes. */
 static void gl_estado_olvidar(void);
 
+/*
+	El rectangulo donde se rasteriza, que **no siempre es la ventana**.
+
+	Con --render=ventana es el buffer trasero entero: 800x600, y los 640x480
+	del guest se estiran encima con el glOrtho de screeninit(). Ese es el
+	camino de siempre y el que se documenta en la disciplina de medicion ("el
+	buffer de GL es la ventana, no los 640x480 emulados").
+
+	Con --render=fbo es la resolucion emulada por la escala: el guest se
+	rasteriza a su propio tamano --o a un multiplo-- y recien al presentar se
+	escala a la ventana. Eso es lo que hace que el volcado del framebuffer
+	deje de remuestrear y que exista el escalado de resolucion interna.
+
+	Todo lo que lee de vuelta lo que GL dibujo tiene que pedir el tamano por
+	aca: leer 800x600 de un destino de 640x480 devuelve el rectangulo de abajo
+	a la izquierda mas basura, que es la misma trampa que ya costo un barrido
+	entero al reves.
+*/
+static int render_ancho(void)
+{
+	if (glmoderno_fbo_ligado())
+		return screenancho * opciones.escala;
+
+	return (outputscreen != NULL) ? outputscreen->w : 800;
+}
+
+static int render_alto(void)
+{
+	if (glmoderno_fbo_ligado())
+		return screenheight * opciones.escala;
+
+	return (outputscreen != NULL) ? outputscreen->h : 600;
+}
+
+/* El viewport de la pantalla, que render_a_textura() tiene que reponer. */
+static void viewport_pantalla(void)
+{
+	glViewport(0, 0, render_ancho(), render_alto());
+}
+
+void gl_presentar(void)
+{
+	if (glmoderno_fbo_ligado())
+		glmoderno_presentar(render_ancho(), render_alto(),
+			(outputscreen != NULL) ? outputscreen->w : 800,
+			(outputscreen != NULL) ? outputscreen->h : 600);
+
+	SDL_GL_SwapBuffers();
+
+	/* Y de vuelta al destino propio para la escena que viene. El viewport se
+	   repone despues de ligar, porque render_ancho() depende de que este
+	   ligado. */
+	if (opciones.render_fbo && glmoderno_hay_fbo())
+	{
+		glmoderno_fbo_ligar(1);
+		viewport_pantalla();
+	}
+}
+
 void limpiar_pantalla()
 {
 	float r, g, b;
@@ -3602,10 +3662,11 @@ static void volcar_escena_a_framebuffer(void)
 	if (ancho == 0 || alto == 0 || ancho > 2048 || alto > 2048)
 		return;
 
+	/* La fuente es el rectangulo rasterizado, no la ventana. Con --render=fbo
+	   y escala 1 coincide con el destino y el remuestreo desaparece. */
 	volcar_a_memoria(r.sof1 & 0x007FFFFF, ancho, alto, filas_bytes,
 		(int) (r.ctrl & 0x7),
-		(DWORD) (outputscreen ? outputscreen->w : 800),
-		(DWORD) (outputscreen ? outputscreen->h : 600), 0);
+		(DWORD) render_ancho(), (DWORD) render_alto(), 0);
 }
 
 static int render_a_textura(void)
@@ -3662,8 +3723,7 @@ static int render_a_textura(void)
 	volcar_a_memoria(destino, ancho, alto, filas_bytes, formato, ancho, alto, 1);
 
 	/* Y se deja todo como estaba: la escena siguiente va a la pantalla. */
-	glViewport(0, 0, outputscreen ? outputscreen->w : 800,
-					 outputscreen ? outputscreen->h : 600);
+	viewport_pantalla();
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 	glOrtho(0, screenancho, screenheight, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
@@ -3824,7 +3884,7 @@ static void terminar_escena(void)
 		   lo mismo que estar lento. */
 		PERF_MARCA(t_swap);
 
-		SDL_GL_SwapBuffers();
+		gl_presentar();
 
 		PERF_SUMAR(t_swap, perf_ns_presentar);
 	}
@@ -5307,8 +5367,11 @@ int volcar_gl(const char * ruta)
 		escriba en la franja superior -- toda la familia conio, que pone su
 		texto ahi -- salia en negro y parecia que no dibujaba nada.
 	*/
-	int				ancho = (outputscreen != NULL) ? outputscreen->w : screenancho;
-	int				alto  = (outputscreen != NULL) ? outputscreen->h : screenheight;
+	/* Con --render=fbo esto ya no es la ventana sino el rectangulo emulado por
+	   la escala, que es lo que hace que la captura deje de traer las franjas
+	   negras del estirado y pase a ser exactamente lo que el guest dibujo. */
+	int				ancho = render_ancho();
+	int				alto  = render_alto();
 	int				x, y, relleno;
 	unsigned char	cabecera[54];
 	unsigned char *	pixeles;
@@ -5730,6 +5793,22 @@ int glinit(void)
 			prof, stencil, alfa, (int) alfa_real);
 	}
 
+	/*
+		Las entradas de GL que opengl32.dll no exporta. Va **despues** de
+		SDL_SetVideoMode y antes de cualquier otra cosa que las use: sin
+		contexto creado, SDL_GL_GetProcAddress devuelve NULL para todo y el
+		camino nuevo se apagaria solo, en silencio y sin motivo.
+	*/
+	glmoderno_iniciar();
+
+	if (opciones.render_fbo && !glmoderno_hay_fbo())
+	{
+		fprintf(stderr, "gl: se pidio --render=fbo y el driver no lo da;"
+			" se dibuja en la ventana\n");
+		opciones.render_fbo = 0;
+		opciones.escala = 1;
+	}
+
     SDL_WM_SetCaption(titulo_ventana, NULL);
     SDL_WM_SetIcon(SDL_LoadBMP("dcemu.bmp"), NULL);
 	SDL_EnableUNICODE(1);
@@ -5932,6 +6011,30 @@ int screeninit(void)
 		exit(1);
 	}
 
+	/*
+		El destino propio, dimensionado para este modo de video.
+
+		Se pide **al menos el tamano de la ventana** aunque la escala sea 1 y
+		el guest salga en 640x480: el render a textura dibuja en el destino que
+		este ligado, y en el camino de la ventana podia usar hasta 800x600. Un
+		FBO mas chico recortaria en silencio un RTT que antes entraba, que es
+		exactamente la clase de regresion que no avisa.
+	*/
+	if (opciones.render_fbo)
+	{
+		int nw = screenancho  * opciones.escala;
+		int nh = screenheight * opciones.escala;
+		int vw = (outputscreen != NULL) ? outputscreen->w : 800;
+		int vh = (outputscreen != NULL) ? outputscreen->h : 600;
+
+		if (glmoderno_fbo_asegurar((nw > vw) ? nw : vw, (nh > vh) ? nh : vh))
+			glmoderno_fbo_ligar(1);
+		else
+			opciones.render_fbo = 0;
+	}
+
+	viewport_pantalla();
+
 	logxmsg(LOG_PVR, "screeninit: glOrtho %dx%d\n", screenancho, screenheight);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
@@ -5992,6 +6095,6 @@ void DibujarGL(SDL_Surface * sfc)
 	glEnable(GL_DEPTH_TEST);
 
 	logxmsg(LOG_PVR, "DibujarGL: SDL_GL_SwapBuffers\n");
-	SDL_GL_SwapBuffers();
+	gl_presentar();
 	fps_marcar_cuadro();
 }

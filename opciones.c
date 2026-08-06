@@ -34,6 +34,8 @@ struct opciones_t opciones =
 	0,					/* sin_vmu */
 	"bios/vmu-a1.bin",	/* vmu_archivo: junto a la flash, que es el otro
 						   estado persistente de la consola */
+	0,					/* render_fbo: la ventana, que es la referencia */
+	1,					/* escala */
 	0,					/* hilos: apagado por omision, ver opciones.h */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
@@ -76,6 +78,10 @@ void opciones_ayuda(const char * programa)
 		"                        bios/vmu-a1.bin.\n"
 		"  --sin-vmu             sin tarjeta en la ranura 1: el mando vuelve a\n"
 		"                        estar solo en el bus. Para aislar una regresion.\n"
+		"  --render=MODO         ventana (por omision, y es la referencia) o fbo:\n"
+		"                        rasterizar a la resolucion emulada en un destino\n"
+		"                        propio y presentar respetando el aspecto.\n"
+		"  --escala=N            resolucion interna xN (1 a 8). Implica --render=fbo.\n"
 		"  --hilos               sacar el AICA y el ARM7 a su propio hilo. Hoy es\n"
 		"                        mas lento; ver docs/hilos-plan.md.\n"
 		"  --perf                al salir, desglosa en que se fue el tiempo real y\n"
@@ -252,6 +258,40 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-vmu") == 0)
 		{
 			opciones.sin_vmu = 1;
+		}
+		else
+		if (strncmp(arg, "--render=", 9) == 0)
+		{
+			const char * m = arg + 9;
+
+			if (strcmp(m, "ventana") == 0)
+				opciones.render_fbo = 0;
+			else
+			if (strcmp(m, "fbo") == 0)
+				opciones.render_fbo = 1;
+			else
+			{
+				fprintf(stderr, "modo de render desconocido: %s"
+					" (ventana o fbo)\n", m);
+				return 1;
+			}
+		}
+		else
+		if (strncmp(arg, "--escala=", 9) == 0)
+		{
+			int n = atoi(arg + 9);
+
+			if (n < 1 || n > 8)
+			{
+				fprintf(stderr, "escala fuera de rango: %s (1 a 8)\n", arg + 9);
+				return 1;
+			}
+
+			opciones.escala = n;
+
+			/* Pedir escala es pedir el destino propio: sin el no hay donde
+			   rasterizar mas grande que la ventana. */
+			opciones.render_fbo = 1;
 		}
 		else
 		if (strcmp(arg, "--hilos") == 0)

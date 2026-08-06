@@ -193,6 +193,8 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--sin-aica` | no emular el AICA: ni el ARM, ni los canales, ni los temporizadores. Para aislar una regresión |
 | `--vmu=ARCHIVO` | imagen de la Visual Memory de la ranura 1 (`bios/vmu-a1.bin` por omisión; se crea formateada si no existe) |
 | `--sin-vmu` | sin tarjeta en la ranura 1. Es el interruptor de aislamiento, y **el que reproduce la línea base anterior byte a byte** |
+| `--render=MODO` | `ventana` (por omisión, y **es la referencia**) o `fbo`: rasterizar a la resolución emulada en un destino propio y presentar respetando el aspecto |
+| `--escala=N` | resolución interna ×N (1 a 8). Implica `--render=fbo`. **Medida: no cuesta nada** — ver abajo |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -268,9 +270,12 @@ how to believe a measurement of it.
   black and read as a massive regression.
 - **F5 reads video RAM, F6 and `--captura-gl` read the GL buffer.** 3D never passes through
   video RAM in dcemu, so for a PVR demo F5 is always black. That is not a bug.
-- **The GL buffer is the window, 800×600, not the emulated 640×480.** A `glReadPixels(0, 0,
-  640, 480)` returns the bottom-left rectangle and silently drops the top and right 20%.
-  Anything drawing in the top band (all of `conio`) reads as "draws nothing".
+- **The GL buffer is the window, 800×600, not the emulated 640×480** — in the default
+  `--render=ventana`. A `glReadPixels(0, 0, 640, 480)` returns the bottom-left rectangle and
+  silently drops the top and right 20%. Anything drawing in the top band (all of `conio`) reads
+  as "draws nothing". **With `--render=fbo` the size is the emulated one times `--escala`**, so
+  a capture is not the same image and not even the same dimensions: a sweep is only comparable
+  against another sweep with the same render setting.
 - **When a capture says blank, check the strip counts at exit before believing it.**
   `--traza-mem` prints how many scenes rendered and the strip count of the last twelve — that
   is what separates "the demo stopped submitting" from "the capture is wrong".
@@ -556,6 +561,32 @@ rendering. `DibujarFramebuffer()` handles the 2D case.
 **The whole graphics path costs 7.6% of a run**, which is the ceiling for anything left in it;
 the 9.5 million draw calls are worth 1.7% of that, which is why a VBO and strip batching were
 both discarded by measurement.
+
+#### The off-screen render target (`--render=fbo`)
+
+`glmoderno.c/h` resolves the GL entry points `opengl32.dll` does not export and owns an FBO —
+colour texture plus packed depth24/stencil8 — that the scene can be drawn into instead of the
+window's back buffer. **The context was already GL 4.6**: SDL 1.2 has no version or profile
+attributes, so it cannot ask for a *core* context, and it does not need to — the default context
+on Windows and Mesa is compatibility, which reaches 4.6 on any current driver, and the entry
+points load through `SDL_GL_GetProcAddress`. Fixed function and modern GL live in the same
+context, so the migration is incremental. `offset_iniciar()` was already doing this for
+`glSecondaryColorPointer`; this is the same pattern at scale.
+
+What it buys, and what it does not:
+
+- **The rasterization rectangle stops being the window.** Ask anything that reads back what GL
+  drew for its size through `render_ancho()`/`render_alto()`, never `outputscreen->w`. This is
+  the same trap as before, mirrored: reading 800×600 out of a 640×480 target returns the
+  bottom-left rectangle plus garbage.
+- **The framebuffer dump stops resampling.** It used to read 800×600 and store 640×480 by
+  nearest neighbour; at scale 1 source and destination now match exactly.
+- **Internal resolution scaling, and it is free.** Measured: Crazy Taxi 1.28× either way, Sega
+  Rally 2 0.51× at ×1, ×2 and ×4 alike. The bottleneck is the SH-4 interpreter, not the GPU, so
+  the extra pixels cost nothing — this is the one lever in the graphics path with headroom.
+- **It changes nothing about how a pixel is computed**: no shaders, same fixed-function
+  pipeline, same draw model. That is why the two paths are comparable at all, and why the
+  baseline still holds — `--render=ventana` is the default and stays byte-identical.
 
 → `docs/notas-graficos.md` for all of it: the texture formats, the YUV converter, the palette
 rules, the cache, RTT, the VRAM windows, the background plane, depth, fog and modifier

@@ -1567,3 +1567,85 @@ negativo. Es el mismo patrón que la fase 6 dejó anotado —de cinco hipótesis
 murieron— y a esta altura es la conclusión más sólida del árbol sobre sí mismo: **acá lo que
 rinde no se parece a lo que uno propondría en una pizarra**, y la única forma de saberlo es
 alternar dos binarios en una tanda.
+
+# La vía 2.a: destino de render propio, resolución interna y aspecto (2026-08-05)
+
+`glmoderno.c/h`, `--render=fbo`, `--escala=N`. Es la primera etapa de la vía gráfica del plan
+de estado del arte, y la que no necesita shaders.
+
+## El contexto ya era GL 4.6, y eso era lo que había que verificar
+
+La premisa del plan se confirmó tal cual: **`SDL_GL_SetAttribute` de SDL 1.2 no tiene atributos
+de versión ni de perfil**, así que no se puede pedir un contexto *core* — y no hace falta. El
+contexto por omisión en Windows es de compatibilidad y el driver lo da en **4.6**, con todas las
+entradas resolubles por `SDL_GL_GetProcAddress`:
+
+```
+gl: 4.6.0 NVIDIA 610.88 -- version 4.6, FBO disponible
+```
+
+O sea que función fija y GL moderno conviven en el mismo contexto, la migración puede ser
+incremental y no hay que cambiar de SDL. El patrón ya estaba en el árbol —`offset_iniciar()`
+resuelve `glSecondaryColorPointer` exactamente así— y esto es lo mismo a mayor escala.
+
+La versión se lee de la **cadena** de `glGetString(GL_VERSION)` y no con `glGetIntegerv` de
+`GL_MAJOR_VERSION`: ese enum es de 3.0, así que en un contexto viejo devuelve error y deja el
+entero sin tocar, o sea con lo que hubiera en la pila.
+
+## Lo que cambia, y lo que no
+
+El FBO lleva el color en una textura y profundidad+plantilla empaquetadas en un renderbuffer.
+Las tres cosas hacen falta y ninguna es opcional en este árbol: la plantilla lleva los volúmenes
+modificadores, la profundidad tiene que ser de 24 porque `profundidad_ta()` comprime las z en
+una fracción del rango, y sin planos de alfa el blend por `DST_ALPHA` no funciona. El color va
+en textura y no en renderbuffer porque la etapa 2.b la va a querer como entrada de un shader.
+
+**Lo que no cambia es cómo se calcula un píxel**: mismo pipeline de función fija, mismo modelo
+de dibujo. Por eso los dos caminos son comparables, y por eso `--render=ventana` sigue siendo el
+de omisión y la referencia.
+
+## Las tres cosas que arregla
+
+1. **El volcado del framebuffer deja de remuestrear.** Leía 800×600 y guardaba 640×480 por
+   vecino más cercano, porque la ventana no mide lo que la pantalla emulada. Con escala 1 el
+   origen y el destino miden lo mismo.
+2. **El render a textura deja de estar limitado por la ventana** — dibujaba en el buffer
+   trasero. El FBO se pide de al menos el tamaño de la ventana justamente para que un RTT que
+   antes entraba no empiece a recortarse en silencio, que es la clase de regresión que no avisa.
+3. **Escalado de resolución interna**, que es lo que cualquier emulador actual ofrece.
+
+## Y la medición, que es la parte interesante
+
+| | `--render=ventana` | `--render=fbo` |
+| --- | --- | --- |
+| Crazy Taxi, 90 s | 1,28× / 1,28× | 1,27× / 1,28× |
+
+Dos pasadas de cada uno alternando dentro de una tanda, descartando la primera de un binario
+recién enlazado. La diferencia es ruido: **el destino propio no cuesta nada**, que era lo
+esperable siendo un blit por cuadro.
+
+Lo que no era esperable:
+
+| Sega Rally 2, 60 s | ×1 | ×2 | ×4 |
+| --- | --- | --- | --- |
+| | 0,51× | 0,51× | **0,52×** |
+
+**Rasterizar dieciséis veces más píxeles no cuesta nada medible.** Y tiene una explicación que
+el plan ya había establecido por otro lado: el cuello es el intérprete de SH-4 —71,6 % a 93 %
+de la corrida— y el camino gráfico entero es el 7,6 %, así que la GPU está esperando. Es la
+otra cara de la conclusión que descartó Vulkan: si el backend gráfico no puede dar velocidad
+porque no es el cuello, entonces tampoco la puede **quitar** cuando se le pide dieciséis veces
+más trabajo.
+
+O sea que la vía gráfica no rinde en fps —ya se sabía— pero la resolución interna es lo más
+cerca de gratis que hay en el árbol, y es visible.
+
+## La baranda, y lo que le hace a la línea base
+
+- Las ocho demos de control salen **byte a byte idénticas** con el binario anterior por el
+  camino de omisión, y DCDoom reproduce su SHA de referencia. `ctest` 22/22.
+- Los juegos por `--render=fbo` dibujan bien (DCDoom, Sega Rally 2, Street Fighter III
+  verificados a ojo, y SF3 sale en 640×**464**, que es su modo de video real).
+- **Una captura con `--render=fbo` no es la misma imagen ni mide lo mismo**: un barrido solo se
+  compara contra otro con el mismo ajuste. Eso queda anotado en la disciplina de medición junto
+  a la trampa vieja, que es su espejo.

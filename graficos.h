@@ -92,6 +92,12 @@ extern DWORD pvr_yuv_convertidos;	/* lo que devuelve PVR_YUV_STAT */
 void DibujarGL(SDL_Surface * sfc);
 void limpiar_pantalla();
 
+/* Presentar el cuadro: si se rasterizo en el destino propio (--render=fbo) lo
+   copia a la ventana respetando el aspecto, y despues intercambia. Todo el que
+   antes llamaba a SDL_GL_SwapBuffers tiene que llamar a esto, o el cuadro se
+   queda dentro del FBO y la ventana no cambia nunca. */
+void gl_presentar(void);
+
 // callbacks
 void cb_tastart(DWORD addr, void * p, size_t size);
 void cb_isp_backgnd_t(DWORD addr, void * p, size_t size);

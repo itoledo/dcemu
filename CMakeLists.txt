@@ -234,6 +234,7 @@ set(DCEMU_SOURCES
 	sistema.c
 	ta.c
 	tmu.c
+	glmoderno.c
 	ubc.c
 	vmu.c
 	vram.c
