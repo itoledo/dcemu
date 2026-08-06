@@ -308,14 +308,52 @@ static PFN_UNIFORM_3F		p_glUniform3f;
 static PFN_UNIFORM_4F		p_glUniform4f;
 static PFN_UNIFORM_2FV		p_glUniform2fv;
 
+/* Los mismos, pero sobre un programa que no esta ligado (GL 4.1). Es lo que
+   permite mantener dos programas al dia sin un glUseProgram por uniforme. */
+typedef void (APIENTRY * PFN_PU_1I)(GLuint, GLint, GLint);
+typedef void (APIENTRY * PFN_PU_1F)(GLuint, GLint, GLfloat);
+typedef void (APIENTRY * PFN_PU_3F)(GLuint, GLint, GLfloat, GLfloat, GLfloat);
+typedef void (APIENTRY * PFN_PU_4F)(GLuint, GLint, GLfloat, GLfloat, GLfloat,
+									GLfloat);
+typedef void (APIENTRY * PFN_PU_2FV)(GLuint, GLint, GLsizei, const GLfloat *);
+
+static PFN_PU_1I	p_glProgramUniform1i;
+static PFN_PU_1F	p_glProgramUniform1f;
+static PFN_PU_3F	p_glProgramUniform3f;
+static PFN_PU_4F	p_glProgramUniform4f;
+static PFN_PU_2FV	p_glProgramUniform2fv;
+
 static GLuint	programa = 0;
 static int		hay_shader = 0;
 static int		shader_puesto = 0;
 
-static GLint	u_muestra, u_textura, u_env, u_offset, u_alpha, u_umbral;
-static GLint	u_niebla, u_nie_color, u_nie_dens, u_nie_tabla;
-static GLint	u_bump, u_bump_param;
-static GLint	u_oit, u_oit_max, u_oit_mezcla;
+/*
+	Los dos programas de escena, y por que son dos.
+
+	`programa` es el de siempre. `programa_ez` es el MISMO fragment shader mas
+	`layout(early_fragment_tests)`, y se liga solamente durante la tanda
+	translucida con la lista encendida -- ver el comentario de fs_temprano.
+
+	Que sean dos reabre justo el problema que un solo programa evitaba: los
+	uniformes los pone la sombra de estado de graficos.c, y si se escribe uno
+	solo el otro miente. Se cierra escribiendo **los dos en cada setter**, con
+	glProgramUniform*, que escribe sin ligar; si el driver no la da, no hay
+	transparencia ordenada y queda el programa unico de antes. Cuesta una
+	llamada de mas por cambio de estado y ninguna decision en el camino de
+	dibujo.
+*/
+static GLuint	programa_ez = 0;
+static int		oit_puesto = 0;
+
+typedef struct {
+	GLint	muestra, textura, env, offset, alpha, umbral;
+	GLint	niebla, nie_color, nie_dens, nie_tabla;
+	GLint	bump, bump_param;
+	GLint	oit, oit_max, oit_mezcla;
+} locs_t;
+
+static locs_t	u_n;	/* las del programa normal */
+static locs_t	u_z;	/* las del de prueba adelantada */
 
 /* ---- Transparencia ordenada por pixel ---- */
 
@@ -558,6 +596,34 @@ static const char * fs_cabeza_oit =
 	"uniform int oit_max;\n"
 	"uniform int oit_mezcla;\n";
 
+/*
+	**La prueba de profundidad tiene que correr ANTES del shader**, y esto es lo
+	unico que lo consigue.
+
+	Un shader que contiene `discard` obliga al driver a hacer la prueba de
+	profundidad tarde -- despues de ejecutarlo, porque hasta no ejecutarlo no se
+	sabe si el fragmento existe. Con la lista encendida el shader apila el
+	fragmento y *despues* descarta, asi que **el apilado ocurre igual para los
+	fragmentos que la profundidad iba a rechazar**: geometria translucida tapada
+	por geometria opaca entra en la lista y la resolucion la mezcla encima de lo
+	que la tapaba.
+
+	No es un detalle de una demo: es toda la tanda translucida de cualquier
+	escena con paredes. Lo destapo pvr-fb_tex, donde el cubo opaco quedaba
+	borrado por los dos cuadrilateros de pantalla completa que estan detras de
+	el -- y como esa demo se realimenta del framebuffer, el cubo borrado se
+	llevaba puesto el rastro del cuadro siguiente y la pantalla entera terminaba
+	en negro.
+
+	Y no puede ir en el programa compartido: con la prueba adelantada la
+	profundidad se ESCRIBE antes del shader, asi que un fragmento de
+	punch-through que se descarta por alfa dejaria su z escrita igual. Por eso
+	el apilado va en un programa propio, identico salvo esta linea, que solo se
+	liga durante la tanda translucida -- donde la escritura de z esta apagada y
+	la contradiccion no existe.
+*/
+static const char * fs_temprano = "layout(early_fragment_tests) in;\n";
+
 static const char * fs_main_120 =
 	"void main()\n"
 	"{\n"
@@ -689,9 +755,27 @@ static const char * fuente_fs_resolver =
 	"\n"
 	"void main()\n"
 	"{\n"
-	"	if (solo_fondo != 0)\n"
+	/*
+		Las sondas que miran el fondo salen antes de recorrer la lista; las que
+		miran la lista tienen que salir DESPUES de armarla, mas abajo.
+
+		Tenerlas todas aca arriba bajo un `!= 0` fue una falla propia: la sonda
+		de capas devolvia el fondo y se leyo como "no se apila nada", que era
+		justo la conclusion que venia a comprobar.
+	*/
+	"	if (solo_fondo == 1)\n"
 	"	{\n"
-	"		gl_FragColor = texelFetch(fondo, ivec2(gl_FragCoord.xy), 0);\n"
+	"		gl_FragColor = vec4(texelFetch(fondo, ivec2(gl_FragCoord.xy), 0).rgb,\n"
+	"						    1.0);\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	/* El ALFA del fondo, que es lo que la mezcla por DST_ALPHA consume y lo
+	   unico que una captura RGB no puede mostrar. */
+	"	if (solo_fondo == 3)\n"
+	"	{\n"
+	"		gl_FragColor = vec4(vec3(texelFetch(fondo,\n"
+	"						    ivec2(gl_FragCoord.xy), 0).a), 1.0);\n"
 	"		return;\n"
 	"	}\n"
 	"\n"
@@ -736,6 +820,17 @@ static const char * fuente_fs_resolver =
 	"	if (solo_fondo == 2)\n"
 	"	{\n"
 	"		gl_FragColor = vec4(vec3(float(n) / 8.0), 1.0);\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	/* solo_fondo=4: el color del fragmento MAS CERCANO de la lista, sin
+	   mezclar. Contesta "el color apilado es el que corresponde" aparte de
+	   "la mezcla lo usa bien". */
+	"	if (solo_fondo == 4)\n"
+	"	{\n"
+	"		if (n == 0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
+	"		gl_FragColor = vec4(unpackUnorm4x8(\n"
+	"					oit_nodos[lista[n - 1]].color).rgb, 1.0);\n"
 	"		return;\n"
 	"	}\n"
 	"\n"
@@ -837,6 +932,94 @@ static GLuint enlazar(GLuint vs, GLuint fs, const char * nombre)
 	return ok ? p : 0;
 }
 
+static void ubicar(GLuint p, locs_t * l)
+{
+	if (p == 0)
+	{
+		memset(l, 0xFF, sizeof(*l));	/* todas en -1: no existen */
+		return;
+	}
+
+	l->muestra	= p_glGetUniformLocation(p, "muestra");
+	l->textura	= p_glGetUniformLocation(p, "usa_textura");
+	l->env		= p_glGetUniformLocation(p, "modo_env");
+	l->offset	= p_glGetUniformLocation(p, "usa_offset");
+	l->alpha	= p_glGetUniformLocation(p, "usa_alpha");
+	l->umbral	= p_glGetUniformLocation(p, "umbral");
+	l->niebla	= p_glGetUniformLocation(p, "usa_niebla");
+	l->nie_color = p_glGetUniformLocation(p, "niebla_color");
+	l->nie_dens	= p_glGetUniformLocation(p, "niebla_densidad");
+	l->nie_tabla = p_glGetUniformLocation(p, "niebla_tabla");
+	l->bump		= p_glGetUniformLocation(p, "usa_bump");
+	l->bump_param = p_glGetUniformLocation(p, "bump_param");
+	l->oit		= p_glGetUniformLocation(p, "usa_oit");
+	l->oit_max	= p_glGetUniformLocation(p, "oit_max");
+	l->oit_mezcla = p_glGetUniformLocation(p, "oit_mezcla");
+}
+
+/*
+	Escribir un uniforme en los dos programas de escena.
+
+	Si el driver da glProgramUniform* --GL 4.1, y la transparencia ordenada ya
+	pide 4.3-- se escribe sin ligar y los dos quedan al dia siempre. Si no la
+	da no hay segundo programa, y queda la forma de antes: sobre el que este
+	puesto, que es lo que garantiza el camino de dibujo.
+*/
+static void pu_1i(GLint la, GLint lb, GLint v)
+{
+	if (p_glProgramUniform1i != NULL)
+	{
+		if (la >= 0) p_glProgramUniform1i(programa, la, v);
+		if (lb >= 0 && programa_ez) p_glProgramUniform1i(programa_ez, lb, v);
+	}
+	else if (la >= 0)
+		p_glUniform1i(la, v);
+}
+
+static void pu_1f(GLint la, GLint lb, GLfloat v)
+{
+	if (p_glProgramUniform1f != NULL)
+	{
+		if (la >= 0) p_glProgramUniform1f(programa, la, v);
+		if (lb >= 0 && programa_ez) p_glProgramUniform1f(programa_ez, lb, v);
+	}
+	else if (la >= 0)
+		p_glUniform1f(la, v);
+}
+
+static void pu_3f(GLint la, GLint lb, GLfloat x, GLfloat y, GLfloat z)
+{
+	if (p_glProgramUniform3f != NULL)
+	{
+		if (la >= 0) p_glProgramUniform3f(programa, la, x, y, z);
+		if (lb >= 0 && programa_ez) p_glProgramUniform3f(programa_ez, lb, x, y, z);
+	}
+	else if (la >= 0)
+		p_glUniform3f(la, x, y, z);
+}
+
+static void pu_4f(GLint la, GLint lb, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
+{
+	if (p_glProgramUniform4f != NULL)
+	{
+		if (la >= 0) p_glProgramUniform4f(programa, la, x, y, z, w);
+		if (lb >= 0 && programa_ez) p_glProgramUniform4f(programa_ez, lb, x, y, z, w);
+	}
+	else if (la >= 0)
+		p_glUniform4f(la, x, y, z, w);
+}
+
+static void pu_2fv(GLint la, GLint lb, GLsizei n, const GLfloat * v)
+{
+	if (p_glProgramUniform2fv != NULL)
+	{
+		if (la >= 0) p_glProgramUniform2fv(programa, la, n, v);
+		if (lb >= 0 && programa_ez) p_glProgramUniform2fv(programa_ez, lb, n, v);
+	}
+	else if (la >= 0)
+		p_glUniform2fv(la, n, v);
+}
+
 int glmoderno_shader_iniciar(void)
 {
 	GLuint	vs, fs;
@@ -861,6 +1044,25 @@ int glmoderno_shader_iniciar(void)
 	p_glUniform4f			= (PFN_UNIFORM_4F)		resolver("glUniform4f");
 	p_glUniform2fv			= (PFN_UNIFORM_2FV)		resolver("glUniform2fv");
 
+	p_glProgramUniform1i	= (PFN_PU_1I)	resolver("glProgramUniform1i");
+	p_glProgramUniform1f	= (PFN_PU_1F)	resolver("glProgramUniform1f");
+	p_glProgramUniform3f	= (PFN_PU_3F)	resolver("glProgramUniform3f");
+	p_glProgramUniform4f	= (PFN_PU_4F)	resolver("glProgramUniform4f");
+	p_glProgramUniform2fv	= (PFN_PU_2FV)	resolver("glProgramUniform2fv");
+
+	/* Todas o ninguna: media familia resuelta dejaria un uniforme escrito en un
+	   programa y no en el otro, que es exactamente la forma de fallar que este
+	   arreglo viene a cerrar. */
+	if (!p_glProgramUniform1i || !p_glProgramUniform1f || !p_glProgramUniform3f
+	||  !p_glProgramUniform4f || !p_glProgramUniform2fv)
+	{
+		p_glProgramUniform1i = NULL;
+		p_glProgramUniform1f = NULL;
+		p_glProgramUniform3f = NULL;
+		p_glProgramUniform4f = NULL;
+		p_glProgramUniform2fv = NULL;
+	}
+
 	if (!p_glCreateShader || !p_glShaderSource || !p_glCompileShader
 	||  !p_glGetShaderiv || !p_glGetShaderInfoLog || !p_glCreateProgram
 	||  !p_glAttachShader || !p_glLinkProgram || !p_glGetProgramiv
@@ -879,16 +1081,19 @@ int glmoderno_shader_iniciar(void)
 
 	/*
 		Se intenta primero el sabor de 4.30, que es el que sabe apilar el
-		fragmento en la lista por pixel. Es UN solo programa con las dos
-		salidas y no dos programas: los uniformes los pone la sombra de estado
-		de graficos.c, y con dos programas habria que ponerlos en los dos o
-		aceptar que uno miente.
+		fragmento en la lista por pixel. Si no compila --driver viejo, o un
+		contexto que no da 4.3-- se cae al de 1.20 y la transparencia ordenada
+		simplemente no esta.
 
-		Si no compila --driver viejo, o un contexto que no da 4.3-- se cae al
-		de 1.20 y la transparencia ordenada simplemente no esta.
+		Del de 4.30 se compilan **dos programas con el mismo fuente**: el normal
+		y el de prueba adelantada. La razon esta entera en fs_temprano, y el
+		precio --mantener los uniformes de los dos al dia-- lo paga
+		glProgramUniform*. Sin esa entrada se sigue con uno solo y la lista
+		queda mal ordenada donde haya opacos delante, asi que se prefiere
+		apagar la transparencia ordenada antes que dibujar de mas.
 	*/
 	{
-		const char * partes[3];
+		const char * partes[4];
 
 		partes[0] = fs_cabeza_oit;
 		partes[1] = fuente_fs_cuerpo;
@@ -903,8 +1108,29 @@ int glmoderno_shader_iniciar(void)
 			p_glDeleteShader(fs);
 		}
 
-		if (programa != 0)
+		if (programa != 0 && p_glProgramUniform1i != NULL)
+		{
+			partes[0] = fs_cabeza_oit;
+			partes[1] = fs_temprano;
+			partes[2] = fuente_fs_cuerpo;
+			partes[3] = fs_main_oit;
+
+			fs = compilar_partes(GL_FRAGMENT_SHADER, partes, 4,
+				"fragment shader (4.30, prueba adelantada)");
+
+			if (fs != 0)
+			{
+				programa_ez = enlazar(vs, fs,
+					"el programa (4.30, prueba adelantada)");
+				p_glDeleteShader(fs);
+			}
+		}
+
+		if (programa != 0 && programa_ez != 0)
 			hay_oit = 1;
+		else if (programa != 0 && programa_ez == 0)
+			fprintf(stderr, "gl: sin prueba de profundidad adelantada no hay"
+				" transparencia ordenada\n");
 	}
 
 	if (programa == 0)
@@ -930,28 +1156,13 @@ int glmoderno_shader_iniciar(void)
 	if (programa == 0)
 		return 0;
 
-	u_muestra	= p_glGetUniformLocation(programa, "muestra");
-	u_textura	= p_glGetUniformLocation(programa, "usa_textura");
-	u_env		= p_glGetUniformLocation(programa, "modo_env");
-	u_offset	= p_glGetUniformLocation(programa, "usa_offset");
-	u_alpha		= p_glGetUniformLocation(programa, "usa_alpha");
-	u_umbral	= p_glGetUniformLocation(programa, "umbral");
-	u_niebla	= p_glGetUniformLocation(programa, "usa_niebla");
-	u_nie_color	= p_glGetUniformLocation(programa, "niebla_color");
-	u_nie_dens	= p_glGetUniformLocation(programa, "niebla_densidad");
-	u_nie_tabla	= p_glGetUniformLocation(programa, "niebla_tabla");
-	u_bump		= p_glGetUniformLocation(programa, "usa_bump");
-	u_bump_param = p_glGetUniformLocation(programa, "bump_param");
-	u_oit		= p_glGetUniformLocation(programa, "usa_oit");
-	u_oit_max	= p_glGetUniformLocation(programa, "oit_max");
-	u_oit_mezcla = p_glGetUniformLocation(programa, "oit_mezcla");
+	ubicar(programa, &u_n);
+	ubicar(programa_ez, &u_z);
 
 	/* La unidad de textura 0, una vez: el arbol no usa multitextura. */
 	p_glUseProgram(programa);
-	if (u_muestra >= 0)
-		p_glUniform1i(u_muestra, 0);
-	if (u_oit >= 0)
-		p_glUniform1i(u_oit, 0);
+	pu_1i(u_n.muestra, u_z.muestra, 0);
+	pu_1i(u_n.oit, u_z.oit, 0);
 	p_glUseProgram(0);
 
 	hay_shader = 1;
@@ -971,6 +1182,13 @@ int glmoderno_shader_iniciar(void)
 
 int glmoderno_hay_shader(void) { return hay_shader; }
 
+/* Cual de los dos va ligado ahora mismo: el de prueba adelantada solo mientras
+   la tanda translucida apila. */
+static GLuint prog_actual(void)
+{
+	return (oit_puesto && programa_ez) ? programa_ez : programa;
+}
+
 void glmoderno_shader_usar(int puesto)
 {
 	if (!hay_shader)
@@ -980,27 +1198,27 @@ void glmoderno_shader_usar(int puesto)
 		return;
 
 	shader_puesto = puesto ? 1 : 0;
-	p_glUseProgram(shader_puesto ? programa : 0);
+	p_glUseProgram(shader_puesto ? prog_actual() : 0);
 }
 
 /* Los uniformes no llevan sombra propia: los llama la de graficos.c, que ya
    filtra lo que no cambio. Duplicar el filtro solo daria dos verdades. */
 void glmoderno_u_textura(int on)
 {
-	if (hay_shader && u_textura >= 0)
-		p_glUniform1i(u_textura, on ? 1 : 0);
+	if (hay_shader)
+		pu_1i(u_n.textura, u_z.textura, on ? 1 : 0);
 }
 
 void glmoderno_u_env(int modo)
 {
-	if (hay_shader && u_env >= 0)
-		p_glUniform1i(u_env, modo);
+	if (hay_shader)
+		pu_1i(u_n.env, u_z.env, modo);
 }
 
 void glmoderno_u_offset(int on)
 {
-	if (hay_shader && u_offset >= 0)
-		p_glUniform1i(u_offset, on ? 1 : 0);
+	if (hay_shader)
+		pu_1i(u_n.offset, u_z.offset, on ? 1 : 0);
 }
 
 void glmoderno_u_alpha(int on, float umbral)
@@ -1008,10 +1226,8 @@ void glmoderno_u_alpha(int on, float umbral)
 	if (!hay_shader)
 		return;
 
-	if (u_alpha >= 0)
-		p_glUniform1i(u_alpha, on ? 1 : 0);
-	if (u_umbral >= 0)
-		p_glUniform1f(u_umbral, umbral);
+	pu_1i(u_n.alpha, u_z.alpha, on ? 1 : 0);
+	pu_1f(u_n.umbral, u_z.umbral, umbral);
 }
 
 /*
@@ -1032,14 +1248,13 @@ void glmoderno_niebla_escena(float r, float g, float b, float densidad,
 		return;
 
 	if (!antes)
-		p_glUseProgram(programa);
+		p_glUseProgram(prog_actual());
 
-	if (u_nie_color >= 0)
-		p_glUniform3f(u_nie_color, r, g, b);
-	if (u_nie_dens >= 0)
-		p_glUniform1f(u_nie_dens, densidad);
-	if (u_nie_tabla >= 0 && tabla != NULL)
-		p_glUniform2fv(u_nie_tabla, 128, tabla);
+	pu_3f(u_n.nie_color, u_z.nie_color, r, g, b);
+	pu_1f(u_n.nie_dens, u_z.nie_dens, densidad);
+
+	if (tabla != NULL)
+		pu_2fv(u_n.nie_tabla, u_z.nie_tabla, 128, tabla);
 
 	if (!antes)
 		p_glUseProgram(0);
@@ -1047,8 +1262,8 @@ void glmoderno_niebla_escena(float r, float g, float b, float densidad,
 
 void glmoderno_u_niebla(int on)
 {
-	if (hay_shader && u_niebla >= 0)
-		p_glUniform1i(u_niebla, on ? 1 : 0);
+	if (hay_shader)
+		pu_1i(u_n.niebla, u_z.niebla, on ? 1 : 0);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1187,10 +1402,7 @@ int glmoderno_oit_dimensionar(int ancho, int alto)
 		fprintf(stderr, "gl: la reserva quedo en el tope; con muchas capas"
 			" translucidas se van a perder fragmentos\n");
 
-	p_glUseProgram(programa);
-	if (u_oit_max >= 0)
-		p_glUniform1i(u_oit_max, (GLint) oit_max);
-	p_glUseProgram(shader_puesto ? programa : 0);
+	pu_1i(u_n.oit_max, u_z.oit_max, (GLint) oit_max);
 
 	return 1;
 }
@@ -1215,7 +1427,7 @@ void glmoderno_oit_empezar(int ancho, int alto, int presort)
 	{
 		p_glUseProgram(oit_prog);
 		p_glUniform1i(u_res_presort, presort ? 1 : 0);
-		p_glUseProgram(shader_puesto ? programa : 0);
+		p_glUseProgram(shader_puesto ? prog_actual() : 0);
 	}
 
 	p_glClearTexImage(oit_cabezas, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &vacio);
@@ -1285,19 +1497,35 @@ void glmoderno_oit_resolver(void)
 	glBindTexture(GL_TEXTURE_2D, 0);
 	glEnable(GL_DEPTH_TEST);
 
-	p_glUseProgram(shader_puesto ? programa : 0);
+	p_glUseProgram(shader_puesto ? prog_actual() : 0);
 }
 
+/*
+	Encender el apilado es tambien **cambiar de programa**: el de prueba
+	adelantada es el unico que deja fuera de la lista lo que la profundidad
+	rechaza. Si el driver no dio glProgramUniform* no hay segundo programa y
+	esto se reduce al uniforme de antes.
+*/
 void glmoderno_u_oit(int on)
 {
-	if (hay_shader && u_oit >= 0)
-		p_glUniform1i(u_oit, on ? 1 : 0);
+	if (!hay_shader)
+		return;
+
+	pu_1i(u_n.oit, u_z.oit, on ? 1 : 0);
+
+	if (oit_puesto == (on ? 1 : 0))
+		return;
+
+	oit_puesto = on ? 1 : 0;
+
+	if (shader_puesto)
+		p_glUseProgram(prog_actual());
 }
 
 void glmoderno_u_mezcla(int src, int dst)
 {
-	if (hay_shader && u_oit_mezcla >= 0)
-		p_glUniform1i(u_oit_mezcla,
+	if (hay_shader)
+		pu_1i(u_n.oit_mezcla, u_z.oit_mezcla,
 			(GLint) (((src & 7) << 4) | (dst & 7)));
 }
 
@@ -1306,11 +1534,10 @@ void glmoderno_u_bump(int on, unsigned long param)
 	if (!hay_shader)
 		return;
 
-	if (u_bump >= 0)
-		p_glUniform1i(u_bump, on ? 1 : 0);
+	pu_1i(u_n.bump, u_z.bump, on ? 1 : 0);
 
-	if (on && u_bump_param >= 0)
-		p_glUniform4f(u_bump_param,
+	if (on)
+		pu_4f(u_n.bump_param, u_z.bump_param,
 			(GLfloat) ((param >> 24) & 0xFF) / 255.0f,		/* K1 */
 			(GLfloat) ((param >> 16) & 0xFF) / 255.0f,		/* K2 */
 			(GLfloat) ((param >> 8)  & 0xFF) / 255.0f,		/* K3 */

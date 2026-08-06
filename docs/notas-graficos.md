@@ -937,3 +937,105 @@ igual se compila y se enlaza. No supongas que un cambio ahí afecta el render.
 
 `DibujarFramebuffer()` maneja el caso 2D, subiendo la RAM de video del PVR como textura sobre un
 quad del tamaño de la pantalla (formatos `FRAMEBUFFER_*`).
+
+---
+
+## El medio píxel: dónde muestrea el chip y dónde muestrea OpenGL
+
+**El PVR toma la muestra de un píxel en su coordenada entera; OpenGL la toma en el centro,
+`(X+0,5; Y+0,5)`.** Con la misma geometría, los dos interpolan coordenadas de textura corridas
+medio píxel. Para casi todo es invisible —medio píxel dentro del mismo texel da el mismo texel— y
+por eso el árbol vivió doce años sin notarlo. Se ve cuando una tira tiene **más de un texel por
+píxel**, porque ahí el medio píxel vale un texel entero o más.
+
+La corrección va en el `glOrtho` de `screeninit()` (`medio_pixel()` en `graficos.c`), no en la
+geometría: mover el sistema de coordenadas deja el vértice que el guest puso en X justo donde GL
+muestrea el píxel X. Tiene tres sutilezas y **las tres fueron errores cometidos y medidos**:
+
+- **Es medio píxel del DESTINO, expresado en unidades del guest.** Con `--render=ventana` la
+  pantalla emulada de 640 se estira sobre 800, así que medio píxel de destino son 0,4 unidades. Con
+  0,5 fijo el centro del primer píxel del destino cae *fuera* de una geometría que empieza en 0:
+  DCDoom, Virtua Tennis y Dave Mirra perdieron su columna izquierda y su fila superior enteras, y
+  sólo en el modo por omisión, que es justo el que se mira en vivo. Con la razón puesta, el centro
+  del primer píxel del destino cae exactamente sobre el borde a cualquier resolución.
+- **Es un pelo menos que medio.** Justo en el medio, el punto de muestreo cae exactamente sobre el
+  borde de toda geometría alineada a enteros —o sea casi toda— y la cobertura queda a merced del
+  desempate del rasterizador. En x salía bien por casualidad; en y no, porque el `glOrtho` invierte
+  el eje y con él se invierte el desempate: el primer cubo de `pvr-fb_tex` caía en las filas 1..64
+  en vez de 0..63. Quitarle 1/64 saca el empate en los dos ejes y mueve la interpolación menos de
+  una centésima de píxel.
+- **Los quads propios de dcemu tienen que sacárselo.** `DibujarFramebuffer()` es una copia 1:1
+  filtrada con `GL_LINEAR`; medio píxel ahí no la corre, la **mezcla con el vecino**. El quad se
+  dibuja en `-h .. ancho-h` para volver a cubrir el destino exacto.
+
+**A qué no equivale**: no es media coordenada de textura. Un corrimiento fijo de medio texel daría
+la mitad de lo que hace falta en `fb_tex` —que tiene dos texeles por píxel— y de más en cualquier
+ampliación. La corrección es de pantalla y su tamaño en texeles depende de cada tira.
+
+`DCEMU_SIN_MEDIO_PIXEL=1` vuelve al comportamiento anterior y **reproduce cualquier línea base
+previa byte a byte**, verificado contra el SHA de DCDoom.
+
+### `pvr-fb_tex` es lo único del parque que puede medirlo
+
+Lee su propio front buffer como textura con stride, a **dos texeles por píxel de pantalla**, así
+que ahí el medio píxel vale un texel exacto. Y su verificación no necesita imagen de referencia,
+que es lo que la hace utilizable: la demo se realimenta del framebuffer, o sea que **si la copia es
+1:1, dos cuadros consecutivos sólo pueden diferir dentro de la caja de 64×64 del cubo nuevo**. Con
+la convención mal, difieren 12 000 píxeles repartidos por toda la pantalla; con la convención bien,
+4096 y ni uno fuera de la caja. En pantalla la diferencia es un rastro continuo del arcoíris contra
+dos copias de media anchura.
+
+La aritmética de la demo, que es de donde salió el signo: sus dos pasadas mezclan por `DST_ALPHA` e
+`INV_DST_ALPHA` contra una máscara opaca que alterna columnas, y la fila de textura `2Y` frente a
+`2Y+1` decide si se lee la mitad izquierda o la derecha del framebuffer —una fila con stride 640 son
+1280 bytes en la numeración de 64 bits, o sea 640 bytes y 320 píxeles en la de 32—. Sólo cierra si
+el índice de texel trunca a `2X`/`2Y`; GL, muestreando en el centro, obtenía `2X+1`/`2Y+1`. El caso
+`hi_chip` —con desplazamientos de U de +2 y +1 texeles, donde 2 texeles son 4 bytes, o sea
+exactamente el bit del banco— sale bien con la misma regla, y eso es lo que la fija.
+
+**Residuo conocido**: la copia pierde la columna 0 y la fila 0. Es el propio desplazamiento de
+`-1/1024` de la demo leyendo fuera de la textura en el borde izquierdo; dcemu no pierde la fila
+superior en general —cinco demos de pantalla completa siguen pintando sus 640 píxeles de la fila 0—.
+
+---
+
+## La prueba de profundidad y la transparencia ordenada
+
+**Un shader con `discard` obliga a probar la profundidad después de ejecutarlo.** Hasta no
+ejecutarlo el driver no sabe si el fragmento existe, así que la prueba se atrasa — y con ella se
+atrasa *sólo la prueba*, no los efectos laterales. El epílogo de la lista por píxel apila y después
+descarta, o sea que **apilaba también lo que la profundidad iba a rechazar**: geometría translúcida
+tapada por geometría opaca entraba en la lista y la resolución la mezclaba encima de lo que la
+tapaba. No es el detalle de una demo: es toda la tanda translúcida de cualquier escena con paredes.
+
+Lo destapó `pvr-fb_tex`, donde el cubo opaco quedaba borrado por los dos cuadriláteros de pantalla
+completa que están detrás de él; y como esa demo se realimenta del framebuffer, el cubo borrado se
+llevaba puesto el rastro del cuadro siguiente y la pantalla entera terminaba en negro. La sonda de
+capas lo confirma al revés: con el arreglo, `n = 0` en exactamente los 4096 píxeles del cubo y
+`n = 2` en los otros 303 104.
+
+Se arregla con `layout(early_fragment_tests)`, que corre las pruebas **antes** del shader, y por
+eso el apilado necesita un **programa propio**: con la prueba adelantada la profundidad se escribe
+antes del shader, así que un fragmento de punch-through que se descarta por alfa dejaría su z
+escrita igual. Los dos programas son el mismo fuente salvo esa línea y se mantienen al día con
+`glProgramUniform*`, que escribe un uniforme sin ligar el programa — sin esa entrada no hay segundo
+programa y no hay transparencia ordenada, que es preferible a dibujar lo que debería estar tapado.
+
+El arreglo subió de 5 a 9 (de 12) las demos de control byte a byte iguales entre `--render=shader`
+y `--render=oit`. Las tres que quedan —`2ndmix`, `kgl-tunnel`, `tsunami-banner`— son exactamente
+las que tienen capas translúcidas superpuestas, que es donde el orden por píxel *debe* diferir del
+orden por tira.
+
+### Las sondas de `DCEMU_OIT_SOLO_FONDO`, y la que mintió
+
+1 emite el fondo, 2 cuenta capas, 3 el **alfa** del fondo, 4 el color del fragmento más cercano sin
+mezclar. La 3 existe porque la mezcla por `DST_ALPHA` consume un canal que una captura RGB no
+muestra; la 4 separa «el color apilado está mal» de «la mezcla lo usa mal».
+
+**La 2 estuvo rota desde que se escribió y eso costó una sesión.** Vivía detrás de un
+`if (solo_fondo != 0)` que ya había devuelto el fondo, así que devolvía el fondo y no contaba nada.
+Su salida —4096 píxeles «con lista» y 303 104 «sin»— era la imagen del cubo sobre negro, y se leyó
+como «la escena de pantalla no apila nada». Eso quedó anotado como hecho en el mensaje de commit y
+en un comentario del código. La regla que deja: **una sonda es código, y una sonda equivocada
+confirma justo aquello para lo que se escribió**; antes de creerle la primera respuesta, hay que
+hacerle contestar algo cuya respuesta ya se sabe.

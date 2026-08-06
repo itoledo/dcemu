@@ -1931,9 +1931,13 @@ static void viewport_pantalla(void)
 	Existe porque la transparencia ordenada tiene una cabeza de lista por pixel
 	y copia el fondo de un rectangulo: con el tamano de la pantalla durante un
 	render a textura, la lista se apila en las coordenadas del viewport chico y
-	el fondo se copia de otro lado. pvr-fb_tex --que rinde a una textura de
-	64x64 y despues la muestra-- salia negro por eso, y la sonda que lo dijo
-	fue contar capas: 4096 pixeles con lista y 303104 sin.
+	el fondo se copia de otro lado.
+
+	Salio de investigar pvr-fb_tex, y **la lectura que lo motivo era falsa**: la
+	sonda de capas devolvia el fondo en vez de contar --su rama estaba detras de
+	un `!= 0` que ya habia salido-- y se leyo como "la escena de pantalla no
+	apila nada". Con la sonda arreglada apila 2 capas en cada pixel. Esto queda
+	igual porque es correcto por su cuenta, no porque haya arreglado aquello.
 */
 static int escena_w = 0, escena_h = 0;
 
@@ -2403,6 +2407,58 @@ static void plantilla_para(int i, int dentro, int hay_volumen)
 	optimizacion sino un requisito.
 */
 static int env_sin_dibujo = -1;
+
+/*
+	**Medio pixel**: donde cae el punto de muestreo de un pixel.
+
+	OpenGL evalua los atributos en el CENTRO del pixel --(X+0,5; Y+0,5)-- y el
+	PVR en la coordenada entera, o sea que la misma geometria interpola
+	coordenadas de textura corridas medio pixel entre los dos. Para casi todo es
+	invisible; para pvr-fb_tex, que muestrea su propio framebuffer con un texel
+	por medio pixel de pantalla, es la diferencia entre reconstruir la pantalla y
+	no reconstruirla.
+
+	Se corrige moviendo el glOrtho, no la geometria: asi el vertice que el guest
+	puso en X queda en el punto donde GL muestrea el pixel X.
+
+	**Medio pixel del DESTINO, no medio pixel emulado**, y la diferencia se ve.
+	El corrimiento tiene que valer medio pixel *de los que GL rasteriza*, medido
+	en unidades del guest: con --render=ventana la pantalla emulada de 640 se
+	estira sobre 800, asi que medio pixel de destino son 0,4 unidades y no 0,5.
+	Puesto en 0,5 fijo, el centro del primer pixel del destino cae FUERA de una
+	geometria que empieza en 0 -- y la primera columna y la primera fila salen
+	negras. Se midio: DCDoom, Virtua Tennis y Dave Mirra perdian su columna
+	izquierda y su fila superior entera, y solo en el modo por omision. Con la
+	razon puesta, el centro del primer pixel cae exactamente sobre el borde a
+	cualquier resolucion, y ahi entra el pelo de abajo.
+
+	**Medio no, un pelo menos**, y el pelo tampoco es cosmetico. Justo en el
+	medio el punto de muestreo cae EXACTAMENTE sobre el borde de toda geometria
+	alineada a enteros, que es casi toda, y la cobertura queda a merced del
+	desempate del rasterizador. En x salia bien por casualidad; en y no, porque
+	el glOrtho invierte el eje y con el se invierte el desempate: el primer cubo
+	de pvr-fb_tex caia en las filas 1..64 en vez de 0..63. Quitar 1/64 del
+	corrimiento saca el empate en los dos ejes --el borde queda dentro por un
+	lado y fuera por el otro, como en el chip-- y mueve la interpolacion menos
+	de una centesima de pixel.
+
+	Vale la pena decir a que no equivale: no es media coordenada de textura. El
+	corrimiento es de pantalla, y cuantos texeles son depende de cuantos texeles
+	por pixel tenga la tira -- en fb_tex son dos, que es justo lo que hace que
+	esa demo lo mida y ninguna otra.
+*/
+static int env_medio_pixel = -1;
+
+static double medio_pixel(double guest, double destino)
+{
+	if (env_interruptor("DCEMU_SIN_MEDIO_PIXEL", &env_medio_pixel))
+		return 0.0;
+
+	if (destino <= 0.0)
+		destino = guest;
+
+	return (0.5 - 1.0 / 64.0) * guest / destino;
+}
 
 static void dibujar_tira(DWORD i)
 {
@@ -3966,7 +4022,14 @@ static int render_a_textura(void)
 	glViewport(0, 0, ancho, alto);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glOrtho(0, ancho, alto, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
+	{
+		/* Aca el destino ES la textura, asi que la razon vale 1. */
+		double hx = medio_pixel(ancho, ancho);
+		double hy = medio_pixel(alto, alto);
+
+		glOrtho(-hx, ancho - hx, alto - hy, -hy,
+			PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
+	}
 
 	/* La mascara va **antes** del clear: glClear de la profundidad la respeta.
 	   Ver limpiar_pantalla(). */
@@ -3998,7 +4061,13 @@ static int render_a_textura(void)
 	viewport_pantalla();
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glOrtho(0, screenancho, screenheight, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
+	{
+		double hx = medio_pixel(screenancho, render_ancho());
+		double hy = medio_pixel(screenheight, render_alto());
+
+		glOrtho(-hx, screenancho - hx, screenheight - hy, -hy,
+			PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
+	}
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -5936,12 +6005,30 @@ void DibujarFramebuffer()
 /* Con el test de profundidad apagado la z solo importa para el recorte: tiene
    que caer dentro del +-PROFUNDIDAD_RANGO del glOrtho. Era -1000. */
 #define PROFUNDIDAD (-1.0f)
-	glBegin(GL_QUADS);
-	glTexCoord2f(0.0f, screenheight / screentexheight); glVertex3f(0.0f, (float) screenheight, PROFUNDIDAD);
-	glTexCoord2f(screenancho / screentexwidth, screenheight / screentexheight); glVertex3f((float) screenancho, (float) screenheight, PROFUNDIDAD);
-	glTexCoord2f(screenancho / screentexwidth, 0.0f); glVertex3f((float) screenancho, 0.0f, PROFUNDIDAD);
-	glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, 0.0f, PROFUNDIDAD);
-	glEnd();
+	/*
+		**Este quad no es geometria del guest y por eso se saca el medio pixel.**
+
+		El glOrtho corre el sistema de coordenadas para que el punto de muestreo
+		de GL caiga donde muestrea el chip -- ver medio_pixel(). Eso vale para lo
+		que dibuja el guest; esto es una copia 1:1 de dcemu, que quiere cubrir el
+		destino exacto y caer texel con pixel. Dejarlo en 0..ancho lo correria
+		medio pixel del destino, y como el framebuffer se filtra con GL_LINEAR el
+		sintoma no seria un corrimiento sino que **cada pixel saldria mezclado
+		con su vecino**: una copia exacta convertida en borrosa.
+	*/
+	{
+		float x0 = (float) -medio_pixel(screenancho, render_ancho());
+		float y0 = (float) -medio_pixel(screenheight, render_alto());
+		float x1 = x0 + (float) screenancho;
+		float y1 = y0 + (float) screenheight;
+
+		glBegin(GL_QUADS);
+		glTexCoord2f(0.0f, screenheight / screentexheight); glVertex3f(x0, y1, PROFUNDIDAD);
+		glTexCoord2f(screenancho / screentexwidth, screenheight / screentexheight); glVertex3f(x1, y1, PROFUNDIDAD);
+		glTexCoord2f(screenancho / screentexwidth, 0.0f); glVertex3f(x1, y0, PROFUNDIDAD);
+		glTexCoord2f(0.0f, 0.0f); glVertex3f(x0, y0, PROFUNDIDAD);
+		glEnd();
+	}
 
 	/* Diagnostico temporal: que quedo de verdad en el buffer de GL. Si la RAM de
 	   video tiene la imagen y esto sale negro, el problema es la subida o el
@@ -6354,7 +6441,13 @@ int screeninit(void)
 		su comentario. Con el rango lineal de antes (+-32768) la ciudad de un
 		juego entraba en veinte pasos del buffer.
 	*/
-	glOrtho(0, screenancho, screenheight, 0, PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
+	{
+		double hx = medio_pixel(screenancho, render_ancho());
+		double hy = medio_pixel(screenheight, render_alto());
+
+		glOrtho(-hx, screenancho - hx, screenheight - hy, -hy,
+			PROFUNDIDAD_RANGO, -PROFUNDIDAD_RANGO);
+	}
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();

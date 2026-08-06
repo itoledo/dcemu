@@ -1868,3 +1868,64 @@ render a textura no es el de la pantalla; y muestrear el fondo con `texelFetch` 
 coordenadas normalizadas, que lo hace independiente del tamaño), pero el negro sigue. Queda
 anotado como regresión conocida de un modo que es **opcional y no el de omisión**, y como el
 próximo hilo del que tirar.
+
+---
+
+## 2026-08-06 — El `fb_tex` que quedó abierto, y lo que había abajo
+
+El commit anterior dejó `pvr-fb_tex` en negro bajo `--render=oit` como «el próximo hilo del que
+tirar». Tirando de él salieron **dos** fallas, y sólo la primera era de la transparencia ordenada.
+
+### Lo primero fue desarmar la sonda
+
+La conclusión anotada —«la escena de pantalla no apila nada, 4096 píxeles con lista y 303 104
+sin»— era falsa. `DCEMU_OIT_SOLO_FONDO=2` salía por un `if (solo_fondo != 0)` anterior que devuelve
+el fondo, así que nunca contó una capa: esos 4096 píxeles eran el cubo dibujado, no una lista. Con
+la sonda arreglada, cada píxel apila 2 capas. Se agregaron además la 3 (el alfa del fondo, que es
+lo que consume la mezcla por `DST_ALPHA` y una captura RGB no puede mostrar) y la 4 (el color del
+fragmento más cercano sin mezclar), y fue la 4 la que dijo que lo apilado era negro.
+
+### La falla real de la OIT: `discard` atrasa la prueba de profundidad
+
+Un shader con `discard` obliga a probar la profundidad después de ejecutarlo, y el epílogo de la
+lista apila *y después* descarta. O sea que se apilaba lo que la profundidad iba a rechazar: los dos
+cuadriláteros de pantalla completa que están detrás del cubo opaco entraban en la lista y la
+resolución los mezclaba encima del cubo. Como la demo se realimenta del framebuffer, el cubo borrado
+se llevaba el rastro del cuadro siguiente y todo terminaba en negro.
+
+Se arregló con `layout(early_fragment_tests)` en un **segundo programa** —no se puede poner en el
+compartido, porque con la prueba adelantada un punch-through descartado por alfa dejaría su z
+escrita— mantenido al día con `glProgramUniform*`. Detalle en `docs/notas-graficos.md`.
+
+**Y no era el problema de una demo.** Las demos de control byte a byte iguales entre
+`--render=shader` y `--render=oit` pasaron de 5 a 9 de 12; las tres que quedan son exactamente las
+que tienen capas translúcidas superpuestas.
+
+### La segunda falla no era de la OIT: el medio píxel
+
+Con la OIT arreglada, `fb_tex` salía igual en los tres modos **y los tres estaban mal**: la pantalla
+mostraba dos copias de media anchura en vez de un rastro. O sea que la línea base contra la que se
+venía comparando nunca fue correcta para esta demo — que es justo lo que había que sospechar.
+
+**El PVR muestrea un píxel en su coordenada entera y OpenGL en el centro.** La demo lo mide porque
+lee su propio front buffer a dos texeles por píxel, donde medio píxel vale un texel entero. La
+corrección va en el `glOrtho`, y su verificación no necesita imagen de referencia: si la copia es
+1:1, dos cuadros consecutivos sólo pueden diferir dentro de la caja del cubo nuevo. Antes diferían
+12 000 píxeles por toda la pantalla; ahora 4096 y ninguno fuera de la caja.
+
+Tres errores propios en el camino, los tres medidos y anotados en `notas-graficos.md`: el
+corrimiento es medio píxel **del destino** y no medio píxel emulado (con 0,5 fijo, DCDoom, Virtua
+Tennis y Dave Mirra perdían su columna izquierda y su fila superior, y sólo en el modo por
+omisión); tiene que ser un pelo menos que medio, porque justo en el medio la cobertura queda a
+merced del desempate del rasterizador y el `glOrtho` invierte el eje y; y los quads propios de
+dcemu tienen que sacárselo, porque una copia 1:1 filtrada con `GL_LINEAR` no se corre medio píxel,
+se mezcla con el vecino.
+
+### Barandas
+
+`ctest` 22/22. `--render=fbo` contra `--render=shader`: idénticas en 10 de 12 demos de control, y
+las dos que difieren son la niebla y el relieve por píxel, que difieren a propósito. Los bordes de
+las doce demos y de los seis juegos, contados columna por columna, iguales a los de antes del
+cambio. **`DCEMU_SIN_MEDIO_PIXEL=1` reproduce el SHA de DCDoom anterior (`36578F59…`) byte a byte**,
+que es lo que prueba que el interruptor aísla el cambio y que no se movió nada más. Las referencias
+nuevas son `198B396F…` con `--sin-vmu` y `68F7C61A…` con la tarjeta.

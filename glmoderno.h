@@ -157,6 +157,11 @@ void glmoderno_u_bump(int on, unsigned long param);
 	de mezcla, y una pasada de resolucion ordena cada lista y la mezcla sobre lo
 	que dejo la tanda opaca. Necesita GL 4.3 (SSBO, imagenes atomicas) y el
 	destino propio, porque el fondo se copia del FBO.
+
+	**Y necesita que la prueba de profundidad corra antes del shader**, que es
+	lo que obliga a un segundo programa: ver fs_temprano en glmoderno.c. Sin eso
+	se apila tambien lo que la geometria opaca tapa, y la resolucion lo mezcla
+	encima de lo que lo tapaba.
 */
 int glmoderno_hay_oit(void);
 

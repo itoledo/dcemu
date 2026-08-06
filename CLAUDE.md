@@ -155,7 +155,9 @@ when the VMU was added, and all seven came back byte-identical under `--sin-vmu`
 consequences: a sweep is only comparable against another sweep with the same VMU setting, and
 **a run can write the card**, so an A/B has to start from the same image (delete
 `bios/vmu-a1.bin`, or point `--vmu=` at a scratch copy). DCDoom's end-to-end reference has one
-hash per configuration: `36578F59…` with `--sin-vmu`, `BB64A0B0…` with the card.
+hash per configuration: `198B396F…` with `--sin-vmu`, `68F7C61A…` with the card. **Both changed on
+2026-08-06** when the half-pixel sampling convention was corrected; `DCEMU_SIN_MEDIO_PIXEL=1`
+reproduces the previous `36578F59…` byte for byte, which is what proves the switch isolates it.
 
 **A KOS demo sweep cannot catch every regression, and this matters when judging a change.**
 Several paths are exercised only by commercial games: mipmapped textures, the TSP repeat
@@ -195,7 +197,8 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--sin-vmu` | sin tarjeta en la ranura 1. Es el interruptor de aislamiento, y **el que reproduce la línea base anterior byte a byte** |
 | `--render=MODO` | `ventana` (por omisión, y **es la referencia**), `fbo` —rasterizar a la resolución emulada en un destino propio, respetando el aspecto— o `shader`, que además rasteriza con GLSL en vez de función fija |
 | `--escala=N` | resolución interna ×N (1 a 8). Implica `--render=fbo`. **Medida: no cuesta nada** — ver abajo |
-| `DCEMU_OIT_SOLO_FONDO=1\|2` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel. Separa «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
+| `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
+| `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -277,6 +280,12 @@ how to believe a measurement of it.
   as "draws nothing". **With `--render=fbo` the size is the emulated one times `--escala`**, so
   a capture is not the same image and not even the same dimensions: a sweep is only comparable
   against another sweep with the same render setting.
+- **A probe is code, and a wrong probe confirms whatever it was built to test.** The OIT layer
+  counter sat behind an `if (solo_fondo != 0)` that had already returned the background, so it
+  painted the background and never counted a thing. Read as "the screen scene stacks nothing", it
+  sent a whole session down the wrong path and got written into the notes as a fact. With the probe
+  fixed, every pixel had two layers. Before trusting a probe on the first question you ask it, make
+  it report something you already know the answer to.
 - **When a capture says blank, check the strip counts at exit before believing it.**
   `--traza-mem` prints how many scenes rendered and the strip count of the last twelve — that
   is what separates "the demo stopped submitting" from "the capture is wrong".
@@ -530,6 +539,24 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   — monotonic, so every compare mode holds. `glOrtho` carries near/far inverted because GL
   negates eye z. z = 0 is legal and means infinitely far.
 - **`glClear` of the depth buffer is masked by `glDepthMask`.**
+- **The chip samples a pixel at its integer coordinate; OpenGL samples at the centre.** So the same
+  geometry interpolates texture coordinates half a pixel apart in the two, and `screeninit()`'s
+  `glOrtho` carries the correction (`medio_pixel()`). Three things about it, each one a bug that was
+  made and measured: the shift is **half a pixel of the render target expressed in guest units**,
+  not half an emulated pixel — with `--render=ventana` the 640 wide screen is stretched over 800, so
+  it is 0.4, and a fixed 0.5 puts the first target pixel's centre outside geometry that starts at 0
+  and **DCDoom, Virtua Tennis and Dave Mirra lost their left column and top row**. It is a hair less
+  than half, because exactly half puts the sample point on the edge of all integer-aligned geometry
+  and leaves coverage to the rasterizer's tie-break — which the `glOrtho`'s y flip resolves the wrong
+  way, costing a row. And **dcemu's own full-screen quads must take it back out** (`DibujarFramebuffer()`):
+  they are a 1:1 copy filtered `GL_LINEAR`, so half a pixel does not shift them, it blends every pixel
+  with its neighbour.
+- **`pvr-fb_tex` is the only thing in the park that can measure that**, because it reads its own front
+  buffer as a strided texture at two texels per screen pixel, where half a pixel is a whole texel. Its
+  check is self-contained and does not need a reference image: with the convention right, consecutive
+  frames differ **only inside the 64×64 box of the new cube**, and the screen shows one continuous
+  rainbow trail instead of two half-width copies. One residue: the copy drops column 0 and row 0, which
+  is the demo's own `-1/1024` U offset reading outside the texture at the left edge.
 - **Mipmapped textures store their levels from 1×1 up**, so the big level is not at the
   texture address.
 - **`glTexParameteri` applies to whatever texture is bound** — set the filters after
@@ -616,12 +643,20 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
 - **`--render=oit` orders the translucent list per pixel**, which is what the chip does; today's
   `qsort` orders it per strip and its own comment admits interpenetrating geometry can come out
   wrong. Per-pixel linked lists (SSBO + atomic image), resolved in a full-screen pass that sorts
-  each list and applies the TSP's eight blend factors in order. Five control demos are
-  byte-identical to `--render=shader` — the ones with no overlapping translucent layers, which is
-  what validates the re-implemented blend factors. **`pvr-fb_tex` regresses to black and is an
-  open issue**: it combines a 64×64 render-to-texture with framebuffer feedback, and the probe
-  `DCEMU_OIT_SOLO_FONDO=2` (paint the layer count) says the screen scene stacks nothing. The mode
-  is opt-in and not the default.
+  each list and applies the TSP's eight blend factors in order. **Nine of the twelve control demos
+  are byte-identical to `--render=shader`**; the three that differ (`2ndmix`, `kgl-tunnel`,
+  `tsunami-banner`) are exactly the ones with overlapping translucent layers, which is what
+  validates the re-implemented blend factors.
+- **The stacking pass needs its own program, with `layout(early_fragment_tests)`.** A shader
+  containing `discard` forces the depth test *after* it runs, so the OIT epilogue — stack, then
+  discard — stacked the fragments depth was about to reject: **translucent geometry hidden behind
+  opaque geometry entered the list and the resolve blended it over what was hiding it.** That is
+  every scene with walls, not one demo. The qualifier cannot go on the shared program, because with
+  the test brought forward the depth is *written* before the shader and a punch-through fragment
+  that discards would leave its z behind; so the two programs are the same source differing in that
+  one line, kept in step by `glProgramUniform*` (which writes a uniform without binding). Without
+  that entry point there is no second program and no ordered transparency — better off than drawing
+  what should be hidden.
 - **Bump mapping is evaluated per pixel** from the raw angles instead of being baked into the
   texture at upload. Same formula — `pvr-bumpmap` agrees to within 1 level, which is byte rounding
   — but it fixes what baking cannot: K1..K3 and Q come from the *polygon*, while the texture cache
