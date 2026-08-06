@@ -2776,6 +2776,11 @@ void traza_ta_resumen(void)
 		" 0/1 %ld, 1/0 %ld, 1/1 %ld\n",
 		censo_sel[0], censo_sel[1], censo_sel[2], censo_sel[3]);
 
+	fprintf(stderr, "traza: censo de tipos de color: 0 (empaquetado) %ld,"
+		" 1 (flotante) %ld, 2 (intensidad) %ld, 3 (intensidad heredada) %ld\n",
+		ta_censo_color[0], ta_censo_color[1], ta_censo_color[2],
+		ta_censo_color[3]);
+
 	fprintf(stderr, "traza: censo de volumenes por instruccion: 0 (acumula)"
 		" %ld, 1 (cierra incluyendo) %ld, 2 (cierra excluyendo) %ld, 3 %ld;"
 		" %ld cierres\n",

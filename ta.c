@@ -36,6 +36,9 @@ void ta_reiniciar(void)
 	ta_faltan = 0;
 }
 
+/* Ver ta.h: el censo de tipos de color, para saber que usa cada guest. */
+long ta_censo_color[4] = { 0, 0, 0, 0 };
+
 void ta_clasificar(DWORD pcw, int * global, int * vertice)
 {
 	int textura	= (pcw >> 3) & 1;
@@ -48,6 +51,13 @@ void ta_clasificar(DWORD pcw, int * global, int * vertice)
 
 	*global = TA_GLOBAL_POLY0;
 	*vertice = 0;
+
+	/* Censo del tipo de color por encabezado: 0 empaquetado, 1 en coma
+	   flotante, 2 intensidad y 3 intensidad heredada. Es lo que contesta si un
+	   guest usa el color de cara, que no se puede saber mirando el codigo.
+	   Un incremento por encabezado; lo informa traza_ta_resumen(). */
+	if (tipo != 5 && lista != 1 && lista != 3)
+		ta_censo_color[col & 3]++;
 
 	/*
 		Un sprite no tiene tipo de color ni volumen: su encabezado mide 32 y su

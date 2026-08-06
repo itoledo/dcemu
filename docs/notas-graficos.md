@@ -230,11 +230,28 @@ quedan byte a byte idénticas) — otro que solo muestra un juego.
 
 Las sombras ahora dibujan *nada*, que es lo correcto para lo que esas tiras llevan y sigue sin ser
 lo que muestra la consola: el oscurecimiento tiene que venir de algún lado que dcemu descarta. No
-es un volumen modificador (medido: `DCEMU_SIN_VOLUMEN=1` deja la escena byte a byte idéntica). Los
-dos sospechosos abiertos son los bits del **buffer de acumulación secundario** del TSP (25 y 24),
-que eligen ese buffer en vez del framebuffer como operando de mezcla y que dcemu solo registra, y
-el color de cara de un vértice en modo intensidad, ya que esas tiras llegan negro puro con solo el
-alfa por vértice variando (0.00, 0.11, 0.15).
+es un volumen modificador (medido: `DCEMU_SIN_VOLUMEN=1` deja la escena byte a byte idéntica).
+
+**Los dos sospechosos que quedaban están descartados, los dos por medición (2026-08-06).**
+
+- El **buffer de acumulación secundario** del TSP (bits 25 y 24). Censado: sobre 1,16 millones de
+  tiras de Crazy Taxi en juego, las doce demos de control y los nueve juegos, **no hay una sola tira
+  que lo seleccione** — y Virtua Tennis 2 menos que ninguna, con sus 5581 tiras todas en 0/0. Está
+  implementado igual (ver más abajo), así que si algún día aparece una que lo pida, funciona.
+- El **color de cara en modo intensidad**. Ahí el censo dice lo contrario y por eso era el candidato
+  fuerte: Virtua Tennis 2 manda **826 414 encabezados en modo intensidad contra 56 576
+  empaquetados**, el 64 % de todo lo que dibuja. Pero el camino está bien: `demos/intensidad/`
+  compara el mismo dibujo mandado empaquetado y mandado como color de cara más intensidad, y salen
+  **byte a byte iguales**, tanto el RGB como la regla del alfa —que sale del color de cara y es
+  constante en el polígono, no de la intensidad—.
+
+O sea que el oscurecimiento no viene de ninguno de los tres sitios que se habían anotado, y la
+pregunta vuelve a estar abierta sin candidato. Lo que sí quedó del intento son tres cosas
+utilizables: las dos demos que fabrican el contenido que faltaba, el censo de tipos de color y de
+bits del TSP que se informa en el resumen de `--traza-mem`, y la certeza de que las tiras de sombra
+—las 53 de una escena de partido, con `SRC_ALPHA/INV_SRC_ALPHA` y negro al 0.40 sobre la cancha— sí
+dibujan sombra hoy. La nota anterior es de antes de arreglar la tabla de mezcla y el color de
+offset.
 
 ## El Offset Color es el color secundario de GL
 

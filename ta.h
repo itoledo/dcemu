@@ -62,6 +62,15 @@
 */
 void ta_clasificar(DWORD pcw, int * global, int * vertice);
 
+/*
+	Cuantos encabezados de poligono trajo cada tipo de color: 0 empaquetado,
+	1 en coma flotante, 2 intensidad y 3 intensidad heredada. Los dos ultimos
+	son los que usan el COLOR DE CARA del encabezado en vez de un color por
+	vertice, asi que este censo es lo que contesta si un guest depende de el --
+	una pregunta que mirando el codigo del emulador no se puede responder.
+*/
+extern long ta_censo_color[4];
+
 /* Cuanto mide un parametro de cada clase: 32 o 64 bytes. */
 int ta_tam_global(int global);
 int ta_tam_vertice(int vertice);
