@@ -294,12 +294,58 @@ si de verdad se perdió algo.
 anillo, no la tarjeta. Por eso la verificación byte a byte de arriba salió limpia aunque la
 corrida fuera rápida.
 
+## El DSP de efectos (2026-08-06)
+
+**Emulado** (`aicadsp.c/h`, fase 6 del plan): los 128 pasos del microprograma tal como los
+enumera el DevBox §8.1.1.8, contrastados con las implementaciones que descienden de las notas
+de Corlett — el formato del paso, el orden de las operaciones y el flotante de 16 bits del
+anillo son los mismos en MAME, nullDC y reicast, y ese acuerdo es lo más parecido a una segunda
+fuente que tiene este chip.
+
+Las decisiones que importan:
+
+- **El microprograma, los coeficientes y las direcciones se leen de `aica_reg[]` directamente**,
+  sin copia: los registros son el almacenamiento, así que la subida por DMA interno y la
+  relectura del guest funcionan solas. Un aviso (`aicadsp_tocar`) marca el programa como sucio y
+  el reescaneo —contar pasos con contenido— pasa una vez, no por muestra.
+- **El costo con el programa en cero es un retorno temprano**, que es lo que corre el parque
+  entero de KOS: su driver no programa el DSP nunca. Verificado con el `.wav`: `cpp-modplug_test`
+  —la única demo de sonido que produce señal en el arnés sin disco— sale **byte a byte idéntico**
+  con y sin el módulo. (`sound-sfx`, `sound-hello-mp3/adx/ogg` capturan silencio en este arnés y
+  no guardan nada: la regla del `.wav` silencioso, aplicada.)
+- **El dato de un MRD lo entrega el IWT de dos pasos después** (`dsp_memval[4]`), que es la regla
+  que el ensamblador de Sega da por sentada.
+- **El DSP es el cuarto escritor de la RAM de onda**: cada MWT marca su página
+  (`onda_marcar_escritura`), o el ARM se saltearía un barrido que debía rehacer.
+- El envío de un canal (ISEL/IMXL, +0x20) va **antes del DISDL y sin paneo**: DISDL/DIPAN son de
+  la salida directa, y el paneo del efecto lo pone EFPAN a la salida. Las 16 EFREG y las 2 EXTS
+  se componen con EFSDL/EFPAN (0x2000-0x2044), la misma tabla de atenuación que un canal, antes
+  de MVOL.
+
+**El censo que cambió el veredicto del plan.** «Casi nadie lo nota» era cierto para KOS y falso
+para Katana: de los juegos censados, **Crazy Taxi programa 78 pasos, Tennis 2K2 y Virtua
+Tennis 2 programan 110**, con las 16 ranuras EFSDL activas — reverberación real que dcemu venía
+descartando. Dead or Alive 2 manda 1,4 M de muestras a MIXS **sin programa y sin EFSDL**, o sea
+que en el chip tampoco sonarían. El `.wav` del banco de Crazy Taxi cambia como cambia una
+reverberación: mismo largo, RMS +3 % (4718 → 4871), sin recorte nuevo, y **bit a bit
+reproducible** entre corridas.
+
+**El CD-DA tiene dos caminos y la traza dice cuál corrió.** En el chip entra por EXTS y suena
+por los EFSDL de las ranuras 16 y 17, pasando por MVOL como todo; eso es lo que pasa si el guest
+programó esos registros. Pero dcemu con hooks de syscall no corre la inicialización de sonido
+del boot ROM, así que un guest que confía en lo que el ROM dejó puede no escribirlos nunca: con
+la regla del chip a secas se quedaría sin música aquí y no en la consola. Si ninguna de las dos
+ranuras tiene EFSDL, corre el camino de antes — nivel fijo, fuera de MVOL.
+
+La suite `dsp` (7 casos) ensambla microprogramas a mano y verifica la aritmética del paso, la
+línea de retardo TEMP con su decremento, el anillo en crudo y el flotante de ida y vuelta sobre
+los 65536 patrones.
+
 ## Lo que no está emulado
 
-El DSP de audio —y con él el nivel de CD-DA, que queda fijo—, el LFO, el filtro FEG (el papel
-dice cómo dejarlo pasante: `Q = 4`, `FLV = 0x1FF8`, y el firmware de KOS simplemente lo apaga)
-y la interrupción de intervalo de muestra. `docs/aica-plan.md`, "Lo que sigue faltando", tiene
-el detalle.
+El LFO, el filtro FEG (el papel dice cómo dejarlo pasante: `Q = 4`, `FLV = 0x1FF8`, y el
+firmware de KOS simplemente lo apaga) y la interrupción de intervalo de muestra.
+`docs/aica-plan.md`, "Lo que sigue faltando", tiene el detalle.
 
 Del CD-DA falta el `CD_SCAN` de verdad: se acepta y la reproducción sigue donde estaba, que es
 lo que ve un juego que adelanta y después suelta.

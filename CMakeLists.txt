@@ -239,6 +239,7 @@ set(DCEMU_SOURCES
 	vmu.c
 	vram.c
 	aica.c
+	aicadsp.c
 	arm7.c
 	audio.c
 	g2dma.c

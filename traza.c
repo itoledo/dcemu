@@ -17,7 +17,8 @@
 #include "traza.h"
 #include "audio.h"
 #include "tmu.h"
-#include "aica.h"			/* los cuadros que el anillo de salida tuvo que tirar */
+#include "aica.h"
+#include "aicadsp.h"			/* los cuadros que el anillo de salida tuvo que tirar */
 #include "opciones.h"
 #include "mem.h"
 
@@ -424,6 +425,10 @@ void traza_resumen(void)
 	   pregunta -- si la ventana quedo con contenido o si el guest dejo de
 	   mandar --, que es la que separa un parpadeo de una demo terminada. */
 	traza_ta_resumen();
+
+	/* El DSP de efectos: si algun guest lo programo, y por cual camino salio
+	   el CD-DA. */
+	aicadsp_resumen();
 
 	/* Cuanto mas lento que una consola corrio el emulador. Antes no habia con
 	   que compararlo. Ver docs/clock-plan.md, fase 4. */

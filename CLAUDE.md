@@ -810,9 +810,17 @@ forever is the tree's usual failure shape: a valid answer that means nothing.
 Silencing the whole mechanism would not isolate anything — a guest that polls its music would
 take a different path, and the two runs would no longer be comparable.
 
-**What is not emulated**: the audio DSP (so the CDDA level is fixed — on the chip it goes
-through the DSP mixer with its own attenuation registers), the LFO, the FEG filter and the
-sample-interval interrupt. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a
+**The effects DSP is emulated** (`aicadsp.c/h`): the 128-step microprogram, read straight out of
+`aica_reg[]` so DMA uploads and guest readback work by construction, with a zero-cost early-out
+when no program is loaded — which is the whole KOS park. **Three of the commercial games program
+it for real** (Crazy Taxi 78 steps, Tennis 2K2 and Virtua Tennis 2 110), which is reverb dcemu
+used to drop. CDDA now has two paths: through EXTS and the EFSDL levels of slots 16/17 when the
+guest programs them (the chip's rule, through MVOL), and the old fixed-level path when it never
+does — because with syscall hooks nobody ran the boot ROM's sound init. The `dsp` test suite
+hand-assembles microprograms; the audio guardrail is the `.wav`, byte-identical on the KOS demo
+with signal and bit-reproducible on Crazy Taxi with the reverb on.
+
+**What is not emulated**: the LFO, the FEG filter and the sample-interval interrupt. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a
 run.
 
 → `docs/notas-aica.md` and `docs/arm7-plan.md`.

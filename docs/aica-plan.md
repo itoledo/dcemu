@@ -490,7 +490,15 @@ que es la frecuencia de salida del AICA: no hay remuestreo.
 
 ---
 
-## Fase 6 — El DSP de audio (opcional)
+## Fase 6 — El DSP de audio — **hecha el 6 de agosto de 2026, y la premisa era falsa**
+
+La fase decía «se puede escribir desde el papel, y aun así va último» porque el driver de KOS no
+lo programa nunca. Las dos mitades eran ciertas y la conclusión no: **los juegos de Katana sí lo
+programan** — Crazy Taxi 78 pasos, Tennis 2K2 y Virtua Tennis 2 110, con las 16 ranuras EFSDL
+activas. Lo que se perdía por no emularlo estaba sonando en tres de los juegos del árbol.
+`docs/notas-aica.md`, «El DSP de efectos», tiene la implementación, el censo y los dos caminos
+del CD-DA. Lo de abajo queda como se planificó.
+
 
 §8.1.1.8 lo trae completo: 128 pasos de microprograma de 55 bits útiles (`MPRO[63:0]`), un búfer
 circular en la RAM de onda (`RBP`/`RBL`), 128 coeficientes de 13 bits (`COEF`), 64 direcciones

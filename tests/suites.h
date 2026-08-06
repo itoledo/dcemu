@@ -48,4 +48,7 @@ extern const dc_suite suite_arm7;
 /* La Visual Memory de la ranura 1 del mando (vmu.h). */
 extern const dc_suite suite_vmu;
 
+/* El DSP de efectos del AICA (aicadsp.h). */
+extern const dc_suite suite_dsp;
+
 #endif /* _SUITES_H_ */

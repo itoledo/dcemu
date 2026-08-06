@@ -19,6 +19,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/floatgraph.c
 	${CMAKE_SOURCE_DIR}/floatsimple.c
 	${CMAKE_SOURCE_DIR}/aica.c
+	${CMAKE_SOURCE_DIR}/aicadsp.c
 	${CMAKE_SOURCE_DIR}/cdda.c
 	${CMAKE_SOURCE_DIR}/arm7.c
 	${CMAKE_SOURCE_DIR}/g2dma.c
@@ -58,6 +59,7 @@ set(DCEMU_PRUEBAS
 	test_fpu_graph.c
 	test_fpu_simple.c
 	test_aica.c
+	test_dsp.c
 	test_arm7.c
 	test_g2dma.c
 	test_gdrom.c
@@ -107,7 +109,7 @@ endforeach()
 
 # Las piezas del arranque por BIOS no son opcodes, asi que van con otro prefijo.
 # La MMU tampoco lo es: es la ventana de control P4 (docs/mmu-plan.md, fase 1).
-foreach(_suite sistema gdrom ta mmu wdt tmu vram ubc vmu)
+foreach(_suite sistema gdrom ta mmu wdt tmu vram ubc vmu dsp)
 	add_test(NAME dc.${_suite} COMMAND dcemu_tests ${_suite})
 endforeach()
 

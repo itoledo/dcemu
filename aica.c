@@ -9,6 +9,7 @@
 
 #include "main.h"			/* solo por los tipos; no se enlaza nada de SDL */
 #include "aica.h"
+#include "aicadsp.h"
 #include "tmu.h"			/* reloj_total, DC_CPU_HZ */
 #include "intc.h"
 #include "traza.h"
@@ -253,6 +254,10 @@ static void dma_interno_ejecutar(void)
 				memset(&aica_reg[regs + i], 0, 4);
 			else
 				memcpy(&aica_reg[regs + i], &sound_mem[onda + i], 4);
+
+			/* La subida de un microprograma por DMA tambien cuenta. */
+			if (regs + i >= 0x2800 && regs + i < 0x3C00)
+				aicadsp_tocar();
 		}
 	}
 
@@ -700,6 +705,28 @@ static int canal_muestrear(int canal, int * izq, int * der)
 
 	att = (c->eg_nivel >> 16) + (long) ((r28 >> 8) & 0xFF) * 4;
 
+	/*
+		El envio al DSP: ISEL dice a cual MIXS y IMXL con cuanto nivel (+0x20,
+		bits 3:0 y 7:4). Va ANTES del DISDL y sin paneo: DISDL y DIPAN son solo
+		de la salida directa, y el DSP recibe la voz en mono -- el paneo del
+		efecto lo pone EFPAN a la salida.
+	*/
+	{
+		DWORD r20  = CAN(canal, 0x20);
+		int   imxl = (int) ((r20 >> 4) & 0xF);
+
+		if (imxl != 0)
+		{
+			long adsp = att + (15 - imxl) * 32;
+
+			if (adsp < 0)			 adsp = 0;
+			if (adsp > AICA_ATT_MAX) adsp = AICA_ATT_MAX;
+
+			aicadsp_mixs((int) (r20 & 0xF),
+				(muestra * ganancia[adsp]) >> 16);
+		}
+	}
+
 	/* DISDL: 0 es silencio, 0xF es 0 dB, 3 dB --32 unidades-- por escalon. */
 	if (disdl == 0)
 		att = AICA_ATT_MAX;
@@ -822,6 +849,7 @@ static void mezclar_una_muestra(void)
 {
 	long izq = 0, der = 0;
 	int  i;
+	int  cd_izq = 0, cd_der = 0, hubo_cd = 0, cd_por_dsp = 0;
 	DWORD r2800 = reg16(AICA_MVOL);
 	int   mvol  = (int) (r2800 & 0xF);
 	unsigned proxima;
@@ -839,6 +867,80 @@ static void mezclar_una_muestra(void)
 		{
 			izq += l;
 			der += r;
+		}
+	}
+
+	/*
+		El DSP de efectos, entre el sintetizador y el DAC.
+
+		Los canales ya acumularon sus envios en MIXS (canal_muestrear); el
+		CD-DA entra por las dos lineas EXTS **corra o no un microprograma**,
+		porque es una entrada del chip y no un efecto. Despues del paso, las 16
+		salidas EFREG y las 2 EXTS se componen con sus propios niveles
+		(EFSDL/EFPAN, 0x2000-0x2044), la misma tabla de atenuacion y el mismo
+		paneo que la salida directa de un canal.
+	*/
+	{
+		int j;
+
+		hubo_cd = cdda_muestra(&cd_izq, &cd_der);
+
+		aicadsp_exts(0, hubo_cd ? cd_izq : 0);
+		aicadsp_exts(1, hubo_cd ? cd_der : 0);
+
+		aicadsp_paso();
+
+		for (j = 0; j < 18; j++)
+		{
+			DWORD r     = reg16(0x2000 + (unsigned long) j * 4);
+			int   efsdl = (int) ((r >> 8) & 0xF);
+			int   efpan = (int) (r & 0x1F);
+			long  v, att, g;
+
+			if (efsdl == 0)
+				continue;
+
+			if (j < 16)
+				v = aicadsp_efreg(j);
+			else
+			{
+				v = (j == 16) ? (hubo_cd ? cd_izq : 0)
+							  : (hubo_cd ? cd_der : 0);
+				cd_por_dsp = 1;		/* el guest programo el nivel del CD */
+			}
+
+			att = (long) (15 - efsdl) * 32;
+			g   = ganancia[att];
+
+			/* EFPAN, con la misma regla que DIPAN. */
+			{
+				int  lado  = efpan & 0x10;
+				int  n     = efpan & 0x0F;
+				long extra = (n == 0xF) ? AICA_ATT_MAX : (long) n * 32;
+				long a2    = att + extra;
+				long g2;
+
+				if (a2 > AICA_ATT_MAX)	a2 = AICA_ATT_MAX;
+
+				g2 = ganancia[a2];
+
+				if (n == 0)
+				{
+					izq += (v * g) >> 16;
+					der += (v * g) >> 16;
+				}
+				else
+				if (lado)
+				{
+					izq += (v * g) >> 16;
+					der += (v * g2) >> 16;
+				}
+				else
+				{
+					izq += (v * g2) >> 16;
+					der += (v * g) >> 16;
+				}
+			}
 		}
 	}
 
@@ -862,28 +964,26 @@ static void mezclar_una_muestra(void)
 	}
 
 	/*
-		Y el audio de CD, si la lectora esta reproduciendo una pista.
+		El CD-DA cuando el guest NO programo sus niveles.
 
-		**Va despues de MVOL a proposito.** MVOL es el volumen maestro de las 64
-		voces del AICA; el CD-DA no es una voz -- entra al chip ya decodificado,
-		por una entrada aparte, y se suma en el mezclador del DSP con sus
-		propios registros de nivel. Como el DSP no se emula, sumarlo aqui, a
-		nivel fijo y fuera de MVOL, es lo mas parecido a "otra entrada del DAC":
-		un juego que baja MVOL para callar sus efectos no deberia quedarse
-		tambien sin musica.
+		En el chip el CD entra por EXTS y suena por los EFSDL de las ranuras 16
+		y 17 -- eso ya esta arriba, y pasa por MVOL como todo. Pero dcemu con
+		hooks de syscall no corre la inicializacion de sonido del boot ROM, asi
+		que un guest que confia en lo que el ROM dejo puede no escribir esos
+		registros nunca: con la regla del chip a secas se quedaria sin musica
+		aqui y no en la consola. Este es el camino de compatibilidad de antes
+		del DSP --nivel fijo, fuera de MVOL-- y solo corre si ninguna de las
+		dos ranuras del CD tiene EFSDL puesto; la traza del resumen dice cual
+		de los dos caminos se uso.
 
 		El formato del CD es exactamente el de esta salida --44 100 Hz, estereo,
 		16 bits con signo-- asi que hay una muestra de CD por cada vuelta y no
 		hay remuestreo. El recorte de abajo es el que cubre la suma.
 	*/
+	if (hubo_cd && !cd_por_dsp)
 	{
-		int cd_izq, cd_der;
-
-		if (cdda_muestra(&cd_izq, &cd_der))
-		{
-			izq += cd_izq;
-			der += cd_der;
-		}
+		izq += cd_izq;
+		der += cd_der;
 	}
 
 	if (izq >  32767)	izq =  32767;
@@ -1035,6 +1135,14 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 
 	default:
 		poner16(off, valor);
+
+		/* El DSP relee su microprograma solo cuando alguien lo toco; el
+		   estado de trabajo (0x4000-0x45BF) no lo relee, y por eso avisa. */
+		if (off >= 0x2800 && off < 0x3C00)
+			aicadsp_tocar();
+		else
+		if (off >= 0x4000 && off < 0x45C0)
+			aicadsp_estado_escrito(off, valor);
 
 		/* El registro 0 de un canal: KYONEX dispara el KEY ON/OFF de **todos**
 		   los canales a la vez, no solo del suyo. */
@@ -1378,4 +1486,6 @@ void aica_reset(void)
 
 	/* Los dos FIFO de MIDI arrancan vacios (MIEMP y MOEMP). */
 	poner16(AICA_MIDI_IN, 0x0900);
+
+	aicadsp_reiniciar();
 }
