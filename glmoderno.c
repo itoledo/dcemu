@@ -285,6 +285,8 @@ typedef void (APIENTRY * PFN_DELETE_SHADER)(GLuint);
 typedef GLint (APIENTRY * PFN_GET_UNIFORM_LOC)(GLuint, const char *);
 typedef void (APIENTRY * PFN_UNIFORM_1I)(GLint, GLint);
 typedef void (APIENTRY * PFN_UNIFORM_1F)(GLint, GLfloat);
+typedef void (APIENTRY * PFN_UNIFORM_3F)(GLint, GLfloat, GLfloat, GLfloat);
+typedef void (APIENTRY * PFN_UNIFORM_2FV)(GLint, GLsizei, const GLfloat *);
 
 static PFN_CREATE_SHADER	p_glCreateShader;
 static PFN_SHADER_SOURCE	p_glShaderSource;
@@ -301,12 +303,15 @@ static PFN_DELETE_SHADER	p_glDeleteShader;
 static PFN_GET_UNIFORM_LOC	p_glGetUniformLocation;
 static PFN_UNIFORM_1I		p_glUniform1i;
 static PFN_UNIFORM_1F		p_glUniform1f;
+static PFN_UNIFORM_3F		p_glUniform3f;
+static PFN_UNIFORM_2FV		p_glUniform2fv;
 
 static GLuint	programa = 0;
 static int		hay_shader = 0;
 static int		shader_puesto = 0;
 
 static GLint	u_muestra, u_textura, u_env, u_offset, u_alpha, u_umbral;
+static GLint	u_niebla, u_nie_color, u_nie_dens, u_nie_tabla;
 
 /*
 	El vertex shader. No hace nada que la funcion fija no hiciera: transforma
@@ -348,6 +353,26 @@ static const char * fuente_vs =
 	--las pastillas del menu de Crazy Taxi y su mundo blanco-- estan en el
 	comentario de tira_estado().
 */
+/*
+	La niebla, y por que aca es mejor que donde estaba.
+
+	El chip aplica niebla **por pixel y antes de la mezcla**: es parte del
+	camino del pixel, delante de la unidad de blend. La funcion fija no puede
+	hacer ninguna de las dos cosas, asi que dibuja la tira una segunda vez
+	entera, con el color de niebla y el alfa evaluado por vertice, mezclada
+	encima. Eso difiere del chip en dos sentidos --dentro de triangulos grandes,
+	porque interpola el alfa en vez de evaluarlo, y en la geometria translucida,
+	porque llega despues de la mezcla en vez de antes-- y ademas cuesta una
+	pasada de geometria por tira con niebla.
+
+	El indice de la tabla es densidad x (1/w) acotado a [1, 256): el exponente
+	elige la ranura de 16 y la mantisa la entrada dentro de ella, con el alfa
+	lejano en el byte alto y el cercano en el bajo, interpolados por la fraccion.
+	Es lo mismo que evalua dibujar_niebla_tira(), solo que aca `q` sale
+	interpolado por el rasterizador: viaja en gl_TexCoord[0].w, que es el 1/w
+	que el TA entrega para la correccion de perspectiva. O sea que la niebla por
+	pixel no cuesta ni un dato mas.
+*/
 static const char * fuente_fs =
 	"#version 120\n"
 	"uniform sampler2D muestra;\n"
@@ -356,6 +381,26 @@ static const char * fuente_fs =
 	"uniform int usa_offset;\n"
 	"uniform int usa_alpha;\n"
 	"uniform float umbral;\n"
+	"uniform int usa_niebla;\n"
+	"uniform vec3 niebla_color;\n"
+	"uniform float niebla_densidad;\n"
+	"uniform vec2 niebla_tabla[128];\n"
+	"\n"
+	"float niebla_alfa(float q)\n"
+	"{\n"
+	"	float v = clamp(niebla_densidad * q, 1.0, 255.9999);\n"
+	"	float e = floor(log2(v));\n"
+	"	float m16 = (v / exp2(e) - 1.0) * 16.0;\n"
+	"	float m = floor(m16);\n"
+	"	int idx = int(e) * 16 + int(m);\n"
+	"\n"
+	"	if (idx < 0) idx = 0;\n"
+	"	if (idx > 127) idx = 127;\n"
+	"\n"
+	"	/* x es el alfa lejano y y el cercano, como en la palabra del chip. */\n"
+	"	return mix(niebla_tabla[idx].x, niebla_tabla[idx].y, m16 - m);\n"
+	"}\n"
+	"\n"
 	"void main()\n"
 	"{\n"
 	"	vec4 col = gl_Color;\n"
@@ -382,6 +427,11 @@ static const char * fuente_fs =
 	"\n"
 	"	if (usa_alpha != 0 && (pix.a < umbral || pix.a == 0.0))\n"
 	"		discard;\n"
+	"\n"
+	/* Antes de salir, o sea antes de la mezcla: es donde la aplica el chip. */
+	"	if (usa_niebla != 0)\n"
+	"		pix.rgb = mix(pix.rgb, niebla_color,\n"
+	"			niebla_alfa(gl_TexCoord[0].w));\n"
 	"\n"
 	"	gl_FragColor = pix;\n"
 	"}\n";
@@ -435,12 +485,15 @@ int glmoderno_shader_iniciar(void)
 	p_glGetUniformLocation	= (PFN_GET_UNIFORM_LOC)	resolver("glGetUniformLocation");
 	p_glUniform1i			= (PFN_UNIFORM_1I)		resolver("glUniform1i");
 	p_glUniform1f			= (PFN_UNIFORM_1F)		resolver("glUniform1f");
+	p_glUniform3f			= (PFN_UNIFORM_3F)		resolver("glUniform3f");
+	p_glUniform2fv			= (PFN_UNIFORM_2FV)		resolver("glUniform2fv");
 
 	if (!p_glCreateShader || !p_glShaderSource || !p_glCompileShader
 	||  !p_glGetShaderiv || !p_glGetShaderInfoLog || !p_glCreateProgram
 	||  !p_glAttachShader || !p_glLinkProgram || !p_glGetProgramiv
 	||  !p_glGetProgramInfoLog || !p_glUseProgram || !p_glDeleteShader
-	||  !p_glGetUniformLocation || !p_glUniform1i || !p_glUniform1f)
+	||  !p_glGetUniformLocation || !p_glUniform1i || !p_glUniform1f
+	||  !p_glUniform3f || !p_glUniform2fv)
 	{
 		fprintf(stderr, "gl: el driver no da GLSL; no hay camino programable\n");
 		return 0;
@@ -484,6 +537,10 @@ int glmoderno_shader_iniciar(void)
 	u_offset	= p_glGetUniformLocation(programa, "usa_offset");
 	u_alpha		= p_glGetUniformLocation(programa, "usa_alpha");
 	u_umbral	= p_glGetUniformLocation(programa, "umbral");
+	u_niebla	= p_glGetUniformLocation(programa, "usa_niebla");
+	u_nie_color	= p_glGetUniformLocation(programa, "niebla_color");
+	u_nie_dens	= p_glGetUniformLocation(programa, "niebla_densidad");
+	u_nie_tabla	= p_glGetUniformLocation(programa, "niebla_tabla");
 
 	/* La unidad de textura 0, una vez: el arbol no usa multitextura. */
 	p_glUseProgram(programa);
@@ -541,6 +598,43 @@ void glmoderno_u_alpha(int on, float umbral)
 		p_glUniform1i(u_alpha, on ? 1 : 0);
 	if (u_umbral >= 0)
 		p_glUniform1f(u_umbral, umbral);
+}
+
+/*
+	Lo de la niebla que vale para el cuadro entero. Se sube una vez por escena
+	y no por tira: el color, la densidad y la tabla salen de registros del PVR,
+	que el guest no toca en medio de un render.
+
+	Va con el programa puesto y lo repone como estaba: se llama desde el
+	arranque de la escena, antes de que nadie haya decidido si dibuja con
+	shader o sin el.
+*/
+void glmoderno_niebla_escena(float r, float g, float b, float densidad,
+							 const float * tabla)
+{
+	int antes = shader_puesto;
+
+	if (!hay_shader)
+		return;
+
+	if (!antes)
+		p_glUseProgram(programa);
+
+	if (u_nie_color >= 0)
+		p_glUniform3f(u_nie_color, r, g, b);
+	if (u_nie_dens >= 0)
+		p_glUniform1f(u_nie_dens, densidad);
+	if (u_nie_tabla >= 0 && tabla != NULL)
+		p_glUniform2fv(u_nie_tabla, 128, tabla);
+
+	if (!antes)
+		p_glUseProgram(0);
+}
+
+void glmoderno_u_niebla(int on)
+{
+	if (hay_shader && u_niebla >= 0)
+		p_glUniform1i(u_niebla, on ? 1 : 0);
 }
 
 void glmoderno_presentar(int ancho, int alto, int ven_ancho, int ven_alto)

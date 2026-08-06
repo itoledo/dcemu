@@ -2128,6 +2128,7 @@ static struct
 	int		textura;
 	GLint	tex_env;
 	int		offset;		/* GL_COLOR_SUM y el arreglo de color secundario */
+	int		niebla;		/* solo el camino programable: la niebla por pixel */
 	int		estencil;
 	GLuint	ligada;		/* la textura de GL ligada; 0 es "ninguna o no se" */
 
@@ -2889,6 +2890,12 @@ static float niebla_rgba[VERTICES_MAX][4];
 /*
 	Si la pasada de niebla va a dibujar algo, sin dibujarlo.
 
+	Con el camino programable la pasada no existe --la niebla sale por pixel
+	dentro del fragment shader-- asi que esta funcion pasa a contestar solo
+	"esta tira lleva niebla de tabla", que es lo que gl_niebla() necesita. Los
+	dos llamadores de dibujar_niebla_tira() la saltean cuando el shader esta
+	puesto.
+
 	Existe por el lote: una tira con niebla se dibuja y se repinta enseguida,
 	asi que corta el agrupamiento. Preguntarlo antes evita cortarlo por las que
 	no la tienen -- que en la lista opaca son casi todas.
@@ -2907,6 +2914,48 @@ static int niebla_aplica(DWORD i)
 		return 0;
 
 	return !env_interruptor("DCEMU_SIN_NIEBLA", &sin_niebla);
+}
+
+/*
+	La niebla del cuadro entero al shader: color, densidad y las 128 entradas
+	de la tabla.
+
+	Los tres salen de registros del PVR que el guest no toca en medio de un
+	render, asi que se leen una vez por escena. Cada palabra de la tabla lleva
+	el alfa del borde LEJANO en el byte alto y el del CERCANO en el bajo; el
+	shader interpola entre los dos con la fraccion de la mantisa, igual que
+	dibujar_niebla_tira().
+*/
+static void niebla_al_shader(void)
+{
+	DWORD	reg = 0, col = 0;
+	float	tabla[128 * 2];
+	int		k;
+
+	if (!shader_activo())
+		return;
+
+	memread_fisico(0xA05F80B8, &reg, 4);
+	memread_fisico(0xA05F80B0, &col, 4);
+
+	for (k = 0; k < 128; k++)
+	{
+		DWORD palabra = 0;
+
+		memread_fisico(0xA05F8200 + k * 4, &palabra, 4);
+
+		tabla[k * 2 + 0] = (float) ((palabra >> 8) & 0xFF) / 255.0f;
+		tabla[k * 2 + 1] = (float) (palabra & 0xFF) / 255.0f;
+	}
+
+	glmoderno_niebla_escena(
+		(float) ((col >> 16) & 0xFF) / 255.0f,
+		(float) ((col >> 8) & 0xFF) / 255.0f,
+		(float) (col & 0xFF) / 255.0f,
+		/* El formato de FOG_DENSITY: ver dibujar_niebla_tira(). */
+		ldexpf((float) ((reg >> 8) & 0xFF) / 128.0f,
+			(int) (signed char) (reg & 0xFF)),
+		tabla);
 }
 
 static void dibujar_niebla_tira(DWORD i)
@@ -3056,6 +3105,7 @@ static void gl_estado_olvidar(void)
 	gl_e.textura    = -1;
 	gl_e.tex_env    = -1;
 	gl_e.offset     = -1;
+	gl_e.niebla     = -1;
 	gl_e.estencil   = -1;
 	gl_e.ligada     = 0;
 
@@ -3209,6 +3259,19 @@ static void gl_textura(int on)
 	}
 }
 
+/* La niebla por pixel del camino programable. En funcion fija no hay nada que
+   encender: la resuelve la segunda pasada de dibujar_niebla_tira(). */
+static void gl_niebla(int on)
+{
+	if (gl_e.niebla != on)
+	{
+		gl_e.niebla = on;
+		gl_e.cambios++;
+
+		glmoderno_u_niebla(on);
+	}
+}
+
 static void tira_estado(DWORD i)
 {
 			gl_depth_func(TriangleStrip[i].depthmode);
@@ -3262,6 +3325,10 @@ static void tira_estado(DWORD i)
 			   Offset de la palabra ISP; el resto ni siquiera lo lleva en el
 			   vertice. */
 			offset_estado(TriangleStrip[i].usa_offset != 0);
+
+			/* La niebla del camino programable se decide aca, por tira, con
+			   la misma condicion que usa la segunda pasada. */
+			gl_niebla(shader_activo() && niebla_aplica(i));
 
 			/*
 				Lo que distingue al punch-through en el chip es que descarta el
@@ -3418,6 +3485,7 @@ static void dibujar_escena(void)
 	   framebuffer, la vista de depuracion-- lo sacan, porque dibujan con la
 	   funcion fija y no tienen nada que decirle a los uniformes. */
 	glmoderno_shader_usar(shader_activo());
+	niebla_al_shader();
 
 	DWORD i;
 	int vol_opaca, vol_trans;
@@ -3479,7 +3547,7 @@ static void dibujar_escena(void)
 
 		dibujar_tira(i);
 
-		if (niebla_aplica(i))
+		if (!shader_activo() && niebla_aplica(i))
 			dibujar_niebla_tira(i);
 	}
 
@@ -3560,7 +3628,7 @@ static void dibujar_escena(void)
 			juego_de_parametros(0);
 		}
 
-		if (niebla_aplica(i))
+		if (!shader_activo() && niebla_aplica(i))
 			dibujar_niebla_tira(i);
 	}
 

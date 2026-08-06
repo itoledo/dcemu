@@ -612,6 +612,12 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
 - **The eight PVR control demos and all five commercial games come out byte-identical** to
   `--render=fbo`, including `pvr-texture_render`, `pvr-fb_tex`, `pvr-modifier_volume_zclip` and
   Dave Mirra's FMV. The plan expected exact comparison to stop working here; it did not.
+- **Fog is the one thing that deliberately differs**, and it is the first item of 2.c: the shader
+  evaluates it per pixel and *before* the blend, which is what the chip does, instead of a second
+  full geometry pass per strip with the alpha interpolated between vertices. `q` rides in
+  `gl_TexCoord[0].w` for free. `DCEMU_SIN_NIEBLA=1` isolates it — with fog off the two paths are
+  byte-identical again, so nothing else moved. It also removes a wart: the second pass called
+  `gl_estado_olvidar()`, so every foggy strip destroyed the next one's state shadow.
 
 Two ways that comparison lied before it told the truth, both worth knowing because they produce
 the same symptom — "the shader broke 99.98% of the pixels" with both images perfect, each showing

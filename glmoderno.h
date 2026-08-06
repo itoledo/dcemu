@@ -117,4 +117,16 @@ void glmoderno_u_env(int modo);
 void glmoderno_u_offset(int on);
 void glmoderno_u_alpha(int on, float umbral);
 
+/*
+	La niebla, que en el camino programable es **por pixel como en el chip** y
+	no una segunda pasada de geometria por tira.
+
+	`glmoderno_niebla_escena()` sube lo que vale para el cuadro entero: el color,
+	la densidad y las 128 entradas de la tabla, cada una con su alfa lejano y su
+	alfa cercano. `glmoderno_u_niebla()` dice si la tira que viene la lleva.
+*/
+void glmoderno_niebla_escena(float r, float g, float b, float densidad,
+							 const float * tabla /* 128 x 2 */);
+void glmoderno_u_niebla(int on);
+
 #endif /* _GLMODERNO_H_ */

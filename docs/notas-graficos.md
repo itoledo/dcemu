@@ -789,8 +789,36 @@ de perspectiva — y dibuja la tira una segunda vez, sin textura, mezclada hacia
 La pasada reutiliza la profundidad que la tira acaba de dejar: `GL_EQUAL` si escribió z, la
 comparación propia de la tira si no (pasa exactamente donde pasó la original), y nunca escribe el
 buffer. Una tabla nunca escrita es todo ceros, así que la pasada se salta sola y no les cuesta
-nada a las otras demos. El chip aplica niebla por píxel; por vértice difiere solo dentro de
-triángulos grandes.
+nada a las otras demos.
+
+### Y con `--render=shader` es por píxel, que es como la aplica el chip
+
+El fragment shader la evalúa por fragmento y **antes de salir, o sea antes de la mezcla**, que son
+las dos cosas que la función fija no puede hacer. `q` sale interpolado por el rasterizador sin
+costo: viaja en `gl_TexCoord[0].w`, que es el mismo 1/w que el TA entrega para la corrección de
+perspectiva. La tabla va como un uniforme de 128 `vec2` (alfa lejano, alfa cercano) subido una vez
+por escena, junto con el color y la densidad; nada de eso cambia en medio de un render.
+
+Las dos diferencias contra la pasada por vértice son reales y las dos favorecen al shader:
+
+- **Dentro de polígonos grandes que abarcan mucha profundidad** —las paredes de un túnel, el piso
+  de un juego de autos— interpolar linealmente el alfa entre los vértices de una curva exponencial
+  está muy mal en el medio. En `kgl-tunnel` la versión por vértice tapa los pilares y el arco que
+  las paredes sí tienen; la de por píxel los muestra. Es la misma demo que descubrió que la niebla
+  no estaba emulada.
+- **En geometría translúcida**, aplicarla antes de la mezcla en vez de después cambia el resultado,
+  y antes es donde la aplica el chip.
+
+`DCEMU_SIN_NIEBLA=1` es lo que aísla el cambio: con la niebla apagada los dos caminos vuelven a
+salir byte a byte idénticos, así que la única diferencia entre ellos es ésta.
+
+Y se lleva una verruga por delante: la segunda pasada llamaba a `gl_estado_olvidar()`, o sea que
+**cada tira con niebla destruía la sombra de estado de la siguiente**. Con el camino programable no
+hay segunda pasada.
+
+**La niebla por vértice (modo 1) sigue sin emularse.** Su coeficiente es el alfa del color de
+offset, que el vértice de dcemu no guarda — `vertex` lleva `ro,go,bo` sin alfa. Emularla es tocar
+la estructura y el armado del TA, no el shader.
 
 ---
 

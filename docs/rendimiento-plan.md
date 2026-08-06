@@ -1743,3 +1743,48 @@ perfectas, cada una mostrando otro momento— y las dos son de método, no del s
    contra uno terminado — que fue exactamente lo que pasó con Dave Mirra, y la conclusión falsa
    duró hasta que dos corridas idénticas dieron el mismo hash. **Hay que esperar al proceso, no al
    archivo.**
+
+# La vía 2.c, primer punto: la niebla por píxel (2026-08-05)
+
+La primera cosa de la etapa 2.c —lo que sólo el camino programable puede dar— y la más barata de
+las que estaban en la lista.
+
+## Qué cambia
+
+El chip aplica la niebla **por píxel y antes de la mezcla**: es parte del camino del píxel, delante
+de la unidad de blend. La función fija no puede hacer ninguna de las dos cosas, así que
+`dibujar_niebla_tira()` dibuja la tira una segunda vez entera, con el color de niebla y el alfa
+evaluado por vértice, mezclada encima.
+
+En el fragment shader son ocho líneas. Y `q` sale gratis: viaja en `gl_TexCoord[0].w`, que es el
+mismo 1/w que el TA entrega para la corrección de perspectiva, así que el rasterizador ya lo
+interpola. La tabla va como un uniforme de 128 `vec2` subido una vez por escena.
+
+## Las dos diferencias, y por qué las dos favorecen al shader
+
+- **Dentro de polígonos grandes que abarcan mucha profundidad**, interpolar linealmente el alfa
+  entre los vértices de una curva exponencial está muy mal en el medio. `kgl-tunnel` lo muestra
+  sin ambigüedad: la versión por vértice tapa los pilares y el arco que las paredes sí tienen, la
+  de por píxel los muestra. Es la misma demo que en su momento descubrió que la niebla no estaba
+  emulada.
+- **En geometría translúcida**, aplicarla antes de la mezcla en vez de después cambia el
+  resultado, y antes es donde la aplica el chip.
+
+## Y una verruga que se lleva por delante
+
+La segunda pasada llamaba a `gl_estado_olvidar()`, o sea que **cada tira con niebla destruía la
+sombra de estado de la siguiente**. Estaba anotado como residuo desde que se armó la sombra. Con el
+camino programable no hay segunda pasada y el problema no existe.
+
+## La verificación
+
+Lo que hace creíble el cambio no es que se vea mejor —eso es una opinión— sino que **se puede
+aislar**: con `DCEMU_SIN_NIEBLA=1` los dos caminos vuelven a salir byte a byte idénticos, así que
+la única diferencia entre ellos es ésta y nada más se movió. Las ocho demos de control siguen
+idénticas (ninguna usa niebla) y los juegos también.
+
+## Lo que sigue sin estar
+
+**La niebla por vértice (modo 1 del TSP).** Su coeficiente es el alfa del color de offset, que el
+vértice de dcemu no guarda: `vertex` lleva `ro,go,bo` sin alfa. Emularla es tocar la estructura y
+el armado del TA, no el shader — o sea que no es trabajo de esta vía.
