@@ -612,6 +612,11 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
 - **The eight PVR control demos and all five commercial games come out byte-identical** to
   `--render=fbo`, including `pvr-texture_render`, `pvr-fb_tex`, `pvr-modifier_volume_zclip` and
   Dave Mirra's FMV. The plan expected exact comparison to stop working here; it did not.
+- **Bump mapping is evaluated per pixel** from the raw angles instead of being baked into the
+  texture at upload. Same formula — `pvr-bumpmap` agrees to within 1 level, which is byte rounding
+  — but it fixes what baking cannot: K1..K3 and Q come from the *polygon*, while the texture cache
+  is keyed by address, so two polygons sharing a bump map with different parameters both got the
+  first one's intensity. `gl_bump()` compares the parameters too, not just the on/off.
 - **Fog is the one thing that deliberately differs**, and it is the first item of 2.c: the shader
   evaluates it per pixel and *before* the blend, which is what the chip does, instead of a second
   full geometry pass per strip with the alpha interpolated between vertices. `q` rides in

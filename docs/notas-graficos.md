@@ -400,6 +400,17 @@ fragmento que el GL de función fija no tiene. `decodificar_bump()` lo resuelve 
 entrega a GL un gris. Eso es exacto mientras los parámetros vengan del encabezado — cierto para un
 sprite, donde el color de offset vive ahí — y lo que se pierde es la combinación con la otra capa.
 
+**Con `--render=shader` la textura sube con los dos ángulos crudos** (S en el canal R, R en el G) y
+la intensidad se evalúa por píxel. La fórmula es la misma, y en `pvr-bumpmap` las dos versiones
+coinciden **con una diferencia máxima de 1 nivel**, que es el redondeo de hornear a bytes contra
+calcular en float. Lo que arregla es otra cosa: **K1..K3 y Q no son de la textura sino del
+polígono**, y la caché se indexa por dirección, así que dos polígonos que comparten mapa de relieve
+con parámetros distintos —una misma pared con dos luces— recibían los dos la intensidad del primero
+que la subió, sin que nada lo delatara. Con los ángulos crudos los parámetros viajan por uniforme y
+el problema desaparece por construcción; por eso `gl_bump()` compara también los parámetros, no
+sólo el encendido. Lo que sigue faltando es la combinación con la otra capa, que es arquitectura y
+no shader.
+
 **`glTexParameteri` aplica a la textura que esté ligada, y los filtros se fijaban antes de
 `glBindTexture`.** Así que caían sobre la textura del cuadro *anterior* y la nueva se quedaba con
 los valores por omisión de GL — y el `GL_TEXTURE_MIN_FILTER` por omisión es

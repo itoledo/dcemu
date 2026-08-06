@@ -1788,3 +1788,23 @@ idénticas (ninguna usa niebla) y los juegos también.
 **La niebla por vértice (modo 1 del TSP).** Su coeficiente es el alfa del color de offset, que el
 vértice de dcemu no guarda: `vertex` lleva `ro,go,bo` sin alfa. Emularla es tocar la estructura y
 el armado del TA, no el shader — o sea que no es trabajo de esta vía.
+
+## Segundo punto de la 2.c: el relieve por píxel
+
+La textura de relieve sube ahora con **los dos ángulos crudos** —S en el canal R, R en el G— y la
+intensidad `I = K1 + K2·sin(S) + K3·cos(S)·cos(R − Q)` se evalúa en el fragment shader.
+
+La verificación es la más limpia que dio la vía: en `pvr-bumpmap` las dos versiones coinciden **con
+una diferencia máxima de 1 nivel**, y sólo dentro del cuadrado del relieve. Ese 1 es el redondeo de
+hornear a bytes contra calcular en float, o sea que la fórmula del shader es la misma fórmula.
+
+Lo que arregla no se ve en esa demo, y es el motivo de hacerlo: **K1..K3 y Q son del polígono, no
+de la textura**, y la caché de texturas se indexa por dirección. Dos polígonos que comparten mapa de
+relieve con parámetros distintos —una misma pared con dos luces— recibían los dos la intensidad del
+primero que la subió, y nada lo delataba: la textura estaba en caché y la respuesta era plausible.
+Con los ángulos crudos los parámetros viajan por uniforme y el problema desaparece por
+construcción. Por eso `gl_bump()` compara también los parámetros y no sólo el encendido.
+
+Lo que sigue faltando es lo que el comentario del código siempre dijo: **la combinación con la otra
+capa**. En el chip la intensidad modula al polígono texturado que viene detrás, y eso no es un
+problema de shader sino de arquitectura del render.

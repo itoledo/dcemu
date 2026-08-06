@@ -129,4 +129,15 @@ void glmoderno_niebla_escena(float r, float g, float b, float densidad,
 							 const float * tabla /* 128 x 2 */);
 void glmoderno_u_niebla(int on);
 
+/*
+	El mapa de relieve. Con el camino programable la textura sube con los dos
+	angulos crudos y la intensidad se resuelve por pixel, con los parametros
+	del **poligono** -- que es lo que la version horneada no podia hacer, porque
+	la cache de texturas se indexa por direccion y no por parametros.
+
+	`param` es la palabra tal cual viene en el color de offset del encabezado:
+	K1, K2, K3 y Q, un byte cada uno de arriba hacia abajo.
+*/
+void glmoderno_u_bump(int on, unsigned long param);
+
 #endif /* _GLMODERNO_H_ */

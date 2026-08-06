@@ -286,6 +286,7 @@ typedef GLint (APIENTRY * PFN_GET_UNIFORM_LOC)(GLuint, const char *);
 typedef void (APIENTRY * PFN_UNIFORM_1I)(GLint, GLint);
 typedef void (APIENTRY * PFN_UNIFORM_1F)(GLint, GLfloat);
 typedef void (APIENTRY * PFN_UNIFORM_3F)(GLint, GLfloat, GLfloat, GLfloat);
+typedef void (APIENTRY * PFN_UNIFORM_4F)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 typedef void (APIENTRY * PFN_UNIFORM_2FV)(GLint, GLsizei, const GLfloat *);
 
 static PFN_CREATE_SHADER	p_glCreateShader;
@@ -304,6 +305,7 @@ static PFN_GET_UNIFORM_LOC	p_glGetUniformLocation;
 static PFN_UNIFORM_1I		p_glUniform1i;
 static PFN_UNIFORM_1F		p_glUniform1f;
 static PFN_UNIFORM_3F		p_glUniform3f;
+static PFN_UNIFORM_4F		p_glUniform4f;
 static PFN_UNIFORM_2FV		p_glUniform2fv;
 
 static GLuint	programa = 0;
@@ -312,6 +314,7 @@ static int		shader_puesto = 0;
 
 static GLint	u_muestra, u_textura, u_env, u_offset, u_alpha, u_umbral;
 static GLint	u_niebla, u_nie_color, u_nie_dens, u_nie_tabla;
+static GLint	u_bump, u_bump_param;
 
 /*
 	El vertex shader. No hace nada que la funcion fija no hiciera: transforma
@@ -385,6 +388,8 @@ static const char * fuente_fs =
 	"uniform vec3 niebla_color;\n"
 	"uniform float niebla_densidad;\n"
 	"uniform vec2 niebla_tabla[128];\n"
+	"uniform int usa_bump;\n"
+	"uniform vec4 bump_param;\n"		/* K1, K2, K3, Q ya en radianes */
 	"\n"
 	"float niebla_alfa(float q)\n"
 	"{\n"
@@ -409,6 +414,22 @@ static const char * fuente_fs =
 	"	if (usa_textura != 0)\n"
 	"	{\n"
 	"		vec4 tex = texture2DProj(muestra, gl_TexCoord[0]);\n"
+	"\n"
+	/*
+		El mapa de relieve: los dos angulos vienen crudos en R y G, y la
+		intensidad es la formula del chip evaluada por pixel.
+		S recorre 0..pi/2, R y Q recorren 0..2pi, K1..K3 son 0..1.
+	*/
+	"		if (usa_bump != 0)\n"
+	"		{\n"
+	"			float S = tex.r * 1.5707963;\n"
+	"			float R = tex.g * 6.2831853;\n"
+	"			float I = bump_param.x + bump_param.y * sin(S)\n"
+	"				+ bump_param.z * cos(S) * cos(R - bump_param.w);\n"
+	"\n"
+	"			tex = vec4(clamp(I, 0.0, 1.0), clamp(I, 0.0, 1.0),\n"
+	"				clamp(I, 0.0, 1.0), 1.0);\n"
+	"		}\n"
 	"\n"
 	"		if (modo_env == 0)\n"
 	"			pix = tex;\n"
@@ -486,6 +507,7 @@ int glmoderno_shader_iniciar(void)
 	p_glUniform1i			= (PFN_UNIFORM_1I)		resolver("glUniform1i");
 	p_glUniform1f			= (PFN_UNIFORM_1F)		resolver("glUniform1f");
 	p_glUniform3f			= (PFN_UNIFORM_3F)		resolver("glUniform3f");
+	p_glUniform4f			= (PFN_UNIFORM_4F)		resolver("glUniform4f");
 	p_glUniform2fv			= (PFN_UNIFORM_2FV)		resolver("glUniform2fv");
 
 	if (!p_glCreateShader || !p_glShaderSource || !p_glCompileShader
@@ -493,7 +515,7 @@ int glmoderno_shader_iniciar(void)
 	||  !p_glAttachShader || !p_glLinkProgram || !p_glGetProgramiv
 	||  !p_glGetProgramInfoLog || !p_glUseProgram || !p_glDeleteShader
 	||  !p_glGetUniformLocation || !p_glUniform1i || !p_glUniform1f
-	||  !p_glUniform3f || !p_glUniform2fv)
+	||  !p_glUniform3f || !p_glUniform4f || !p_glUniform2fv)
 	{
 		fprintf(stderr, "gl: el driver no da GLSL; no hay camino programable\n");
 		return 0;
@@ -541,6 +563,8 @@ int glmoderno_shader_iniciar(void)
 	u_nie_color	= p_glGetUniformLocation(programa, "niebla_color");
 	u_nie_dens	= p_glGetUniformLocation(programa, "niebla_densidad");
 	u_nie_tabla	= p_glGetUniformLocation(programa, "niebla_tabla");
+	u_bump		= p_glGetUniformLocation(programa, "usa_bump");
+	u_bump_param = p_glGetUniformLocation(programa, "bump_param");
 
 	/* La unidad de textura 0, una vez: el arbol no usa multitextura. */
 	p_glUseProgram(programa);
@@ -635,6 +659,25 @@ void glmoderno_u_niebla(int on)
 {
 	if (hay_shader && u_niebla >= 0)
 		p_glUniform1i(u_niebla, on ? 1 : 0);
+}
+
+void glmoderno_u_bump(int on, unsigned long param)
+{
+	if (!hay_shader)
+		return;
+
+	if (u_bump >= 0)
+		p_glUniform1i(u_bump, on ? 1 : 0);
+
+	if (on && u_bump_param >= 0)
+		p_glUniform4f(u_bump_param,
+			(GLfloat) ((param >> 24) & 0xFF) / 255.0f,		/* K1 */
+			(GLfloat) ((param >> 16) & 0xFF) / 255.0f,		/* K2 */
+			(GLfloat) ((param >> 8)  & 0xFF) / 255.0f,		/* K3 */
+			/* Q ya en radianes: el shader compara contra R, que tambien lo
+			   esta. Convertirlo aca y no alla ahorra la constante en el
+			   camino caliente y deja una sola definicion del rango. */
+			(GLfloat) (((param) & 0xFF) / 255.0f * 6.2831853f));
 }
 
 void glmoderno_presentar(int ancho, int alto, int ven_ancho, int ven_alto)

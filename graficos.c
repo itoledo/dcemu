@@ -792,9 +792,19 @@ static BYTE recortar(int v)
 	sale como un gris. Es exacto mientras los parametros sean del encabezado --
 	que es el caso de un sprite, donde el color de offset esta ahi -- y lo que
 	se pierde es la combinacion con la otra capa.
+
+	**Con `crudo` la intensidad no se resuelve**: se suben los dos angulos tal
+	cual, S en el canal R y R en el G, y la cuenta la hace el fragment shader
+	por pixel. Eso arregla algo que la version horneada no puede arreglar: los
+	parametros K1..K3 y Q **no son de la textura sino del poligono**, y la cache
+	de texturas se indexa por direccion. Dos poligonos que comparten mapa de
+	relieve con parametros distintos --una misma pared con dos luces-- recibian
+	los dos la intensidad del primero que la subio, sin que nada lo delatara.
+	Con los angulos crudos los parametros viajan por uniforme y el problema
+	desaparece por construccion.
 */
 static DWORD * decodificar_bump(const Uint16 * origen, int usize, int vsize,
-								int twiddled, DWORD parametros)
+								int twiddled, DWORD parametros, int crudo)
 {
 	/* M_PI no es estandar y MSVC no la define sin _USE_MATH_DEFINES. */
 	static const double PI = 3.14159265358979323846;
@@ -820,16 +830,27 @@ static DWORD * decodificar_bump(const Uint16 * origen, int usize, int vsize,
 						? (TWIDOUT(j & mask, i & mask) + (j / min + i / min) * min * min)
 						: (i * usize + j);
 			Uint16	texel = origen[pos];
-			double	s = ((texel >> 8) & 0xFF) / 255.0 * (PI / 2.0);
-			double	r = ((texel >> 0) & 0xFF) / 255.0 * 2.0 * PI;
-			double	intensidad;
+			DWORD	sb = (texel >> 8) & 0xFF;		/* elevacion S */
+			DWORD	rb = (texel >> 0) & 0xFF;		/* rotacion R */
+			double	s, r, intensidad;
 			BYTE	g;
+
+			if (crudo)
+			{
+				/* GL_RGBA con bytes: R en el byte 0, G en el 1. */
+				destino[i * usize + j] =
+					((DWORD) 0xFF << 24) | (rb << 8) | sb;
+				continue;
+			}
+
+			s = sb / 255.0 * (PI / 2.0);
+			r = rb / 255.0 * 2.0 * PI;
 
 			intensidad = k1 + k2 * sin(s) + k3 * cos(s) * cos(r - q);
 
 			g = recortar((int) (intensidad * 255.0));
 
-			/* GL_RGBA con bytes: R en el byte 0. Gris opaco. */
+			/* Gris opaco. */
 			destino[i * usize + j] =
 				((DWORD) 0xFF << 24) | ((DWORD) g << 16) | ((DWORD) g << 8) | g;
 		}
@@ -1429,7 +1450,8 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	{
 		cached_textures[cur_tex_count].data =
 			decodificar_bump((const Uint16 *) v, usize, vsize, twiddled,
-				TriangleStrip[strip].texture.pvr_texture_bump_param);
+				TriangleStrip[strip].texture.pvr_texture_bump_param,
+				shader_activo());
 
 		cached_textures[cur_tex_count].twiddled = true;
 	}
@@ -2129,6 +2151,8 @@ static struct
 	GLint	tex_env;
 	int		offset;		/* GL_COLOR_SUM y el arreglo de color secundario */
 	int		niebla;		/* solo el camino programable: la niebla por pixel */
+	int		bump;		/* idem: el relieve por pixel */
+	DWORD	bump_param;
 	int		estencil;
 	GLuint	ligada;		/* la textura de GL ligada; 0 es "ninguna o no se" */
 
@@ -3106,6 +3130,8 @@ static void gl_estado_olvidar(void)
 	gl_e.tex_env    = -1;
 	gl_e.offset     = -1;
 	gl_e.niebla     = -1;
+	gl_e.bump       = -1;
+	gl_e.bump_param = 0xFFFFFFFFu;
 	gl_e.estencil   = -1;
 	gl_e.ligada     = 0;
 
@@ -3272,6 +3298,21 @@ static void gl_niebla(int on)
 	}
 }
 
+/* Idem para el relieve. Los parametros entran en la comparacion porque **son
+   del poligono y no de la textura**: dos tiras con el mismo mapa y distinta luz
+   tienen que emitir el uniforme de nuevo. */
+static void gl_bump(int on, DWORD param)
+{
+	if (gl_e.bump != on || (on && gl_e.bump_param != param))
+	{
+		gl_e.bump = on;
+		gl_e.bump_param = param;
+		gl_e.cambios++;
+
+		glmoderno_u_bump(on, param);
+	}
+}
+
 static void tira_estado(DWORD i)
 {
 			gl_depth_func(TriangleStrip[i].depthmode);
@@ -3374,6 +3415,10 @@ static void tira_estado(DWORD i)
 			{
 				gl_textura(1);
 
+				gl_bump(shader_activo()
+					&& TriangleStrip[i].texture.pvr_texture_bump,
+					TriangleStrip[i].texture.pvr_texture_bump_param);
+
 				/*
 					Los cuatro modos del chip, tal como los define la tabla
 					"Texture/Shading Instruction" del DevBox (pagina 210).
@@ -3472,7 +3517,10 @@ static void tira_estado(DWORD i)
 				}
 			}
 			else
+			{
 				gl_textura(0);
+				gl_bump(0, 0);
+			}
 }
 
 static void dibujar_escena(void)
