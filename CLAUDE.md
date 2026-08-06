@@ -820,14 +820,22 @@ does — because with syscall hooks nobody ran the boot ROM's sound init. The `d
 hand-assembles microprograms; the audio guardrail is the `.wav`, byte-identical on the KOS demo
 with signal and bit-reproducible on Crazy Taxi with the reverb on.
 
-**What is not emulated**: the LFO, the FEG filter and the sample-interval interrupt — now with a
-**sentinel in the key-on path** that reports in the `--traza-mem` summary if a guest asks for them,
-which is exactly what the DSP lacked. Censused over seven games: LFO is used by nobody; the FEG is
-real only in Dead or Alive 2 (17 of 40 voices) — everything else that looked like a filter was
-`0x1FF7`, the Katana driver's pass-through, one LSB under the documented `0x1FF8`. The census probe
-has its own test (`el_censo_del_lfo_cuenta`), because its first run reported "no LFO" from a counter
-nothing incremented. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a
-run.
+**The FEG filter is emulated** — the per-voice resonant lowpass of §8.1.1.7, which the census
+found only Dead or Alive 2 really using (29 of 73 key-ons on the 60 s bench). The envelope comes
+from the papers — the DevBox's FEG table is the AEG decay table ×4 entry by entry, so it is derived,
+not copied — and the IIR arithmetic from the published reverse engineering (Corlett's Highly
+Theoretical, via flycast), since Sega's own docs left the equation in lost figures. Three deliberate
+skips in `feg_decidir()`, each documented: LPOFF (undocumented bit 5 of `+0x28`, what KOS sets, what
+protects the demo park), all-five-FLV-zero (a register file nobody wrote), and the pass-through —
+including Katana's `0x1FF7`, one LSB under the documented `0x1FF8`, so every Katana game skips the
+filter its driver parks open. Guardrails: cpp-modplug and Crazy Taxi `.wav` byte-identical, DOA2
+changes by RMS +0.3% and is bit-reproducible across binaries.
+
+**What is not emulated**: the LFO and the sample-interval interrupt — the LFO with a **sentinel in
+the key-on path** that reports in the `--traza-mem` summary if a guest asks for it, which is exactly
+what the DSP lacked. Censused over seven games: LFO is used by nobody. The census probe has its own
+test (`el_censo_del_lfo_cuenta`), because its first run reported "no LFO" from a counter nothing
+incremented. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a run.
 
 → `docs/notas-aica.md` and `docs/arm7-plan.md`.
 

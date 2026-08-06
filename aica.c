@@ -346,6 +346,41 @@ static const long eg_us_decay[64] =
 static long eg_paso_ataque[64];
 static long eg_paso_decay[64];
 
+/*
+	El filtro FEG (seccion 8.1.1.7): un paso bajo IIR de dos polos por canal,
+	con envolvente propia que mueve el corte entre FLV0 y FLV4 al ritmo de
+	FAR/FD1R/FD2R/FRR.
+
+	El barrido completo --0x0008 a 0x1FF8-- tarda **cuatro veces** lo que la
+	tabla de decaimiento del AEG a la misma tasa efectiva: la tabla 8-14 del
+	DevBox es la de decaimiento multiplicada por 4 entrada por entrada
+	(472800 = 4 x 118200, 405200 = 4 x 101300, ..., 12,4 = 4 x 3,1), asi que
+	no se copia: se deriva. flycast reusa los pasos del AEG tal cual y su
+	barrido tarda 8x, porque el rango del FLV es ocho veces el del AEG; ahi
+	el papel gana. Una sola tabla para los cuatro estados, que es lo que la
+	8-14 da -- el ataque del AEG tiene tabla propia, el del FEG no.
+*/
+#define FEG_FLV_MIN		0x0008L
+#define FEG_FLV_MAX		0x1FF8L
+
+static long feg_paso[64];
+
+/*
+	La resonancia: Q[4:0] de +0x28, la ganancia de la tabla 8-24 (0,75 dB por
+	unidad, menos 3). Lo que entra a la ecuacion no es el dB sino este factor
+	sobre f, y **la tabla es de la ingenieria inversa** (Highly Theoretical,
+	de Neill Corlett, via el sgc_if.cpp de flycast): el papel define la
+	ganancia y deja la ecuacion en una figura. q = 0 cae en Q = 4, que es
+	exactamente el "pasante" que el papel documenta.
+*/
+static const long feg_q_tabla[32] =
+{
+	 2048,  1536,  1024,   512,     0,  -256,  -512,  -768,
+	-1024, -1280, -1536, -1792, -2048, -2176, -2304, -2432,
+	-2560, -2688, -2816, -2944, -3072, -3136, -3200, -3264,
+	-3328, -3392, -3456, -3520, -3584, -3648, -3712, -3776
+};
+
 static long paso_desde_us(long us)
 {
 	if (us == EG_INFINITO)
@@ -385,6 +420,15 @@ static void armar_tablas(void)
 	{
 		eg_paso_ataque[i] = paso_desde_us(eg_us_ataque[i]);
 		eg_paso_decay[i]  = paso_desde_us(eg_us_decay[i]);
+
+		/* El rango del FLV en cuatro veces el tiempo de la tabla de
+		   decaimiento (tabla 8-14, ver arriba). No hay tasas instantaneas:
+		   la tabla del FEG termina en 12,4 ms. */
+		feg_paso[i] = (eg_us_decay[i] == EG_INFINITO)
+			? 0
+			: (long) ((double) (FEG_FLV_MAX - FEG_FLV_MIN) * 65536.0
+			          * 1000000.0
+			          / ((double) eg_us_decay[i] * 4.0 * 44100.0));
 	}
 
 	tablas_listas = 1;
@@ -460,6 +504,174 @@ static void eg_avanzar(int canal, struct aica_canal * c)
 	if (c->eg_estado == AICA_EG_RELEASE
 	&&  (c->eg_nivel >> 16) >= AICA_ATT_MAX)
 		c->activo = 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* El filtro FEG                                                            */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Si el canal filtra se decide en el key-on, con el resto de la voz. Tres
+	maneras de no filtrar:
+
+	  - LPOFF, el bit 5 de +0x28, que el papel no documenta: KOS escribe 0x24
+	    ahi con el comentario "turn off Low Pass Filter", y es lo que protege
+	    al parque entero de demos.
+	  - el pasante: Q = 4 y los cinco FLV en 0x1FF7 o mas. El papel dice
+	    0x1FF8 (DevBox) o 0x1FFF (AICA_E); el driver de Katana escribe 0x1FF7,
+	    un LSB abajo, en todas las voces de todos sus juegos (censado). El
+	    chip real corre el filtro ahi --casi transparente-- pero pagarlo en
+	    cada voz de cada juego Katana por una parte en mil de mantisa no vale:
+	    es la aproximacion de esta capa, y el A/B del .wav la vigila.
+	  - los cinco FLV en cero: el archivo de registros tal como calloc lo
+	    dejo. El papel solo define 0x0008 a 0x1FF8 ("playback may not be
+	    possible" fuera de eso); filtrar con FLV = 0 es un doble integrador
+	    que se come la voz entera, y un guest que jamas escribio el filtro no
+	    pidio eso.
+*/
+static int feg_decidir(int canal)
+{
+	DWORD r28    = CAN(canal, 0x28);
+	int   traves = 1;
+	int   nunca  = 1;
+	int   k;
+
+	if ((r28 >> 5) & 1)						/* LPOFF */
+		return 0;
+
+	for (k = 0; k < 5; k++)
+	{
+		DWORD flv = CAN(canal, 0x2C + (unsigned long) k * 4) & 0x1FFF;
+
+		if (flv != 0)		nunca  = 0;
+		if (flv < 0x1FF7)	traves = 0;
+	}
+
+	if (nunca)
+		return 0;
+
+	return !(traves && (r28 & 0x1F) == 4);
+}
+
+/*
+	La envolvente del filtro: camina hacia el FLV del estado en curso y al
+	llegar pasa al siguiente -- hasta DECAY2, que retiene FLV3. A RELEASE solo
+	se entra por key-off, nunca por llegada: FLV3 es "el corte en el KOFF"
+	(fig. 8-14), o sea el valor en el que la voz espera a que la apaguen. Los
+	registros se releen en cada paso, como hace eg_avanzar: una tasa o un
+	objetivo cambiados a mitad de nota valen desde la muestra siguiente.
+*/
+static void feg_avanzar(int canal, struct aica_canal * c)
+{
+	DWORD r40 = CAN(canal, 0x40);
+	DWORD r44 = CAN(canal, 0x44);
+	int   tasa;
+	long  objetivo;
+
+	switch (c->feg_estado)
+	{
+	case AICA_EG_ATAQUE:
+		tasa = (int) ((r40 >> 8) & 0x1F);				/* FAR */
+		objetivo = (long) (CAN(canal, 0x30) & 0x1FFF);	/* FLV1 */
+		break;
+
+	case AICA_EG_DECAY1:
+		tasa = (int) (r40 & 0x1F);						/* FD1R */
+		objetivo = (long) (CAN(canal, 0x34) & 0x1FFF);	/* FLV2 */
+		break;
+
+	case AICA_EG_DECAY2:
+		tasa = (int) ((r44 >> 8) & 0x1F);				/* FD2R */
+		objetivo = (long) (CAN(canal, 0x38) & 0x1FFF);	/* FLV3 */
+		break;
+
+	default:
+		tasa = (int) (r44 & 0x1F);						/* FRR */
+		objetivo = (long) (CAN(canal, 0x3C) & 0x1FFF);	/* FLV4 */
+		break;
+	}
+
+	objetivo <<= 16;
+
+	if (c->feg_nivel < objetivo)
+	{
+		c->feg_nivel += feg_paso[tasa_efectiva(canal, tasa)];
+
+		if (c->feg_nivel > objetivo)
+			c->feg_nivel = objetivo;
+	}
+	else
+	if (c->feg_nivel > objetivo)
+	{
+		c->feg_nivel -= feg_paso[tasa_efectiva(canal, tasa)];
+
+		if (c->feg_nivel < objetivo)
+			c->feg_nivel = objetivo;
+	}
+	else
+	if (c->feg_estado < AICA_EG_DECAY2)
+		c->feg_estado++;
+}
+
+/*
+	El IIR, en Q30:
+
+	  y[n] = -a0 x[n] + (2 - f - a0) y[n-1] - (1 - f) y[n-2] - err
+
+	con el error de truncado realimentado a la muestra siguiente, que es lo
+	que hace exacta la aritmetica entera. f y a0 salen del valor de 13 bits
+	leido como flotante --4 bits de exponente, 9 de mantisa con bit
+	implicito-- y la resonancia entra escalando f. **La decodificacion es de
+	la ingenieria inversa** (Highly Theoretical de Neill Corlett, via el
+	sgc_if.cpp de flycast): las figuras 8-13 y 8-15 del papel definen que
+	curva es, no con que aritmetica se calcula. El filtro invierte el signo
+	(y -> -x en continua); es del chip, no un descuido.
+
+	El estado interno se recorta a 20 bits con signo --el ancho del mezclador
+	del chip-- y lo que vuelve al de dcemu, que es de 16, se recorta aparte:
+	una resonancia de +20 dB sobre una muestra a fondo excede los 16 bits, y
+	dejarla pasar desbordaria (muestra * ganancia) en el mezclador.
+*/
+static int feg_filtrar(struct aica_canal * c, int muestra, long q)
+{
+	unsigned long fv = (unsigned long) (c->feg_nivel >> 16) & 0x1FFF;
+	unsigned long e  = fv >> 9;
+	unsigned long m  = (fv & 0x1FF) | 0x200;
+	unsigned long long a0;
+	long long f, b1, b2, mac;
+	long s;
+
+	a0 = ((unsigned long long) m << 30) >> ((15 - e) * 2);
+	a0 = (a0 * ((m - 1) / 8)) >> 17;
+
+	f  = ((long long) m << e) << 5;
+	f += q * f / 4096;
+
+	b1 = (2LL << 30) - f - (long long) a0;
+	b2 = (1LL << 30) - f;
+
+	/* Con exponente 0 el residuo realimentado es mas grande que la propia
+	   senal filtrada y deja un siseo que no se apaga. */
+	if (e == 0)
+		c->feg_err = 0;
+
+	mac = -(long long) a0 * muestra + b1 * c->feg_prev1 - b2 * c->feg_prev2
+	      - c->feg_err;
+
+	s = (long) (mac >> 30);
+	c->feg_err = (long) (((long long) s << 30) - mac);
+
+	c->feg_prev2 = c->feg_prev1;
+
+	if (s >  524287)	s =  524287;
+	if (s < -524288)	s = -524288;
+
+	c->feg_prev1 = s;
+
+	if (s >  32767)		return  32767;
+	if (s < -32768)		return -32768;
+
+	return (int) s;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -569,11 +781,12 @@ static void canal_encender(int canal)
 	aica_key_on++;
 
 	/*
-		Censo del LFO y del filtro FEG, que NO estan emulados: cuantos key-on
-		piden modulacion de tono (PLFOS), de amplitud (ALFOS) o un filtro real
-		(FLV0 que no es ni 0 --nunca escrito-- ni 0x1FF8, el pasante que deja
-		KOS). Es el centinela que al DSP le falto: "casi nadie lo nota" fue
-		una premisa sin medir durante un mes, y era falsa.
+		Censo del LFO --que NO esta emulado-- y del filtro FEG --que si, desde
+		que este censo encontro a Dead or Alive 2 usandolo--: cuantos key-on
+		piden modulacion de tono (PLFOS), de amplitud (ALFOS) o un filtro real.
+		Es el centinela que al DSP le falto: "casi nadie lo nota" fue una
+		premisa sin medir durante un mes, y era falsa. El del FEG queda como
+		registro de uso: es lo que dice en que corrida el filtro trabajo.
 
 		**La sonda tiene su prueba** (el_censo_del_lfo_cuenta, en test_aica.c):
 		el censo del LFO de esta misma sesion se corrio seis juegos con el
@@ -669,6 +882,14 @@ static void canal_encender(int canal)
 	c->eg_estado = AICA_EG_ATAQUE;
 	c->eg_nivel  = (long) AICA_ATT_MAX << 16;
 	c->ultima    = 0;
+
+	/* El filtro arranca en FLV0 con el IIR en reposo. */
+	c->feg_activo = feg_decidir(canal);
+	c->feg_estado = AICA_EG_ATAQUE;
+	c->feg_nivel  = (long) (CAN(canal, 0x2C) & 0x1FFF) << 16;
+	c->feg_prev1  = 0;
+	c->feg_prev2  = 0;
+	c->feg_err    = 0;
 }
 
 /* KEY OFF: no corta, pasa a release. */
@@ -682,7 +903,8 @@ static void canal_apagar(int canal)
 			fprintf(stderr, "traza: AICA key off canal %2d: pos %lu eg %d\n",
 				canal, (unsigned long) c->pos, c->eg_estado);
 
-		c->eg_estado = AICA_EG_RELEASE;
+		c->eg_estado  = AICA_EG_RELEASE;
+		c->feg_estado = AICA_EG_RELEASE;	/* el corte camina hacia FLV4 */
 	}
 }
 
@@ -771,6 +993,18 @@ static int canal_muestrear(int canal, int * izq, int * der)
 	dipan = (int) (r24 & 0x1F);
 
 	att = (c->eg_nivel >> 16) + (long) ((r28 >> 8) & 0xFF) * 4;
+
+	/*
+		El filtro FEG va sobre la muestra decodificada, antes de toda
+		atenuacion: lo filtrado alimenta igual la salida directa y el envio al
+		DSP, que es el orden del chip. `ultima` queda sin filtrar a proposito
+		-- es la muestra decodificada, que es lo que el monitor reporta.
+	*/
+	if (c->feg_activo)
+	{
+		feg_avanzar(canal, c);
+		muestra = feg_filtrar(c, muestra, feg_q_tabla[r28 & 0x1F]);
+	}
 
 	/*
 		El envio al DSP: ISEL dice a cual MIXS y IMXL con cuanto nivel (+0x20,

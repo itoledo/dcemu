@@ -64,9 +64,24 @@ static void reiniciar(void)
 
 static void avanzar_muestras(unsigned n)
 {
-	muestras_pedidas += n;
-	reloj_total = (muestras_pedidas * 3324992ull + 734ull) / 735ull;
-	aica_tick();
+	/*
+		De a tramos de 256: aica_tick() produce a lo sumo AICA_MUESTRAS_MAX
+		por llamada y **descarta** el atraso que sobre -- esta hecho para que
+		una pausa del emulador no se vuelva una rafaga --, asi que pedirle mas
+		de 256 de una vez entrega 256 y tira el resto. Las pruebas del filtro
+		lo descubrieron: un buffer pedido de 2000 volvia con 256 escritas y la
+		cola en basura de pila.
+	*/
+	while (n > 0)
+	{
+		unsigned paso = (n > 256u) ? 256u : n;
+
+		muestras_pedidas += paso;
+		reloj_total = (muestras_pedidas * 3324992ull + 734ull) / 735ull;
+		aica_tick();
+
+		n -= paso;
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -903,6 +918,179 @@ static void el_pcm_de_8_bits_se_extiende_con_signo(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* El filtro FEG                                                            */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Como armar_canal, pero programando el filtro antes del disparo: si el
+	canal filtra se decide en el key-on, asi que los registros tienen que
+	estar puestos cuando llega. PCM16 con bucle siempre.
+*/
+static void armar_canal_filtrado(int canal, DWORD sa, DWORD lea,
+                                 DWORD r28, DWORD flv0, DWORD flv1,
+                                 DWORD flv2, DWORD flv3, DWORD flv4,
+                                 DWORD r40, DWORD r44)
+{
+	unsigned long b = (unsigned long) canal * AICA_CANAL_PASO;
+
+	escribir_g2(b + 0x04, sa & 0xFFFF);
+	escribir_g2(b + 0x08, 0);
+	escribir_g2(b + 0x0C, lea);
+	escribir_g2(b + 0x10, 0x1F);		/* AR maximo: ataque instantaneo */
+	escribir_g2(b + 0x14, 0x1F);		/* RR maximo */
+	escribir_g2(b + 0x18, 0);			/* OCT 0, FNS 0 */
+	escribir_g2(b + 0x24, 0x0F00);		/* DISDL 0xF, DIPAN centrado */
+	escribir_g2(b + 0x28, r28);			/* TL, LPOFF y Q */
+	escribir_g2(b + 0x2C, flv0);
+	escribir_g2(b + 0x30, flv1);
+	escribir_g2(b + 0x34, flv2);
+	escribir_g2(b + 0x38, flv3);
+	escribir_g2(b + 0x3C, flv4);
+	escribir_g2(b + 0x40, r40);			/* FAR(12:8), FD1R(4:0) */
+	escribir_g2(b + 0x44, r44);			/* FD2R(12:8), FRR(4:0) */
+
+	escribir_g2(AICA_MVOL, 0x000F);
+
+	escribir_g2(b + 0x00, 0xC000 | 0x200 | ((sa >> 16) & 0x7F));
+}
+
+/*
+	Las tres maneras de no filtrar y las dos de si. El pasante del papel es
+	Q = 4 y FLV = 0x1FF8 (DevBox; el AICA_E dice 0x1FFF); el de Katana es
+	0x1FF7, un LSB abajo, y tratarlo igual es la aproximacion documentada en
+	feg_decidir(). Los cinco FLV en cero son el archivo de registros que
+	nadie escribio, y LPOFF (bit 5 de +0x28, el 0x24 que escribe KOS) manda
+	sobre todo lo demas.
+*/
+static void el_filtro_solo_se_enciende_cuando_lo_piden(void)
+{
+	reiniciar();
+
+	/* LPOFF gana aunque los FLV pidan un filtro real. */
+	armar_canal_filtrado(0, 0x2000, 63, 0x0024,
+		0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0, 0);
+	ESPERAR_I32(aica_canales[0].feg_activo, 0);
+
+	/* Los dos pasantes, con Q = 4. */
+	armar_canal_filtrado(1, 0x2000, 63, 0x0004,
+		0x1FF7, 0x1FF7, 0x1FF7, 0x1FF7, 0x1FF7, 0, 0);
+	ESPERAR_I32(aica_canales[1].feg_activo, 0);
+
+	armar_canal_filtrado(2, 0x2000, 63, 0x0004,
+		0x1FF8, 0x1FF8, 0x1FF8, 0x1FF8, 0x1FF8, 0, 0);
+	ESPERAR_I32(aica_canales[2].feg_activo, 0);
+
+	/* Nunca escrito. */
+	armar_canal_filtrado(3, 0x2000, 63, 0x0000,
+		0, 0, 0, 0, 0, 0, 0);
+	ESPERAR_I32(aica_canales[3].feg_activo, 0);
+
+	/* El pasante exige Q = 4: con otra Q el filtro trabaja. */
+	armar_canal_filtrado(4, 0x2000, 63, 0x0000,
+		0x1FF7, 0x1FF7, 0x1FF7, 0x1FF7, 0x1FF7, 0, 0);
+	ESPERAR_I32(aica_canales[4].feg_activo, 1);
+
+	/* Y un solo FLV real basta: el barrido que arranca abierto y se cierra. */
+	armar_canal_filtrado(5, 0x2000, 63, 0x0004,
+		0x0800, 0x1FF7, 0x1FF7, 0x1FF7, 0x1FF7, 0, 0);
+	ESPERAR_I32(aica_canales[5].feg_activo, 1);
+}
+
+/*
+	Un paso bajo cerrado tiene que comerse Nyquist y dejar pasar la continua.
+	Con FLV = 0x1800 y Q = 4 la ganancia en Nyquist es a0/(4-2f-a0) ~ 0,001:
+	el tono alternado ±0x4000 sale en ruido de un puñado de LSB, y la
+	continua converge a -0x4000 -- **el filtro invierte el signo** (y -> -x),
+	que es del chip y esta prueba lo deja escrito.
+*/
+static void el_filtro_cerrado_come_el_agudo_y_deja_el_grave(void)
+{
+	short salida[1200];
+	int   i, pico_ref, pico_cola;
+
+	/* La referencia: el mismo tono con el filtro apagado (LPOFF). */
+	reiniciar();
+
+	for (i = 0; i < 64; i++)
+	{
+		sound_mem[0x2000 + i * 2]     = 0x00;
+		sound_mem[0x2000 + i * 2 + 1] = (i & 1) ? 0xC0 : 0x40;	/* ±0x4000 */
+	}
+
+	armar_canal_filtrado(0, 0x2000, 63, 0x0024,
+		0x1800, 0x1800, 0x1800, 0x1800, 0x1800, 0, 0);
+	pico_ref = producir(600, NULL);
+
+	ESPERAR(pico_ref > 0x3000);
+
+	/* El mismo tono filtrado: el pico del regimen estacionario (las ultimas
+	   200 muestras, pasado el transitorio) queda en el fondo. */
+	reiniciar();
+	armar_canal_filtrado(0, 0x2000, 63, 0x0004,
+		0x1800, 0x1800, 0x1800, 0x1800, 0x1800, 0, 0);
+	producir(600, salida);
+
+	pico_cola = 0;
+
+	for (i = 400; i < 600; i++)
+	{
+		int v = salida[i * 2];
+
+		if (v < 0)			v = -v;
+		if (v > pico_cola)	pico_cola = v;
+	}
+
+	ESPERAR(pico_cola < pico_ref / 64);
+
+	/* Y la continua pasa entera, con el signo dado la vuelta. */
+	reiniciar();
+
+	for (i = 0; i < 64; i++)
+	{
+		sound_mem[0x2000 + i * 2]     = 0x00;
+		sound_mem[0x2000 + i * 2 + 1] = 0x40;					/* +0x4000 */
+	}
+
+	armar_canal_filtrado(0, 0x2000, 63, 0x0004,
+		0x1800, 0x1800, 0x1800, 0x1800, 0x1800, 0, 0);
+	producir(600, salida);
+
+	ESPERAR(salida[599 * 2] < -0x4000 + 0x100);
+	ESPERAR(salida[599 * 2] > -0x4000 - 0x100);
+}
+
+/*
+	La envolvente del filtro: FLV0 -> FLV1 -> FLV2 -> FLV3 y ahi se queda --
+	FLV3 es "el corte en el KOFF", no un estado de paso -- y el release
+	camina hacia FLV4 solo cuando el key-off llega. Las tasas van al maximo
+	(efectiva 62: barrido completo en 14,4 ms, la tabla 8-14), y el RR del
+	AEG se baja antes del key-off para que el canal siga vivo mientras el
+	filtro termina su caminata.
+*/
+static void la_envolvente_del_filtro_barre_y_retiene_flv3(void)
+{
+	reiniciar();
+
+	armar_canal_filtrado(0, 0x2000, 63, 0x0004,
+		0x1FF0, 0x1000, 0x0800, 0x0400, 0x1FF0,
+		(0x1F << 8) | 0x1F, (0x1F << 8) | 0x1F);
+
+	producir(2000, NULL);
+
+	ESPERAR_I32(aica_canales[0].feg_estado, AICA_EG_DECAY2);
+	ESPERAR_I32((int) (aica_canales[0].feg_nivel >> 16), 0x0400);
+
+	/* Key-off, con el release del AEG casi congelado (RR = 2). */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x14, 0x0002);
+	escribir_g2(0 * AICA_CANAL_PASO + 0x00, 0x8000 | 0x200);
+
+	producir(700, NULL);
+
+	ESPERAR_I32(aica_canales[0].feg_estado, AICA_EG_RELEASE);
+	ESPERAR_I32((int) (aica_canales[0].feg_nivel >> 16), 0x1FF0);
+}
+
+/* ------------------------------------------------------------------------ */
 
 /*
 	La sonda del censo del LFO/FEG cuenta de verdad.
@@ -976,6 +1164,9 @@ static const dc_caso casos[] =
 	CASO(un_canal_en_release_vuelve_a_arrancar),
 	CASO(el_monitor_informa_el_canal_elegido),
 	CASO(el_pcm_de_8_bits_se_extiende_con_signo),
+	CASO(el_filtro_solo_se_enciende_cuando_lo_piden),
+	CASO(el_filtro_cerrado_come_el_agudo_y_deja_el_grave),
+	CASO(la_envolvente_del_filtro_barre_y_retiene_flv3),
 };
 
 const dc_suite suite_aica = DEFINIR_SUITE("aica", casos);

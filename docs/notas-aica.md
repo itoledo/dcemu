@@ -341,12 +341,66 @@ La suite `dsp` (7 casos) ensambla microprogramas a mano y verifica la aritmétic
 línea de retardo TEMP con su decremento, el anillo en crudo y el flotante de ida y vuelta sobre
 los 65536 patrones.
 
+## El filtro FEG
+
+Emulado desde 2026-08-06, el mismo día en que el censo encontró a su único cliente. Es el paso
+bajo IIR por canal de la sección 8.1.1.7, con una envolvente propia de cuatro estados que mueve
+la frecuencia de corte entre FLV0 y FLV4 al ritmo de FAR/FD1R/FD2R/FRR. Lo que costó saber, en
+orden:
+
+- **La envolvente sale entera de los papeles, pero hay que cuadrarlos entre sí.** La tabla 8-14
+  del DevBox («Change Time from 0x0008 to 0x1FF8») es **la tabla de decaimiento del AEG
+  multiplicada por 4, entrada por entrada** (472800 = 4×118200, 405200 = 4×101300, …,
+  12,4 = 4×3,1) — así que en `aica.c` no se copia: se deriva. El AICA_E dice «same as AEG» y
+  reimprime la tabla del AEG tal cual; el DevBox da el barrido completo medido, y es el que
+  vale. flycast reusa los pasos del AEG sin escalar y su barrido tarda 8× (el rango del FLV es
+  ocho veces el del AEG); ahí el papel gana. Una sola tabla para los cuatro estados: el ataque
+  del AEG tiene curva propia, el del FEG no.
+- **La ecuación del IIR no está en ningún papel** — las figuras 8-13/8-15 que la definían se
+  perdieron en texto — así que la aritmética es la de la ingeniería inversa (Highly Theoretical
+  de Neill Corlett, vía el `sgc_if.cpp` de flycast): el valor de 13 bits se lee como flotante de
+  4 bits de exponente y 9 de mantisa con bit implícito, y en Q30
+  `y[n] = −a0·x[n] + (2−f−a0)·y[n−1] − (1−f)·y[n−2]`, con el error de truncado realimentado a la
+  muestra siguiente. La Q entra escalando `f` desde una tabla de 32 entradas cuyo cero cae en
+  Q = 4 — exactamente el «pasante» del papel, que es lo que ata la tabla invertida a la
+  documentación. **El filtro invierte el signo** (y → −x en continua); es del chip.
+- **LPOFF existe y no está documentado**: bit 5 de `+0x28`. KOS escribe `0x24` ahí con el
+  comentario «turn off Low Pass Filter», y ese bit es lo que protege al parque entero de demos.
+- **Cuándo filtrar es una decisión, y está anotada en `feg_decidir()`.** No se filtra con LPOFF,
+  ni con los cinco FLV en cero (el archivo de registros que nadie escribió; el papel sólo define
+  0x0008–0x1FF8), ni en el pasante — que aquí incluye el `0x1FF7` de Katana, un LSB debajo del
+  documentado. El chip real sí corre el filtro en el pasante, casi transparente; pagarlo en cada
+  voz de cada juego Katana por una parte en mil de mantisa no vale, y el A/B del `.wav` vigila
+  la aproximación.
+- **El estado interno se recorta a 20 bits** (el ancho del mezclador del chip) y lo que vuelve
+  al mezclador de dcemu, que es de 16, se recorta aparte: una resonancia de +20 dB sobre una
+  muestra a fondo desbordaría `(muestra * ganancia)`.
+
+**La verificación, diseñada antes de creerle**: tres casos en la suite `aica` — la matriz de
+activación completa, un filtro cerrado que se come Nyquist (−60 dB) y deja la continua entera
+con el signo dado la vuelta, y la envolvente que barre FLV0→FLV1→FLV2→FLV3, retiene, y sólo con
+el key-off camina a FLV4. Y el A/B de extremo a extremo, con los binarios hasheados
+(E8EBE877 ≠ F6DF31BA): **cpp-modplug byte-idéntico** (LPOFF), **Crazy Taxi byte-idéntico** (el
+pasante de Katana se saltea, y de paso confirma que Katana pone Q = 4), y **DOA2 cambia y sólo
+lo justo** — 29 de 73 key-on con filtro real (`1f28/1ff4/1c7c/1d30`), RMS 6073 → 6092 (+0,3 %),
+**bit a bit reproducible** entre corridas y entre compilaciones.
+
+Dos trampas de esa verificación, pagadas aquí:
+
+- **`aica_tick()` produce a lo sumo 256 muestras por llamada** (`AICA_MUESTRAS_MAX`) **y
+  descarta el atraso que sobre** — está hecho para que una pausa del emulador no se vuelva una
+  ráfaga. El arnés de pruebas le pedía 2000 de una vez: recibió 256, la cola del buffer quedó en
+  basura de pila, y las dos aserciones fallaron con el filtro perfectamente sano.
+  `avanzar_muestras()` ahora avanza de a tramos.
+- **El `.wav` de comparación se captura con `--sin-vmu`**: el primer A/B de cpp-modplug dio
+  hashes distintos por la tarjeta en el bus, no por el filtro — la misma regla que ya costó un
+  falso «el shader rompió todo» en los render paths.
+
 ## Lo que no está emulado — y ahora está censado, con la sonda probada
 
-El LFO, el filtro FEG y la interrupción de intervalo de muestra. Los dos primeros llevan desde
-2026-08-06 un **centinela en el key-on**: si un guest los pide, el resumen de `--traza-mem` lo
-dice, que es exactamente lo que al DSP le faltó — «casi nadie lo nota» fue una premisa sin medir
-y era falsa.
+El LFO y la interrupción de intervalo de muestra. El LFO lleva desde 2026-08-06 un **centinela
+en el key-on**: si un guest lo pide, el resumen de `--traza-mem` lo dice, que es exactamente lo
+que al DSP le faltó — «casi nadie lo nota» fue una premisa sin medir y era falsa.
 
 **El censo, sobre siete juegos** (Crazy Taxi, Tennis 2K2, Virtua Tennis 2, DOA2, Dave Mirra,
 4X4 EVO, SF3):
@@ -366,9 +420,9 @@ la OIT ese mismo día. `el_censo_del_lfo_cuenta` (suite `aica`) hace key-on con 
 y verifica que los contadores cuenten: la sonda contesta algo cuya respuesta se sabe, antes de
 preguntarle lo que no.
 
-El FEG queda sin implementar a sabiendas: un juego, valores moderados, y el algoritmo exacto del
-filtro pide leerse el DevBox §8.1.1 con su propia verificación diseñada — no un puñado de
-coeficientes de memoria. `docs/aica-plan.md`, "Lo que sigue faltando", tiene el detalle.
+El FEG que este censo dejó pendiente está implementado — la sección de arriba. El contador de
+key-on con filtro real sigue en el resumen de la traza, ahora como registro de uso: dice en qué
+corrida el filtro trabajó.
 
 Del CD-DA falta el `CD_SCAN` de verdad: se acepta y la reproducción sigue donde estaba, que es
 lo que ve un juego que adelanta y después suelta.

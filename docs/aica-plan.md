@@ -844,10 +844,17 @@ sonar, y cada una por una razón distinta:
   `mem.c`. Reporta `Load OK, starting ARM` y ahí se queda. Es un ARM distinto del de KOS y
   merece mirarse aparte.
 
-Del resto del chip, lo que no está: **el LFO** (tablas 8-8 y 8-9), **el filtro FEG** —el papel
-dice cómo dejarlo en "pasa todo", `Q = 4` y `FLV = 0x1FF8`, y el firmware de KOS directamente lo
-apaga—, **el modo de ADPCM de flujo largo** tratado como el normal, y **la interrupción de
-intervalo de muestra** (bit 10 de `SCIPD`), que nadie habilita.
+Del resto del chip, lo que no está: **el LFO** (tablas 8-8 y 8-9), **el modo de ADPCM de flujo
+largo** tratado como el normal, y **la interrupción de intervalo de muestra** (bit 10 de
+`SCIPD`), que nadie habilita.
+
+**El filtro FEG salió de esta lista el 2026-08-06**, el mismo día en que el censo del key-on
+encontró a Dead or Alive 2 usándolo de verdad — la premisa de 4.7 («lo primero que se puede
+omitir sin que nadie lo note») era cierta para el parque de KOS, que lo apaga con LPOFF, y falsa
+para un juego. La envolvente salió de cuadrar los dos papeles (la tabla 8-14 del DevBox es la de
+decaimiento del AEG ×4, entrada por entrada) y la ecuación del IIR de la ingeniería inversa
+publicada, porque las figuras que la definían no sobreviven en texto. Los detalles, las tres
+maneras de no filtrar y el A/B con los `.wav` están en `docs/notas-aica.md`, «El filtro FEG».
 
 Y dos valores contestados sin medida, anotados como tales porque ya pasó dos veces que un
 registro de identificación contestado a la ligera dejara al guest colgado lejos de ahí:

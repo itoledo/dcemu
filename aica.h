@@ -278,6 +278,21 @@ struct aica_canal
 	int			eg_estado;
 	long		eg_nivel;
 
+	/*
+		Filtro FEG: el paso bajo por canal (seccion 8.1.1.7). El nivel es el
+		valor de 13 bits del papel en 16.16, con su propia envolvente de cuatro
+		estados -- comparte los codigos AICA_EG_* pero no el estado del AEG,
+		porque las dos caminan a tasas distintas. prev1/prev2/err son el estado
+		del IIR de dos polos; err realimenta el error de truncado de cada
+		muestra, que es lo que hace exacta la aritmetica entera.
+	*/
+	int			feg_activo;
+	int			feg_estado;
+	long		feg_nivel;
+	long		feg_prev1;
+	long		feg_prev2;
+	long		feg_err;
+
 	int			ultima;			/* la ultima muestra decodificada, con signo */
 };
 
