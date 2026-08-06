@@ -369,7 +369,7 @@ static GLuint	programa_ez = 0;
 static int		oit_puesto = 0;
 
 typedef struct {
-	GLint	muestra, textura, env, offset, alpha, umbral;
+	GLint	muestra, textura, env, sin_alfa_tex, offset, alpha, umbral;
 	GLint	niebla, nie_color, nie_dens, nie_tabla;
 	GLint	bump, bump_param;
 	GLint	oit, oit_max, oit_mezcla;
@@ -539,6 +539,9 @@ static const char * fuente_fs_cuerpo =
 	"uniform sampler2D muestra;\n"
 	"uniform int usa_textura;\n"
 	"uniform int modo_env;\n"
+	/* Bit 19 del TSP: el texel no tiene alfa, TEXA vale 1. No es el bit 20
+	   ("Use Alpha"), que fuerza el alfa del VERTICE. */
+	"uniform int sin_alfa_tex;\n"
 	"uniform int usa_offset;\n"
 	"uniform int usa_alpha;\n"
 	"uniform float umbral;\n"
@@ -594,6 +597,12 @@ static const char * fuente_fs_cuerpo =
 	"	if (usa_textura != 0)\n"
 	"	{\n"
 	"		vec4 tex = texture2DProj(muestra, uv);\n"
+	"\n"
+	/* Bit 19 del TSP: el texel no tiene alfa. Va antes que todo lo demas
+	   porque cambia la salida de los cuatro entornos --y en el modo 2 tambien
+	   el RGB, cuya interpolacion por TEXA se colapsa a la textura sola. */
+	"		if (sin_alfa_tex != 0)\n"
+	"			tex.a = 1.0;\n"
 	"\n"
 	/*
 		El mapa de relieve: los dos angulos vienen crudos en R y G, y la
@@ -1116,6 +1125,7 @@ static void ubicar(GLuint p, locs_t * l)
 	l->muestra	= p_glGetUniformLocation(p, "muestra");
 	l->textura	= p_glGetUniformLocation(p, "usa_textura");
 	l->env		= p_glGetUniformLocation(p, "modo_env");
+	l->sin_alfa_tex = p_glGetUniformLocation(p, "sin_alfa_tex");
 	l->offset	= p_glGetUniformLocation(p, "usa_offset");
 	l->alpha	= p_glGetUniformLocation(p, "usa_alpha");
 	l->umbral	= p_glGetUniformLocation(p, "umbral");
@@ -1407,6 +1417,12 @@ void glmoderno_u_env(int modo)
 {
 	if (hay_shader)
 		pu_1i(u_n.env, u_z.env, modo);
+}
+
+void glmoderno_u_sin_alfa_tex(int on)
+{
+	if (hay_shader)
+		pu_1i(u_n.sin_alfa_tex, u_z.sin_alfa_tex, on ? 1 : 0);
 }
 
 void glmoderno_u_offset(int on)

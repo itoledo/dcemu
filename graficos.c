@@ -954,6 +954,10 @@ static DWORD * decodificar_yuv422(const DWORD * origen, int usize, int vsize,
 #ifndef GL_MIRRORED_REPEAT
 #define GL_MIRRORED_REPEAT	0x8370
 #endif
+#ifndef GL_CONSTANT
+#define GL_CONSTANT			0x8576
+#endif
+
 #ifndef GL_COMBINE
 #define GL_COMBINE			0x8570
 #define GL_COMBINE_RGB		0x8571
@@ -2740,6 +2744,10 @@ static void juego_de_parametros(int juego)
 static long censo_sel[4];			/* (srcselect << 1) | dstselect */
 static long censo_clip_modo[4];		/* pcw_user_clip: 0 apagado, 2 dentro, 3 fuera */
 static long censo_clip_param;		/* parametros de User Tile Clip recibidos */
+static long censo_tsp19;			/* bit 19: alfa de textura deshabilitado */
+static long censo_tsp19_con_alfa;	/* ...y ademas la textura tiene alfa de verdad */
+static long censo_tsp21;			/* bit 21: recorte de color (fog clamp) */
+static long censo_tsp_tex;			/* tiras con textura, para poner los de arriba en escala */
 
 /*
 	El rectangulo de recorte de usuario vigente, ya en pixeles. Lo deja el
@@ -2785,6 +2793,11 @@ void traza_ta_resumen(void)
 	fprintf(stderr, "traza: censo del buffer secundario (src/dst): 0/0 %ld,"
 		" 0/1 %ld, 1/0 %ld, 1/1 %ld\n",
 		censo_sel[0], censo_sel[1], censo_sel[2], censo_sel[3]);
+
+	fprintf(stderr, "traza: censo de bits del TSP: 19 (alfa de textura apagado)"
+		" %ld, de las cuales %ld sobre textura CON alfa; 21 (recorte de color)"
+		" %ld; de %ld tiras con textura\n",
+		censo_tsp19, censo_tsp19_con_alfa, censo_tsp21, censo_tsp_tex);
 
 	fprintf(stderr, "traza: censo de recorte de usuario: %ld parametros;"
 		" encabezados 0 (apagado) %ld, 1 (reservado) %ld, 2 (dentro) %ld,"
@@ -3866,22 +3879,62 @@ static void tira_estado(DWORD i)
 					3 es MODULATE, pero el 1 y el 2 necesitan COMBINE para poder
 					decir el RGB y el alfa por separado.
 				*/
-					if (gl_e.tex_env != (GLint) TriangleStrip[i].texture.pvr_texture_env)
 				{
-					gl_e.tex_env = (GLint) TriangleStrip[i].texture.pvr_texture_env;
+					/*
+						La clave de la sombra lleva el bit 19 pegado al modo: con
+						el alfa de la textura apagado los cuatro entornos dan otra
+						salida, asi que dos tiras con el mismo modo y distinto bit
+						NO comparten estado. Con la clave vieja la segunda se
+						saltaba su propia programacion por "ya estaba puesto".
+					*/
+					GLint clave = (GLint) (TriangleStrip[i].texture.pvr_texture_env
+						| (TriangleStrip[i].texture.sin_alfa_textura << 4));
+
+					if (gl_e.tex_env != clave)
+				{
+					int sin_a = (int) TriangleStrip[i].texture.sin_alfa_textura;
+
+					gl_e.tex_env = clave;
 					gl_e.cambios++;
 
 					/* Con el shader los cuatro modos son un entero, y los
 					   hasta nueve glTexEnvi de abajo no se emiten. */
 					glmoderno_u_env((int) TriangleStrip[i].texture.pvr_texture_env);
+					glmoderno_u_sin_alfa_tex(sin_a);
 
 					if (shader_activo())
 						goto env_listo;
 
+				/*
+					**El bit 19 del TSP apaga el alfa del texel**, o sea que TEXA
+					vale 1.0, y eso cambia la salida de los cuatro modos:
+
+					  modo   con TEXA vivo              con TEXA = 1
+					  0      RGB=TEX      A=TEXA        RGB=TEX      A=1
+					  1      RGB=COL*TEX  A=TEXA        RGB=COL*TEX  A=1
+					  2      RGB=mezcla   A=COLA        RGB=TEX      A=COLA
+					  3      RGB=COL*TEX  A=COLA*TEXA   RGB=COL*TEX  A=COLA
+
+					El modo 2 es el unico donde tambien cambia el RGB: su
+					interpolacion por TEXA se colapsa a la textura sola.
+
+					"A = 1" se dice con REPLACE desde GL_CONSTANT, y por eso el
+					color del entorno se fija una vez en glinit() con alfa 1.
+				*/
 				switch (TriangleStrip[i].texture.pvr_texture_env)
 				{
 					case 0:
-					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+					if (!sin_a)
+						glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+					else
+					{
+						glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_REPLACE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_CONSTANT);
+					}
 					break;
 
 					case 1:
@@ -3891,31 +3944,59 @@ static void tira_estado(DWORD i)
 					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
 					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
 					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
-					/* PIXA = TEXA: el alfa del vertice no entra. */
+					/* PIXA = TEXA: el alfa del vertice no entra. Con el bit 19,
+					   TEXA es 1. */
 					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_TEXTURE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA,
+						sin_a ? GL_CONSTANT : GL_TEXTURE);
 					break;
 
 					case 2:
 					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
-					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_TEXTURE);
-					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_ALPHA);
+
+					if (!sin_a)
+					{
+						glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_TEXTURE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_ALPHA);
+					}
+					else
+					{
+						/* TEXA = 1 deja la mezcla en la textura sola. */
+						glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_REPLACE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+					}
+
 					/* PIXA = COLA: el del texel ya se gasto en el RGB. */
 					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE);
 					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_PRIMARY_COLOR);
 					break;
 
 					default:
-					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+					if (!sin_a)
+						glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+					else
+					{
+						/* PIXA = COLA * TEXA con TEXA = 1, o sea COLA. */
+						glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_MODULATE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
+						glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE);
+						glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_PRIMARY_COLOR);
+					}
 					break;
 				}
 
 				env_listo: ;
+				}
 				}
 
 				/* Los filtros los pone get_texture(), **despues** de ligar la
@@ -5153,6 +5234,31 @@ void taPolyModifier()
 	    usarlo como interruptor del blending costo los arboles de Crazy Taxi
 	    (ver dibujar_escena()). */
 	 poly_usa_alfa = (int) ((ta_address_pointer[2] >> 20) & 0x1);
+
+	TriangleStrip[strip_count].texture.sin_alfa_textura =
+		(ta_address_pointer[2] >> 19) & 1;
+
+	/* Censo de los dos bits del TSP: 19 apaga el canal alfa de la textura --ya
+	   implementado-- y 21 recorta el color con FOG_CLAMP_MIN/MAX.
+
+	   El 19 se cuenta dos veces: cuantas tiras lo piden y cuantas lo piden
+	   sobre una textura que **de verdad tiene** canal alfa (ARGB1555, ARGB4444
+	   o paleta). Sobre una RGB565 el texel ya sale opaco y apagarle el alfa no
+	   cambia un pixel, asi que la segunda cuenta es la que dice si el bit hace
+	   algo o es una declaracion de intenciones del guest. */
+	if ((ta_address_pointer[2] >> 19) & 1)
+	{
+		int fmt = (ta_address_pointer[3] >> 27) & 0x7;
+
+		censo_tsp19++;
+
+		if (TA.registers.pcw_texture
+		&& (fmt == 0 || fmt == 2 || fmt == 5 || fmt == 6))
+			censo_tsp19_con_alfa++;
+	}
+
+	if ((ta_address_pointer[2] >> 21) & 1) censo_tsp21++;
+	if (TA.registers.pcw_texture) censo_tsp_tex++;
 
 	
 	if (TA.registers.pcw_texture)
@@ -6641,6 +6747,14 @@ int glinit(void)
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);			// Clear The Screen And The Depth Buffer
 
 	logxmsg(LOG_PVR, "glinit: saliendo");
+
+	/* El color del entorno de textura, una vez: su ALFA es el 1.0 que usa el
+	   bit 19 del TSP para decir "el texel no tiene alfa". El RGB no se usa. */
+	{
+		static const GLfloat uno[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+		glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, uno);
+	}
 
 	glEnableClientState(GL_VERTEX_ARRAY);
 	glEnableClientState(GL_COLOR_ARRAY);

@@ -114,6 +114,10 @@ void glmoderno_shader_usar(int puesto);
 */
 void glmoderno_u_textura(int on);
 void glmoderno_u_env(int modo);
+
+/* Bit 19 del TSP: el alfa del texel se ignora y vale 1.0. Lo pide mas de la
+   mitad de las tiras con textura en cinco de los catorce juegos. */
+void glmoderno_u_sin_alfa_tex(int on);
 void glmoderno_u_offset(int on);
 void glmoderno_u_alpha(int on, float umbral);
 

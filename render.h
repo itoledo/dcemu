@@ -241,6 +241,22 @@ typedef struct TriangleStripInfo
 		   3 modulate alpha. */
 		DWORD pvr_texture_env;
 
+		/*
+			Bit 19 del TSP, "Disable alpha channel in textures": con 1 el chip
+			ignora el alfa del texel y lo toma como 1.0. **No es lo mismo que el
+			bit 20** ("Use Alpha"), que fuerza el alfa del VERTICE.
+
+			Cambia la regla de salida de los cuatro entornos --y en el modo 2
+			tambien el RGB, porque la interpolacion se colapsa-- asi que no se
+			puede hornear en la textura: es por poligono, y dos poligonos pueden
+			compartir textura con distinto valor, la misma trampa que el relieve.
+
+			Lo pide **mas de la mitad de las tiras con textura** en cinco de los
+			catorce juegos: Virtua Tennis 2 el 87 %, Tennis 2K2 el 82 %, Dead or
+			Alive 2 el 66 %, Virtua Tennis el 53 % y Crazy Taxi el 51 %.
+		*/
+		DWORD sin_alfa_textura;
+
 		/* La palabra de control de textura tal como llego, para el volcado de
 		   --traza-mem: cuando un formato parece mal leido, esto es lo que
 		   permite mirar los bits sin intermediarios. */

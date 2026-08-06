@@ -1184,3 +1184,69 @@ el redirigido del destino no ocurre y el grupo nunca llega al secundario. La dem
 bajo `--render=oit` —sumar sobre negro es asociativo y la composición aporta cero—, que es justo la
 clase de acierto por casualidad que en este árbol hay que no dejar pasar por implementación. Una tira
 que pida el secundario con la OIT puesta produce un aviso, una vez.
+
+---
+
+## Los dos bits del TSP que dcemu no leía: 19 y 21
+
+`docs/rendimiento-plan.md` los tenía anotados como «residuos menores» de la vía 2.c. El censo dice
+que menores no son.
+
+### Bit 19 — «el texel no tiene alfa» (implementado)
+
+Con el bit puesto el chip ignora el canal alfa de la textura y lo toma como 1.0. **No es el bit 20**
+(«Use Alpha»), que fuerza el alfa del *vértice*: son dos cosas distintas y el árbol ya se equivocó
+una vez usando el 20 como interruptor del blending.
+
+Cambia la regla de salida de los cuatro entornos, y en el modo 2 también el RGB, porque la
+interpolación por TEXA se colapsa a la textura sola:
+
+| modo | con TEXA vivo | con TEXA = 1 |
+| --- | --- | --- |
+| 0 decal | RGB=TEX, A=TEXA | RGB=TEX, A=1 |
+| 1 modulate | RGB=COL×TEX, A=TEXA | RGB=COL×TEX, A=1 |
+| 2 decal alpha | RGB=mezcla por TEXA, A=COLA | RGB=TEX, A=COLA |
+| 3 modulate alpha | RGB=COL×TEX, A=COLA×TEXA | RGB=COL×TEX, A=COLA |
+
+**No se puede hornear en la textura**: es por polígono, y dos polígonos pueden compartir textura con
+distinto valor — la misma trampa que ya costó el relieve. En el shader es una línea; en función fija
+son ocho ramas de `GL_COMBINE`, con «A = 1» dicho como REPLACE desde `GL_CONSTANT` (por eso el color
+del entorno se fija una vez con alfa 1). **Y la clave de la sombra de estado lleva el bit pegado al
+modo**: dos tiras con el mismo entorno y distinto bit no comparten estado, y con la clave vieja la
+segunda se saltaba su propia programación por «ya estaba puesto».
+
+**Lo pide más de la mitad de las tiras con textura en cinco juegos** — Virtua Tennis 2 el 87 %,
+Tennis 2K2 el 82 %, Dead or Alive 2 el 66 %, Virtua Tennis el 53 %, Crazy Taxi el 51 % — y esa cifra
+sola engaña. La que vale es cuántas lo ponen sobre una textura que **de verdad tiene** canal alfa,
+porque sobre una RGB565 el texel ya sale opaco y apagarle el alfa no cambia un píxel:
+
+| juego | bit 19 | sobre textura con alfa |
+| --- | --- | --- |
+| Street Fighter III | 54 127 | **44 383** |
+| Dead or Alive 2 | 415 525 | 11 441 |
+| Crazy Taxi | 220 032 | 3 565 |
+| Tennis 2K2 | 159 498 | 2 052 |
+| Virtua Tennis 2 | 130 254 | 1 980 |
+| Virtua Tennis | 100 549 | 153 |
+| 4X4 EVO, Mat Hoffman | 2 630 | **0** |
+
+**Y aun así no cambia ninguna de las capturas medidas**, ni las doce demos de control ni los seis
+juegos. Eso es un resultado, no una decepción: quiere decir que en esos cuadros los texeles de las
+texturas con alfa ya venían opacos. Queda implementado y correcto —los dos caminos coinciden entre
+sí— y Street Fighter III es donde tiene más oportunidad de importar. Un cuadro donde se note pedía
+más corridas de las que se hicieron.
+
+### Bit 21 — el recorte de color (pendiente, y no es menor)
+
+Con el bit puesto el color del píxel se recorta entre `FOG_CLAMP_MIN` (`0x005F80C0`) y
+`FOG_CLAMP_MAX` (`0x005F80BC`), cada uno ARGB8888.
+
+**Lo pide un solo juego, y masivamente: Dead or Alive 2, 497 412 de sus 633 057 tiras con textura,
+el 79 %.** Ninguno de los otros trece lo toca. Con el recorte sin aplicar, todo lo que ese juego
+dibuja queda fuera del rango que pidió — y es justamente el juego cuyas sombras se ven mal.
+
+No está hecho porque **la función fija no lo puede expresar** y ése es el camino por omisión: en el
+shader son dos uniformes y un `clamp()` después de la niebla, pero en `--render=ventana` no hay
+dónde ponerlo sin una segunda pasada. Hacerlo sólo en el camino programable dejaría los dos caminos
+discrepando en un juego entero, que es peor que la deuda actual mientras no se decida cuál es la
+referencia.
