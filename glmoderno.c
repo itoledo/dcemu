@@ -372,6 +372,7 @@ typedef struct {
 	GLint	muestra, textura, env, sin_alfa_tex, offset, alpha, umbral;
 	GLint	niebla, nie_color, nie_dens, nie_tabla;
 	GLint	bump, bump_param;
+	GLint	clamp_on, clamp_min, clamp_max;
 	GLint	oit, oit_max, oit_mezcla;
 	GLint	volumen, vol_mascara;
 	GLint	acum_src, acum_muestra;
@@ -549,6 +550,14 @@ static const char * fuente_fs_cuerpo =
 	"uniform vec3 niebla_color;\n"
 	"uniform float niebla_densidad;\n"
 	"uniform vec2 niebla_tabla[128];\n"
+	/*
+		Bit 21 del TSP: el color del pixel se acota entre FOG_CLAMP_MIN y
+		FOG_CLAMP_MAX, **despues de la niebla**, que es donde lo aplica el chip.
+		Los dos limites valen para la escena entera; el bit es por tira.
+	*/
+	"uniform int usa_clamp;\n"
+	"uniform vec4 clamp_min;\n"
+	"uniform vec4 clamp_max;\n"
 	"uniform int usa_bump;\n"
 	"uniform vec4 bump_param;\n"		/* K1, K2, K3, Q ya en radianes */
 	/*
@@ -641,6 +650,10 @@ static const char * fuente_fs_cuerpo =
 	/* Antes de salir, o sea antes de la mezcla: es donde la aplica el chip. */
 	"	if (usa_niebla != 0)\n"
 	"		pix.rgb = mix(pix.rgb, niebla_color, niebla_alfa(uv.w));\n"
+	"\n"
+	/* Y el recorte de color, que va justo detras de la niebla. */
+	"	if (usa_clamp != 0)\n"
+	"		pix = clamp(pix, clamp_min, clamp_max);\n"
 	"\n"
 	"	return pix;\n"
 	"}\n";
@@ -1134,6 +1147,9 @@ static void ubicar(GLuint p, locs_t * l)
 	l->nie_dens	= p_glGetUniformLocation(p, "niebla_densidad");
 	l->nie_tabla = p_glGetUniformLocation(p, "niebla_tabla");
 	l->bump		= p_glGetUniformLocation(p, "usa_bump");
+	l->clamp_on	= p_glGetUniformLocation(p, "usa_clamp");
+	l->clamp_min = p_glGetUniformLocation(p, "clamp_min");
+	l->clamp_max = p_glGetUniformLocation(p, "clamp_max");
 	l->bump_param = p_glGetUniformLocation(p, "bump_param");
 	l->oit		= p_glGetUniformLocation(p, "usa_oit");
 	l->oit_max	= p_glGetUniformLocation(p, "oit_max");
@@ -1423,6 +1439,23 @@ void glmoderno_u_sin_alfa_tex(int on)
 {
 	if (hay_shader)
 		pu_1i(u_n.sin_alfa_tex, u_z.sin_alfa_tex, on ? 1 : 0);
+}
+
+void glmoderno_u_clamp(int on)
+{
+	if (hay_shader)
+		pu_1i(u_n.clamp_on, u_z.clamp_on, on ? 1 : 0);
+}
+
+void glmoderno_clamp_escena(const float * minimo, const float * maximo)
+{
+	if (!hay_shader)
+		return;
+
+	pu_4f(u_n.clamp_min, u_z.clamp_min,
+		minimo[0], minimo[1], minimo[2], minimo[3]);
+	pu_4f(u_n.clamp_max, u_z.clamp_max,
+		maximo[0], maximo[1], maximo[2], maximo[3]);
 }
 
 void glmoderno_u_offset(int on)

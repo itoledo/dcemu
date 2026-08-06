@@ -2187,6 +2187,7 @@ static struct
 	int		mezcla_cod;	/* idem: los dos codigos de mezcla sin traducir */
 	int		estencil;
 	int		tijera;		/* el recorte de usuario: GL_SCISSOR_TEST */
+	int		clamp;		/* el recorte de color, bit 21 del TSP */
 	GLuint	ligada;		/* la textura de GL ligada; 0 es "ninguna o no se" */
 
 	/* Cuantas llamadas a GL emitio la sombra. No se lee su valor: se compara
@@ -3255,6 +3256,37 @@ static int niebla_aplica(DWORD i)
 	shader interpola entre los dos con la fraccion de la mantisa, igual que
 	dibujar_niebla_tira().
 */
+/*
+	Los dos limites del recorte de color (bit 21 del TSP), que valen para la
+	escena entera: FOG_CLAMP_MIN y FOG_CLAMP_MAX, los dos ARGB8888.
+
+	Se suben una vez por escena, como la tabla de niebla y por lo mismo: salen
+	de registros del PVR que el guest no toca en medio de un render.
+*/
+static void clamp_al_shader(void)
+{
+	DWORD	cmin = 0, cmax = 0xFFFFFFFFu;
+	float	lo[4], hi[4];
+
+	if (!shader_activo())
+		return;
+
+	memread_fisico(0xA05F80C0, &cmin, 4);
+	memread_fisico(0xA05F80BC, &cmax, 4);
+
+	lo[0] = (float) ((cmin >> 16) & 0xFF) / 255.0f;
+	lo[1] = (float) ((cmin >> 8)  & 0xFF) / 255.0f;
+	lo[2] = (float) ( cmin        & 0xFF) / 255.0f;
+	lo[3] = (float) ((cmin >> 24) & 0xFF) / 255.0f;
+
+	hi[0] = (float) ((cmax >> 16) & 0xFF) / 255.0f;
+	hi[1] = (float) ((cmax >> 8)  & 0xFF) / 255.0f;
+	hi[2] = (float) ( cmax        & 0xFF) / 255.0f;
+	hi[3] = (float) ((cmax >> 24) & 0xFF) / 255.0f;
+
+	glmoderno_clamp_escena(lo, hi);
+}
+
 static void niebla_al_shader(void)
 {
 	DWORD	reg = 0, col = 0;
@@ -3440,6 +3472,7 @@ static void gl_estado_olvidar(void)
 	gl_e.mezcla_cod = -1;
 	gl_e.estencil   = -1;
 	gl_e.tijera     = -1;
+	gl_e.clamp      = -1;
 	gl_e.ligada     = 0;
 
 	/* El olvido cuenta como cambio: quien venia agrupando tiene que cortar. */
@@ -3693,6 +3726,16 @@ static void tira_estado(DWORD i)
 				peor que no aplicar ninguno, porque el grupo se acumularia en un
 				buffer que despues nadie compone.
 			*/
+			/* El recorte de color, por tira. Sin shader no se aplica: la
+			   funcion fija no lo puede expresar, y decirlo a medias seria
+			   peor -- ver docs/notas-graficos.md. */
+			if (gl_e.clamp != (int) TriangleStrip[i].clamp_color)
+			{
+				gl_e.clamp = (int) TriangleStrip[i].clamp_color;
+				gl_e.cambios++;
+				glmoderno_u_clamp(gl_e.clamp);
+			}
+
 			gl_tijera(TriangleStrip[i].clip_modo,
 				TriangleStrip[i].clip_x0, TriangleStrip[i].clip_y0,
 				TriangleStrip[i].clip_x1, TriangleStrip[i].clip_y1);
@@ -4030,6 +4073,7 @@ static void dibujar_escena(void)
 	   funcion fija y no tienen nada que decirle a los uniformes. */
 	glmoderno_shader_usar(shader_activo());
 	niebla_al_shader();
+	clamp_al_shader();
 	glmoderno_acum_limpiar();
 
 	DWORD i;
@@ -5237,6 +5281,8 @@ void taPolyModifier()
 
 	TriangleStrip[strip_count].texture.sin_alfa_textura =
 		(ta_address_pointer[2] >> 19) & 1;
+
+	TriangleStrip[strip_count].clamp_color = (ta_address_pointer[2] >> 21) & 1;
 
 	/* Censo de los dos bits del TSP: 19 apaga el canal alfa de la textura --ya
 	   implementado-- y 21 recorta el color con FOG_CLAMP_MIN/MAX.

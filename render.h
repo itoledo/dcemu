@@ -287,6 +287,16 @@ typedef struct TriangleStripInfo
 	DWORD clip_x0, clip_y0, clip_x1, clip_y1;
 
 	/*
+		Bit 21 del TSP, el RECORTE DE COLOR: con 1, el color del pixel se acota
+		entre FOG_CLAMP_MIN (0x005F80C0) y FOG_CLAMP_MAX (0x005F80BC), los dos
+		ARGB8888, despues de la niebla.
+
+		Lo pide **un solo juego y masivamente**: Dead or Alive 2, el 79 % de sus
+		tiras con textura. Ninguno de los otros trece lo toca.
+	*/
+	DWORD clamp_color;
+
+	/*
 		La z mas cercana de la tira (el maximo, porque z es 1/w), ya pasada por
 		profundidad_ta(). Es la llave del autosort de la lista translucida:
 		el chip la ordena por profundidad por pixel, y dcemu aproxima por

@@ -1236,17 +1236,26 @@ texturas con alfa ya venían opacos. Queda implementado y correcto —los dos ca
 sí— y Street Fighter III es donde tiene más oportunidad de importar. Un cuadro donde se note pedía
 más corridas de las que se hicieron.
 
-### Bit 21 — el recorte de color (pendiente, y no es menor)
+### Bit 21 — el recorte de color (implementado en el camino programable, y **inerte**)
 
 Con el bit puesto el color del píxel se recorta entre `FOG_CLAMP_MIN` (`0x005F80C0`) y
-`FOG_CLAMP_MAX` (`0x005F80BC`), cada uno ARGB8888.
+`FOG_CLAMP_MAX` (`0x005F80BC`), cada uno ARGB8888, **después de la niebla**. Los límites valen para
+la escena entera y el bit es por tira, así que se suben una vez por escena como la tabla de niebla y
+por la misma razón.
 
 **Lo pide un solo juego, y masivamente: Dead or Alive 2, 497 412 de sus 633 057 tiras con textura,
-el 79 %.** Ninguno de los otros trece lo toca. Con el recorte sin aplicar, todo lo que ese juego
-dibuja queda fuera del rango que pidió — y es justamente el juego cuyas sombras se ven mal.
+el 79 %.** Ninguno de los otros trece lo toca. Con eso parecía el candidato obvio para sus sombras.
 
-No está hecho porque **la función fija no lo puede expresar** y ése es el camino por omisión: en el
-shader son dos uniformes y un `clamp()` después de la niebla, pero en `--render=ventana` no hay
-dónde ponerlo sin una segunda pasada. Hacerlo sólo en el camino programable dejaría los dos caminos
-discrepando en un juego entero, que es peor que la deuda actual mientras no se decida cuál es la
-referencia.
+**Y no lo es, porque los límites que pone son `MIN = 00000000` y `MAX = ffffffff`.** Recortar al
+rango completo es exactamente lo que el hardware hace igual: el bit está encendido en cuatro de cada
+cinco tiras del juego y no puede cambiar un solo píxel. Medido, no deducido — `--render=fbo` (sin
+recorte) contra `--render=shader` (con recorte) difieren en **123 píxeles de 305 920**, y ésos son
+la niebla por píxel, que difiere a propósito.
+
+Eso deja el bit en la misma categoría que el 19: implementado, correcto, y sin efecto en el parque
+actual. La diferencia con dejarlo sin hacer es que ahora **se sabe** que no es la causa de nada, en
+vez de figurar como sospechoso; y si aparece un juego que ponga límites de verdad, funciona.
+
+Sólo existe en el camino programable: la función fija no lo puede expresar sin una segunda pasada.
+Con los límites abiertos eso no crea ninguna discrepancia entre caminos, que era la objeción para no
+hacerlo a medias.

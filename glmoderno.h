@@ -118,6 +118,16 @@ void glmoderno_u_env(int modo);
 /* Bit 19 del TSP: el alfa del texel se ignora y vale 1.0. Lo pide mas de la
    mitad de las tiras con textura en cinco de los catorce juegos. */
 void glmoderno_u_sin_alfa_tex(int on);
+
+/*
+	Bit 21 del TSP: el color del pixel se acota entre FOG_CLAMP_MIN y
+	FOG_CLAMP_MAX, despues de la niebla. Los limites valen para la escena y el
+	bit es por tira. **La funcion fija no lo puede expresar**, asi que esto solo
+	existe en el camino programable: ver docs/notas-graficos.md.
+*/
+void glmoderno_u_clamp(int on);
+void glmoderno_clamp_escena(const float * minimo /* RGBA */,
+							const float * maximo);
 void glmoderno_u_offset(int on);
 void glmoderno_u_alpha(int on, float umbral);
 
