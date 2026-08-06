@@ -182,4 +182,48 @@ void glmoderno_u_oit(int on);
    con cada fragmento apilado. */
 void glmoderno_u_mezcla(int src, int dst);
 
+/* ------------------------------------------------------------------------ */
+/* Volumenes modificadores por pixel                                        */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El chip decide pixel a pixel si esta dentro del volumen y con eso elige uno
+	de los DOS juegos de parametros que trae el vertice. En funcion fija eso son
+	el buffer de plantilla y **dos pasadas de la misma geometria**, una recortada
+	a fuera y otra a dentro.
+
+	Aca la cuenta de caras va a una imagen que el fragment shader puede leer, y
+	entonces la eleccion se hace donde corresponde: dentro del shader, en una
+	sola pasada. El juego 1 viaja en las unidades de textura 1, 2 y 3.
+
+	Y con la mascara aparte de la plantilla se puede implementar la instruccion 2
+	("cerrar excluyendo"), que con la plantilla era una aproximacion: la region
+	afectada es el complemento del volumen del grupo, no lo que sus caras cubren.
+*/
+int glmoderno_hay_volumen_px(void);
+
+/* Reserva la mascara y el contador de grupo para ese tamano. */
+int glmoderno_vol_dimensionar(int ancho, int alto);
+
+/*
+	Empieza la marca de una lista. `por_grupo` en 1 --solo si la escena trae
+	alguna instruccion 2-- cuenta cada grupo aparte para poder doblarlo con su
+	polaridad; en 0 todos suman en la mascara y el shader prueba != 0, que es
+	exactamente lo que hacia la plantilla.
+*/
+void glmoderno_vol_empezar(int ancho, int alto, int por_grupo);
+
+/* Liga (1) o suelta (0) el programa que acumula caras. */
+void glmoderno_vol_acumular(int on, int por_grupo);
+
+/* Dobla el grupo contado en la mascara y deja el contador en cero.
+   `excluir` es la instruccion 2. */
+void glmoderno_vol_plegar(int excluir);
+
+/* Barrera: la mascara ya se puede leer desde el shader de escena. */
+void glmoderno_vol_listo(void);
+
+/* Si la tira que viene consulta la mascara. */
+void glmoderno_u_volumen(int on);
+
 #endif /* _GLMODERNO_H_ */

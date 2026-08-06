@@ -350,6 +350,7 @@ typedef struct {
 	GLint	niebla, nie_color, nie_dens, nie_tabla;
 	GLint	bump, bump_param;
 	GLint	oit, oit_max, oit_mezcla;
+	GLint	volumen, vol_mascara;
 } locs_t;
 
 static locs_t	u_n;	/* las del programa normal */
@@ -413,6 +414,21 @@ static GLint	u_res_presort = -1;
 
 static int oit_armar(void);
 
+/* ---- Volumenes modificadores por pixel ---- */
+
+#define GL_R32I				0x8235
+#define GL_RED_INTEGER_		GL_RED_INTEGER
+
+static int		hay_vol = 0;
+static GLuint	vol_mascara = 0;	/* lo que lee el shader de escena: !=0 dentro */
+static GLuint	vol_cuenta = 0;		/* contador de un grupo, solo si hay exclusion */
+static GLuint	vol_prog = 0;		/* acumula caras en la mascara */
+static GLuint	vol_prog_plegar = 0;/* dobla un grupo en la mascara */
+static int		vol_w = 0, vol_h = 0;
+static GLint	u_vol_excluir = -1;
+
+static int vol_armar(void);
+
 /*
 	El vertex shader. No hace nada que la funcion fija no hiciera: transforma
 	por la matriz y pasa color, color secundario y coordenadas de textura.
@@ -420,6 +436,14 @@ static int oit_armar(void);
 	Las coordenadas van de cuatro componentes (u*q, v*q, 0, q) y el fragmento
 	las divide con texture2DProj, que es lo mismo que hace glTexCoordPointer(4)
 	-- ver el comentario de `vertex` en render.h: para eso el TA entrega 1/w.
+*/
+/*
+	El juego 1 --el de dentro del volumen modificador-- viaja en las unidades de
+	textura 1, 2 y 3, y no es un abuso: son cuatro flotantes por unidad y lo que
+	hace falta pasar es una UV, un color y un color de offset. La alternativa
+	--atributos genericos-- obligaria a VBO y VAO, que es justo lo que el camino
+	de arreglos de cliente evita. graficos.c los enciende solo para las tiras que
+	un volumen afecta; para el resto las tres quedan apagadas.
 */
 static const char * fuente_vs =
 	"#version 120\n"
@@ -429,6 +453,9 @@ static const char * fuente_vs =
 	"	gl_FrontColor = gl_Color;\n"
 	"	gl_FrontSecondaryColor = gl_SecondaryColor;\n"
 	"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+	"	gl_TexCoord[1] = gl_MultiTexCoord1;\n"	/* UV del juego 1 */
+	"	gl_TexCoord[2] = gl_MultiTexCoord2;\n"	/* color del juego 1 */
+	"	gl_TexCoord[3] = gl_MultiTexCoord3;\n"	/* offset del juego 1 */
 	"}\n";
 
 /*
@@ -513,14 +540,22 @@ static const char * fuente_fs_cuerpo =
 	"	return mix(niebla_tabla[idx].x, niebla_tabla[idx].y, m16 - m);\n"
 	"}\n"
 	"\n"
-	"vec4 dc_pixel()\n"
+	/*
+		Los tres datos que un volumen modificador cambia --color, UV y color de
+		offset-- entran por parametro y no se leen de las incorporadas.
+
+		Es lo que permite que el juego de parametros se elija POR PIXEL: el chip
+		decide dentro/fuera pixel a pixel y con eso escoge uno de los dos juegos
+		que trae el vertice. El cuerpo sigue siendo el mismo para los dos sabores
+		del shader, que es la condicion para poder compararlos.
+	*/
+	"vec4 dc_pixel(vec4 col, vec4 uv, vec3 off)\n"
 	"{\n"
-	"	vec4 col = gl_Color;\n"
 	"	vec4 pix;\n"
 	"\n"
 	"	if (usa_textura != 0)\n"
 	"	{\n"
-	"		vec4 tex = texture2DProj(muestra, gl_TexCoord[0]);\n"
+	"		vec4 tex = texture2DProj(muestra, uv);\n"
 	"\n"
 	/*
 		El mapa de relieve: los dos angulos vienen crudos en R y G, y la
@@ -551,15 +586,14 @@ static const char * fuente_fs_cuerpo =
 	"		pix = col;\n"
 	"\n"
 	"	if (usa_offset != 0)\n"
-	"		pix.rgb += gl_SecondaryColor.rgb;\n"
+	"		pix.rgb += off;\n"
 	"\n"
 	"	if (usa_alpha != 0 && (pix.a < umbral || pix.a == 0.0))\n"
 	"		discard;\n"
 	"\n"
 	/* Antes de salir, o sea antes de la mezcla: es donde la aplica el chip. */
 	"	if (usa_niebla != 0)\n"
-	"		pix.rgb = mix(pix.rgb, niebla_color,\n"
-	"			niebla_alfa(gl_TexCoord[0].w));\n"
+	"		pix.rgb = mix(pix.rgb, niebla_color, niebla_alfa(uv.w));\n"
 	"\n"
 	"	return pix;\n"
 	"}\n";
@@ -594,7 +628,28 @@ static const char * fs_cabeza_oit =
 		negra sin un solo error a la vista. Costo la primera corrida de esto.
 	*/
 	"uniform int oit_max;\n"
-	"uniform int oit_mezcla;\n";
+	"uniform int oit_mezcla;\n"
+	/*
+		La mascara del volumen modificador: distinto de cero es "este pixel esta
+		dentro". La escribe la pasada de volumenes contando caras contra la
+		profundidad ya resuelta, igual que la plantilla, solo que aca el shader
+		la puede LEER -- que es lo que permite elegir el juego de parametros por
+		pixel en vez de dibujar la geometria dos veces con la plantilla de reja.
+	*/
+	/*
+		`binding` explicito y no un uniforme con el numero de unidad. Los
+		uniformes de imagen son de los que un driver puede no aceptar por
+		glProgramUniform*, y el sintoma es el de siempre: la unidad se queda en
+		0 --donde vive otra imagen-- imageLoad devuelve cero, la mascara se lee
+		vacia y no hay ni un error. Con el binding en el fuente no hay nada que
+		poner ni nada que se pueda quedar sin poner.
+	*/
+	"layout(binding = 1, r32i) uniform coherent iimage2D vol_mascara;\n"
+	"uniform int usa_volumen;\n"
+	/* DCEMU_VOL_SONDA=1: la tira que consulta la mascara sale roja donde dio
+	   dentro y verde donde dio fuera, en vez de dibujarse. Separa "la mascara
+	   esta vacia" de "el juego 1 es igual al 0", que dan el mismo sintoma. */
+	"uniform int vol_sonda;\n";
 
 /*
 	**La prueba de profundidad tiene que correr ANTES del shader**, y esto es lo
@@ -627,7 +682,8 @@ static const char * fs_temprano = "layout(early_fragment_tests) in;\n";
 static const char * fs_main_120 =
 	"void main()\n"
 	"{\n"
-	"	gl_FragColor = dc_pixel();\n"
+	"	gl_FragColor = dc_pixel(gl_Color, gl_TexCoord[0],\n"
+	"		gl_SecondaryColor.rgb);\n"
 	"}\n";
 
 /*
@@ -646,7 +702,34 @@ static const char * fs_main_120 =
 static const char * fs_main_oit =
 	"void main()\n"
 	"{\n"
-	"	vec4 c = dc_pixel();\n"
+	/*
+		El volumen modificador, por pixel y como en el chip: si este pixel esta
+		dentro, el poligono se dibuja con su juego 1 --el otro color, la otra UV
+		y el otro offset, que el vertice ya trae-- y si no, con el 0. Una sola
+		pasada de geometria; la version de plantilla necesitaba dos.
+	*/
+	"	vec4 col = gl_Color;\n"
+	"	vec4 uv  = gl_TexCoord[0];\n"
+	"	vec3 off = gl_SecondaryColor.rgb;\n"
+	"\n"
+	"	bool dentro = usa_volumen != 0\n"
+	"		&& imageLoad(vol_mascara, ivec2(gl_FragCoord.xy)).r != 0;\n"
+	"\n"
+	"	if (dentro)\n"
+	"	{\n"
+	"		col = gl_TexCoord[2];\n"
+	"		uv  = gl_TexCoord[1];\n"
+	"		off = gl_TexCoord[3].rgb;\n"
+	"	}\n"
+	"\n"
+	"	if (vol_sonda != 0 && usa_volumen != 0)\n"
+	"	{\n"
+	"		gl_FragColor = dentro ? vec4(1.0, 0.0, 0.0, 1.0)\n"
+	"							  : vec4(0.0, 1.0, 0.0, 1.0);\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	"	vec4 c = dc_pixel(col, uv, off);\n"
 	"\n"
 	"	if (usa_oit == 0)\n"
 	"	{\n"
@@ -666,6 +749,58 @@ static const char * fs_main_oit =
 	"		oit_nodos[idx].prof = gl_FragCoord.z;\n"
 	"		oit_nodos[idx].mezcla = uint(oit_mezcla);\n"
 	"	}\n"
+	"\n"
+	"	discard;\n"
+	"}\n";
+
+/* ---- Los dos programas de la mascara de volumen ---- */
+
+/*
+	Acumular: una cara que mira hacia aca suma y una que mira hacia alla resta,
+	contra la profundidad ya resuelta. Dentro del volumen la cuenta no cierra.
+
+	`gl_FrontFacing` en vez de dos pasadas con culling opuesto, que es lo que
+	hace la version de plantilla: el sentido se decide en coordenadas de ventana
+	igual que el culling, asi que el resultado es el mismo con la mitad de
+	geometria enviada.
+
+	`early_fragment_tests` por lo mismo que la transparencia ordenada: el
+	`discard` atrasaria la prueba de profundidad y se contarian caras que estan
+	DETRAS de la superficie, que es justamente lo que la cuenta no debe ver. Sin
+	esto el volumen marca todo lo que sus caras cubran -- el error que la version
+	anterior a la plantilla por profundidad ya habia cometido.
+*/
+static const char * fuente_fs_vol =
+	"#version 430 compatibility\n"
+	"layout(early_fragment_tests) in;\n"
+	"layout(binding = 2, r32i) uniform coherent iimage2D cuenta;\n"
+	"void main()\n"
+	"{\n"
+	"	imageAtomicAdd(cuenta, ivec2(gl_FragCoord.xy),\n"
+	"		gl_FrontFacing ? 1 : -1);\n"
+	"	discard;\n"
+	"}\n";
+
+/*
+	Doblar un grupo en la mascara: `dentro` es cuenta != 0, o su complemento si
+	el grupo cerro con la instruccion 2 ("cerrar excluyendo"), donde la region
+	afectada es el COMPLEMENTO del volumen y no lo que sus caras cubren.
+
+	Sin exclusion los grupos se suman en una sola cuenta y basta un plegado al
+	final, que es lo mismo que hacia la plantilla probando != 0.
+*/
+static const char * fuente_fs_vol_plegar =
+	"#version 430 compatibility\n"
+	"layout(binding = 1, r32i) uniform coherent iimage2D destino;\n"
+	"layout(binding = 2, r32i) uniform coherent iimage2D cuenta;\n"
+	"uniform int excluir;\n"
+	"void main()\n"
+	"{\n"
+	"	ivec2 p = ivec2(gl_FragCoord.xy);\n"
+	"	bool dentro = imageLoad(cuenta, p).r != 0;\n"
+	"\n"
+	"	if (excluir != 0) dentro = !dentro;\n"
+	"	if (dentro) imageStore(destino, p, ivec4(1));\n"
 	"\n"
 	"	discard;\n"
 	"}\n";
@@ -955,6 +1090,8 @@ static void ubicar(GLuint p, locs_t * l)
 	l->oit		= p_glGetUniformLocation(p, "usa_oit");
 	l->oit_max	= p_glGetUniformLocation(p, "oit_max");
 	l->oit_mezcla = p_glGetUniformLocation(p, "oit_mezcla");
+	l->volumen	= p_glGetUniformLocation(p, "usa_volumen");
+	l->vol_mascara = p_glGetUniformLocation(p, "vol_mascara");
 }
 
 /*
@@ -1176,6 +1313,21 @@ int glmoderno_shader_iniciar(void)
 			" transparencia ordenada; queda apagada\n");
 		hay_oit = 0;
 	}
+
+	/* Los volumenes por pixel piden lo mismo que la OIT --imagenes atomicas y
+	   prueba de profundidad adelantada--, asi que van juntos: si el programa de
+	   4.30 esta, los dos estan. */
+	hay_vol = (programa_ez != 0);
+
+	if (hay_vol && !vol_armar())
+	{
+		fprintf(stderr, "gl: no se pudieron crear los recursos de los"
+			" volumenes por pixel; se dibujan con plantilla\n");
+		hay_vol = 0;
+	}
+
+	fprintf(stderr, "gl: volumenes modificadores %s\n",
+		hay_vol ? "por pixel" : "por plantilla");
 
 	return 1;
 }
@@ -1506,6 +1658,234 @@ void glmoderno_oit_resolver(void)
 	rechaza. Si el driver no dio glProgramUniform* no hay segundo programa y
 	esto se reduce al uniforme de antes.
 */
+/* ------------------------------------------------------------------------ */
+/* Volumenes modificadores por pixel                                        */
+/* ------------------------------------------------------------------------ */
+
+static int vol_armar(void)
+{
+	GLuint vs, fs;
+
+	vs = compilar(GL_VERTEX_SHADER,
+		"#version 430 compatibility\n"
+		"void main() { gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }\n",
+		"vertex shader (volumen)");
+
+	if (vs == 0)
+		return 0;
+
+	fs = compilar(GL_FRAGMENT_SHADER, fuente_fs_vol, "fragment shader (volumen)");
+
+	if (fs != 0)
+	{
+		vol_prog = enlazar(vs, fs, "el programa de volumen");
+		p_glDeleteShader(fs);
+	}
+
+	p_glDeleteShader(vs);
+
+	if (vol_prog == 0)
+		return 0;
+
+	/* El de plegar dibuja un quad en coordenadas de recorte, como el de
+	   resolucion de la OIT: no depende del glOrtho de la escena. */
+	vs = compilar(GL_VERTEX_SHADER, fuente_vs_resolver, "vertex shader (plegar)");
+	fs = compilar(GL_FRAGMENT_SHADER, fuente_fs_vol_plegar,
+		"fragment shader (plegar)");
+
+	if (vs != 0 && fs != 0)
+		vol_prog_plegar = enlazar(vs, fs, "el programa de plegado");
+
+	if (vs != 0) p_glDeleteShader(vs);
+	if (fs != 0) p_glDeleteShader(fs);
+
+	if (vol_prog_plegar == 0)
+		return 0;
+
+	u_vol_excluir = p_glGetUniformLocation(vol_prog_plegar, "excluir");
+
+	/* Las unidades de imagen van en el fuente (`layout(binding=)`): 1 la
+	   mascara y 2 el contador del grupo. No hay uniformes que poner. */
+
+	{
+		const char * e = getenv("DCEMU_VOL_SONDA");
+		GLint v = (e != NULL) ? atoi(e) : 0;
+
+		pu_1i(p_glGetUniformLocation(programa, "vol_sonda"),
+			p_glGetUniformLocation(programa_ez, "vol_sonda"), v);
+	}
+
+	return 1;
+}
+
+int glmoderno_hay_volumen_px(void) { return hay_vol; }
+
+int glmoderno_vol_dimensionar(int ancho, int alto)
+{
+	if (!hay_vol || ancho <= 0 || alto <= 0)
+		return 0;
+
+	if (vol_mascara != 0 && ancho == vol_w && alto == vol_h)
+		return 1;
+
+	if (vol_mascara != 0) glDeleteTextures(1, &vol_mascara);
+	if (vol_cuenta != 0)  glDeleteTextures(1, &vol_cuenta);
+
+	glGenTextures(1, &vol_mascara);
+	glBindTexture(GL_TEXTURE_2D, vol_mascara);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, ancho, alto, 0,
+		GL_RED_INTEGER, GL_INT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+	glGenTextures(1, &vol_cuenta);
+	glBindTexture(GL_TEXTURE_2D, vol_cuenta);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, ancho, alto, 0,
+		GL_RED_INTEGER, GL_INT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	vol_w = ancho;
+	vol_h = alto;
+
+	return 1;
+}
+
+/*
+	Empezar la marca de una lista de volumenes. `por_grupo` es 1 si la escena
+	trae alguna instruccion 2: entonces cada grupo se cuenta aparte y se dobla,
+	y si no, todos suman en la mascara y el shader prueba != 0 -- que es
+	exactamente lo que hacia la plantilla.
+*/
+void glmoderno_vol_empezar(int ancho, int alto, int por_grupo)
+{
+	GLint cero = 0;
+
+	if (!hay_vol)
+		return;
+
+	/*
+		El dimensionado va ANTES de mirar la textura, no despues.
+
+		Con `vol_mascara == 0` en la guarda de arriba --que es su valor hasta que
+		esta llamada la crea-- la funcion salia sin crear nada, para siempre: la
+		imagen nunca se ligaba, imageAtomicAdd escribia en el vacio e imageLoad
+		devolvia cero. O sea la mascara vacia en todas las escenas, sin un solo
+		error a la vista, que es la forma de fallar de siempre en este arbol.
+	*/
+	if (!glmoderno_vol_dimensionar(ancho, alto) || vol_mascara == 0)
+		return;
+
+	(void) por_grupo;
+
+	p_glClearTexImage(vol_mascara, 0, GL_RED_INTEGER, GL_INT, &cero);
+	p_glClearTexImage(vol_cuenta, 0, GL_RED_INTEGER, GL_INT, &cero);
+
+	p_glBindImageTexture(1, vol_mascara, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+	p_glBindImageTexture(2, vol_cuenta, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+}
+
+void glmoderno_vol_acumular(int on, int por_grupo)
+{
+	(void) por_grupo;
+
+	if (!hay_vol || vol_prog == 0)
+		return;
+
+	p_glUseProgram(on ? vol_prog : (shader_puesto ? prog_actual() : 0));
+}
+
+void glmoderno_vol_plegar(int excluir)
+{
+	GLint cero = 0;
+
+	if (!hay_vol || vol_prog_plegar == 0)
+		return;
+
+	p_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+	p_glUseProgram(vol_prog_plegar);
+
+	if (u_vol_excluir >= 0)
+		p_glUniform1i(u_vol_excluir, excluir ? 1 : 0);
+
+	/* El quad tiene que tocar TODOS los pixeles: la prueba de profundidad la
+	   rechazaria contra la escena que ya esta dibujada, y el complemento de un
+	   volumen vive justamente donde el volumen no llego. */
+	glDisable(GL_DEPTH_TEST);
+
+	glBegin(GL_QUADS);
+	glVertex4f(-1.0f, -1.0f, 0.0f, 1.0f);
+	glVertex4f( 1.0f, -1.0f, 0.0f, 1.0f);
+	glVertex4f( 1.0f,  1.0f, 0.0f, 1.0f);
+	glVertex4f(-1.0f,  1.0f, 0.0f, 1.0f);
+	glEnd();
+
+	/* El grupo siguiente arranca de cero. */
+	p_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+	p_glClearTexImage(vol_cuenta, 0, GL_RED_INTEGER, GL_INT, &cero);
+
+	glEnable(GL_DEPTH_TEST);
+	p_glUseProgram(shader_puesto ? prog_actual() : 0);
+}
+
+void glmoderno_vol_listo(void)
+{
+	if (!hay_vol)
+		return;
+
+	p_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+	/*
+		DCEMU_VOL_SONDA=2: lee la mascara de vuelta y dice cuantos texeles
+		quedaron distintos de cero, mas el error de GL pendiente. Es la sonda
+		que separa "la pasada de acumulacion no escribio" de "el shader de
+		escena no la lee", que dan el mismo sintoma -- la escena sin volumen.
+	*/
+	{
+		static int	sonda = -1;
+		static int	quedan = 8;
+		int *		p;
+		int			i, n = 0, total;
+
+		if (sonda < 0)
+		{
+			const char * e = getenv("DCEMU_VOL_SONDA");
+			sonda = (e != NULL) ? atoi(e) : 0;
+		}
+
+		if (sonda != 2 || quedan <= 0 || vol_mascara == 0)
+			return;
+
+		quedan--;
+		total = vol_w * vol_h;
+		p = (int *) malloc((size_t) total * sizeof(int));
+
+		if (p == NULL)
+			return;
+
+		glBindTexture(GL_TEXTURE_2D, vol_mascara);
+		glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_INT, p);
+		glBindTexture(GL_TEXTURE_2D, 0);
+
+		for (i = 0; i < total; i++)
+			if (p[i] != 0)
+				n++;
+
+		fprintf(stderr, "gl: mascara de volumen %dx%d: %d texeles marcados,"
+			" glGetError %04x\n", vol_w, vol_h, n, (unsigned) glGetError());
+
+		free(p);
+	}
+}
+
+void glmoderno_u_volumen(int on)
+{
+	if (hay_shader)
+		pu_1i(u_n.volumen, u_z.volumen, on ? 1 : 0);
+}
+
 void glmoderno_u_oit(int on)
 {
 	if (!hay_shader)

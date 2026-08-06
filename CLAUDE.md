@@ -198,6 +198,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--render=MODO` | `ventana` (por omisión, y **es la referencia**), `fbo` —rasterizar a la resolución emulada en un destino propio, respetando el aspecto— o `shader`, que además rasteriza con GLSL en vez de función fija |
 | `--escala=N` | resolución interna ×N (1 a 8). Implica `--render=fbo`. **Medida: no cuesta nada** — ver abajo |
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
+| `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
@@ -647,6 +648,22 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
   are byte-identical to `--render=shader`**; the three that differ (`2ndmix`, `kgl-tunnel`,
   `tsunami-banner`) are exactly the ones with overlapping translucent layers, which is what
   validates the re-implemented blend factors.
+- **Modifier volumes are resolved per pixel**, which is what the chip does: the face count goes to an
+  image the fragment shader can read, so the polygon picks between its two parameter sets inside the
+  shader instead of being drawn twice with the stencil as a gate. Parameter set 1 rides in texture
+  units 1, 2 and 3. The marking pass still has to run *after* the depth is resolved — that is the
+  chip's order, and it is the geometry pass that disappears, not the marking. Three silent traps came
+  out of it, all in `docs/notas-graficos.md`: `glFrontFace` has to be pinned even with culling off
+  (`gl_FrontFacing` reads it, and `gl_cull()` changes it per strip); a guard that returned on
+  `vol_mascara == 0` meant the image the same call was supposed to create never got created; and
+  image uniforms did not take through `glProgramUniform*`, which is why they now carry
+  `layout(binding = N)` in the source.
+- **"Close excluding" is implemented now, and `demos/volumen-excluir/` is the only thing that
+  exercises it.** Nothing in the park does: 1.16 M strips of Crazy Taxi in play, the three volume
+  demos and the other eight games contain zero instruction-2 triangles, and zero strips selecting the
+  TSP secondary accumulation buffer either — which also **removes it as a suspect for the Virtua
+  Tennis 2 shadow**. The demo checks itself without a reference image: include and exclude are exact
+  complements, and the two captures come out complementary on 307 200 of 307 200 pixels.
 - **The stacking pass needs its own program, with `layout(early_fragment_tests)`.** A shader
   containing `discard` forces the depth test *after* it runs, so the OIT epilogue — stack, then
   discard — stacked the fragments depth was about to reject: **translucent geometry hidden behind

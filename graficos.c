@@ -2209,8 +2209,117 @@ static int oit_activa(void)
 	return opciones.render_oit && shader_activo() && glmoderno_hay_oit();
 }
 
+/* 1 si esta lista trae alguna instruccion 2, que es la unica que obliga a
+   contar los grupos por separado. */
+static int hay_exclusion_de(DWORD lista)
+{
+	DWORD v;
+
+	for (v = 0; v < vol_count; v++)
+		if (VolumeBuffer[v].lista == lista && VolumeBuffer[v].instruccion == 2)
+			return 1;
+
+	return 0;
+}
+
+/*
+	La marca por pixel: la misma cuenta de caras contra la profundidad, pero a
+	una imagen que el shader de escena puede leer.
+
+	Sin exclusion es una sola pasada sobre todos los triangulos de la lista y el
+	shader prueba != 0 -- identico a lo que hacia la plantilla, y por eso el
+	resultado tiene que salir byte a byte igual.
+
+	Con exclusion hay que respetar la semantica de verdad: los triangulos se
+	agrupan por su cierre (instruccion 1 o 2) y cada grupo se dobla en la
+	mascara con su polaridad, porque "cerrar excluyendo" afecta al COMPLEMENTO
+	del volumen y no a lo que sus caras cubren.
+*/
+static void marcar_volumenes_px(DWORD lista)
+{
+	int		por_grupo = hay_exclusion_de(lista);
+	DWORD	v, desde;
+
+	gl_estado_olvidar();
+
+	glmoderno_vol_empezar(escena_ancho(), escena_alto(), por_grupo);
+
+	/* Ni color ni profundidad: la cuenta va a la imagen. La prueba de
+	   profundidad SI, y adelantada -- ver fuente_fs_vol en glmoderno.c. */
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	glDepthMask(GL_FALSE);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_GREATER);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_STENCIL_TEST);
+
+	/*
+		**El sentido de giro hay que fijarlo**, aunque no se recorte por cara:
+		`gl_FrontFacing` lo decide contra glFrontFace igual que el culling, y
+		gl_cull() lo cambia POR TIRA. Sin esto la cuenta sale con el signo que
+		dejo la ultima tira dibujada, y el volumen se marca al reves en la mitad
+		de las escenas: pvr-modifier_volume_zclip salia con el 52 % de los
+		pixeles cambiados.
+	*/
+	glFrontFace(GL_CCW);
+
+	glmoderno_vol_acumular(1, por_grupo);
+
+	desde = 0;
+
+	for (v = 0; v < vol_count; v++)
+	{
+		const VolTri *	t = &VolumeBuffer[v];
+		int				k;
+
+		if (t->lista != lista)
+			continue;
+
+		if (desde == 0)
+		{
+			glBegin(GL_TRIANGLES);
+			desde = 1;
+		}
+
+		for (k = 0; k < 3; k++)
+			glVertex3f(t->x[k], t->y[k], t->z[k]);
+
+		/* Un cierre termina el grupo; con exclusion cada uno se dobla aca
+		   mismo, con su polaridad. Sin ella se dobla todo junto al final. */
+		if (por_grupo && (t->instruccion == 1 || t->instruccion == 2))
+		{
+			glEnd();
+			desde = 0;
+
+			glmoderno_vol_plegar(t->instruccion == 2);
+			glmoderno_vol_acumular(1, 1);
+		}
+	}
+
+	if (desde)
+		glEnd();
+
+	glmoderno_vol_acumular(0, por_grupo);
+
+	if (!por_grupo)
+		glmoderno_vol_plegar(0);
+
+	glmoderno_vol_listo();
+
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	gl_estado_olvidar();
+}
+
 static void marcar_volumenes(DWORD lista)
 {
+	if (volumen_px())
+	{
+		marcar_volumenes_px(lista);
+		return;
+	}
+
 	/* De aca en adelante se toca el estado de GL a mano; la sombra de
 	   tira_estado() deja de valer. Ver gl_estado_olvidar(). */
 	gl_estado_olvidar();
@@ -2549,6 +2658,61 @@ static void offset_estado(int encendido)
 	glmoderno_u_offset(encendido);
 }
 
+/*
+	Los arreglos del juego 1, para el camino por pixel.
+
+	Van en las unidades de textura 1, 2 y 3 --UV, color y color de offset-- que
+	es lo que deja pasarlos sin VBO ni atributos genericos. Se encienden solo
+	para las tiras que un volumen afecta: son una minoria, y encendidos para
+	todas costarian tres arreglos mas por vertice en toda la escena.
+
+	`glClientActiveTexture` es de GL 1.3, o sea que en Windows hay que pedirla
+	por SDL_GL_GetProcAddress como el color secundario: opengl32.dll exporta 1.1.
+*/
+typedef void (APIENTRY * PTR_CLIENT_ACTIVE_TEXTURE)(GLenum);
+static PTR_CLIENT_ACTIVE_TEXTURE p_glClientActiveTexture = NULL;
+
+static int juego1_puesto = 0;
+
+static void juego1_arreglos(int on)
+{
+	static const GLenum unidad[3] = { 0x84C1, 0x84C2, 0x84C3 };	/* TEXTURE1..3 */
+	int i;
+
+	if (p_glClientActiveTexture == NULL || juego1_puesto == (on ? 1 : 0))
+		return;
+
+	juego1_puesto = on ? 1 : 0;
+
+	for (i = 0; i < 3; i++)
+	{
+		p_glClientActiveTexture(unidad[i]);
+
+		if (on)
+		{
+			if (i == 0)
+				glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].u1);
+			else if (i == 1)
+				glTexCoordPointer(4, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].r1);
+			else
+				glTexCoordPointer(3, GL_FLOAT, sizeof(vertex), &VertexBuffer[0].ro1);
+
+			glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+		}
+		else
+			glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+	}
+
+	p_glClientActiveTexture(0x84C0);	/* TEXTURE0, que es la que usa todo lo demas */
+}
+
+/* 1 si esta escena resuelve los volumenes por pixel en vez de por plantilla. */
+static int volumen_px(void)
+{
+	return shader_activo() && glmoderno_hay_volumen_px()
+		&& p_glClientActiveTexture != NULL;
+}
+
 static void juego_de_parametros(int juego)
 {
 	if (juego)
@@ -2564,6 +2728,17 @@ static void juego_de_parametros(int juego)
 
 	offset_puntero(juego);
 }
+
+/*
+	Censo de dos cosas que el arbol registra y no usa, para decidir con datos si
+	vale la pena implementarlas: los bits 25/24 del TSP --el buffer de
+	acumulacion secundario-- y la instruccion de cada triangulo de volumen
+	modificador. Dos incrementos por tira y por triangulo de volumen, que no es
+	camino caliente; se informan en traza_ta_resumen().
+*/
+static long censo_sel[4];			/* (srcselect << 1) | dstselect */
+static long censo_vol_instr[4];		/* bits 30-29 de la palabra ISP/TSP */
+static long censo_vol_grupos;		/* triangulos que cierran un volumen */
 
 /* Las tiras que trajo cada una de las ultimas escenas, y cuantas hubo. */
 #define TRAZA_ULTIMAS	12
@@ -2596,6 +2771,16 @@ void traza_ta_resumen(void)
 
 	fprintf(stderr, "traza: %ld TA_LIST_INIT sin nada registrado (no presentan)\n",
 		traza_inits_vacios);
+
+	fprintf(stderr, "traza: censo del buffer secundario (src/dst): 0/0 %ld,"
+		" 0/1 %ld, 1/0 %ld, 1/1 %ld\n",
+		censo_sel[0], censo_sel[1], censo_sel[2], censo_sel[3]);
+
+	fprintf(stderr, "traza: censo de volumenes por instruccion: 0 (acumula)"
+		" %ld, 1 (cierra incluyendo) %ld, 2 (cierra excluyendo) %ld, 3 %ld;"
+		" %ld cierres\n",
+		censo_vol_instr[0], censo_vol_instr[1], censo_vol_instr[2],
+		censo_vol_instr[3], censo_vol_grupos);
 
 	/* Y por que ventana entro cada byte a la RAM de video. En el resumen y no
 	   solo en la traza de framebuffer, que una demo del PVR no dibuja por ahi
@@ -3705,7 +3890,12 @@ static void dibujar_escena(void)
 	   sombra barata, el 0 escalado por FPU_SHAD_SCALE). Estas listas no
 	   mezclan, asi que repintar solo los pixeles de dentro es seguro.
 	   GL_EQUAL contra la z que la propia tira dejo limita la pasada a donde
-	   esa tira sigue visible; si la tira no escribio z, repite su prueba. */
+	   esa tira sigue visible; si la tira no escribio z, repite su prueba.
+
+	   Por pixel la pasada existe igual --la mascara no puede calcularse antes
+	   de que la profundidad este resuelta, que es el orden del chip-- pero se
+	   dibuja UNA vez con los dos juegos: donde la mascara dice fuera sale el
+	   juego 0, o sea exactamente lo que dejo la pasada (1). */
 	if (vol_opaca)
 	{
 		marcar_volumenes(1);
@@ -3717,6 +3907,23 @@ static void dibujar_escena(void)
 				continue;
 
 			tira_estado(i);
+
+			if (volumen_px())
+			{
+				gl_depth_func(TriangleStrip[i].zwrite
+					? TriangleStrip[i].depthmode : GL_EQUAL);
+				gl_depth_mask(0);
+				gl_estencil(0);
+
+				juego1_arreglos(1);
+				glmoderno_u_volumen(1);
+
+				glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,
+					TriangleStrip[i].count);
+
+				glmoderno_u_volumen(0);
+				continue;
+			}
 
 			/* Por la sombra, no directo: esto corre DENTRO del bucle por
 			   tira, asi que un glDepthFunc suelto deja a gl_e mintiendo y la
@@ -3767,25 +3974,46 @@ static void dibujar_escena(void)
 		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type != 2)
 			continue;
 
-		/* Fuera del volumen, o entera si ninguno la afecta. Con mezcla de
-		   por medio cada pixel tiene que salir UNA sola vez, asi que la tira
-		   afectada se parte en fuera/dentro en vez de repintarse. */
-		{
-			unsigned long antes = gl_e.cambios;
+		/*
+			Fuera del volumen, o entera si ninguno la afecta.
 
-			plantilla_para(i, 0, vol_trans);
+			**Aca es donde el camino por pixel gana de verdad.** Con mezcla de
+			por medio cada pixel tiene que salir UNA sola vez, asi que con
+			plantilla la tira afectada se parte en dos dibujos recortados a
+			fuera y a dentro; eligiendo el juego dentro del shader sale de un
+			solo dibujo, que ademas es lo que hace el chip.
+		*/
+		{
+			unsigned long	antes = gl_e.cambios;
+			int				px = volumen_px()
+							  && TriangleStrip[i].volumen && vol_trans;
+
+			if (px)
+				gl_estencil(0);
+			else
+				plantilla_para(i, 0, vol_trans);
+
 			tira_estado(i);
+
+			if (px)
+			{
+				juego1_arreglos(1);
+				glmoderno_u_volumen(1);
+			}
 
 			if (perf_activa && gl_e.cambios == antes)
 				perf_tiras_sin_cambio++;
-		}
 
-		dibujar_tira(i);
+			dibujar_tira(i);
+
+			if (px)
+				glmoderno_u_volumen(0);
+		}
 
 		/* Dentro: la misma geometria con el juego 1, aqui mismo para que
 		   herede el estado recien programado -- blend, culling, profundidad
-		   y la textura ya ligada. */
-		if (TriangleStrip[i].volumen && vol_trans)
+		   y la textura ya ligada. Solo el camino de plantilla. */
+		if (TriangleStrip[i].volumen && vol_trans && !volumen_px())
 		{
 			plantilla_para(i, 1, vol_trans);
 			juego_de_parametros(1);
@@ -3811,6 +4039,12 @@ static void dibujar_escena(void)
 	}
 
 	gl_estencil(0);
+
+	/* Los arreglos del juego 1 no quedan encendidos fuera de la escena: los
+	   caminos 2D y la vista de depuracion dibujan con funcion fija, y tres
+	   arreglos de coordenadas vivos les cambiarian lo que reciben. */
+	juego1_arreglos(0);
+	glmoderno_u_volumen(0);
 
 	PERF_SUMAR(t_escena, perf_ns_escena);
 }
@@ -4741,6 +4975,8 @@ void taPolyModifier()
 	TriangleStrip[strip_count].srcselect = pvr_srcblendmode;
 	TriangleStrip[strip_count].dstselect = pvr_dstblendmode;
 
+	censo_sel[(pvr_srcblendmode << 1) | pvr_dstblendmode]++;
+
 	if (pvr_srcblendmode)
 		logxmsg(LOG_PVR, "srcblend: src select\n");
 	if (pvr_dstblendmode)
@@ -5508,6 +5744,11 @@ void taVertexHandler()
 
 				t->lista = vol_lista;
 				t->instruccion = vol_instruccion;
+
+				censo_vol_instr[vol_instruccion & 3]++;
+
+				if (vol_instruccion == 1 || vol_instruccion == 2)
+					censo_vol_grupos++;
 			}
 		}
 		break;
@@ -6249,6 +6490,17 @@ int glinit(void)
 	glTexCoordPointer		(4, GL_FLOAT,		   sizeof(vertex), &VertexBuffer->t1);
 
 	offset_iniciar();
+
+	p_glClientActiveTexture = (PTR_CLIENT_ACTIVE_TEXTURE)
+		SDL_GL_GetProcAddress("glClientActiveTexture");
+
+	if (p_glClientActiveTexture == NULL)
+		p_glClientActiveTexture = (PTR_CLIENT_ACTIVE_TEXTURE)
+			SDL_GL_GetProcAddress("glClientActiveTextureARB");
+
+	if (p_glClientActiveTexture == NULL)
+		fprintf(stderr, "gl: sin glClientActiveTexture; los volumenes"
+			" modificadores van por plantilla\n");
 
 	return 0;
 }

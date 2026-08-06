@@ -1039,3 +1039,79 @@ como «la escena de pantalla no apila nada». Eso quedó anotado como hecho en e
 en un comentario del código. La regla que deja: **una sonda es código, y una sonda equivocada
 confirma justo aquello para lo que se escribió**; antes de creerle la primera respuesta, hay que
 hacerle contestar algo cuya respuesta ya se sabe.
+
+---
+
+## Los volúmenes modificadores por píxel
+
+El chip decide **pixel a pixel** si está dentro del volumen y con eso elige uno de los **dos juegos
+de parámetros** que trae el vértice — otro color, otra UV, otro color de offset. En función fija eso
+son el buffer de plantilla y **dos pasadas de la misma geometría**, una recortada a fuera y otra a
+dentro. Con el camino programable la cuenta de caras va a una imagen que el fragment shader puede
+leer, así que la elección se hace donde corresponde: dentro del shader, en un solo dibujo.
+
+- **El juego 1 viaja en las unidades de textura 1, 2 y 3** (UV, color y offset). No es un abuso: son
+  cuatro flotantes por unidad y es exactamente lo que hay que pasar. La alternativa —atributos
+  genéricos— obligaría a VBO y VAO, que es justo lo que el camino de arreglos de cliente evita.
+  `graficos.c` los enciende sólo para las tiras que un volumen afecta.
+- **La pasada de marcado sigue existiendo y tiene que seguir existiendo.** La máscara se cuenta
+  contra la profundidad ya resuelta, que es el orden del chip: primero la visibilidad, después el
+  volumen. Lo que desaparece es la *segunda pasada de geometría*, no el marcado.
+- **Una sola pasada de acumulación en vez de dos**, usando `gl_FrontFacing` en lugar de dos recorridos
+  con culling opuesto: el sentido se decide en coordenadas de ventana igual que el culling.
+- **`layout(early_fragment_tests)`, por lo mismo que la transparencia ordenada.** El `discard` del
+  acumulador atrasaría la prueba de profundidad y se contarían caras que están *detrás* de la
+  superficie — que es exactamente el error que la versión anterior a la plantilla por profundidad ya
+  había cometido, y que dejaba el techo del taxi de Crazy Taxi oscurecido por su propia sombra.
+
+### Las tres cosas que costaron, todas silenciosas
+
+1. **`glFrontFace` hay que fijarlo aunque no se recorte por cara.** `gl_FrontFacing` lo decide contra
+   `glFrontFace` igual que el culling, y `gl_cull()` lo cambia **por tira**. Sin fijarlo, la cuenta
+   sale con el signo que dejó la última tira dibujada.
+2. **Una guarda que se protegía de lo que ella misma tenía que crear.** `glmoderno_vol_empezar()`
+   salía temprano con `vol_mascara == 0` —su valor hasta que esa misma llamada la crea— así que la
+   imagen no se creaba nunca, `imageAtomicAdd` escribía en el vacío e `imageLoad` devolvía cero. La
+   máscara vacía en todas las escenas, sin un solo error. La forma de fallar de siempre en este árbol.
+3. **Los uniformes de imagen no se pusieron con `glProgramUniform*`.** La unidad se quedaba en 0
+   —donde vive otra imagen—, `imageLoad` devolvía cero y el síntoma era idéntico al anterior. Se
+   cerró poniendo `layout(binding = N)` en el fuente: lo que no hay que poner no se puede quedar sin
+   poner.
+
+Las dos últimas dan el mismo síntoma y por eso hubo que separar las sondas: `DCEMU_VOL_SONDA=1` pinta
+la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —o sea, mira lo que el shader
+lee—, y `DCEMU_VOL_SONDA=2` lee la máscara de vuelta con `glGetTexImage` y cuenta los texeles
+marcados —o sea, mira lo que la pasada escribió—. La primera decía «vacía» y la segunda «165 000
+marcados»: entre las dos, el problema quedó del lado de la lectura en un paso.
+
+### La verificación
+
+Contra el camino de plantilla, con `DCEMU_RTC_FIJO`: `pvr-modifier_volume` y
+`pvr-modifier_volume_tex` **byte a byte idénticas**; `pvr-modifier_volume_zclip` difiere en **5
+píxeles**, todos de ±1 en un canal. De los seis juegos, cuatro salen byte a byte iguales —DCDoom,
+Sega Rally 2, Street Fighter III y Virtua Tennis 2—, Virtua Tennis difiere en 2 píxeles de ±1, y
+Crazy Taxi —el único con volúmenes de verdad, 39 677 grupos en 70 segundos de juego— en 315 píxeles
+sueltos con mediana de diferencia 1.
+
+**Ese residuo tiene explicación y no es ruido**: el juego 1 ahora viaja como coordenada de textura,
+que se interpola en coma flotante, y antes viajaba por `glColorPointer`, que GL puede interpolar con
+menos precisión y recorta a [0,1]. O sea que el camino nuevo es el más preciso de los dos, y los ±1
+son la cuantización del viejo.
+
+### La instrucción de cierre, y una demo que se verifica sola
+
+Un volumen se cierra con «incluyendo» —afecta a los píxeles de dentro— o con «excluyendo», que
+afecta a los de **fuera**. dcemu registraba las dos y trataba la segunda como una aproximación,
+poniendo en cero lo que sus caras cubrían.
+
+**No hay contenido en el árbol que la ejercite**: censadas 1,16 millones de tiras de Crazy Taxi en
+juego, más las tres demos de volúmenes y los otros ocho juegos, la instrucción 2 no aparece ni una
+vez. Por eso `demos/volumen-excluir/` existe: una pantalla entera con los dos juegos de parámetros
+—azul el 0, rojo el 1— y un volumen cuadrado en el centro, compilada en dos sabores que sólo
+difieren en la instrucción de cierre.
+
+**Su prueba no necesita imagen de referencia, y esa es la gracia**: incluir y excluir son
+complementos exactos, así que las dos capturas tienen que ser una el negativo de la otra. Lo son:
+**307 200 de 307 200 píxeles**, cero fallas, y el rectángulo afectado sale exactamente en
+x 160..479, y 120..359. El camino de plantilla, con la misma demo, da 38 640 píxeles en vez de
+230 400 — que es la aproximación, medida.
