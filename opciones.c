@@ -36,6 +36,7 @@ struct opciones_t opciones =
 						   estado persistente de la consola */
 	0,					/* render_fbo: la ventana, que es la referencia */
 	1,					/* escala */
+	0,					/* render_shader: funcion fija, que es la referencia */
 	0,					/* hilos: apagado por omision, ver opciones.h */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
@@ -78,9 +79,10 @@ void opciones_ayuda(const char * programa)
 		"                        bios/vmu-a1.bin.\n"
 		"  --sin-vmu             sin tarjeta en la ranura 1: el mando vuelve a\n"
 		"                        estar solo en el bus. Para aislar una regresion.\n"
-		"  --render=MODO         ventana (por omision, y es la referencia) o fbo:\n"
-		"                        rasterizar a la resolucion emulada en un destino\n"
-		"                        propio y presentar respetando el aspecto.\n"
+		"  --render=MODO         ventana (por omision, y es la referencia), fbo\n"
+		"                        --rasterizar a la resolucion emulada en un destino\n"
+		"                        propio, respetando el aspecto-- o shader, que\n"
+		"                        ademas rasteriza con GLSL en vez de funcion fija.\n"
 		"  --escala=N            resolucion interna xN (1 a 8). Implica --render=fbo.\n"
 		"  --hilos               sacar el AICA y el ARM7 a su propio hilo. Hoy es\n"
 		"                        mas lento; ver docs/hilos-plan.md.\n"
@@ -265,14 +267,28 @@ int opciones_parsear(int argc, char ** argv)
 			const char * m = arg + 9;
 
 			if (strcmp(m, "ventana") == 0)
+			{
 				opciones.render_fbo = 0;
+				opciones.render_shader = 0;
+			}
 			else
 			if (strcmp(m, "fbo") == 0)
+			{
 				opciones.render_fbo = 1;
+				opciones.render_shader = 0;
+			}
+			else
+			if (strcmp(m, "shader") == 0)
+			{
+				/* El camino programable va sobre el destino propio: son la
+				   misma via y separarlos daria cuatro combinaciones. */
+				opciones.render_fbo = 1;
+				opciones.render_shader = 1;
+			}
 			else
 			{
 				fprintf(stderr, "modo de render desconocido: %s"
-					" (ventana o fbo)\n", m);
+					" (ventana, fbo o shader)\n", m);
 				return 1;
 			}
 		}

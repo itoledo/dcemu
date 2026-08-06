@@ -2141,6 +2141,14 @@ static struct
 /* Las funciones que la manejan viven junto a tira_estado(), que es quien la
    usa; aca esta solo la estructura, que offset_estado() necesita antes. */
 static void gl_estado_olvidar(void);
+static void gl_textura(int on);
+static void gl_alpha_test(int on, GLfloat ref);
+
+/* 1 si la escena se dibuja con el camino programable. */
+static int shader_activo(void)
+{
+	return opciones.render_shader && glmoderno_hay_shader();
+}
 
 static void marcar_volumenes(DWORD lista)
 {
@@ -2150,6 +2158,16 @@ static void marcar_volumenes(DWORD lista)
 
 	int paso;
 	DWORD v;
+
+	/*
+		Sin el shader: esta pasada manda triangulos por glBegin/glEnd con SOLO
+		la posicion, asi que el color y las coordenadas de textura que le
+		llegarian son el estado actual de GL y no algo que este codigo puso.
+		El color no importa --se escribe con la mascara cerrada-- pero el
+		descarte por alfa si: un uniforme viejo tirando fragmentos dejaria la
+		plantilla a medio marcar, y el volumen se veria mal sin que nada avise.
+	*/
+	glmoderno_shader_usar(0);
 
 	glEnable(GL_STENCIL_TEST);
 	glStencilMask(0xFF);
@@ -2215,6 +2233,8 @@ static void marcar_volumenes(DWORD lista)
 
 	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+	glmoderno_shader_usar(shader_activo());
 }
 
 /*
@@ -2411,6 +2431,11 @@ static void offset_estado(int encendido)
 		glDisableClientState(GL_SECONDARY_COLOR_ARRAY);
 		glDisable(GL_COLOR_SUM);
 	}
+
+	/* El arreglo de cliente se sigue encendiendo y apagando igual: es de donde
+	   sale gl_SecondaryColor. Lo que el uniforme decide es si el shader lo
+	   suma -- GL_COLOR_SUM no hace nada con un programa puesto. */
+	glmoderno_u_offset(encendido);
 }
 
 static void juego_de_parametros(int juego)
@@ -2965,8 +2990,11 @@ static void dibujar_niebla_tira(DWORD i)
 
 	gl_estado_olvidar();
 
-	glDisable(GL_TEXTURE_2D);
-	glDisable(GL_ALPHA_TEST);
+	/* Por gl_textura()/gl_alpha_test() y no con glDisable a secas: son las que
+	   llevan los uniformes del shader al dia, y despues del olvido de arriba
+	   las dos emiten la llamada igual. */
+	gl_textura(0);
+	gl_alpha_test(0, 0.0f);
 	glDisable(GL_STENCIL_TEST);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -3117,20 +3145,55 @@ static void gl_cull(int on, GLint cara)
 	}
 }
 
+/*
+	`ref` es el umbral CRUDO de PT_ALPHA_REF, sin el piso de medio paso.
+
+	La regla del chip son dos condiciones -- "alfa >= umbral **y** distinto de
+	cero" -- y glAlphaFunc solo sabe decir una, asi que la funcion fija la
+	finge con GEQUAL contra el umbral elevado a medio paso cuando es cero. El
+	shader la escribe como es. El piso se aplica **aca** y no en el llamador
+	para que las dos versiones partan del mismo numero: pasarle al shader el
+	valor ya redondeado le daria la aproximacion en vez de la regla.
+*/
 static void gl_alpha_test(int on, GLfloat ref)
 {
+	/*
+		**Con el shader puesto la prueba de funcion fija queda apagada**, y no
+		es un detalle de limpieza: el descarte por alfa es una operacion por
+		fragmento POSTERIOR al programa, asi que en un contexto de
+		compatibilidad se sigue aplicando encima. Las dos reglas juntas dan la
+		mas estricta, o sea la aproximacion -- el shader escribiria la regla
+		exacta y no se notaria nunca. Es la primera precision que gana esta via,
+		y habria quedado tapada.
+	*/
+	int fija = !shader_activo();
+
 	if (gl_e.alpha != on)
 	{
-		if (on) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
+		if (fija)
+		{
+			if (on) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
+		}
+
 		gl_e.alpha = on;
 		gl_e.cambios++;
+
+		glmoderno_u_alpha(on, ref);
 	}
 
 	if (on && gl_e.alpha_ref != ref)
 	{
-		glAlphaFunc(GL_GEQUAL, ref);
+		if (fija)
+		{
+			GLfloat piso = (ref < 0.5f / 255.0f) ? 0.5f / 255.0f : ref;
+
+			glAlphaFunc(GL_GEQUAL, piso);
+		}
+
 		gl_e.alpha_ref = ref;
 		gl_e.cambios++;
+
+		glmoderno_u_alpha(1, ref);
 	}
 }
 
@@ -3141,6 +3204,8 @@ static void gl_textura(int on)
 		if (on) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
 		gl_e.textura = on;
 		gl_e.cambios++;
+
+		glmoderno_u_textura(on);
 	}
 }
 
@@ -3228,15 +3293,12 @@ static void tira_estado(DWORD i)
 			    && !env_interruptor("DCEMU_SIN_ALPHATEST", &env_sin_alphatest))
 			{
 				DWORD	ref = 0;
-				GLfloat	umbral;
 
 				memread_fisico(0xA05F811C, &ref, 4);
-				umbral = (GLfloat) (ref & 0xFF) / 255.0f;
 
-				if (umbral < 0.5f / 255.0f)
-					umbral = 0.5f / 255.0f;
-
-				gl_alpha_test(1, umbral);
+				/* El umbral crudo: el piso de medio paso lo pone
+				   gl_alpha_test(), que es donde vive esa aproximacion. */
+				gl_alpha_test(1, (GLfloat) (ref & 0xFF) / 255.0f);
 			}
 			else
 				gl_alpha_test(0, 0.0f);
@@ -3282,6 +3344,13 @@ static void tira_estado(DWORD i)
 					gl_e.tex_env = (GLint) TriangleStrip[i].texture.pvr_texture_env;
 					gl_e.cambios++;
 
+					/* Con el shader los cuatro modos son un entero, y los
+					   hasta nueve glTexEnvi de abajo no se emiten. */
+					glmoderno_u_env((int) TriangleStrip[i].texture.pvr_texture_env);
+
+					if (shader_activo())
+						goto env_listo;
+
 				switch (TriangleStrip[i].texture.pvr_texture_env)
 				{
 					case 0:
@@ -3318,6 +3387,8 @@ static void tira_estado(DWORD i)
 					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 					break;
 				}
+
+				env_listo: ;
 				}
 
 				/* Los filtros los pone get_texture(), **despues** de ligar la
@@ -3342,6 +3413,11 @@ static void dibujar_escena(void)
 	/* Cada escena arranca sin suponer nada: entre una y otra pasaron el
 	   presentado y el limpiado, que tocan el estado. */
 	gl_estado_olvidar();
+
+	/* El programa se pone para la escena entera. Los caminos 2D --el quad del
+	   framebuffer, la vista de depuracion-- lo sacan, porque dibujan con la
+	   funcion fija y no tienen nada que decirle a los uniformes. */
+	glmoderno_shader_usar(shader_activo());
 
 	DWORD i;
 	int vol_opaca, vol_trans;
@@ -5545,6 +5621,9 @@ void DibujarFramebuffer()
 {
 	gl_estado_olvidar();
 
+	/* El camino 2D dibuja un quad con la funcion fija. Ver dibujar_escena(). */
+	glmoderno_shader_usar(0);
+
 	/* Formato y tipo de GL que corresponden al formato del framebuffer. */
 	GLenum formato, tipo;
 
@@ -5800,6 +5879,13 @@ int glinit(void)
 		camino nuevo se apagaria solo, en silencio y sin motivo.
 	*/
 	glmoderno_iniciar();
+
+	if (opciones.render_shader && !glmoderno_shader_iniciar())
+	{
+		fprintf(stderr, "gl: se pidio --render=shader y no se pudo armar el"
+			" programa; se dibuja con funcion fija\n");
+		opciones.render_shader = 0;
+	}
 
 	if (opciones.render_fbo && !glmoderno_hay_fbo())
 	{
@@ -6069,6 +6155,7 @@ int screeninit(void)
 void DibujarGL(SDL_Surface * sfc)
 {
 	gl_estado_olvidar();
+	glmoderno_shader_usar(0);
 
 	glEnable(GL_TEXTURE_2D);
 		

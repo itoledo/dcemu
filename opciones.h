@@ -92,6 +92,12 @@ struct opciones_t
 	int				render_fbo;
 	int				escala;
 
+	/* 1: rasterizar con el par de shaders de glmoderno.c en vez de con
+	   GL_COMBINE, glAlphaFunc y GL_COLOR_SUM. Implica el destino propio: los
+	   dos son la misma via y separarlos daria cuatro combinaciones que nadie
+	   va a verificar. Ver la etapa 2.b. */
+	int				render_shader;
+
 	/* 1: sacar el AICA y el ARM7 a su propio hilo (hilo_aica.c).
 
 	   **Apagado por omision, y no por precaucion sino por medicion**: cuesta

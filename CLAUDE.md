@@ -193,7 +193,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--sin-aica` | no emular el AICA: ni el ARM, ni los canales, ni los temporizadores. Para aislar una regresión |
 | `--vmu=ARCHIVO` | imagen de la Visual Memory de la ranura 1 (`bios/vmu-a1.bin` por omisión; se crea formateada si no existe) |
 | `--sin-vmu` | sin tarjeta en la ranura 1. Es el interruptor de aislamiento, y **el que reproduce la línea base anterior byte a byte** |
-| `--render=MODO` | `ventana` (por omisión, y **es la referencia**) o `fbo`: rasterizar a la resolución emulada en un destino propio y presentar respetando el aspecto |
+| `--render=MODO` | `ventana` (por omisión, y **es la referencia**), `fbo` —rasterizar a la resolución emulada en un destino propio, respetando el aspecto— o `shader`, que además rasteriza con GLSL en vez de función fija |
 | `--escala=N` | resolución interna ×N (1 a 8). Implica `--render=fbo`. **Medida: no cuesta nada** — ver abajo |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
@@ -587,6 +587,41 @@ What it buys, and what it does not:
 - **It changes nothing about how a pixel is computed**: no shaders, same fixed-function
   pipeline, same draw model. That is why the two paths are comparable at all, and why the
   baseline still holds — `--render=ventana` is the default and stays byte-identical.
+
+#### The programmable path (`--render=shader`)
+
+A vertex/fragment pair that reproduces `GL_COMBINE`, `glAlphaFunc` and `GL_COLOR_SUM`. Written in
+**compatibility GLSL 1.20** with the built-ins (`gl_Vertex`, `gl_Color`, `gl_SecondaryColor`,
+`gl_MultiTexCoord0`, `gl_ModelViewProjectionMatrix`), which is what lets the existing client
+arrays keep feeding it without touching the draw path — generic attributes would mean VBOs and
+VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECTION identity, so
+`gl_ModelViewProjectionMatrix` *is* the ortho.
+
+- **The uniforms hang off the state shadow, not the draw loop.** `gl_textura()`,
+  `gl_alpha_test()`, `offset_estado()` and the texture-env `switch` each update their uniform, so
+  the shader and fixed function cannot disagree about what state is set. Anything that touches
+  `GL_TEXTURE_2D` or `GL_ALPHA_TEST` by hand has to go through those helpers or the uniform goes
+  stale.
+- **Paths that draw with fixed function on purpose must switch the program off**: the framebuffer
+  quads, the debug view, and `marcar_volumenes()` — that last one submits `glBegin/glEnd`
+  positions only, so the colour and UVs the shader would see are whatever GL currently holds, and
+  a `discard` from a stale uniform would leave the stencil half-marked with nothing to report it.
+- **With the program bound, `GL_ALPHA_TEST` must be disabled.** The alpha test is a per-fragment
+  operation *after* the shader, so in a compatibility context both rules apply and the stricter
+  one wins — which is the approximation. The shader's exact rule would never have taken effect.
+- **The eight PVR control demos and all five commercial games come out byte-identical** to
+  `--render=fbo`, including `pvr-texture_render`, `pvr-fb_tex`, `pvr-modifier_volume_zclip` and
+  Dave Mirra's FMV. The plan expected exact comparison to stop working here; it did not.
+
+Two ways that comparison lied before it told the truth, both worth knowing because they produce
+the same symptom — "the shader broke 99.98% of the pixels" with both images perfect, each showing
+a different moment:
+
+- **An A/B of render paths runs with `--sin-vmu`.** The first run of a pair writes the card and
+  the second starts from a different one, so the guest takes another path.
+- **`--captura-gl` overwrites its file every frame, so the file existing does not mean the run
+  finished.** Waiting on "the capture is there" compares a half-progressed frame against a
+  finished one. Wait for the process, not for the file.
 
 → `docs/notas-graficos.md` for all of it: the texture formats, the YUV converter, the palette
 rules, the cache, RTT, the VRAM windows, the background plane, depth, fog and modifier

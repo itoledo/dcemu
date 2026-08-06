@@ -74,4 +74,47 @@ void glmoderno_presentar(int ancho, int alto, int ven_ancho, int ven_alto);
 int glmoderno_fbo_ancho(void);
 int glmoderno_fbo_alto(void);
 
+/* ------------------------------------------------------------------------ */
+/* El camino programable (etapa 2.b)                                        */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Un par de shaders que reproduce lo que hoy hacen GL_COMBINE, glAlphaFunc y
+	GL_COLOR_SUM. **Misma imagen, distinto mecanismo**: no agrega precision por
+	si mismo, y por eso se puede verificar contra el camino de funcion fija.
+
+	Se escribe en GLSL 1.20 **de compatibilidad**, con las variables
+	incorporadas (gl_Vertex, gl_Color, gl_SecondaryColor, gl_MultiTexCoord0,
+	gl_ModelViewProjectionMatrix). Eso no es nostalgia: es lo que hace que los
+	arreglos de cliente que ya programa glinit() --y el glColorPointer que el
+	barrido de niebla intercambia por su propia tabla-- sigan alimentando al
+	shader sin tocar una linea del camino de dibujo. Con atributos genericos
+	habria que armar VBO y VAO, que es trabajo de la etapa siguiente y otro
+	riesgo.
+
+	Ojo con la matriz: screeninit() pone el glOrtho en la MODELVIEW y deja la
+	PROJECTION en identidad, asi que gl_ModelViewProjectionMatrix es justo el
+	ortho. Sale bien, pero no por donde uno lo buscaria.
+*/
+int glmoderno_shader_iniciar(void);
+
+/* 1 si el programa compilo y enlazo. */
+int glmoderno_hay_shader(void);
+
+/* Encender o apagar el programa. Apagado se vuelve a funcion fija, que es lo
+   que necesitan los caminos 2D y los quads del framebuffer. */
+void glmoderno_shader_usar(int puesto);
+
+/*
+	Los uniformes, uno por cada pieza de estado que el shader reemplaza. Se
+	llaman desde la sombra de estado de graficos.c --gl_textura(),
+	gl_alpha_test(), offset_estado() y el switch del entorno de textura-- para
+	que el shader y la funcion fija no puedan discrepar: si la sombra dice que
+	algo no cambio, tampoco cambio para el shader.
+*/
+void glmoderno_u_textura(int on);
+void glmoderno_u_env(int modo);
+void glmoderno_u_offset(int on);
+void glmoderno_u_alpha(int on, float umbral);
+
 #endif /* _GLMODERNO_H_ */

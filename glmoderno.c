@@ -260,6 +260,289 @@ void glmoderno_fbo_ligar(int puesto)
 	ligado = puesto ? 1 : 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* El camino programable                                                    */
+/* ------------------------------------------------------------------------ */
+
+#define GL_FRAGMENT_SHADER		0x8B30
+#define GL_VERTEX_SHADER		0x8B31
+#define GL_COMPILE_STATUS		0x8B81
+#define GL_LINK_STATUS			0x8B82
+#define GL_INFO_LOG_LENGTH		0x8B84
+
+typedef GLuint (APIENTRY * PFN_CREATE_SHADER)(GLenum);
+typedef void (APIENTRY * PFN_SHADER_SOURCE)(GLuint, GLsizei, const char * const *, const GLint *);
+typedef void (APIENTRY * PFN_COMPILE_SHADER)(GLuint);
+typedef void (APIENTRY * PFN_GET_SHADER_IV)(GLuint, GLenum, GLint *);
+typedef void (APIENTRY * PFN_GET_SHADER_LOG)(GLuint, GLsizei, GLsizei *, char *);
+typedef GLuint (APIENTRY * PFN_CREATE_PROGRAM)(void);
+typedef void (APIENTRY * PFN_ATTACH_SHADER)(GLuint, GLuint);
+typedef void (APIENTRY * PFN_LINK_PROGRAM)(GLuint);
+typedef void (APIENTRY * PFN_GET_PROGRAM_IV)(GLuint, GLenum, GLint *);
+typedef void (APIENTRY * PFN_GET_PROGRAM_LOG)(GLuint, GLsizei, GLsizei *, char *);
+typedef void (APIENTRY * PFN_USE_PROGRAM)(GLuint);
+typedef void (APIENTRY * PFN_DELETE_SHADER)(GLuint);
+typedef GLint (APIENTRY * PFN_GET_UNIFORM_LOC)(GLuint, const char *);
+typedef void (APIENTRY * PFN_UNIFORM_1I)(GLint, GLint);
+typedef void (APIENTRY * PFN_UNIFORM_1F)(GLint, GLfloat);
+
+static PFN_CREATE_SHADER	p_glCreateShader;
+static PFN_SHADER_SOURCE	p_glShaderSource;
+static PFN_COMPILE_SHADER	p_glCompileShader;
+static PFN_GET_SHADER_IV	p_glGetShaderiv;
+static PFN_GET_SHADER_LOG	p_glGetShaderInfoLog;
+static PFN_CREATE_PROGRAM	p_glCreateProgram;
+static PFN_ATTACH_SHADER	p_glAttachShader;
+static PFN_LINK_PROGRAM		p_glLinkProgram;
+static PFN_GET_PROGRAM_IV	p_glGetProgramiv;
+static PFN_GET_PROGRAM_LOG	p_glGetProgramInfoLog;
+static PFN_USE_PROGRAM		p_glUseProgram;
+static PFN_DELETE_SHADER	p_glDeleteShader;
+static PFN_GET_UNIFORM_LOC	p_glGetUniformLocation;
+static PFN_UNIFORM_1I		p_glUniform1i;
+static PFN_UNIFORM_1F		p_glUniform1f;
+
+static GLuint	programa = 0;
+static int		hay_shader = 0;
+static int		shader_puesto = 0;
+
+static GLint	u_muestra, u_textura, u_env, u_offset, u_alpha, u_umbral;
+
+/*
+	El vertex shader. No hace nada que la funcion fija no hiciera: transforma
+	por la matriz y pasa color, color secundario y coordenadas de textura.
+
+	Las coordenadas van de cuatro componentes (u*q, v*q, 0, q) y el fragmento
+	las divide con texture2DProj, que es lo mismo que hace glTexCoordPointer(4)
+	-- ver el comentario de `vertex` en render.h: para eso el TA entrega 1/w.
+*/
+static const char * fuente_vs =
+	"#version 120\n"
+	"void main()\n"
+	"{\n"
+	"	gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+	"	gl_FrontColor = gl_Color;\n"
+	"	gl_FrontSecondaryColor = gl_SecondaryColor;\n"
+	"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+	"}\n";
+
+/*
+	El fragment shader: los cuatro modos de la instruccion de textura/sombreado
+	del PVR, el color de offset y el descarte por alfa.
+
+	Los cuatro modos son la tabla del DevBox (pagina 210) escrita tal cual, que
+	es la ventaja de tenerlos aca en vez de en GL_COMBINE -- **el alfa de salida
+	es una regla distinta en cada uno**, y expresarlo con el entorno de textura
+	costaba hasta nueve glTexEnvi y dos de los cuatro modos no se podian decir
+	sin COMBINE:
+
+	  0 decal          PIXRGB = TEX                      PIXA = TEXA
+	  1 modulate       PIXRGB = COL*TEX                  PIXA = TEXA
+	  2 decal alpha    PIXRGB = TEX*TEXA + COL*(1-TEXA)  PIXA = COLA
+	  3 modulate alpha PIXRGB = COL*TEX                  PIXA = COLA*TEXA
+
+	El descarte reproduce la regla exacta del chip, que son DOS condiciones y
+	no una: "alfa >= umbral **y** distinto de cero". En funcion fija habia que
+	fingirla con GEQUAL y un piso de medio paso, porque glAlphaFunc no sabe
+	decir dos cosas; aca se escribe la que es. Las dos medidas que la fijaron
+	--las pastillas del menu de Crazy Taxi y su mundo blanco-- estan en el
+	comentario de tira_estado().
+*/
+static const char * fuente_fs =
+	"#version 120\n"
+	"uniform sampler2D muestra;\n"
+	"uniform int usa_textura;\n"
+	"uniform int modo_env;\n"
+	"uniform int usa_offset;\n"
+	"uniform int usa_alpha;\n"
+	"uniform float umbral;\n"
+	"void main()\n"
+	"{\n"
+	"	vec4 col = gl_Color;\n"
+	"	vec4 pix;\n"
+	"\n"
+	"	if (usa_textura != 0)\n"
+	"	{\n"
+	"		vec4 tex = texture2DProj(muestra, gl_TexCoord[0]);\n"
+	"\n"
+	"		if (modo_env == 0)\n"
+	"			pix = tex;\n"
+	"		else if (modo_env == 1)\n"
+	"			pix = vec4(col.rgb * tex.rgb, tex.a);\n"
+	"		else if (modo_env == 2)\n"
+	"			pix = vec4(mix(col.rgb, tex.rgb, tex.a), col.a);\n"
+	"		else\n"
+	"			pix = vec4(col.rgb * tex.rgb, col.a * tex.a);\n"
+	"	}\n"
+	"	else\n"
+	"		pix = col;\n"
+	"\n"
+	"	if (usa_offset != 0)\n"
+	"		pix.rgb += gl_SecondaryColor.rgb;\n"
+	"\n"
+	"	if (usa_alpha != 0 && (pix.a < umbral || pix.a == 0.0))\n"
+	"		discard;\n"
+	"\n"
+	"	gl_FragColor = pix;\n"
+	"}\n";
+
+/* Compila y reporta. El log se imprime siempre que exista: un shader que
+   compila con avisos es lo que despues no dibuja igual. */
+static GLuint compilar(GLenum tipo, const char * fuente, const char * nombre)
+{
+	GLuint	s = p_glCreateShader(tipo);
+	GLint	ok = 0, largo = 0;
+
+	p_glShaderSource(s, 1, &fuente, NULL);
+	p_glCompileShader(s);
+	p_glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+	p_glGetShaderiv(s, GL_INFO_LOG_LENGTH, &largo);
+
+	if (largo > 1)
+	{
+		char log[2048];
+
+		p_glGetShaderInfoLog(s, (GLsizei) sizeof(log), NULL, log);
+		fprintf(stderr, "gl: %s: %s\n", nombre, log);
+	}
+
+	if (!ok)
+	{
+		p_glDeleteShader(s);
+		return 0;
+	}
+
+	return s;
+}
+
+int glmoderno_shader_iniciar(void)
+{
+	GLuint	vs, fs;
+	GLint	ok = 0, largo = 0;
+
+	p_glCreateShader		= (PFN_CREATE_SHADER)	resolver("glCreateShader");
+	p_glShaderSource		= (PFN_SHADER_SOURCE)	resolver("glShaderSource");
+	p_glCompileShader		= (PFN_COMPILE_SHADER)	resolver("glCompileShader");
+	p_glGetShaderiv			= (PFN_GET_SHADER_IV)	resolver("glGetShaderiv");
+	p_glGetShaderInfoLog	= (PFN_GET_SHADER_LOG)	resolver("glGetShaderInfoLog");
+	p_glCreateProgram		= (PFN_CREATE_PROGRAM)	resolver("glCreateProgram");
+	p_glAttachShader		= (PFN_ATTACH_SHADER)	resolver("glAttachShader");
+	p_glLinkProgram			= (PFN_LINK_PROGRAM)	resolver("glLinkProgram");
+	p_glGetProgramiv		= (PFN_GET_PROGRAM_IV)	resolver("glGetProgramiv");
+	p_glGetProgramInfoLog	= (PFN_GET_PROGRAM_LOG)	resolver("glGetProgramInfoLog");
+	p_glUseProgram			= (PFN_USE_PROGRAM)		resolver("glUseProgram");
+	p_glDeleteShader		= (PFN_DELETE_SHADER)	resolver("glDeleteShader");
+	p_glGetUniformLocation	= (PFN_GET_UNIFORM_LOC)	resolver("glGetUniformLocation");
+	p_glUniform1i			= (PFN_UNIFORM_1I)		resolver("glUniform1i");
+	p_glUniform1f			= (PFN_UNIFORM_1F)		resolver("glUniform1f");
+
+	if (!p_glCreateShader || !p_glShaderSource || !p_glCompileShader
+	||  !p_glGetShaderiv || !p_glGetShaderInfoLog || !p_glCreateProgram
+	||  !p_glAttachShader || !p_glLinkProgram || !p_glGetProgramiv
+	||  !p_glGetProgramInfoLog || !p_glUseProgram || !p_glDeleteShader
+	||  !p_glGetUniformLocation || !p_glUniform1i || !p_glUniform1f)
+	{
+		fprintf(stderr, "gl: el driver no da GLSL; no hay camino programable\n");
+		return 0;
+	}
+
+	vs = compilar(GL_VERTEX_SHADER, fuente_vs, "vertex shader");
+	fs = compilar(GL_FRAGMENT_SHADER, fuente_fs, "fragment shader");
+
+	if (vs == 0 || fs == 0)
+		return 0;
+
+	programa = p_glCreateProgram();
+	p_glAttachShader(programa, vs);
+	p_glAttachShader(programa, fs);
+	p_glLinkProgram(programa);
+
+	p_glGetProgramiv(programa, GL_LINK_STATUS, &ok);
+	p_glGetProgramiv(programa, GL_INFO_LOG_LENGTH, &largo);
+
+	if (largo > 1)
+	{
+		char log[2048];
+
+		p_glGetProgramInfoLog(programa, (GLsizei) sizeof(log), NULL, log);
+		fprintf(stderr, "gl: enlace del programa: %s\n", log);
+	}
+
+	/* Los objetos de shader ya no hacen falta con el programa enlazado. */
+	p_glDeleteShader(vs);
+	p_glDeleteShader(fs);
+
+	if (!ok)
+	{
+		programa = 0;
+		return 0;
+	}
+
+	u_muestra	= p_glGetUniformLocation(programa, "muestra");
+	u_textura	= p_glGetUniformLocation(programa, "usa_textura");
+	u_env		= p_glGetUniformLocation(programa, "modo_env");
+	u_offset	= p_glGetUniformLocation(programa, "usa_offset");
+	u_alpha		= p_glGetUniformLocation(programa, "usa_alpha");
+	u_umbral	= p_glGetUniformLocation(programa, "umbral");
+
+	/* La unidad de textura 0, una vez: el arbol no usa multitextura. */
+	p_glUseProgram(programa);
+	if (u_muestra >= 0)
+		p_glUniform1i(u_muestra, 0);
+	p_glUseProgram(0);
+
+	hay_shader = 1;
+
+	fprintf(stderr, "gl: camino programable listo (GLSL 1.20)\n");
+
+	return 1;
+}
+
+int glmoderno_hay_shader(void) { return hay_shader; }
+
+void glmoderno_shader_usar(int puesto)
+{
+	if (!hay_shader)
+		return;
+
+	if (shader_puesto == (puesto ? 1 : 0))
+		return;
+
+	shader_puesto = puesto ? 1 : 0;
+	p_glUseProgram(shader_puesto ? programa : 0);
+}
+
+/* Los uniformes no llevan sombra propia: los llama la de graficos.c, que ya
+   filtra lo que no cambio. Duplicar el filtro solo daria dos verdades. */
+void glmoderno_u_textura(int on)
+{
+	if (hay_shader && u_textura >= 0)
+		p_glUniform1i(u_textura, on ? 1 : 0);
+}
+
+void glmoderno_u_env(int modo)
+{
+	if (hay_shader && u_env >= 0)
+		p_glUniform1i(u_env, modo);
+}
+
+void glmoderno_u_offset(int on)
+{
+	if (hay_shader && u_offset >= 0)
+		p_glUniform1i(u_offset, on ? 1 : 0);
+}
+
+void glmoderno_u_alpha(int on, float umbral)
+{
+	if (!hay_shader)
+		return;
+
+	if (u_alpha >= 0)
+		p_glUniform1i(u_alpha, on ? 1 : 0);
+	if (u_umbral >= 0)
+		p_glUniform1f(u_umbral, umbral);
+}
+
 void glmoderno_presentar(int ancho, int alto, int ven_ancho, int ven_alto)
 {
 	int	dx, dy, dw, dh;

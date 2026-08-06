@@ -1649,3 +1649,97 @@ cerca de gratis que hay en el árbol, y es visible.
 - **Una captura con `--render=fbo` no es la misma imagen ni mide lo mismo**: un barrido solo se
   compara contra otro con el mismo ajuste. Eso queda anotado en la disciplina de medición junto
   a la trampa vieja, que es su espejo.
+
+# La vía 2.b: el camino programable equivalente (2026-08-05)
+
+`--render=shader`. Un par de shaders que reproduce lo que hacían `GL_COMBINE`, `glAlphaFunc` y
+`GL_COLOR_SUM`. **Misma imagen, distinto mecanismo**: no agrega precisión por sí misma, y por eso
+se puede verificar contra la función fija.
+
+## Lo que hizo el trabajo tratable: GLSL de compatibilidad
+
+Se escribe en **GLSL 1.20 de compatibilidad**, con las variables incorporadas — `gl_Vertex`,
+`gl_Color`, `gl_SecondaryColor`, `gl_MultiTexCoord0`, `gl_ModelViewProjectionMatrix`. No es
+nostalgia: es lo que hace que los arreglos de cliente que ya programa `glinit()` —y el
+`glColorPointer` que el barrido de niebla intercambia por su propia tabla— **sigan alimentando al
+shader sin tocar una línea del camino de dibujo**. Con atributos genéricos habría que armar VBO y
+VAO, que es trabajo de otra etapa y otro riesgo.
+
+Una trampa que sale bien pero no por donde uno la buscaría: `screeninit()` pone el `glOrtho` en la
+**MODELVIEW** y deja la PROJECTION en identidad, así que `gl_ModelViewProjectionMatrix` es
+exactamente el ortho.
+
+## Dónde se engancha, y por qué ahí
+
+En la **sombra de estado** de `graficos.c`, no en el bucle de dibujo: `gl_textura()`,
+`gl_alpha_test()`, `offset_estado()` y el `switch` del entorno de textura llevan ahora su uniforme
+al día. Eso da una propiedad que vale más que la brevedad: **el shader y la función fija no pueden
+discrepar sobre qué estado está puesto**, porque leen la misma decisión. Si la sombra dice que una
+tira no cambió nada, tampoco cambió para el shader.
+
+De paso obligó a arreglar dos sitios que tocaban `glDisable(GL_TEXTURE_2D)` a mano —el barrido de
+niebla— y a sacar el programa en los que dibujan con función fija a propósito: los quads del
+framebuffer, la vista de depuración y el marcado de volúmenes. Ese último **tenía que salir**: manda
+triángulos por `glBegin/glEnd` con sólo la posición, así que el color y las UV que le llegarían al
+shader son el estado actual de GL y no algo que ese código puso. El color no importa —se escribe con
+la máscara cerrada— pero un `discard` por un uniforme viejo dejaría la plantilla a medio marcar, y
+el volumen se vería mal sin que nada avise.
+
+## Los cuatro modos, escritos como son
+
+La tabla del DevBox (página 210) entra tal cual en el fragment shader:
+
+```
+0 decal          PIXRGB = TEX                      PIXA = TEXA
+1 modulate       PIXRGB = COL*TEX                  PIXA = TEXA
+2 decal alpha    PIXRGB = TEX*TEXA + COL*(1-TEXA)  PIXA = COLA
+3 modulate alpha PIXRGB = COL*TEX                  PIXA = COLA*TEXA
+```
+
+Esa es la ganancia real de esta etapa, aunque no se vea: **el alfa de salida es una regla distinta
+en cada modo**, y decirlo con el entorno de textura costaba hasta nueve `glTexEnvi` seguidos porque
+dos de los cuatro modos no se pueden expresar sin `COMBINE`. Aquí son cuatro líneas que se leen
+igual que el manual.
+
+## La primera precisión que gana la vía, y casi se pierde
+
+El descarte del punch-through son **dos condiciones y no una** — «alfa ≥ umbral **y** distinto de
+cero» — y `glAlphaFunc` sólo sabe decir una, así que la función fija la finge con `GEQUAL` contra el
+umbral elevado a medio paso cuando vale cero. El shader escribe la que es.
+
+Sólo que no alcanzaba con escribirla: **el descarte por alfa es una operación por fragmento
+posterior al programa**, así que en un contexto de compatibilidad se seguía aplicando encima. Las
+dos reglas juntas dan la más estricta, o sea la aproximación, y la regla exacta del shader no se
+habría notado nunca — habría quedado como código muerto que *parece* correcto. Con el programa
+puesto, `GL_ALPHA_TEST` queda apagado y el shader es el único que decide.
+
+Es la forma de fallo de siempre en este árbol, en versión gráfica: algo que se agrega, que no hace
+nada, y que no avisa.
+
+## La verificación
+
+Las ocho demos de PVR de control salen **byte a byte idénticas** entre `--render=fbo` y
+`--render=shader`, incluidas `pvr-texture_render`, `pvr-fb_tex` y `pvr-modifier_volume_zclip`. El
+plan anticipaba que a partir de esta etapa la comparación exacta dejaría de valer —interpolación,
+orden de operaciones, redondeo— y resultó que no: la ruta de datos es la misma y el hardware da el
+mismo pixel.
+
+Los juegos son la prueba que importa, porque son los únicos que recorren los modos 1 y 2 del
+entorno, el color de offset, el punch-through y la niebla. **Los cinco también salen byte a byte**:
+Crazy Taxi, DCDoom, Sega Rally 2, Street Fighter III y el FMV de Dave Mirra.
+
+### Dos veces que la comparación mintió antes de decir la verdad
+
+Las dos dan el mismo síntoma —«el shader rompe el 99,98 % de los píxeles» con las dos imágenes
+perfectas, cada una mostrando otro momento— y las dos son de método, no del shader:
+
+1. **La primera corrida del par escribe la VMU** y la segunda arranca con otra tarjeta, así que el
+   guest toma otro camino. Es justo la trampa que este mismo trabajo acababa de documentar, y aun
+   así costó una tanda. Un A/B de render se corre con `--sin-vmu`, o con la misma imagen de
+   tarjeta en las dos ramas: cualquier estado persistente del guest es una variable del
+   experimento.
+2. **`--captura-gl` sobrescribe su archivo en cada cuadro, así que el archivo existe desde el
+   primero.** Esperar a que «las capturas estén» y comparar ahí enfrenta un cuadro a medio avanzar
+   contra uno terminado — que fue exactamente lo que pasó con Dave Mirra, y la conclusión falsa
+   duró hasta que dos corridas idénticas dieron el mismo hash. **Hay que esperar al proceso, no al
+   archivo.**

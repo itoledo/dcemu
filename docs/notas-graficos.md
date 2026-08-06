@@ -254,6 +254,39 @@ byte idénticas); en Virtua Tenis 2 es lo que devuelve los brillos a la piel de 
 `usa_offset` (el bit Offset de la palabra ISP) lo habilita por tira, y la pasada de niebla lo
 apaga — esa pasada dibuja el color de niebla y nada más.
 
+Con `--render=shader` la suma la hace el fragment shader desde `gl_SecondaryColor`; el arreglo de
+cliente se sigue encendiendo y apagando igual, porque es de donde sale esa variable. Lo que deja
+de tener efecto es `GL_COLOR_SUM`, que no hace nada con un programa puesto.
+
+---
+
+## El camino programable: los cuatro modos escritos como son
+
+`--render=shader` reemplaza `GL_COMBINE`, `glAlphaFunc` y `GL_COLOR_SUM` por un par de shaders en
+GLSL 1.20 de compatibilidad (`glmoderno.c`). La tabla del DevBox entra tal cual en cuatro líneas,
+que es la ganancia real aunque no se vea: **el alfa de salida es una regla distinta en cada modo**,
+y decirlo con el entorno de textura costaba hasta nueve `glTexEnvi` seguidos porque los modos 1 y 2
+no se pueden expresar sin `COMBINE`.
+
+Los uniformes cuelgan de la **sombra de estado**, no del bucle de dibujo: `gl_textura()`,
+`gl_alpha_test()`, `offset_estado()` y el `switch` del entorno los llevan al día. Así el shader y
+la función fija no pueden discrepar sobre qué estado está puesto. Lo que toque
+`GL_TEXTURE_2D`/`GL_ALPHA_TEST` a mano tiene que pasar por esas funciones o el uniforme miente.
+
+Dos cosas que hay que respetar, y que no avisan si se rompen:
+
+- **`marcar_volumenes()` saca el programa.** Manda triángulos por `glBegin/glEnd` con sólo la
+  posición, así que el color y las UV que le llegarían al shader son el estado actual de GL. El
+  color no importa —se escribe con la máscara cerrada— pero un `discard` por un uniforme viejo
+  dejaría la plantilla a medio marcar.
+- **Con el programa puesto, `GL_ALPHA_TEST` queda apagado.** El descarte por alfa es una operación
+  por fragmento *posterior* al shader, así que en un contexto de compatibilidad se aplica encima y
+  de las dos reglas gana la más estricta: la aproximación. La regla exacta del punch-through —«alfa
+  ≥ umbral **y** distinto de cero», que `glAlphaFunc` no sabe decir— no se habría notado nunca.
+
+Las ocho demos de PVR de control salen byte a byte idénticas entre `--render=fbo` y
+`--render=shader`, incluidas `pvr-texture_render`, `pvr-fb_tex` y `pvr-modifier_volume_zclip`.
+
 ---
 
 ## Sprites y el entorno de textura
