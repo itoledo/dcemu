@@ -430,14 +430,14 @@ void traza_resumen(void)
 	   el CD-DA. */
 	aicadsp_resumen();
 
-	/* El LFO, que NO esta emulado: si un guest lo pide, este es el aviso. Es
-	   el centinela que al DSP le falto durante un mes. */
+	/* El LFO y el filtro FEG estan emulados; esto dice si en esta corrida
+	   trabajaron. Los contadores nacieron como centinelas de "sin emular" y
+	   fueron los que encontraron a los clientes de ambos. */
 	if (aica_censo_plfo || aica_censo_alfo)
-		fprintf(stderr, "traza: AICA sin emular y pedido: LFO de tono en %lu"
-			" key-on, LFO de amplitud en %lu, de %lu\n",
+		fprintf(stderr, "traza: AICA LFO de tono en %lu key-on, de amplitud"
+			" en %lu, de %lu\n",
 			aica_censo_plfo, aica_censo_alfo, aica_key_on);
 
-	/* El filtro FEG si esta emulado; esto dice si en esta corrida trabajo. */
 	if (aica_censo_feg)
 	{
 		fprintf(stderr, "traza: AICA filtro FEG real en %lu key-on de %lu\n",

@@ -751,16 +751,17 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 	   llega a la RAM de sonido y a la AICA. Normalizar aca hace que las dos
 	   ventanas se comporten igual en vez de que una vea los registros vivos y
 	   la otra solo el respaldo. */
+	/*
+		Aqui hubo un caso especial para 0xa080ffc0 ("snd_dbg") que contestaba
+		una variable del emulador alternando 0 y 3 en cada lectura, para que
+		cualquier bucle de espera del guest "viera avanzar" al reproductor del
+		ARM que en 2004 no existia. Con el ARM7 emulado de verdad el parche
+		hacia lo contrario de lo que decia: le escondia al SH-4 la palabra de
+		estado que el ARM escribe en el offset 0xFFC0 de la RAM de onda. La
+		direccion resuelve ahora al camino comun de abajo, como cualquier otra.
+	*/
 	switch(fisica | 0xa0000000)
 	{
-	case 0xa080ffc0: // snd_dbg
-		{
-			memcpy(p, &snd_dbg, size);
-			snd_dbg &= 3; // hack
-			snd_dbg ^= 3; // hack
-		}
-		break;
-	
 	case 0xa05f688c:
 		{
 			memcpy(p, &G2_FIFO, size);
@@ -1650,15 +1651,11 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 	}
 
 	/* Igual que en pvr_read: las etiquetas son P2 y la ventana fisica tiene que
-	   resolver a lo mismo. */
+	   resolver a lo mismo. El caso "snd_dbg" (0xa080ffc0) que habia aqui se
+	   quito junto con el de la lectura: tragaba la escritura en vez de dejarla
+	   llegar a la RAM de onda. */
 	switch(fisica | 0xa0000000)
 	{
-	case 0xa080ffc0: // snd_dbg
-		{
-			memcpy(&snd_dbg, p, size);
-		}
-		break;
-	
 	case 0xa05f688c: // G2 FIFO
 		{
 			memcpy(&G2_FIFO, p, size);

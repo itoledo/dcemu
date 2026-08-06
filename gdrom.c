@@ -956,7 +956,11 @@ static void ejecutar_paquete(void)
 		case SPI_CD_SCAN:
 			/* Avance y retroceso rapidos. No se emula la velocidad: se acepta y
 			   la reproduccion sigue donde estaba, que es lo que ve un juego que
-			   lo usa para adelantar y despues suelta. */
+			   lo usa para adelantar y despues suelta. El aviso es el centinela:
+			   un guest que dependa de la velocidad no debe fallar en silencio. */
+			if (traza_activa)
+				fprintf(stderr,
+					"traza: GD: CD_SCAN aceptado sin emular la velocidad\n");
 			fin_comando();
 			break;
 

@@ -371,15 +371,29 @@ una regresión.
 simultáneos, paneados a lados opuestos y alimentados por el G2-DMA. Y **dos corridas dan el
 mismo `.wav` bit a bit**, que es lo que hay que exigirle a un ADPCM con estado.
 
-Las tres que siguen sin sonar, cada una por su razón:
+Las tres que no sonaban quedaron resueltas el 2026-08-06, y solo una era del emulador:
 
-- **`sound-cdda-basic_cdda`** pide reproducir una pista de audio del disco, que es la fase 5 del
-  plan y no está. Por el camino de KOS el CDDA no llega como paquete SPI sino como **syscall**
-  —comando 20 del vector de GD-ROM—, así que hay que atenderlo en `hack_gdrom()`.
-- **`sound-hello-opus`** no produce audio en ocho segundos y no es del AICA. Sin diagnosticar.
-- **`libdream-spu`** carga su propio reproductor de S3M en el ARM y espera en
-  `while(*snd_dbg != 3)` sobre `0xa080ffc0`. Llega a `Load OK, starting ARM` y ahí se queda. Es
-  un firmware distinto del de KOS y merece mirarse aparte.
+- **`sound-cdda-basic_cdda` suena.** Necesitaba dos cosas: la fase 5 (el CDDA, ya hecho) y **un
+  disco en la bandeja** — arrancando un `.bin` suelto la lectora quedaba vacía, y para eso ahora
+  existe `--disco=IMAGEN`. Ojo con el material: las pistas de audio de los `.cdi` del árbol son
+  **relleno mudo** (302 sectores de ceros), así que un `.wav` en silencio con ellas no prueba
+  nada; las `track02.raw` de los `.gdi` traen el jingle de advertencia real. Con el de Sega
+  Rally 2 montado, la demo entrega señal con pico 32132 desde los 6,2 s.
+- **`sound-hello-opus` está rota por construcción, del lado del ejemplo**: su `romdisk.img` mide
+  1024 bytes — la carpeta `romdisk/` de KOS solo trae un `.gitignore`, sin ningún `.opus` — así
+  que `opusplay_play_file("/rd/test.opus")` falla siempre, imprime su error a la consola de
+  framebuffer (no a la serie: `dbgio_dev_select("fb")`), duerme 10 s y sale. La captura lo
+  muestra saliendo **al menú del boot ROM**, que es adonde va el exit de KOS.
+- **`libdream-spu` está rota tal como se compila hoy, también en consola real** — y 2ndmix, que
+  usa el mismo blob `s3mplay.h` (md5 idéntico), tiene la misma música muerta. El reproductor S3M
+  del ARM espera FIQs del temporizador A para avanzar su contador de tempo (su manejador en
+  0x1C-0x70: nivel 2 → contador++, recarga 0xF6, SCIRE), pero **nadie programa SCIEB, los SCILV
+  ni el temporizador**: el blob no los toca (verificado en su pool de literales) y el `spu.c` del
+  KOS actual tampoco — esa programación la hacía el libdream de 2000 desde el SH-4. Sin FIQ el
+  contador queda en 0 y el reproductor nunca pasa del estado 1. dcemu lo tapaba con un hack de
+  2004: la lectura de `0xa080ffc0` contestaba una variable propia alternando 0 y 3, para que
+  cualquier espera «pasara» — el hack se quitó y la dirección resuelve a la RAM de onda real,
+  así que lo que se ve ahora es lo que el guest hace de verdad.
 
 Nota: `sound-ghettoplay-vorbis`, `sound-hello-mp3` y `sound-hello-ogg` dibujan su interfaz y
 crean el hilo del servidor de sonido, así que están en la lista de los que funcionan —en lo

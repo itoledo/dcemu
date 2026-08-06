@@ -49,8 +49,6 @@
 #include "scramble.h"
 #include "SIMDx86/version.h"
 
-DWORD snd_dbg;			// ...
-
 DWORD G2_FIFO = 0;		// G2 FIFO
 DWORD MAPLE_DMAADDR;
 DWORD MAPLE_RESET2;
@@ -1809,7 +1807,11 @@ int main(int argc, char *argv[])
 
 	if (strncmp(&ejecutable[strlen(ejecutable) - 4], ".bin", 4) == 0)
 	{
-		if (iso_init(NULL))
+		/* --disco= monta una imagen en la lectora aunque el arranque venga
+		   del .bin suelto: sin eso la bandeja queda vacia y una demo que use
+		   el disco (las pistas de audio, el sistema de archivos) no tiene
+		   nada que leer. */
+		if (iso_init((char *) opciones.disco))
 		{
 	 		fprintf(stderr, "No se pudo inicializar ISO.\n");
 			return 1;

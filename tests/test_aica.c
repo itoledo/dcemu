@@ -288,6 +288,51 @@ static void una_fuente_sin_mascara_sigue_pendiente(void)
 	ESPERAR_I32(aica_fiq_pendiente(), 1);
 }
 
+static void la_interrupcion_de_intervalo_de_muestra(void)
+{
+	/*
+		INTON, bit 10: el chip la genera en cada muestra, para quien la
+		habilite. Sin habilitar, SCIPD no la muestra -- la decision esta
+		anotada en aica_tick_hasta(): fijar el bit para todos seria observable
+		por cualquier guest que sondee sin habilitar, y no hay medida de
+		consola que lo respalde. Es la excepcion deliberada a la regla de
+		"una fuente sin mascara sigue pendiente", que protege pendientes ya
+		puestas, no la generacion continua.
+	*/
+	reiniciar();
+
+	/* Sin habilitar: nada pendiente por mas que corran muestras. */
+	avanzar_muestras(4);
+	ESPERAR_U32(leer_g2(AICA_SCIPD) & AICA_INT_MUESTRA, 0);
+
+	/* Habilitada para el ARM: pende en la muestra siguiente. */
+	escribir_g2(AICA_SCIEB, AICA_INT_MUESTRA);
+	avanzar_muestras(1);
+	ESPERAR_U32(leer_g2(AICA_SCIPD) & AICA_INT_MUESTRA, AICA_INT_MUESTRA);
+	ESPERAR_I32(aica_fiq_pendiente(), 1);
+
+	/* Reconocida se apaga, y la muestra siguiente la vuelve a traer. */
+	escribir_g2(AICA_SCIRE, AICA_INT_MUESTRA);
+	ESPERAR_U32(leer_g2(AICA_SCIPD) & AICA_INT_MUESTRA, 0);
+	ESPERAR_I32(aica_fiq_pendiente(), 0);
+
+	avanzar_muestras(1);
+	ESPERAR_I32(aica_fiq_pendiente(), 1);
+
+	/* Y el lado del SH-4 es suyo propio: MCIEB la deja en MCIPD y sube la
+	   linea del ASIC. */
+	escribir_g2(AICA_MCIEB, AICA_INT_MUESTRA);
+	avanzar_muestras(1);
+	ESPERAR_U32(leer_g2(AICA_MCIPD) & AICA_INT_MUESTRA, AICA_INT_MUESTRA);
+	ESPERAR_I32(aica_linea_asic, 1);
+
+	/* Reconocer del todo baja la linea -- y deja el estado limpio para el
+	   caso siguiente, que arranca esperando la linea abajo. */
+	escribir_g2(AICA_MCIEB, 0);
+	escribir_g2(AICA_MCIRE, AICA_INT_MUESTRA);
+	ESPERAR_I32(aica_linea_asic, 0);
+}
+
 static void la_interrupcion_al_sh4_sale_por_el_asic(void)
 {
 	/*
@@ -1091,6 +1136,107 @@ static void la_envolvente_del_filtro_barre_y_retiene_flv3(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* El LFO                                                                   */
+/* ------------------------------------------------------------------------ */
+
+static void la_tabla_del_lfo_es_la_del_papel(void)
+{
+	/*
+		La formula de la recarga es de la ingenieria inversa; lo que la valida
+		es que reproduce la tabla de frecuencias de la seccion 8.1.1.5. Tres
+		puntas: LFOF 0 recarga 1020 -- 256 x 1020 muestras por vuelta a
+		44100 Hz son 0,169 Hz y el papel dice 0,17 --, LFOF 0x0F recarga 76 --
+		2,267 Hz contra 2,27 -- y LFOF 0x1F recarga 1 -- 172,3 Hz clavado.
+	*/
+	reiniciar();
+
+	ESPERAR_I32((int) aica_lfo_recarga[0x00], 1020);
+	ESPERAR_I32((int) aica_lfo_recarga[0x0F], 76);
+	ESPERAR_I32((int) aica_lfo_recarga[0x1F], 1);
+}
+
+static void el_lfo_de_amplitud_ondula_el_volumen(void)
+{
+	/*
+		Tremolo cuadrado a fondo: ALFOS 7 son 24 dB de la tabla 8-9, la onda
+		cuadrada esta muda en la mitad alta de la fase, y con LFOF 0x1F la
+		fase avanza una por muestra. La muestra k lleva fase k+1: las 0..126
+		suenan enteras, las 127..254 atenuadas 23,9 dB -- 0x4000 por la
+		ganancia de 255 unidades (4167/65536) da ~1041 -- y en la vuelta
+		siguiente se repite.
+	*/
+	short salida[800];
+	int   i;
+
+	reiniciar();
+
+	for (i = 0; i < 64; i++)
+	{
+		sound_mem[0x2000 + i * 2]     = 0x00;
+		sound_mem[0x2000 + i * 2 + 1] = 0x40;					/* +0x4000 */
+	}
+
+	/* LFOF 0x1F, ALFOWS cuadrada (1), ALFOS 7. El bucle sobre las 64
+	   muestras escritas: con LEA mas alla el canal lee ceros y la prueba
+	   mide la memoria vacia en vez del tremolo. */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x1C,
+		(0x1Ful << 10) | (1u << 3) | 7u);
+
+	armar_canal(0, 0x2000, AICA_PCM16, 0, 63, 1);
+	producir(400, salida);
+
+	ESPERAR_I32(salida[50 * 2], 0x4000);						/* fase baja */
+	ESPERAR(salida[200 * 2] > 800);								/* fase alta */
+	ESPERAR(salida[200 * 2] < 1200);
+	ESPERAR_I32(salida[300 * 2], 0x4000);						/* la vuelta */
+}
+
+static void el_lfo_de_tono_corre_la_fase(void)
+{
+	/*
+		Vibrato cuadrado a fondo: PLFOS 7 es un octavo del incremento --
+		lineal, que es lo que da los -231/+202 cents asimetricos de la tabla
+		8-9 -- y la onda cuadrada lo resta entero en la mitad baja de la fase.
+		Con OCT y FNS en cero el incremento es 16384 (1,0 en 14 bits):
+
+		  muestras 0..126   fase 1..127, onda -128: inc = 16384 - 2048 = 14336
+		  muestra  127      fase 128,    onda +127: inc = 16384 + 2032 = 18416
+
+		  127 x 14336 = 1820672 -> pos 111, resto 2048; +18416 -> pos 112.
+	*/
+	reiniciar();
+
+	escribir_g2(0 * AICA_CANAL_PASO + 0x1C,
+		(0x1Ful << 10) | (1u << 8) | (7u << 5));
+
+	armar_canal(0, 0x2000, AICA_PCM16, 0, 0xFFFF, 1);
+	producir(128, NULL);
+
+	ESPERAR_U32(aica_canales[0].pos, 112);
+
+	/* El control: sin LFO la misma corrida da una muestra por muestra. */
+	reiniciar();
+	armar_canal(0, 0x2000, AICA_PCM16, 0, 0xFFFF, 1);
+	producir(128, NULL);
+
+	ESPERAR_U32(aica_canales[0].pos, 128);
+
+	/* Y LFORE: la fase corre libre entre notas, salvo que el key-on traiga
+	   el bit de reinicio. */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x1C, (0x1Ful << 10) | (7u << 5));
+	armar_canal(0, 0x2000, AICA_PCM16, 0, 0xFFFF, 1);
+	producir(100, NULL);
+	ESPERAR_I32(aica_canales[0].lfo_estado, 100);
+
+	escribir_g2(0 * AICA_CANAL_PASO + 0x00, 0x8000);			/* key off */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x1C,
+		0x8000ul | (0x1Ful << 10) | (7u << 5));					/* LFORE */
+	armar_canal(0, 0x2000, AICA_PCM16, 0, 0xFFFF, 1);
+
+	ESPERAR_I32(aica_canales[0].lfo_estado, 0);
+}
+
+/* ------------------------------------------------------------------------ */
 
 /*
 	La sonda del censo del LFO/FEG cuenta de verdad.
@@ -1144,6 +1290,7 @@ static const dc_caso casos[] =
 	CASO(el_nivel_de_la_entrada_midi_es_cinco),
 	CASO(scire_limpia_y_m_libera),
 	CASO(una_fuente_sin_mascara_sigue_pendiente),
+	CASO(la_interrupcion_de_intervalo_de_muestra),
 	CASO(la_interrupcion_al_sh4_sale_por_el_asic),
 	CASO(el_temporizador_cuenta_hacia_arriba),
 	CASO(el_prescaler_divide_por_potencias_de_dos),
@@ -1167,6 +1314,9 @@ static const dc_caso casos[] =
 	CASO(el_filtro_solo_se_enciende_cuando_lo_piden),
 	CASO(el_filtro_cerrado_come_el_agudo_y_deja_el_grave),
 	CASO(la_envolvente_del_filtro_barre_y_retiene_flv3),
+	CASO(la_tabla_del_lfo_es_la_del_papel),
+	CASO(el_lfo_de_amplitud_ondula_el_volumen),
+	CASO(el_lfo_de_tono_corre_la_fase),
 };
 
 const dc_suite suite_aica = DEFINIR_SUITE("aica", casos);

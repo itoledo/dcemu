@@ -396,36 +396,76 @@ Dos trampas de esa verificación, pagadas aquí:
   hashes distintos por la tarjeta en el bus, no por el filtro — la misma regla que ya costó un
   falso «el shader rompió todo» en los render paths.
 
-## Lo que no está emulado — y ahora está censado, con la sonda probada
+## El LFO
 
-El LFO y la interrupción de intervalo de muestra. El LFO lleva desde 2026-08-06 un **centinela
-en el key-on**: si un guest lo pide, el resumen de `--traza-mem` lo dice, que es exactamente lo
-que al DSP le faltó — «casi nadie lo nota» fue una premisa sin medir y era falsa.
+Emulado desde 2026-08-06, el mismo día que el FEG y por el mismo camino: el censo le encontró un
+cliente. La fase es un contador de 8 bits que avanza cada `aica_lfo_recarga[LFOF]` muestras; la
+fórmula de la recarga es de la ingeniería inversa (Highly Theoretical) y **reproduce la tabla de
+frecuencias del papel exacta** — 0,169 Hz contra el 0,17 documentado en LFOF 0, 2,267 contra
+2,27 en 0x0F, 172,3 clavado en 0x1F — que es lo que la valida sin figuras. Las cuatro formas de
+onda (sierra, cuadrada, triángulo, ruido por LCG) también vienen de ahí, porque las figuras del
+papel no sobreviven en texto.
 
-**El censo, sobre siete juegos** (Crazy Taxi, Tennis 2K2, Virtua Tennis 2, DOA2, Dave Mirra,
-4X4 EVO, SF3):
+En las dos aplicaciones el papel y flycast difieren, y **las dos veces gana el papel con una
+comprobación numérica**:
 
-- **LFO: cero.** Ni un key-on con PLFOS ni con ALFOS en ninguno.
-- **FEG: sólo Dead or Alive 2 lo usa de verdad** — 17 de sus 40 key-on traen envolventes reales
-  (`0x1F28`, `0x1C7C`, `0x1D30`), más 1 marginal de Crazy Taxi (`0x1FD3`). Todo lo demás que
-  parecía filtro era `0x1FF7`: **el pasante que escribe el driver de Katana**, un LSB debajo del
-  `0x1FF8` que documenta el papel. La primera pasada del censo, que sólo miraba FLV0 contra
-  `{0, 0x1FF8}`, daba «filtro real en el 100 % de los key-on» de casi todos los juegos — un
-  criterio ingenuo convertido en alarma general.
+- **ALFO**: atenuación = `onda >> (7 − ALFOS)` en las unidades de 0,09375 dB del chip. Las siete
+  profundidades dan 0,37/0,75/1,5/2,9/5,9/11,9/23,9 dB — la tabla 8-9 dice 0,4/0,8/1,5/3/6/12/24.
+  flycast desplaza uno menos: el doble de hondo que el papel.
+- **PLFO**: **lineal sobre el incremento de fase**, `inc += (inc·onda) >> (17 − PLFOS)` con la
+  onda en −128..127. Los topes **asimétricos** de la tabla 8-9 salen exactos de ahí: −231/+202
+  cents en PLFOS 7 son `1200·log2(1 − 128/1024)` y `1200·log2(1 + 127/1024)`, y −112/+103 y
+  −55/+52 igual. flycast interpola en cents y le da simétrico (−231/+229), que no es lo que la
+  tabla dice.
 
-**Y la sonda tiene su prueba, por una razón concreta**: la primera corrida de este censo se hizo
-con el contador declarado y el incremento nunca escrito — un error de edición — y reportó «sin
-LFO» en seis juegos desde un contador que nada tocaba. Es la misma falla que la sonda de capas de
-la OIT ese mismo día. `el_censo_del_lfo_cuenta` (suite `aica`) hace key-on con LFO y FEG puestos
-y verifica que los contadores cuenten: la sonda contesta algo cuya respuesta se sabe, antes de
-preguntarle lo que no.
+La fase corre libre entre notas; **LFORE es el que la reinicia**, no el key-on. Y sólo avanza
+mientras alguna profundidad está puesta — con las dos en cero el chip oscila y nadie lo oye, así
+que saltearlo es gratis para todo el parque que no lo usa.
 
-El FEG que este censo dejó pendiente está implementado — la sección de arriba. El contador de
-key-on con filtro real sigue en el resumen de la traza, ahora como registro de uso: dice en qué
-corrida el filtro trabajó.
+La verificación: la tabla contra el papel en la suite (`la_tabla_del_lfo_es_la_del_papel`), el
+trémolo cuadrado con las ganancias exactas de la tabla de volumen
+(`el_lfo_de_amplitud_ondula_el_volumen`), y el vibrato con la fase verificada al entero — 128
+muestras a −1/8 de incremento dan `pos == 112`, calculado a mano en el caso
+(`el_lfo_de_tono_corre_la_fase`). El A/B de extremo a extremo: **ChuChu Rocket** (el cliente:
+15 key-on con vibrato) cambia su `.wav` con el RMS casi quieto — 3280,2 a 3280,7, que es lo que
+una modulación de tono debe hacer — y es bit a bit reproducible; cpp-modplug, Crazy Taxi y DOA2
+quedan **byte-idénticos**.
+
+**La interrupción de intervalo de muestra (INTON, bit 10) también está emulada**: pende en cada
+muestra, sólo para el lado (SCIEB/MCIEB) que la habilitó — dejarla siempre pondría el bit 10 de
+SCIPD/MCIPD fijo en 1 para todo guest, observable por cualquiera que sondee sin habilitar, y no
+hay medida de consola que lo respalde. Es la excepción deliberada, anotada en `aica_tick_hasta()`,
+a la regla de «una fuente sin máscara sigue pendiente».
+
+## El censo, y por qué se corre entero
+
+La historia completa, porque es el método: el primer censo (siete juegos: Crazy Taxi, Tennis 2K2,
+Virtua Tennis 2, DOA2, Dave Mirra, 4X4 EVO, SF3) dijo «FEG: sólo DOA2 — 17 de 40 key-on con
+`0x1F28`/`0x1C7C`/`0x1D30`; LFO: nadie». Todo lo que parecía filtro era `0x1FF7`, **el pasante
+que escribe el driver de Katana**, un LSB debajo del `0x1FF8` del papel. Con el FEG ya
+implementado, extender el censo a los otros ocho juegos volteó las dos conclusiones:
+
+- **FEG: siete clientes de catorce** — DOA2 (29/73 en el banco de 60 s), Crazy Taxi 2 (9/50),
+  Sega Rally 2 (2/14), ChuChu Rocket (74/99), DCDoom (599/906), Mat Hoffman (90/90) y Quake III
+  (20/20).
+- **LFO: ChuChu Rocket pide vibrato en 15 key-on de 99.** «No lo usa nadie» era verdad de siete
+  juegos, no de catorce — la misma trampa del FEG, un nivel más arriba. El centinela hizo
+  exactamente el trabajo para el que se escribió.
+
+**Y la sonda tiene su prueba, por una razón concreta**: la primera corrida del censo se hizo con
+el contador declarado y el incremento nunca escrito — un error de edición — y reportó «sin LFO»
+en seis juegos desde un contador que nada tocaba. Es la misma falla que la sonda de capas de la
+OIT ese mismo día. `el_censo_del_lfo_cuenta` (suite `aica`) hace key-on con LFO y FEG puestos y
+verifica que los contadores cuenten: la sonda contesta algo cuya respuesta se sabe, antes de
+preguntarle lo que no. Los contadores quedan en el resumen de la traza como registro de uso por
+corrida.
+
+## Lo que no está emulado
 
 Del CD-DA falta el `CD_SCAN` de verdad: se acepta y la reproducción sigue donde estaba, que es
-lo que ve un juego que adelanta y después suelta.
+lo que ve un juego que adelanta y después suelta. Desde 2026-08-06 lo dice la traza cuando llega
+— el centinela, para que un guest que dependa de la velocidad no falle en silencio. El modo de
+ADPCM de flujo largo se trata como el normal.
 
 Dos valores se contestan sin una medición detrás, y están marcados como tales porque un registro
 de identificación contestado a la ligera ya colgó al guest dos veces (`REVISION` y `SB_G1SYSM`):

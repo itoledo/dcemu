@@ -844,9 +844,16 @@ sonar, y cada una por una razón distinta:
   `mem.c`. Reporta `Load OK, starting ARM` y ahí se queda. Es un ARM distinto del de KOS y
   merece mirarse aparte.
 
-Del resto del chip, lo que no está: **el LFO** (tablas 8-8 y 8-9), **el modo de ADPCM de flujo
-largo** tratado como el normal, y **la interrupción de intervalo de muestra** (bit 10 de
-`SCIPD`), que nadie habilita.
+**Las tres se cerraron el 2026-08-06** — `basic_cdda` suena con `--disco=` y las otras dos
+resultaron rotas del lado del guest tal como se compilan hoy; el diagnóstico completo, con el
+hack de `snd_dbg` quitado, está en `docs/demos-kos.md`.
+
+Del resto del chip, lo que no está: **el modo de ADPCM de flujo largo** tratado como el normal.
+
+**El LFO y la interrupción de intervalo de muestra salieron de esta lista el 2026-08-06**: el
+censo extendido a los catorce juegos encontró a ChuChu Rocket pidiendo vibrato en 15 key-on —
+«no lo usa nadie» era verdad de siete juegos, no de catorce — y los dos están implementados con
+sus pruebas; ver `docs/notas-aica.md`, «El LFO».
 
 **El filtro FEG salió de esta lista el 2026-08-06**, el mismo día en que el censo del key-on
 encontró a Dead or Alive 2 usándolo de verdad — la premisa de 4.7 («lo primero que se puede

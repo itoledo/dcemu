@@ -186,6 +186,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--bios` | arranca en `0xA0000000` y deja trabajar al boot ROM real; el argumento posicional es la imagen que ve la lectora. Apaga los hooks de syscall |
 | `--cable=vga\|rgb\|compuesto` | tipo de cable que devuelve el handshake de PDTRA (VGA por omisión) |
 | `--bandeja=auto\|disco\|vacia\|abierta` | estado inicial de la lectora; `auto` mira si hay imagen montada |
+| `--disco=IMAGEN` | imagen que ve la lectora cuando el argumento posicional es un `.bin` suelto — que sin esto arranca con la bandeja vacía. Es lo que hace comprobable a `sound-cdda-basic_cdda` (y a cualquier demo que use el disco) |
 | `--traza-mem` | reporta a stderr las direcciones sin emular y dónde se traba el PC, con el tiempo emulado, y al salir la relación con el tiempo real |
 | `--limitar` | no dejar que la emulación corra más rápido que una consola. Solo frena |
 | `--hacks-bios` / `--sin-hacks-bios` | fuerza o desactiva los hooks de syscall |
@@ -770,7 +771,10 @@ leaves on a retail console.
 
 ### Sound: the AICA, the ARM7DI and the G2 DMA
 
-**Sound works: four KOS demos play.** `aica.c/h` is the chip's register block, its three
+**Sound works: five KOS demos play** (`sound-cdda-basic_cdda` needs a disc via `--disco=`, and
+mind that the `.cdi` audio tracks in `roms/` are silent filler — the `.gdi` `track02.raw`
+jingles are real; `sound-hello-opus` and `libdream-spu` are broken guest-side as shipped, see
+`docs/demos-kos.md`). `aica.c/h` is the chip's register block, its three
 timers, its interrupt controller, its internal DMA and the 64-channel synthesizer; `arm7.c/h`
 is the ARM7DI it carries inside; `g2dma.c/h` is the Holly's four G2-DMA channels
 (`0x005F7800-7F`); `audio.c/h` is the only piece that touches SDL.
@@ -820,22 +824,30 @@ does — because with syscall hooks nobody ran the boot ROM's sound init. The `d
 hand-assembles microprograms; the audio guardrail is the `.wav`, byte-identical on the KOS demo
 with signal and bit-reproducible on Crazy Taxi with the reverb on.
 
-**The FEG filter is emulated** — the per-voice resonant lowpass of §8.1.1.7, which the census
-found only Dead or Alive 2 really using (29 of 73 key-ons on the 60 s bench). The envelope comes
-from the papers — the DevBox's FEG table is the AEG decay table ×4 entry by entry, so it is derived,
-not copied — and the IIR arithmetic from the published reverse engineering (Corlett's Highly
-Theoretical, via flycast), since Sega's own docs left the equation in lost figures. Three deliberate
-skips in `feg_decidir()`, each documented: LPOFF (undocumented bit 5 of `+0x28`, what KOS sets, what
-protects the demo park), all-five-FLV-zero (a register file nobody wrote), and the pass-through —
-including Katana's `0x1FF7`, one LSB under the documented `0x1FF8`, so every Katana game skips the
-filter its driver parks open. Guardrails: cpp-modplug and Crazy Taxi `.wav` byte-identical, DOA2
-changes by RMS +0.3% and is bit-reproducible across binaries.
+**The FEG filter is emulated** — the per-voice resonant lowpass of §8.1.1.7. The seven-game census
+found one client (DOA2); extending it to all fourteen found **seven** — DOA2, Crazy Taxi 2, Sega
+Rally 2, ChuChu Rocket, DCDoom (599 of 906 key-ons), Mat Hoffman (90/90) and Quake III (20/20). The
+envelope comes from the papers — the DevBox's FEG table is the AEG decay table ×4 entry by entry, so
+it is derived, not copied — and the IIR arithmetic from the published reverse engineering (Corlett's
+Highly Theoretical, via flycast), since Sega's own docs left the equation in lost figures. Three
+deliberate skips in `feg_decidir()`, each documented: LPOFF (undocumented bit 5 of `+0x28`, what KOS
+sets, what protects the demo park), all-five-FLV-zero (a register file nobody wrote), and the
+pass-through — including Katana's `0x1FF7`, one LSB under the documented `0x1FF8`, so every Katana
+game skips the filter its driver parks open. Guardrails: cpp-modplug and Crazy Taxi `.wav`
+byte-identical, DOA2 changes by RMS +0.3% and is bit-reproducible across binaries.
 
-**What is not emulated**: the LFO and the sample-interval interrupt — the LFO with a **sentinel in
-the key-on path** that reports in the `--traza-mem` summary if a guest asks for it, which is exactly
-what the DSP lacked. Censused over seven games: LFO is used by nobody. The census probe has its own
-test (`el_censo_del_lfo_cuenta`), because its first run reported "no LFO" from a counter nothing
-incremented. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a run.
+**The LFO is emulated too, and how its client appeared is the lesson**: the seven-game census said
+"nobody uses it" and that was true of seven, not of fourteen — extending it found ChuChu Rocket
+asking for pitch LFO on 15 key-ons, the same trap as the FEG one level up. The phase counter's
+reload formula (from Highly Theoretical) reproduces Sega's Hz table exactly, and where flycast and
+the paper disagree the paper wins twice: ALFO depth is `>> (7-ALFOS)` in the chip's 0.09375 dB units
+(all seven depths land on table 8-9's dB values; flycast is twice as deep), and PLFO modulates the
+phase increment **linearly** — which is exactly what produces the table's asymmetric ±cent pairs
+(−231/+202, −112/+103, −55/+52), where flycast interpolates in cents and gets symmetric values. The
+sample-interval interrupt (INTON, bit 10) is emulated as well, pended only when SCIEB/MCIEB enables
+it. `CD_SCAN` speed remains unemulated with a sentinel in the trace. The census counters stay as
+per-run usage reporting; the probe has its own test (`el_censo_del_lfo_cuenta`). The ARM7 is the
+biggest cost after the SH-4 interpreter, 14-15% of a run.
 
 → `docs/notas-aica.md` and `docs/arm7-plan.md`.
 

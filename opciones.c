@@ -27,6 +27,7 @@ struct opciones_t opciones =
 	CABLE_VGA,
 	BANDEJA_AUTO,
 	NULL,
+	NULL,				/* disco: la lectora vacia, como siempre */
 	NULL,				/* captura_gl */
 	NULL,				/* captura_audio */
 	0,					/* sin_audio */
@@ -62,6 +63,8 @@ void opciones_ayuda(const char * programa)
 		"                        si lo hay, es la imagen que ve la lectora.\n"
 		"  --cable=TIPO          vga (por omision), rgb o compuesto.\n"
 		"  --bandeja=ESTADO      auto (por omision), disco, vacia o abierta.\n"
+		"  --disco=IMAGEN        imagen que ve la lectora cuando el argumento es un\n"
+		"                        .bin suelto (que sin esto arranca sin disco).\n"
 		"  --traza-mem           reporta a stderr los accesos a direcciones sin\n"
 		"                        emular y donde se traba el PC.\n"
 		"  --limitar             no dejar que la emulacion corra mas rapido que\n"
@@ -253,6 +256,11 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--sin-aica") == 0)
 		{
 			opciones.sin_aica = 1;
+		}
+		else
+		if (strncmp(arg, "--disco=", 8) == 0)
+		{
+			opciones.disco = arg + 8;
 		}
 		else
 		if (strncmp(arg, "--vmu=", 6) == 0)

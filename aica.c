@@ -381,6 +381,48 @@ static const long feg_q_tabla[32] =
 	-3328, -3392, -3456, -3520, -3584, -3648, -3712, -3776
 };
 
+/*
+	El LFO (seccion 8.1.1.5). El contador de fase avanza cada
+	aica_lfo_recarga[LFOF] muestras; la formula de la recarga es de la
+	ingenieria inversa y reproduce la tabla de Hz del papel exacta (0,169
+	contra 0,17; 2,267 contra 2,27; 172,3 contra 172,3), que es lo que la
+	valida.
+
+	Las dos aplicaciones siguen al papel donde flycast se aparta, y las dos
+	comprobaciones son numericas:
+
+	  - ALFO: atenuacion = onda >> (7 - ALFOS), en las unidades de 0,09375 dB
+	    del chip. Las siete profundidades dan 0,37 / 0,75 / 1,5 / 2,9 / 5,9 /
+	    11,9 / 23,9 dB -- la tabla 8-9 dice 0,4 / 0,8 / 1,5 / 3 / 6 / 12 / 24.
+	    (flycast desplaza uno menos, o sea el doble de hondo que el papel.)
+	  - PLFO: **lineal en el incremento**, no en cents:
+	    inc += (inc * onda) >> (17 - PLFOS), con onda en -128..127. Los topes
+	    asimetricos de la tabla 8-9 salen exactos de ahi: -231/+202 cents en
+	    PLFOS 7 son 1200*log2(1 -+ 128/1024 | 127/1024), y -112/+103, -55/+52
+	    igual. (flycast interpola en cents, que da -231/+229: simetrico, y no
+	    es lo que la tabla dice.)
+*/
+long aica_lfo_recarga[32];
+
+static int lfo_onda(int forma, int estado)
+{
+	switch (forma)
+	{
+	case 0:									/* sierra */
+		return estado;
+
+	case 1:									/* cuadrada */
+		return (estado & 0x80) ? 255 : 0;
+
+	case 2:									/* triangulo */
+		return (((estado & 0x7F) ^ ((estado & 0x80) ? 0x7F : 0)) << 1) & 0xFF;
+
+	default:								/* ruido: un LCG sobre la fase */
+		return (int) (((unsigned long) estado * 0x41C64E6Dul + 0x3039ul)
+		              & 0xFF);
+	}
+}
+
 static long paso_desde_us(long us)
 {
 	if (us == EG_INFINITO)
@@ -429,6 +471,17 @@ static void armar_tablas(void)
 			: (long) ((double) (FEG_FLV_MAX - FEG_FLV_MIN) * 65536.0
 			          * 1000000.0
 			          / ((double) eg_us_decay[i] * 4.0 * 44100.0));
+	}
+
+	/* La recarga del LFO por valor de LFOF: la formula de Highly Theoretical,
+	   que reproduce la tabla de Hz del papel (ver aica.h). */
+	for (i = 0; i < 32; i++)
+	{
+		int s = i >> 2;
+		int m = (~i) & 3;
+		int g = 128 >> s;
+
+		aica_lfo_recarga[i] = (long) ((g - 1) * 4 + g * (m + 1));
 	}
 
 	tablas_listas = 1;
@@ -781,12 +834,13 @@ static void canal_encender(int canal)
 	aica_key_on++;
 
 	/*
-		Censo del LFO --que NO esta emulado-- y del filtro FEG --que si, desde
-		que este censo encontro a Dead or Alive 2 usandolo--: cuantos key-on
-		piden modulacion de tono (PLFOS), de amplitud (ALFOS) o un filtro real.
-		Es el centinela que al DSP le falto: "casi nadie lo nota" fue una
-		premisa sin medir durante un mes, y era falsa. El del FEG queda como
-		registro de uso: es lo que dice en que corrida el filtro trabajo.
+		Censo del LFO y del filtro FEG, hoy emulados los dos: cuantos key-on
+		piden modulacion de tono (PLFOS), de amplitud (ALFOS) o un filtro
+		real. Nacio como el centinela que al DSP le falto -- "casi nadie lo
+		nota" fue una premisa sin medir durante un mes, y era falsa -- y fue
+		el que encontro a los clientes de ambos: el FEG aparecio con Dead or
+		Alive 2 en el censo de siete juegos, y el LFO con ChuChu Rocket al
+		extenderlo a los catorce. Queda como registro de uso por corrida.
 
 		**La sonda tiene su prueba** (el_censo_del_lfo_cuenta, en test_aica.c):
 		el censo del LFO de esta misma sesion se corrio seis juegos con el
@@ -890,6 +944,16 @@ static void canal_encender(int canal)
 	c->feg_prev1  = 0;
 	c->feg_prev2  = 0;
 	c->feg_err    = 0;
+
+	/* El LFO corre libre entre notas; lo que lo reinicia es LFORE, no el
+	   disparo. "Setting has no effect if noise has been selected" -- pero el
+	   ruido de dcemu sale de la fase, asi que reiniciar la fase con ruido
+	   elegido tampoco cambia nada audible. */
+	if (CAN(canal, 0x1C) & 0x8000)
+	{
+		c->lfo_estado = 0;
+		c->lfo_cuenta = 0;
+	}
 }
 
 /* KEY OFF: no corta, pasa a release. */
@@ -955,6 +1019,8 @@ static int canal_muestrear(int canal, int * izq, int * der)
 	DWORD r24, r28;
 	int   disdl, dipan;
 	int   g;
+	int   lfo_plfos = 0;			/* profundidad del PLFO, 0 si no hay */
+	int   lfo_onda_p = 0;			/* su onda, con signo (-128..127) */
 
 	*izq = *der = 0;
 
@@ -993,6 +1059,40 @@ static int canal_muestrear(int canal, int * izq, int * der)
 	dipan = (int) (r24 & 0x1F);
 
 	att = (c->eg_nivel >> 16) + (long) ((r28 >> 8) & 0xFF) * 4;
+
+	/*
+		El LFO. La fase solo avanza mientras alguna de las dos profundidades
+		esta puesta: con las dos en cero el chip oscila igual pero nadie lo
+		oye, asi que saltearlo es gratis y no cambia nada observable -- salvo
+		la fase con la que arrancaria una modulacion encendida a mitad de
+		nota, que ningun censo vio hacer a nadie.
+
+		El ALFO entra aqui, sumado a la atenuacion **antes** del envio al DSP:
+		como el AEG y el TL, modula lo que el canal manda a todas partes.
+	*/
+	{
+		DWORD r1c   = CAN(canal, 0x1C);
+		int   alfos = (int) (r1c & 7);
+
+		lfo_plfos = (int) ((r1c >> 5) & 7);
+
+		if (alfos || lfo_plfos)
+		{
+			if (--c->lfo_cuenta <= 0)
+			{
+				c->lfo_estado = (c->lfo_estado + 1) & 0xFF;
+				c->lfo_cuenta = aica_lfo_recarga[(r1c >> 10) & 0x1F];
+			}
+
+			if (alfos)
+				att += lfo_onda((int) ((r1c >> 3) & 3), c->lfo_estado)
+				       >> (7 - alfos);
+
+			if (lfo_plfos)
+				lfo_onda_p = lfo_onda((int) ((r1c >> 8) & 3),
+				                      c->lfo_estado) - 128;
+		}
+	}
 
 	/*
 		El filtro FEG va sobre la muestra decodificada, antes de toda
@@ -1085,6 +1185,12 @@ static int canal_muestrear(int canal, int * izq, int * der)
 		if (oct < 0)
 			inc >>= -oct;
 	}
+
+	/* El PLFO: lineal sobre el incremento, que es lo que da los topes
+	   asimetricos de la tabla 8-9 (ver la nota junto a lfo_onda()). */
+	if (lfo_plfos)
+		inc = (DWORD) ((long) inc
+		               + (((long) inc * lfo_onda_p) >> (17 - lfo_plfos)));
 
 	c->frac += inc;
 	c->pos  += c->frac >> 14;
@@ -1707,6 +1813,35 @@ unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope)
 	aica_muestras += faltan;
 
 	timers_avanzar((unsigned) faltan);
+
+	/*
+		La interrupcion de intervalo de muestra (INTON, bit 10): el chip la
+		genera en cada muestra. Dos decisiones anotadas:
+
+		  - Se deja pendiente **solo si algun lado la habilito**. Dejarla
+		    siempre pondria el bit 10 de SCIPD/MCIPD fijo en 1 para todo guest
+		    -- observable por cualquiera que sondee sin habilitar -- y no hay
+		    medida de consola que diga que el chip hace eso. El que habilita
+		    la recibe desde la muestra siguiente, que es todo lo que puede
+		    distinguir.
+		  - Una vez por tanda y no por muestra, y da lo mismo: en marcha
+		    normal la tanda es 0 o 1 muestras (aica_tick corre cada ~50 ciclos
+		    y una muestra son 4524), y en una rafaga de alcance el ARM corre
+		    recien despues de la tanda entera, asi que N pendientes seguidas
+		    colapsan en el mismo bit.
+	*/
+	if (faltan)
+	{
+		if (reg16(AICA_SCIEB) & AICA_INT_MUESTRA)
+			poner16(AICA_SCIPD, reg16(AICA_SCIPD) | AICA_INT_MUESTRA);
+
+		if (reg16(AICA_MCIEB) & AICA_INT_MUESTRA)
+		{
+			poner16(AICA_MCIPD, reg16(AICA_MCIPD) | AICA_INT_MUESTRA);
+			aica_linea_asic = 1;
+			aica_asic_subidas++;
+		}
+	}
 
 	{
 		unsigned long long i;

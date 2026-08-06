@@ -293,10 +293,30 @@ struct aica_canal
 	long		feg_prev2;
 	long		feg_err;
 
+	/*
+		LFO (seccion 8.1.1.5): un contador de fase de 8 bits que avanza cada
+		`aica_lfo_recarga[LFOF]` muestras y da la vuelta. De el salen las
+		cuatro formas de onda; ALFOS lo mezcla a la atenuacion y PLFOS al
+		incremento de fase. Corre libre entre key-on: LFORE es el que lo
+		reinicia, no el disparo.
+	*/
+	int			lfo_estado;
+	long		lfo_cuenta;
+
 	int			ultima;			/* la ultima muestra decodificada, con signo */
 };
 
 extern struct aica_canal aica_canales[AICA_CANALES];
+
+/*
+	Muestras entre dos pasos del contador del LFO, por valor de LFOF. La
+	formula viene de la ingenieria inversa (Highly Theoretical) y reproduce
+	exactamente la tabla de frecuencias del papel: 1020 en LFOF 0 son
+	256 x 1020 muestras por vuelta = 0,169 Hz (el papel dice 0,17), y 1 en
+	LFOF 0x1F son 172,3 Hz. Visible para que las pruebas la comparen con la
+	tabla.
+*/
+extern long aica_lfo_recarga[32];
 
 /*
 	La salida: un anillo de cuadros estereo de 16 bits que llena el emulador y

@@ -58,6 +58,12 @@ struct opciones_t
 	int				bandeja;		/* BANDEJA_* */
 	const char *	imagen;			/* .iso/.cue/.bin, o NULL */
 
+	/* Imagen que ve la lectora cuando el argumento posicional es un .bin
+	   suelto. Sin esto un .bin arranca con la bandeja vacia, y una demo que
+	   use la lectora -- sound-cdda-basic_cdda toca las pistas de audio del
+	   disco -- no tiene nada que leer. NULL: como siempre. */
+	const char *	disco;
+
 	/* Archivo BMP donde volcar lo que GL rasterizo, en cada cuadro. NULL para
 	   no hacerlo. Es la verificacion visual que no depende de que la captura de
 	   la ventana funcione; ver volcar_gl() en graficos.c. */

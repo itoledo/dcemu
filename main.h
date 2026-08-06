@@ -75,8 +75,6 @@ extern DWORD MAPLE_STATE;		// 0xa05f6c18
 extern DWORD MAPLE_SPEED;		// 0xa05f6c80
 extern DWORD MAPLE_RESET1;		// 0xa05f6c8c
 
-extern DWORD snd_dbg;			// ...
-
 // joystick
 extern WORD joystick;
 extern unsigned char ltrig, rtrig;
