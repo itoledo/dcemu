@@ -837,9 +837,24 @@ Rules that cost a boot each:
 - `SB_GDSTARD`/`SB_GDLEND` (`0x005F74F4`/`0x005F74F8`) are the DMA's counters and the ROM's
   driver reads them.
 
-Every commercial image in `roms/` runs, on both paths — nine of them as of 2026-08-05: Crazy
-Taxi, Crazy Taxi 2, Virtua Tennis, Capcom vs. SNK, Street Fighter III, Sega Rally 2, Dave Mirra,
-ChuChu Rocket and DCDoom. `docs/notas-gdrom.md` has the layout table, the `.cdi` format, the five
+Every commercial image in `roms/` runs, on both paths — **fourteen of them as of 2026-08-06**: Crazy
+Taxi, Crazy Taxi 2, Virtua Tennis, Virtua Tennis 2, Capcom vs. SNK, Street Fighter III, Sega Rally 2,
+Dave Mirra, ChuChu Rocket, DCDoom, and the five whose `.gdi` zips were sitting unextracted — **4X4
+EVO, Dead or Alive 2, Mat Hoffman's Pro BMX, Quake III Arena and Tennis 2K2**. Four of those five
+reach gameplay on the first try with no changes to the emulator; Quake III boots and renders its
+"SELECT DEVICE" screen and does not advance past it under the blind button bench, which is an input
+question and not a hang — the exit dump shows the guest executing normally. Between them they report
+**one unemulated address each at most**, and the recurring one is the G2 expansion probe at
+`0xA1000400`-`0xA1001800`, which is benign.
+
+**Extracting the zips is the cheapest compatibility work in the tree and it was already paid for.**
+The plan's Vía 3 called test material the biggest gap against the state of the art, and it is
+especially the gap for the graphics work: the KOS park exercises neither mipmaps, nor the TSP repeat
+modes, nor blend codes 2 and 3, nor the Offset Color. Five more commercial games is five more places
+those paths get walked. `roms/` now holds them extracted — mind the disk, it went from 13.8 GB free
+to 8.3.
+
+`docs/notas-gdrom.md` has the layout table, the `.cdi` format, the five
 drive bugs and the damaged Virtua Tennis rip — **damaged rip, not damaged region**: the same USA
 version off a three-track `.gdi` plays fine, so the rule is "try another rip", not "avoid the USA
 release".

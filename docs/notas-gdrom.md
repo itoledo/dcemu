@@ -358,3 +358,39 @@ crudos de 2352 bytes —sin volumen, sin encabezado, sin área de usuario de 204
 archivo de la pista él mismo, porque `iso_init()` solo registra las de datos en `min_iso_*`. En
 un `.gdi` cada pista de audio es su propio archivo y hasta que alguien pide su audio no se abre
 nunca.
+
+---
+
+## 2026-08-06 — Cinco imágenes más, sin tocar una línea del emulador
+
+En `roms/` había seis `.zip` sin descomprimir desde siempre. Descomprimidos y probados, **cinco
+juegos nuevos arrancan y dibujan a la primera**: 4X4 EVO, Dead or Alive 2, Mat Hoffman's Pro BMX,
+Quake III Arena y Tennis 2K2. Con eso las imágenes comerciales que corren pasan de 9 a 14.
+
+Cuatro de los cinco llegan a juego con el banco de botones a ciegas:
+
+| juego | dónde llega en 40-90 s emulados | escenas |
+| --- | --- | --- |
+| 4X4 EVO | en carrera, con tablero y menú de pausa | 879 |
+| Dead or Alive 2 | en combate, con los dos luchadores y el HUD | 2181 |
+| Mat Hoffman's Pro BMX | en el half-pipe, con marcador | 2241 |
+| Tennis 2K2 | en partido, con público y marcador | 2323 |
+| Quake III Arena | pantalla «SELECT DEVICE», no pasa de ahí | 1501 |
+
+**Quake III no está trabado**: el volcado de salida muestra al guest ejecutando su bucle normal, con
+`SR` y `PR` sanos. Es una pantalla de selección de puerto que espera una entrada que las pulsaciones
+a ciegas del banco no le dan — pregunta de entrada, no de emulación. Queda como lo único de los
+cinco que no se pudo ver en juego.
+
+Los accesos sin emular son mínimos: entre uno y cinco por corrida, y el que se repite en tres de
+ellos es el sondeo del bus de expansión G2 en `0xA1000400`-`0xA1001800`, el mismo que ya hacía
+Virtua Tennis 2 y que es benigno.
+
+**Bajo `--bios` los cinco quedan en el menú del boot ROM** (Play / File / Music / Settings), con
+3496 escenas y capturas prácticamente idénticas entre sí. Eso no dice nada de estas imágenes: es la
+frontera conocida de ese camino, donde cae cualquier disco. Ver `docs/bios-boot-plan.md`.
+
+**Por qué valía la pena y no era sólo inventario**: el parque de KOS no ejercita mipmaps, ni los
+modos de repetición del TSP, ni los códigos de mezcla 2 y 3, ni el Offset Color — todo eso sólo lo
+muestra un juego. Cinco juegos más son cinco sitios más donde esos caminos se recorren, y el trabajo
+gráfico reciente se validó contra seis. Cuesta espacio: el disco pasó de 13,8 GB libres a 8,3.
