@@ -848,7 +848,10 @@ sonar, y cada una por una razón distinta:
 resultaron rotas del lado del guest tal como se compilan hoy; el diagnóstico completo, con el
 hack de `snd_dbg` quitado, está en `docs/demos-kos.md`.
 
-Del resto del chip, lo que no está: **el modo de ADPCM de flujo largo** tratado como el normal.
+**El ADPCM de flujo largo también salió de la lista el 2026-08-06** — la reposición del estado
+en LSA, que es del modo normal, degradaba los flujos de `snd_stream` desde la primera vuelta del
+anillo; ver `docs/notas-aica.md`, «El ADPCM de flujo largo». Con eso el capítulo de sonido no
+tiene piezas tratadas distinto de como son, salvo la velocidad del `CD_SCAN` (con centinela).
 
 **El LFO y la interrupción de intervalo de muestra salieron de esta lista el 2026-08-06**: el
 censo extendido a los catorce juegos encontró a ChuChu Rocket pidiendo vibrato en 15 key-on —

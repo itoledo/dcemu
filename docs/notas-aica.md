@@ -460,12 +460,29 @@ verifica que los contadores cuenten: la sonda contesta algo cuya respuesta se sa
 preguntarle lo que no. Los contadores quedan en el resumen de la traza como registro de uso por
 corrida.
 
+## El ADPCM de flujo largo
+
+La única diferencia con el normal está en las notas de la tabla 8-2 y se implementó el
+2026-08-06: «ADPCM references the previous data» — el guest encadena el flujo de modo que el
+dato en LSA continúa al de LEA, y al dar la vuelta el predictor **no** repone el estado
+capturado en LSA: rueda intacto a través del salto. Es lo que hace utilizable un anillo que se
+rellena, y `snd_stream` de KOS en ADPCM usa exactamente este modo (`AICA_SM_ADPCM_LS`).
+
+Tratarlo como el normal — reponer — no era un chasquido por vuelta: **degradaba el flujo
+entero**. El A/B sobre `sound-multi-stream` lo midió: las dos capturas son byte-idénticas hasta
+el cuadro 66 646 — la primera vuelta del anillo, que es exactamente donde la corrección puede
+empezar a actuar — y después el modo viejo se queda en RMS ~1200–1600 mientras el corregido
+sube a 3961–5736. La música llevaba desde siempre decodificándose apagada tras la primera
+vuelta, y la línea base «bit a bit» solo guardaba el determinismo, no la corrección. Crazy Taxi
+y cpp-modplug quedan byte-idénticos: ningún juego censado usa el modo, y el modplug fluye en
+PCM16. La prueba (`el_adpcm_largo_no_repone_en_el_bucle`) corre los dos formatos sobre los
+mismos nibbles y mira el estado del decodificador justo después del salto.
+
 ## Lo que no está emulado
 
 Del CD-DA falta el `CD_SCAN` de verdad: se acepta y la reproducción sigue donde estaba, que es
 lo que ve un juego que adelanta y después suelta. Desde 2026-08-06 lo dice la traza cuando llega
-— el centinela, para que un guest que dependa de la velocidad no falle en silencio. El modo de
-ADPCM de flujo largo se trata como el normal.
+— el centinela, para que un guest que dependa de la velocidad no falle en silencio.
 
 Dos valores se contestan sin una medición detrás, y están marcados como tales porque un registro
 de identificación contestado a la ligera ya colgó al guest dos veces (`REVISION` y `SB_G1SYSM`):

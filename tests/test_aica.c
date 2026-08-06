@@ -641,6 +641,70 @@ static void el_adpcm_sigue_la_formula_del_papel(void)
 	ESPERAR_I32(salida[4], 242);
 }
 
+static void el_adpcm_largo_no_repone_en_el_bucle(void)
+{
+	/*
+		La unica diferencia entre PCMS 2 y 3, notas de la tabla 8-2: el flujo
+		largo encadena -- "ADPCM references the previous data" -- de modo que
+		el dato en LSA continua al de LEA, y al dar la vuelta el predictor NO
+		vuelve al estado capturado en LSA: rueda intacto. Reponer ahi (que es
+		lo que se hacia) metia un chasquido del predictor en cada vuelta del
+		anillo -- y snd_stream de KOS en ADPCM usa exactamente este modo.
+
+		Los dos formatos corren sobre los mismos nibbles (LSA 4 y LEA 8,
+		alineados a 4 como exige el papel: dos fuertes y el resto suaves, para
+		que el estado al llegar a LEA no coincida con el capturado en LSA) y
+		se mira el decodificador justo despues del salto.
+	*/
+	long v8, p8;
+
+	reiniciar();
+
+	sound_mem[0x1000] = 0x77;
+	sound_mem[0x1001] = 0x00;
+	sound_mem[0x1002] = 0x00;
+	sound_mem[0x1003] = 0x00;
+	sound_mem[0x1004] = 0x00;
+
+	armar_canal(0, 0x1000, AICA_ADPCM_LARGO, 4, 8, 1);
+	producir(9, NULL);				/* entrega 0..8; la vuelta ya ocurrio */
+
+	v8 = aica_canales[0].adpcm_valor;
+	p8 = aica_canales[0].adpcm_paso;
+
+	ESPERAR_U32(aica_canales[0].adpcm_pos, 4);
+
+	/* El estado rodo: no es el capturado en LSA (si coincidieran, el caso no
+	   distinguiria nada -- la sonda contesta algo que se sabe). */
+	ESPERAR(v8 != aica_canales[0].adpcm_valor_lsa);
+	ESPERAR(p8 != aica_canales[0].adpcm_paso_lsa);
+
+	/* Y el nibble siguiente (0x0) decodifica DESDE ese estado: la formula
+	   del papel aplicada a lo que habia, no a lo capturado. */
+	producir(1, NULL);
+
+	ESPERAR_I32((int) aica_canales[0].adpcm_valor, (int) (v8 + (p8 >> 3)));
+	ESPERAR_I32((int) aica_canales[0].adpcm_paso,
+		(int) ((p8 * 230 >> 8) < 127 ? 127 : (p8 * 230 >> 8)));
+
+	/* El formato normal, con los mismos datos, si repone. */
+	reiniciar();
+
+	sound_mem[0x1000] = 0x77;
+	sound_mem[0x1001] = 0x00;
+	sound_mem[0x1002] = 0x00;
+	sound_mem[0x1003] = 0x00;
+	sound_mem[0x1004] = 0x00;
+
+	armar_canal(0, 0x1000, AICA_ADPCM, 4, 8, 1);
+	producir(9, NULL);
+
+	ESPERAR_I32((int) aica_canales[0].adpcm_valor,
+		(int) aica_canales[0].adpcm_valor_lsa);
+	ESPERAR_I32((int) aica_canales[0].adpcm_paso,
+		(int) aica_canales[0].adpcm_paso_lsa);
+}
+
 static void el_bucle_vuelve_a_lsa(void)
 {
 	/*
@@ -1300,6 +1364,7 @@ static const dc_caso casos[] =
 	CASO(el_dma_interno_con_dgate_pone_ceros),
 	CASO(la_secuencia_de_aica_init_de_kos),
 	CASO(el_adpcm_sigue_la_formula_del_papel),
+	CASO(el_adpcm_largo_no_repone_en_el_bucle),
 	CASO(el_bucle_vuelve_a_lsa),
 	CASO(sin_bucle_el_canal_se_apaga_en_lea),
 	CASO(el_tono_sale_de_oct_y_fns),

@@ -1207,11 +1207,26 @@ static int canal_muestrear(int canal, int * izq, int * der)
 			/* El ADPCM vuelve al estado que tenia al cruzar LSA; sin eso el
 			   bucle suena a ruido creciente, porque el decodificador es de
 			   estado y no se puede rebobinar. */
-			if (c->formato == AICA_ADPCM || c->formato == AICA_ADPCM_LARGO)
+			if (c->formato == AICA_ADPCM)
 			{
 				c->adpcm_valor = c->adpcm_valor_lsa;
 				c->adpcm_paso  = c->adpcm_paso_lsa;
 				c->adpcm_pos   = lsa;
+			}
+			else
+			if (c->formato == AICA_ADPCM_LARGO)
+			{
+				/*
+					El flujo largo NO repone: "ADPCM references the previous
+					data" (tabla 8-2) -- el guest encadena el flujo de modo
+					que el dato en LSA continua al de LEA, y el predictor
+					rueda a traves del salto. Es la unica diferencia con el
+					modo normal, y es la que hace utilizable un anillo que se
+					rellena: reponer aqui un estado viejo era meter un
+					chasquido del predictor en cada vuelta del buffer --
+					snd_stream de KOS en ADPCM usa exactamente este modo.
+				*/
+				c->adpcm_pos = lsa;
 			}
 		}
 		else
