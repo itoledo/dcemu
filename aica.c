@@ -554,6 +554,12 @@ static int leer_muestra(int canal, struct aica_canal * c, DWORD sa, DWORD n)
 /* Cuantos canales llegaron a sonar alguna vez, para el resumen de la traza. */
 unsigned long aica_key_on;
 
+/* El censo del LFO: key-on con modulacion de tono / de amplitud pedida. */
+unsigned long aica_censo_plfo;
+unsigned long aica_censo_alfo;
+unsigned long aica_censo_feg;
+unsigned long aica_censo_feg_vals[4];
+
 /* Arranca un canal: KEY ON. */
 static void canal_encender(int canal)
 {
@@ -561,6 +567,67 @@ static void canal_encender(int canal)
 	DWORD r0 = CAN(canal, 0x00);
 
 	aica_key_on++;
+
+	/*
+		Censo del LFO y del filtro FEG, que NO estan emulados: cuantos key-on
+		piden modulacion de tono (PLFOS), de amplitud (ALFOS) o un filtro real
+		(FLV0 que no es ni 0 --nunca escrito-- ni 0x1FF8, el pasante que deja
+		KOS). Es el centinela que al DSP le falto: "casi nadie lo nota" fue
+		una premisa sin medir durante un mes, y era falsa.
+
+		**La sonda tiene su prueba** (el_censo_del_lfo_cuenta, en test_aica.c):
+		el censo del LFO de esta misma sesion se corrio seis juegos con el
+		contador declarado y el incremento nunca escrito, y reporto "sin LFO"
+		desde un contador que nada tocaba.
+	*/
+	{
+		DWORD r1c  = CAN(canal, 0x1C);
+		DWORD flv0 = 0;
+		int   k;
+
+		if ((r1c >> 5) & 7)		aica_censo_plfo++;
+		if (r1c & 7)			aica_censo_alfo++;
+
+		/*
+			Un FLV "real" es cualquiera de los cinco niveles de la envolvente
+			del filtro que no sea 0 (nunca escrito), 0x1FF8 (el pasante que
+			documenta el papel) ni 0x1FF7 (el pasante que escribe el driver de
+			Katana -- un LSB abajo, medido: Crazy Taxi y Virtua Tennis 2 mandan
+			ese y solo ese). Mirar solo FLV0 subcontaria los barridos que
+			arrancan abiertos y se cierran.
+		*/
+		for (k = 0; k < 5; k++)
+		{
+			DWORD flv = CAN(canal, 0x2C + (unsigned long) k * 4);
+
+			if (flv != 0 && flv != 0x1FF8 && flv != 0x1FF7)
+			{
+				flv0 = flv;
+				break;
+			}
+		}
+
+		if (flv0 != 0)
+		{
+			int k;
+
+			aica_censo_feg++;
+
+			/* Y los valores distintos que se vieron, hasta cuatro: es lo que
+			   separa "filtra de verdad" de "abierto con otra codificacion". */
+			for (k = 0; k < 4; k++)
+			{
+				if (aica_censo_feg_vals[k] == flv0)
+					break;
+
+				if (aica_censo_feg_vals[k] == 0)
+				{
+					aica_censo_feg_vals[k] = flv0;
+					break;
+				}
+			}
+		}
+	}
 
 	if (traza_activa)
 	{

@@ -309,6 +309,14 @@ extern short             aica_salida[AICA_SALIDA_CUADROS * 2];
 
 	traza_resumen() los informa al salir, con --traza-mem.
 */
+/* El censo del LFO (no emulado): key-on que pidieron modulacion de tono o
+   de amplitud. Decide si implementarlo, como decidio con el DSP. */
+extern unsigned long aica_censo_plfo;
+extern unsigned long aica_censo_alfo;
+extern unsigned long aica_censo_feg;
+extern unsigned long aica_censo_feg_vals[4];
+extern unsigned long aica_key_on;
+
 extern unsigned long long aica_salida_perdidas;
 extern unsigned long      aica_salida_llenadas;
 

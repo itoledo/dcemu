@@ -904,9 +904,48 @@ static void el_pcm_de_8_bits_se_extiende_con_signo(void)
 
 /* ------------------------------------------------------------------------ */
 
+/*
+	La sonda del censo del LFO/FEG cuenta de verdad.
+
+	Existe por un error de esta misma fecha: el censo del LFO se corrio sobre
+	seis juegos con el contador declarado y el incremento NUNCA escrito, y
+	reporto "sin LFO pedido" desde un contador que nada tocaba. Una sonda es
+	codigo, y antes de creerle la primera respuesta hay que hacerle contestar
+	algo cuya respuesta ya se sabe -- esto es exactamente eso, en el arnes.
+*/
+static void el_censo_del_lfo_cuenta(void)
+{
+	unsigned long plfo0, alfo0, feg0;
+
+	reiniciar();
+
+	plfo0 = aica_censo_plfo;
+	alfo0 = aica_censo_alfo;
+	feg0  = aica_censo_feg;
+
+	/* Un canal con LFO de tono (PLFOS=3), de amplitud (ALFOS=2) y un FLV0
+	   que no es ni 0 ni el pasante. */
+	escribir_g2(0 * AICA_CANAL_PASO + 0x1C, (3u << 5) | 2u);
+	escribir_g2(0 * AICA_CANAL_PASO + 0x2C, 0x0FF0);
+
+	armar_canal(0, 0x1000, 0, 0, 16, 0);
+
+	ESPERAR_U32(aica_censo_plfo, plfo0 + 1);
+	ESPERAR_U32(aica_censo_alfo, alfo0 + 1);
+	ESPERAR_U32(aica_censo_feg,  feg0 + 1);
+
+	/* Y un canal sin nada de eso no cuenta. */
+	armar_canal(1, 0x1000, 0, 0, 16, 0);
+
+	ESPERAR_U32(aica_censo_plfo, plfo0 + 1);
+	ESPERAR_U32(aica_censo_alfo, alfo0 + 1);
+	ESPERAR_U32(aica_censo_feg,  feg0 + 1);
+}
+
 static const dc_caso casos[] =
 {
 	CASO(el_respaldo_guarda_16_bits),
+	CASO(el_censo_del_lfo_cuenta),
 	CASO(el_arm_arranca_en_reset),
 	CASO(armrst_es_solo_del_sh4),
 	CASO(l_y_m_son_solo_del_arm),

@@ -820,7 +820,13 @@ does — because with syscall hooks nobody ran the boot ROM's sound init. The `d
 hand-assembles microprograms; the audio guardrail is the `.wav`, byte-identical on the KOS demo
 with signal and bit-reproducible on Crazy Taxi with the reverb on.
 
-**What is not emulated**: the LFO, the FEG filter and the sample-interval interrupt. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a
+**What is not emulated**: the LFO, the FEG filter and the sample-interval interrupt — now with a
+**sentinel in the key-on path** that reports in the `--traza-mem` summary if a guest asks for them,
+which is exactly what the DSP lacked. Censused over seven games: LFO is used by nobody; the FEG is
+real only in Dead or Alive 2 (17 of 40 voices) — everything else that looked like a filter was
+`0x1FF7`, the Katana driver's pass-through, one LSB under the documented `0x1FF8`. The census probe
+has its own test (`el_censo_del_lfo_cuenta`), because its first run reported "no LFO" from a counter
+nothing incremented. The ARM7 is the biggest cost after the SH-4 interpreter, 14-15% of a
 run.
 
 → `docs/notas-aica.md` and `docs/arm7-plan.md`.

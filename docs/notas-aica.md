@@ -341,11 +341,34 @@ La suite `dsp` (7 casos) ensambla microprogramas a mano y verifica la aritmétic
 línea de retardo TEMP con su decremento, el anillo en crudo y el flotante de ida y vuelta sobre
 los 65536 patrones.
 
-## Lo que no está emulado
+## Lo que no está emulado — y ahora está censado, con la sonda probada
 
-El LFO, el filtro FEG (el papel dice cómo dejarlo pasante: `Q = 4`, `FLV = 0x1FF8`, y el
-firmware de KOS simplemente lo apaga) y la interrupción de intervalo de muestra.
-`docs/aica-plan.md`, "Lo que sigue faltando", tiene el detalle.
+El LFO, el filtro FEG y la interrupción de intervalo de muestra. Los dos primeros llevan desde
+2026-08-06 un **centinela en el key-on**: si un guest los pide, el resumen de `--traza-mem` lo
+dice, que es exactamente lo que al DSP le faltó — «casi nadie lo nota» fue una premisa sin medir
+y era falsa.
+
+**El censo, sobre siete juegos** (Crazy Taxi, Tennis 2K2, Virtua Tennis 2, DOA2, Dave Mirra,
+4X4 EVO, SF3):
+
+- **LFO: cero.** Ni un key-on con PLFOS ni con ALFOS en ninguno.
+- **FEG: sólo Dead or Alive 2 lo usa de verdad** — 17 de sus 40 key-on traen envolventes reales
+  (`0x1F28`, `0x1C7C`, `0x1D30`), más 1 marginal de Crazy Taxi (`0x1FD3`). Todo lo demás que
+  parecía filtro era `0x1FF7`: **el pasante que escribe el driver de Katana**, un LSB debajo del
+  `0x1FF8` que documenta el papel. La primera pasada del censo, que sólo miraba FLV0 contra
+  `{0, 0x1FF8}`, daba «filtro real en el 100 % de los key-on» de casi todos los juegos — un
+  criterio ingenuo convertido en alarma general.
+
+**Y la sonda tiene su prueba, por una razón concreta**: la primera corrida de este censo se hizo
+con el contador declarado y el incremento nunca escrito — un error de edición — y reportó «sin
+LFO» en seis juegos desde un contador que nada tocaba. Es la misma falla que la sonda de capas de
+la OIT ese mismo día. `el_censo_del_lfo_cuenta` (suite `aica`) hace key-on con LFO y FEG puestos
+y verifica que los contadores cuenten: la sonda contesta algo cuya respuesta se sabe, antes de
+preguntarle lo que no.
+
+El FEG queda sin implementar a sabiendas: un juego, valores moderados, y el algoritmo exacto del
+filtro pide leerse el DevBox §8.1.1 con su propia verificación diseñada — no un puñado de
+coeficientes de memoria. `docs/aica-plan.md`, "Lo que sigue faltando", tiene el detalle.
 
 Del CD-DA falta el `CD_SCAN` de verdad: se acepta y la reproducción sigue donde estaba, que es
 lo que ve un juego que adelanta y después suelta.

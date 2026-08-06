@@ -430,6 +430,18 @@ void traza_resumen(void)
 	   el CD-DA. */
 	aicadsp_resumen();
 
+	/* El LFO y el filtro FEG, que NO estan emulados: si un guest los pide,
+	   este es el aviso. Es el centinela que al DSP le falto durante un mes. */
+	if (aica_censo_plfo || aica_censo_alfo || aica_censo_feg)
+		fprintf(stderr, "traza: AICA sin emular y pedido: LFO de tono en %lu"
+			" key-on, LFO de amplitud en %lu, filtro FEG real en %lu, de %lu\n",
+			aica_censo_plfo, aica_censo_alfo, aica_censo_feg, aica_key_on);
+
+	if (aica_censo_feg)
+		fprintf(stderr, "traza:   FLV0 vistos: %04lx %04lx %04lx %04lx\n",
+			aica_censo_feg_vals[0], aica_censo_feg_vals[1],
+			aica_censo_feg_vals[2], aica_censo_feg_vals[3]);
+
 	/* Cuanto mas lento que una consola corrio el emulador. Antes no habia con
 	   que compararlo. Ver docs/clock-plan.md, fase 4. */
 	{
