@@ -1924,6 +1924,29 @@ static void viewport_pantalla(void)
 	glViewport(0, 0, render_ancho(), render_alto());
 }
 
+/*
+	El rectangulo de la escena que se esta dibujando **ahora**, que no siempre
+	es el de la pantalla: el render a textura dibuja en el tamano de la textura.
+
+	Existe porque la transparencia ordenada tiene una cabeza de lista por pixel
+	y copia el fondo de un rectangulo: con el tamano de la pantalla durante un
+	render a textura, la lista se apila en las coordenadas del viewport chico y
+	el fondo se copia de otro lado. pvr-fb_tex --que rinde a una textura de
+	64x64 y despues la muestra-- salia negro por eso, y la sonda que lo dijo
+	fue contar capas: 4096 pixeles con lista y 303104 sin.
+*/
+static int escena_w = 0, escena_h = 0;
+
+static int escena_ancho(void)
+{
+	return (escena_w > 0) ? escena_w : render_ancho();
+}
+
+static int escena_alto(void)
+{
+	return (escena_h > 0) ? escena_h : render_alto();
+}
+
 void gl_presentar(void)
 {
 	if (glmoderno_fbo_ligado())
@@ -2153,6 +2176,7 @@ static struct
 	int		niebla;		/* solo el camino programable: la niebla por pixel */
 	int		bump;		/* idem: el relieve por pixel */
 	DWORD	bump_param;
+	int		mezcla_cod;	/* idem: los dos codigos de mezcla sin traducir */
 	int		estencil;
 	GLuint	ligada;		/* la textura de GL ligada; 0 es "ninguna o no se" */
 
@@ -2173,6 +2197,12 @@ static void gl_alpha_test(int on, GLfloat ref);
 static int shader_activo(void)
 {
 	return opciones.render_shader && glmoderno_hay_shader();
+}
+
+/* 1 si la lista translucida se resuelve por pixel en vez de por tira. */
+static int oit_activa(void)
+{
+	return opciones.render_oit && shader_activo() && glmoderno_hay_oit();
 }
 
 static void marcar_volumenes(DWORD lista)
@@ -3132,6 +3162,7 @@ static void gl_estado_olvidar(void)
 	gl_e.niebla     = -1;
 	gl_e.bump       = -1;
 	gl_e.bump_param = 0xFFFFFFFFu;
+	gl_e.mezcla_cod = -1;
 	gl_e.estencil   = -1;
 	gl_e.ligada     = 0;
 
@@ -3361,6 +3392,21 @@ static void tira_estado(DWORD i)
 			*/
 			gl_blend(TriangleStrip[i].type == 2 || TriangleStrip[i].type == 1);
 			gl_blend_func(TriangleStrip[i].pvr_srcblend, TriangleStrip[i].pvr_dstblend);
+
+			/* Los mismos dos factores sin traducir, para el fragmento que se
+			   apila: la resolucion mezcla en el shader y ahi el enum no
+			   sirve. Cuelga de la misma sombra que el glBlendFunc de arriba
+			   para que no puedan discrepar. */
+			if (gl_e.mezcla_cod != (int) ((TriangleStrip[i].blend_src_cod << 4)
+										| TriangleStrip[i].blend_dst_cod))
+			{
+				gl_e.mezcla_cod = (int) ((TriangleStrip[i].blend_src_cod << 4)
+									   | TriangleStrip[i].blend_dst_cod);
+				gl_e.cambios++;
+
+				glmoderno_u_mezcla((int) TriangleStrip[i].blend_src_cod,
+					(int) TriangleStrip[i].blend_dst_cod);
+			}
 
 			/* El color de offset solo en las tiras cuyo encabezado trae el bit
 			   Offset de la palabra ISP; el resto ni siquiera lo lleva en el
@@ -3643,6 +3689,23 @@ static void dibujar_escena(void)
 	if (vol_trans)
 		marcar_volumenes(3);
 
+	/*
+		Con transparencia ordenada, la tanda translucida no mezcla: apila cada
+		fragmento en la lista de su pixel y la resolucion los ordena despues.
+		El estado de profundidad sigue valiendo --lo que la opaca tapo no tiene
+		que apilarse-- pero la escritura de z queda apagada, igual que hoy.
+	*/
+	if (oit_activa())
+	{
+		glmoderno_oit_empezar(escena_ancho(), escena_alto(), trans_presort);
+		glmoderno_u_oit(1);
+
+		/* Copiar el fondo desliga la textura de la unidad 0, asi que la
+		   sombra dejaria de decir la verdad y la primera tira translucida
+		   saldria sin textura. */
+		gl_estado_olvidar();
+	}
+
 	for (i = 0; i < strip_count; i++)
 	{
 		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type != 2)
@@ -3678,6 +3741,17 @@ static void dibujar_escena(void)
 
 		if (!shader_activo() && niebla_aplica(i))
 			dibujar_niebla_tira(i);
+	}
+
+	if (oit_activa())
+	{
+		glmoderno_u_oit(0);
+		gl_estencil(0);
+		glmoderno_oit_resolver();
+
+		/* La resolucion toca el estado de GL a mano, como el marcado de
+		   volumenes: la sombra deja de valer. */
+		gl_estado_olvidar();
 	}
 
 	gl_estencil(0);
@@ -3910,7 +3984,13 @@ static int render_a_textura(void)
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+	/* La escena que viene mide lo que la textura, no lo que la pantalla. */
+	escena_w = (int) ancho;
+	escena_h = (int) alto;
+
 	dibujar_escena();
+
+	escena_w = escena_h = 0;
 
 	volcar_a_memoria(destino, ancho, alto, filas_bytes, formato, ancho, alto, 1);
 
@@ -4582,6 +4662,9 @@ void taPolyModifier()
 	TriangleStrip[strip_count].pvr_srcblend = blend_modes[(ta_address_pointer[2] >> 29) & 0x7];
 
 	TriangleStrip[strip_count].pvr_dstblend = blend_modes_dst[(ta_address_pointer[2] >> 26) & 0x7];
+
+	TriangleStrip[strip_count].blend_src_cod = (ta_address_pointer[2] >> 29) & 0x7;
+	TriangleStrip[strip_count].blend_dst_cod = (ta_address_pointer[2] >> 26) & 0x7;
 	
 	pvr_srcblendmode = (ta_address_pointer[2] >> 25) & 0x1;
 	pvr_dstblendmode = (ta_address_pointer[2] >> 24) & 0x1;
@@ -6001,6 +6084,14 @@ int glinit(void)
 		fprintf(stderr, "gl: se pidio --render=shader y no se pudo armar el"
 			" programa; se dibuja con funcion fija\n");
 		opciones.render_shader = 0;
+		opciones.render_oit = 0;
+	}
+
+	if (opciones.render_oit && !glmoderno_hay_oit())
+	{
+		fprintf(stderr, "gl: se pidio --render=oit y el driver no da lo que"
+			" hace falta; la lista translucida se ordena por tira\n");
+		opciones.render_oit = 0;
 	}
 
 	if (opciones.render_fbo && !glmoderno_hay_fbo())
@@ -6233,6 +6324,13 @@ int screeninit(void)
 			glmoderno_fbo_ligar(1);
 		else
 			opciones.render_fbo = 0;
+
+		/* Las listas por pixel se dimensionan como el FBO y no como el
+		   rectangulo de pantalla: un render a textura puede pedir hasta ese
+		   tamano, y una lista mas chica que el viewport apila fuera. */
+		if (opciones.render_oit)
+			glmoderno_oit_dimensionar(glmoderno_fbo_ancho(),
+				glmoderno_fbo_alto());
 	}
 
 	viewport_pantalla();

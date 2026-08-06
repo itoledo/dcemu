@@ -1808,3 +1808,63 @@ construcción. Por eso `gl_bump()` compara también los parámetros y no sólo e
 Lo que sigue faltando es lo que el comentario del código siempre dijo: **la combinación con la otra
 capa**. En el chip la intensidad modula al polígono texturado que viene detrás, y eso no es un
 problema de shader sino de arquitectura del render.
+
+## Tercer punto de la 2.c: la transparencia ordenada por píxel
+
+`--render=oit`. El artefacto clásico de la Dreamcast: el chip ordena la lista translúcida **por
+píxel** y dcemu la ordena por tira, con un `qsort` sobre la profundidad del centro. El propio
+comentario de `compare()` admitía la aproximación; dos tiras que se interpenetran no tienen un
+orden correcto *como tiras*.
+
+El mecanismo es una lista encadenada por píxel: la tanda translúcida no mezcla, apila cada
+fragmento —color ya resuelto, profundidad de ventana y los dos códigos de mezcla del TSP— con
+`imageAtomicExchange` sobre una imagen de cabezas, y una pasada de resolución ordena cada lista y
+la mezcla sobre lo que dejó la tanda opaca. Necesita GL 4.3 (SSBO, imágenes atómicas) y el destino
+propio, porque el fondo se copia del FBO.
+
+El programa es **uno solo** con las dos salidas y no dos programas: los uniformes los pone la
+sombra de estado de `graficos.c`, y con dos programas habría que ponerlos en los dos o aceptar que
+uno miente. Si el contexto no da 4.30 se cae al de 1.20 y la OIT simplemente no está.
+
+### Lo que costó, que fue todo de la misma familia
+
+Cuatro fallas, y **ninguna dio un mensaje de error**:
+
+1. **`glUniform1i` sobre un uniforme declarado `uint` es `GL_INVALID_OPERATION`**: la llamada no
+   hace nada y el uniforme se queda en cero. Con `oit_max` en cero la condición `idx < oit_max` es
+   siempre falsa y no se apila un solo fragmento. Pantalla negra, cero síntomas. Los uniformes se
+   declaran `int` y se convierten adentro.
+2. **Copiar el fondo desliga la textura de la unidad 0** y la sombra de estado no se entera, así
+   que la primera tira translúcida salía sin textura.
+3. **El factor de alfa no es el rojo del factor de color.** Para los códigos escalares da lo mismo,
+   pero los códigos 2 y 3 son «el otro color»: su factor de alfa es el *alfa* del otro. Es la misma
+   regla que ya aplica GL, y la que separa las dos tablas de `blend_modes`.
+4. **La lista se recorre del más nuevo al más viejo**, porque cada fragmento se apila en la cabeza.
+   El ordenamiento es estable, así que dos fragmentos a la misma profundidad se mezclaban en orden
+   inverso al de envío — justo lo contrario del desempate por `index` que hace `compare()`.
+
+### La verificación
+
+Cinco demos de control salen **byte a byte idénticas** entre `--render=shader` y `--render=oit`:
+las que no tienen capas translúcidas superpuestas, donde el orden no puede influir. Eso es lo que
+valida los ocho factores de mezcla reimplementados en el shader, que es la parte que podía salir
+mal en silencio.
+
+Difieren `2ndmix`, `tsunami-banner` y `kgl-tunnel`, que sí las tienen. En `2ndmix` se ve
+directamente qué cambia: con orden por tira las figuras giratorias tapan el texto; por píxel gana
+en cada punto el que está más cerca.
+
+### Lo que queda abierto: `pvr-fb_tex`
+
+Sale negro con `--render=oit` (4 colores contra 66) y **no está resuelto**. Lo que se sabe: la demo
+combina render a textura de 64×64 con realimentación del framebuffer —muestrea lo que ella misma
+rindió— y sus cuatro cuadriláteros translúcidos mezclan con destino `ZERO`, o sea que se borran
+entre sí. La sonda `DCEMU_OIT_SOLO_FONDO=2` —que pinta cuántas capas encontró la resolución en cada
+píxel— dice que sólo 4096 píxeles (64×64) tienen lista y 303 104 no, o sea que la escena de
+pantalla no está apilando nada.
+
+De investigarlo salieron dos arreglos que valen igual (el rectángulo de la escena, que durante un
+render a textura no es el de la pantalla; y muestrear el fondo con `texelFetch` en vez de
+coordenadas normalizadas, que lo hace independiente del tamaño), pero el negro sigue. Queda
+anotado como regresión conocida de un modo que es **opcional y no el de omisión**, y como el
+próximo hilo del que tirar.

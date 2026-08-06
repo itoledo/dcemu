@@ -37,6 +37,7 @@ struct opciones_t opciones =
 	0,					/* render_fbo: la ventana, que es la referencia */
 	1,					/* escala */
 	0,					/* render_shader: funcion fija, que es la referencia */
+	0,					/* render_oit */
 	0,					/* hilos: apagado por omision, ver opciones.h */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
@@ -82,7 +83,9 @@ void opciones_ayuda(const char * programa)
 		"  --render=MODO         ventana (por omision, y es la referencia), fbo\n"
 		"                        --rasterizar a la resolucion emulada en un destino\n"
 		"                        propio, respetando el aspecto-- o shader, que\n"
-		"                        ademas rasteriza con GLSL en vez de funcion fija.\n"
+		"                        ademas rasteriza con GLSL en vez de funcion fija,\n"
+		"                        u oit, que encima ordena y mezcla la lista\n"
+		"                        translucida por pixel y no por tira.\n"
 		"  --escala=N            resolucion interna xN (1 a 8). Implica --render=fbo.\n"
 		"  --hilos               sacar el AICA y el ARM7 a su propio hilo. Hoy es\n"
 		"                        mas lento; ver docs/hilos-plan.md.\n"
@@ -284,11 +287,19 @@ int opciones_parsear(int argc, char ** argv)
 				   misma via y separarlos daria cuatro combinaciones. */
 				opciones.render_fbo = 1;
 				opciones.render_shader = 1;
+				opciones.render_oit = 0;
+			}
+			else
+			if (strcmp(m, "oit") == 0)
+			{
+				opciones.render_fbo = 1;
+				opciones.render_shader = 1;
+				opciones.render_oit = 1;
 			}
 			else
 			{
 				fprintf(stderr, "modo de render desconocido: %s"
-					" (ventana, fbo o shader)\n", m);
+					" (ventana, fbo, shader u oit)\n", m);
 				return 1;
 			}
 		}

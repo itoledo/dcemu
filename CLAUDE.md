@@ -195,6 +195,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--sin-vmu` | sin tarjeta en la ranura 1. Es el interruptor de aislamiento, y **el que reproduce la línea base anterior byte a byte** |
 | `--render=MODO` | `ventana` (por omisión, y **es la referencia**), `fbo` —rasterizar a la resolución emulada en un destino propio, respetando el aspecto— o `shader`, que además rasteriza con GLSL en vez de función fija |
 | `--escala=N` | resolución interna ×N (1 a 8). Implica `--render=fbo`. **Medida: no cuesta nada** — ver abajo |
+| `DCEMU_OIT_SOLO_FONDO=1\|2` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel. Separa «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -612,6 +613,15 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
 - **The eight PVR control demos and all five commercial games come out byte-identical** to
   `--render=fbo`, including `pvr-texture_render`, `pvr-fb_tex`, `pvr-modifier_volume_zclip` and
   Dave Mirra's FMV. The plan expected exact comparison to stop working here; it did not.
+- **`--render=oit` orders the translucent list per pixel**, which is what the chip does; today's
+  `qsort` orders it per strip and its own comment admits interpenetrating geometry can come out
+  wrong. Per-pixel linked lists (SSBO + atomic image), resolved in a full-screen pass that sorts
+  each list and applies the TSP's eight blend factors in order. Five control demos are
+  byte-identical to `--render=shader` — the ones with no overlapping translucent layers, which is
+  what validates the re-implemented blend factors. **`pvr-fb_tex` regresses to black and is an
+  open issue**: it combines a 64×64 render-to-texture with framebuffer feedback, and the probe
+  `DCEMU_OIT_SOLO_FONDO=2` (paint the layer count) says the screen scene stacks nothing. The mode
+  is opt-in and not the default.
 - **Bump mapping is evaluated per pixel** from the raw angles instead of being baked into the
   texture at upload. Same formula — `pvr-bumpmap` agrees to within 1 level, which is byte rounding
   — but it fixes what baking cannot: K1..K3 and Q come from the *polygon*, while the texture cache

@@ -168,6 +168,12 @@ typedef struct TriangleStripInfo
 	DWORD pvr_srcblend;
 	DWORD pvr_dstblend;
 
+	/* Los mismos dos factores **sin traducir**, o sea los codigos 0-7 del TSP.
+	   Hacen falta porque la transparencia ordenada por pixel resuelve la mezcla
+	   dentro de un shader y no con glBlendFunc: ahi el enum de GL no sirve. */
+	DWORD blend_src_cod;
+	DWORD blend_dst_cod;
+
 	/* Bits 25 y 24 del TSP: eligen el BUFER DE ACUMULACION SECUNDARIO como
 	   origen y como destino de la mezcla, en vez del primario --que es el que
 	   termina en el framebuffer--. DevBox 3.4.6.1: existe para tratar el

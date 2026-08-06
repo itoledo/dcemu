@@ -140,4 +140,41 @@ void glmoderno_u_niebla(int on);
 */
 void glmoderno_u_bump(int on, unsigned long param);
 
+/* ------------------------------------------------------------------------ */
+/* Transparencia ordenada por pixel (OIT)                                   */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El artefacto clasico de la Dreamcast, y el punto grande de la etapa 2.c.
+
+	El chip ordena la lista translucida **por pixel**; dcemu la ordena por tira
+	con un qsort sobre la profundidad del centro, y su propio comentario admite
+	que geometria translucida que se interpenetra puede salir mal -- dos tiras
+	que se cruzan no tienen un orden correcto como tiras.
+
+	El mecanismo es una lista encadenada por pixel: la tanda translucida no
+	mezcla, apila cada fragmento con su color, su profundidad y sus dos codigos
+	de mezcla, y una pasada de resolucion ordena cada lista y la mezcla sobre lo
+	que dejo la tanda opaca. Necesita GL 4.3 (SSBO, imagenes atomicas) y el
+	destino propio, porque el fondo se copia del FBO.
+*/
+int glmoderno_hay_oit(void);
+
+/* Reserva las cabezas, los nodos y la copia del fondo para ese tamano. */
+int glmoderno_oit_dimensionar(int ancho, int alto);
+
+/* Antes de la tanda translucida: lista vacia, contador en cero y copia del
+   fondo. */
+void glmoderno_oit_empezar(int ancho, int alto, int presort);
+
+/* Despues: ordena cada lista y la mezcla sobre el fondo. */
+void glmoderno_oit_resolver(void);
+
+/* Si los fragmentos se apilan (1) o se mezclan como siempre (0). */
+void glmoderno_u_oit(int on);
+
+/* Los dos codigos de mezcla del TSP --0 a 7, sin traducir a GL-- que viajan
+   con cada fragmento apilado. */
+void glmoderno_u_mezcla(int src, int dst);
+
 #endif /* _GLMODERNO_H_ */

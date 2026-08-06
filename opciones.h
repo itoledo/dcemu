@@ -98,6 +98,10 @@ struct opciones_t
 	   va a verificar. Ver la etapa 2.b. */
 	int				render_shader;
 
+	/* 1: la lista translucida se ordena y se mezcla **por pixel** en vez de
+	   por tira. Implica el camino programable. Ver glmoderno.h. */
+	int				render_oit;
+
 	/* 1: sacar el AICA y el ARM7 a su propio hilo (hilo_aica.c).
 
 	   **Apagado por omision, y no por precaucion sino por medicion**: cuesta

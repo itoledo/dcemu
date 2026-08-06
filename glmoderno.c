@@ -315,6 +315,65 @@ static int		shader_puesto = 0;
 static GLint	u_muestra, u_textura, u_env, u_offset, u_alpha, u_umbral;
 static GLint	u_niebla, u_nie_color, u_nie_dens, u_nie_tabla;
 static GLint	u_bump, u_bump_param;
+static GLint	u_oit, u_oit_max, u_oit_mezcla;
+
+/* ---- Transparencia ordenada por pixel ---- */
+
+#define GL_R32UI					0x8236
+#define GL_RED_INTEGER				0x8D94
+#define GL_WRITE_ONLY				0x88B9
+#define GL_READ_WRITE				0x88BA
+#define GL_SHADER_STORAGE_BUFFER	0x90D2
+#define GL_ATOMIC_COUNTER_BUFFER	0x92C0
+#define GL_DYNAMIC_DRAW				0x88E8
+#define GL_SHADER_STORAGE_BARRIER_BIT		0x00002000
+#define GL_TEXTURE_FETCH_BARRIER_BIT		0x00000008
+#define GL_ATOMIC_COUNTER_BARRIER_BIT		0x00001000
+#define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT	0x00000020
+
+typedef void (APIENTRY * PFN_GEN_BUF)(GLsizei, GLuint *);
+typedef void (APIENTRY * PFN_DEL_BUF)(GLsizei, const GLuint *);
+typedef void (APIENTRY * PFN_BIND_BUF)(GLenum, GLuint);
+typedef void (APIENTRY * PFN_BUF_DATA)(GLenum, GLsizeiptr, const void *, GLenum);
+typedef void (APIENTRY * PFN_BUF_SUBDATA)(GLenum, GLintptr, GLsizeiptr, const void *);
+typedef void (APIENTRY * PFN_BIND_BUF_BASE)(GLenum, GLuint, GLuint);
+typedef void (APIENTRY * PFN_BIND_IMG_TEX)(GLuint, GLuint, GLint, GLboolean,
+										   GLint, GLenum, GLenum);
+typedef void (APIENTRY * PFN_MEM_BARRIER)(GLbitfield);
+typedef void (APIENTRY * PFN_CLEAR_TEX_IMG)(GLuint, GLint, GLenum, GLenum,
+											const void *);
+typedef void (APIENTRY * PFN_ACTIVE_TEX)(GLenum);
+
+static PFN_GEN_BUF			p_glGenBuffers;
+static PFN_DEL_BUF			p_glDeleteBuffers;
+static PFN_BIND_BUF			p_glBindBuffer;
+static PFN_BUF_DATA			p_glBufferData;
+static PFN_BUF_SUBDATA		p_glBufferSubData;
+static PFN_BIND_BUF_BASE	p_glBindBufferBase;
+static PFN_BIND_IMG_TEX		p_glBindImageTexture;
+static PFN_MEM_BARRIER		p_glMemoryBarrier;
+static PFN_CLEAR_TEX_IMG	p_glClearTexImage;
+static PFN_ACTIVE_TEX		p_glActiveTexture;
+
+static int		hay_oit = 0;
+static GLuint	oit_prog = 0;
+static GLuint	oit_cabezas = 0;	/* r32ui, una cabeza de lista por pixel */
+static GLuint	oit_nodos = 0;		/* SSBO con los fragmentos apilados */
+static GLuint	oit_contador = 0;	/* contador atomico de reserva */
+static GLuint	oit_fondo = 0;		/* lo que dejo la tanda opaca */
+static int		oit_w = 0, oit_h = 0;
+static unsigned	oit_max = 0;
+static GLint	u_res_fondo = -1;
+static GLint	u_res_presort = -1;
+
+/* Capas por pixel que se reservan, y el techo absoluto de la reserva. Con
+   escala 1 son 640x480x8 = 2,4 M nodos, o sea 39 MB; el techo existe porque a
+   escala 4 la cuenta se iria a 630 MB. Lo que pase del techo se descarta y se
+   avisa una vez. */
+#define OIT_CAPAS		8
+#define OIT_NODOS_TOPE	8000000u
+
+static int oit_armar(void);
 
 /*
 	El vertex shader. No hace nada que la funcion fija no hiciera: transforma
@@ -376,8 +435,18 @@ static const char * fuente_vs =
 	que el TA entrega para la correccion de perspectiva. O sea que la niebla por
 	pixel no cuesta ni un dato mas.
 */
-static const char * fuente_fs =
-	"#version 120\n"
+/*
+	El cuerpo del fragment shader, sin cabecera ni main.
+
+	Se parte en tres piezas --cabecera, cuerpo, main-- porque el programa se
+	compila en dos sabores: uno de GLSL 1.20 que escribe gl_FragColor, y uno de
+	4.30 que ademas puede APILAR el fragmento en una lista por pixel en vez de
+	mezclarlo (la transparencia ordenada). El cuerpo es el mismo en los dos, y
+	tiene que serlo: si divergiera, la comparacion entre caminos dejaria de
+	significar algo. glShaderSource toma un arreglo de cadenas, asi que no hace
+	falta pegarlas.
+*/
+static const char * fuente_fs_cuerpo =
 	"uniform sampler2D muestra;\n"
 	"uniform int usa_textura;\n"
 	"uniform int modo_env;\n"
@@ -406,7 +475,7 @@ static const char * fuente_fs =
 	"	return mix(niebla_tabla[idx].x, niebla_tabla[idx].y, m16 - m);\n"
 	"}\n"
 	"\n"
-	"void main()\n"
+	"vec4 dc_pixel()\n"
 	"{\n"
 	"	vec4 col = gl_Color;\n"
 	"	vec4 pix;\n"
@@ -454,17 +523,266 @@ static const char * fuente_fs =
 	"		pix.rgb = mix(pix.rgb, niebla_color,\n"
 	"			niebla_alfa(gl_TexCoord[0].w));\n"
 	"\n"
-	"	gl_FragColor = pix;\n"
+	"	return pix;\n"
+	"}\n";
+
+/* ---- Las dos cabeceras y los dos main ---- */
+
+static const char * fs_cabeza_120 = "#version 120\n";
+
+/*
+	El sabor con transparencia ordenada por pixel.
+
+	`compatibility` y no `core`: el cuerpo usa gl_Color, gl_SecondaryColor y
+	gl_TexCoord, que es lo que permite que los arreglos de cliente del arbol
+	sigan alimentando al shader sin VBO ni VAO. Un contexto de compatibilidad
+	de 4.6 admite las dos cosas a la vez, que es justamente el hallazgo que hizo
+	viable toda esta via.
+*/
+static const char * fs_cabeza_oit =
+	"#version 430 compatibility\n"
+	"layout(r32ui) uniform coherent uimage2D oit_cabezas;\n"
+	"layout(binding = 0, offset = 0) uniform atomic_uint oit_contador;\n"
+	"struct NodoOIT { uint siguiente; uint color; float prof; uint mezcla; };\n"
+	"layout(std430, binding = 0) buffer NodosOIT { NodoOIT oit_nodos[]; };\n"
+	"uniform int usa_oit;\n"
+	/*
+		**int y no uint**, aunque conceptualmente sean enteros sin signo.
+
+		glUniform1i sobre un uniforme declarado `uint` es GL_INVALID_OPERATION:
+		la llamada no hace nada y el uniforme se queda en cero, en silencio. Con
+		oit_max en cero la condicion `idx < oit_max` es siempre falsa y **no se
+		apila un solo fragmento**, o sea que la lista sale vacia y la pantalla
+		negra sin un solo error a la vista. Costo la primera corrida de esto.
+	*/
+	"uniform int oit_max;\n"
+	"uniform int oit_mezcla;\n";
+
+static const char * fs_main_120 =
+	"void main()\n"
+	"{\n"
+	"	gl_FragColor = dc_pixel();\n"
+	"}\n";
+
+/*
+	Con la lista encendida el fragmento no se mezcla: se apila y se descarta.
+
+	El nodo guarda el color ya resuelto, la profundidad de ventana y los dos
+	codigos de mezcla de la tira -- **los codigos y no los enum de GL**, porque
+	la mezcla la va a hacer el shader de resolucion y no glBlendFunc. La cabeza
+	de la lista se cambia con imageAtomicExchange, que es lo que hace que el
+	orden de llegada no importe.
+
+	Si la reserva se agota el fragmento se pierde. Es lo que hacen todas las
+	implementaciones de esto y no hay alternativa barata; lo que si hay es un
+	aviso, porque perder capas en silencio seria la falla de siempre.
+*/
+static const char * fs_main_oit =
+	"void main()\n"
+	"{\n"
+	"	vec4 c = dc_pixel();\n"
+	"\n"
+	"	if (usa_oit == 0)\n"
+	"	{\n"
+	"		gl_FragColor = c;\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	"	uint idx = atomicCounterIncrement(oit_contador);\n"
+	"\n"
+	"	if (idx < uint(oit_max))\n"
+	"	{\n"
+	"		uint prev = imageAtomicExchange(oit_cabezas,\n"
+	"			ivec2(gl_FragCoord.xy), idx);\n"
+	"\n"
+	"		oit_nodos[idx].siguiente = prev;\n"
+	"		oit_nodos[idx].color = packUnorm4x8(c);\n"
+	"		oit_nodos[idx].prof = gl_FragCoord.z;\n"
+	"		oit_nodos[idx].mezcla = uint(oit_mezcla);\n"
+	"	}\n"
+	"\n"
+	"	discard;\n"
+	"}\n";
+
+/* ---- El shader de resolucion ---- */
+
+static const char * fuente_vs_resolver =
+	"#version 430 compatibility\n"
+	"void main()\n"
+	"{\n"
+	"	gl_Position = gl_Vertex;\n"
+	"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+	"}\n";
+
+/*
+	Recorre la lista de cada pixel, la ordena de lejos a cerca y la mezcla
+	sobre lo que dejo la tanda opaca.
+
+	**El orden**: la z del TA es 1/w --mas grande es mas cerca-- y el glOrtho de
+	screeninit() lleva near y far invertidos justamente para que la profundidad
+	de ventana crezca con ella. O sea que de lejos a cerca es prof ASCENDENTE.
+
+	**La mezcla** son los ocho factores del TSP resueltos aca uno por uno, con
+	el destino acumulado en vez del framebuffer. Eso reproduce exactamente lo
+	que glBlendFunc hacia, solo que en el orden correcto por pixel en vez de por
+	tira. Los codigos 2 y 3 son "el otro color", que del lado del origen es el
+	destino y del lado del destino es el origen -- las dos tablas que ya tiene
+	graficos.c, y confundirlas es lo que dejaba las sombras de Virtua Tenis 2
+	como trapecios opacos.
+
+	El tope de capas por pixel es fijo: lo que pase de ahi se descarta. Una
+	escena con mas capas translucidas superpuestas que eso en el mismo pixel es
+	rarisima, y la alternativa --ordenar una lista de largo arbitrario en el
+	fragment shader-- no cabe en registros.
+*/
+static const char * fuente_fs_resolver =
+	"#version 430 compatibility\n"
+	"layout(r32ui) uniform coherent uimage2D oit_cabezas;\n"
+	"struct NodoOIT { uint siguiente; uint color; float prof; uint mezcla; };\n"
+	"layout(std430, binding = 0) buffer NodosOIT { NodoOIT oit_nodos[]; };\n"
+	"uniform sampler2D fondo;\n"
+	/*
+		El autosort de la lista translucida. Con ISP_FEED_CFG en pre-sort el
+		chip respeta el orden de envio y no ordena por profundidad; ordenar
+		igual seria pasarle por encima a una decision del guest, que es lo que
+		compare() ya evita en el camino por tira.
+	*/
+	"uniform int presort;\n"
+	"\n"
+	"#define CAPAS 32\n"
+	"\n"
+	"vec3 factor(uint cod, vec3 propio, float propio_a, vec3 otro, float otro_a)\n"
+	"{\n"
+	"	if (cod == 0u) return vec3(0.0);\n"
+	"	if (cod == 1u) return vec3(1.0);\n"
+	"	if (cod == 2u) return otro;\n"
+	"	if (cod == 3u) return vec3(1.0) - otro;\n"
+	"	if (cod == 4u) return vec3(propio_a);\n"
+	"	if (cod == 5u) return vec3(1.0 - propio_a);\n"
+	"	if (cod == 6u) return vec3(otro_a);\n"
+	"	return vec3(1.0 - otro_a);\n"
+	"}\n"
+	"\n"
+	/*
+		El factor del ALFA no es el rojo del factor del color.
+
+		Para los codigos escalares --Zero, One, y los cuatro de alfa-- da lo
+		mismo, pero los codigos 2 y 3 son "el otro color": su factor de color es
+		un vector RGB y su factor de alfa es el ALFA del otro, no su
+		componente roja. Es la misma regla que aplica GL con GL_DST_COLOR, y
+		tomar el rojo daba un alfa arbitrario en las escenas que mezclan por
+		color -- que son justo las que usan el alfa del destino despues.
+	*/
+	"float factor_a(uint cod, float propio_a, float otro_a)\n"
+	"{\n"
+	"	if (cod == 0u) return 0.0;\n"
+	"	if (cod == 1u) return 1.0;\n"
+	"	if (cod == 2u) return otro_a;\n"
+	"	if (cod == 3u) return 1.0 - otro_a;\n"
+	"	if (cod == 4u) return propio_a;\n"
+	"	if (cod == 5u) return 1.0 - propio_a;\n"
+	"	if (cod == 6u) return otro_a;\n"
+	"	return 1.0 - otro_a;\n"
+	"}\n"
+	"\n"
+	"uniform int solo_fondo;\n"		/* DCEMU_OIT_SOLO_FONDO: ver glmoderno.c */
+	"\n"
+	"void main()\n"
+	"{\n"
+	"	if (solo_fondo != 0)\n"
+	"	{\n"
+	"		gl_FragColor = texelFetch(fondo, ivec2(gl_FragCoord.xy), 0);\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	"	uint idx = imageLoad(oit_cabezas, ivec2(gl_FragCoord.xy)).r;\n"
+	"	uint lista[CAPAS];\n"
+	"	int n = 0;\n"
+	"	int i, j;\n"
+	"\n"
+	"	while (idx != 0xFFFFFFFFu && n < CAPAS)\n"
+	"	{\n"
+	"		lista[n] = idx;\n"
+	"		n++;\n"
+	"		idx = oit_nodos[idx].siguiente;\n"
+	"	}\n"
+	"\n"
+	/*
+		**La lista se recorre del mas nuevo al mas viejo**, porque cada
+		fragmento se apila en la cabeza. Hay que darla vuelta antes de
+		ordenar, y no es cosmetica: el ordenamiento es estable, asi que dos
+		fragmentos con la MISMA profundidad se mezclan en el orden en que
+		queden. Sin dar vuelta, ese orden es el inverso del de envio -- y el
+		desempate por orden de envio es exactamente lo que hace compare() en
+		graficos.c, por la misma razon (el PVR dibuja dentro de una lista en
+		el orden en que el guest la entrego).
+
+		pvr-fb_tex es lo que lo destapo: sus cuatro cuadriculas de pantalla
+		completa estan a la misma profundidad y una de ellas mezcla con
+		destino ZERO, o sea que borra lo anterior. Al reves, borraba lo que
+		tenia que quedar y la pantalla salia negra.
+	*/
+	"	for (i = 0; i < n / 2; i++)\n"
+	"	{\n"
+	"		uint t = lista[i];\n"
+	"		lista[i] = lista[n - 1 - i];\n"
+	"		lista[n - 1 - i] = t;\n"
+	"	}\n"
+	"\n"
+	"	vec4 dst = texelFetch(fondo, ivec2(gl_FragCoord.xy), 0);\n"
+	"\n"
+	/* solo_fondo=2: cuantas capas encontro, en gris. Separa "la lista esta
+	   vacia" de "la mezcla da negro", que dan el mismo sintoma. */
+	"	if (solo_fondo == 2)\n"
+	"	{\n"
+	"		gl_FragColor = vec4(vec3(float(n) / 8.0), 1.0);\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	"	if (n == 0)\n"
+	"	{\n"
+	"		gl_FragColor = dst;\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	/* Ordenamiento por insercion: n es chico y esto no ramifica de mas. */
+	"	if (presort == 0)\n"
+	"	for (i = 1; i < n; i++)\n"
+	"	{\n"
+	"		uint v = lista[i];\n"
+	"		float p = oit_nodos[v].prof;\n"
+	"\n"
+	"		for (j = i - 1; j >= 0 && oit_nodos[lista[j]].prof > p; j--)\n"
+	"			lista[j + 1] = lista[j];\n"
+	"\n"
+	"		lista[j + 1] = v;\n"
+	"	}\n"
+	"\n"
+	"	for (i = 0; i < n; i++)\n"
+	"	{\n"
+	"		vec4 src = unpackUnorm4x8(oit_nodos[lista[i]].color);\n"
+	"		uint m = oit_nodos[lista[i]].mezcla;\n"
+	"		vec3 fs = factor((m >> 4) & 7u, src.rgb, src.a, dst.rgb, dst.a);\n"
+	"		vec3 fd = factor(m & 7u, dst.rgb, dst.a, src.rgb, src.a);\n"
+	"\n"
+	"		float as = factor_a((m >> 4) & 7u, src.a, dst.a);\n"
+	"		float ad = factor_a(m & 7u, dst.a, src.a);\n"
+	"\n"
+	"		dst = vec4(src.rgb * fs + dst.rgb * fd, src.a * as + dst.a * ad);\n"
+	"	}\n"
+	"\n"
+	"	gl_FragColor = dst;\n"
 	"}\n";
 
 /* Compila y reporta. El log se imprime siempre que exista: un shader que
    compila con avisos es lo que despues no dibuja igual. */
-static GLuint compilar(GLenum tipo, const char * fuente, const char * nombre)
+static GLuint compilar_partes(GLenum tipo, const char ** partes, int n,
+							  const char * nombre)
 {
 	GLuint	s = p_glCreateShader(tipo);
 	GLint	ok = 0, largo = 0;
 
-	p_glShaderSource(s, 1, &fuente, NULL);
+	p_glShaderSource(s, (GLsizei) n, partes, NULL);
 	p_glCompileShader(s);
 	p_glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
 	p_glGetShaderiv(s, GL_INFO_LOG_LENGTH, &largo);
@@ -484,6 +802,39 @@ static GLuint compilar(GLenum tipo, const char * fuente, const char * nombre)
 	}
 
 	return s;
+}
+
+static GLuint compilar(GLenum tipo, const char * fuente, const char * nombre)
+{
+	return compilar_partes(tipo, &fuente, 1, nombre);
+}
+
+/* Enlaza un par ya compilado y reporta el log. Devuelve 0 si fallo. */
+static GLuint enlazar(GLuint vs, GLuint fs, const char * nombre)
+{
+	GLuint	p;
+	GLint	ok = 0, largo = 0;
+
+	if (vs == 0 || fs == 0)
+		return 0;
+
+	p = p_glCreateProgram();
+	p_glAttachShader(p, vs);
+	p_glAttachShader(p, fs);
+	p_glLinkProgram(p);
+
+	p_glGetProgramiv(p, GL_LINK_STATUS, &ok);
+	p_glGetProgramiv(p, GL_INFO_LOG_LENGTH, &largo);
+
+	if (largo > 1)
+	{
+		char log[2048];
+
+		p_glGetProgramInfoLog(p, (GLsizei) sizeof(log), NULL, log);
+		fprintf(stderr, "gl: enlace de %s: %s\n", nombre, log);
+	}
+
+	return ok ? p : 0;
 }
 
 int glmoderno_shader_iniciar(void)
@@ -522,36 +873,62 @@ int glmoderno_shader_iniciar(void)
 	}
 
 	vs = compilar(GL_VERTEX_SHADER, fuente_vs, "vertex shader");
-	fs = compilar(GL_FRAGMENT_SHADER, fuente_fs, "fragment shader");
 
-	if (vs == 0 || fs == 0)
+	if (vs == 0)
 		return 0;
 
-	programa = p_glCreateProgram();
-	p_glAttachShader(programa, vs);
-	p_glAttachShader(programa, fs);
-	p_glLinkProgram(programa);
+	/*
+		Se intenta primero el sabor de 4.30, que es el que sabe apilar el
+		fragmento en la lista por pixel. Es UN solo programa con las dos
+		salidas y no dos programas: los uniformes los pone la sombra de estado
+		de graficos.c, y con dos programas habria que ponerlos en los dos o
+		aceptar que uno miente.
 
-	p_glGetProgramiv(programa, GL_LINK_STATUS, &ok);
-	p_glGetProgramiv(programa, GL_INFO_LOG_LENGTH, &largo);
-
-	if (largo > 1)
+		Si no compila --driver viejo, o un contexto que no da 4.3-- se cae al
+		de 1.20 y la transparencia ordenada simplemente no esta.
+	*/
 	{
-		char log[2048];
+		const char * partes[3];
 
-		p_glGetProgramInfoLog(programa, (GLsizei) sizeof(log), NULL, log);
-		fprintf(stderr, "gl: enlace del programa: %s\n", log);
+		partes[0] = fs_cabeza_oit;
+		partes[1] = fuente_fs_cuerpo;
+		partes[2] = fs_main_oit;
+
+		fs = compilar_partes(GL_FRAGMENT_SHADER, partes, 3,
+			"fragment shader (4.30)");
+
+		if (fs != 0)
+		{
+			programa = enlazar(vs, fs, "el programa (4.30)");
+			p_glDeleteShader(fs);
+		}
+
+		if (programa != 0)
+			hay_oit = 1;
 	}
 
-	/* Los objetos de shader ya no hacen falta con el programa enlazado. */
+	if (programa == 0)
+	{
+		const char * partes[3];
+
+		partes[0] = fs_cabeza_120;
+		partes[1] = fuente_fs_cuerpo;
+		partes[2] = fs_main_120;
+
+		fs = compilar_partes(GL_FRAGMENT_SHADER, partes, 3,
+			"fragment shader (1.20)");
+
+		if (fs != 0)
+		{
+			programa = enlazar(vs, fs, "el programa (1.20)");
+			p_glDeleteShader(fs);
+		}
+	}
+
 	p_glDeleteShader(vs);
-	p_glDeleteShader(fs);
 
-	if (!ok)
-	{
-		programa = 0;
+	if (programa == 0)
 		return 0;
-	}
 
 	u_muestra	= p_glGetUniformLocation(programa, "muestra");
 	u_textura	= p_glGetUniformLocation(programa, "usa_textura");
@@ -565,16 +942,29 @@ int glmoderno_shader_iniciar(void)
 	u_nie_tabla	= p_glGetUniformLocation(programa, "niebla_tabla");
 	u_bump		= p_glGetUniformLocation(programa, "usa_bump");
 	u_bump_param = p_glGetUniformLocation(programa, "bump_param");
+	u_oit		= p_glGetUniformLocation(programa, "usa_oit");
+	u_oit_max	= p_glGetUniformLocation(programa, "oit_max");
+	u_oit_mezcla = p_glGetUniformLocation(programa, "oit_mezcla");
 
 	/* La unidad de textura 0, una vez: el arbol no usa multitextura. */
 	p_glUseProgram(programa);
 	if (u_muestra >= 0)
 		p_glUniform1i(u_muestra, 0);
+	if (u_oit >= 0)
+		p_glUniform1i(u_oit, 0);
 	p_glUseProgram(0);
 
 	hay_shader = 1;
 
-	fprintf(stderr, "gl: camino programable listo (GLSL 1.20)\n");
+	fprintf(stderr, "gl: camino programable listo (GLSL %s)\n",
+		hay_oit ? "4.30, con transparencia ordenada" : "1.20");
+
+	if (hay_oit && !oit_armar())
+	{
+		fprintf(stderr, "gl: no se pudieron crear los recursos de la"
+			" transparencia ordenada; queda apagada\n");
+		hay_oit = 0;
+	}
 
 	return 1;
 }
@@ -659,6 +1049,256 @@ void glmoderno_u_niebla(int on)
 {
 	if (hay_shader && u_niebla >= 0)
 		p_glUniform1i(u_niebla, on ? 1 : 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Transparencia ordenada por pixel                                         */
+/* ------------------------------------------------------------------------ */
+
+/* Resuelve las entradas y compila el shader de resolucion. El buffer de nodos
+   y la imagen de cabezas se dimensionan despues, cuando se sabe el tamano. */
+static int oit_armar(void)
+{
+	GLuint vs, fs;
+
+	p_glGenBuffers			= (PFN_GEN_BUF)			resolver("glGenBuffers");
+	p_glDeleteBuffers		= (PFN_DEL_BUF)			resolver("glDeleteBuffers");
+	p_glBindBuffer			= (PFN_BIND_BUF)		resolver("glBindBuffer");
+	p_glBufferData			= (PFN_BUF_DATA)		resolver("glBufferData");
+	p_glBufferSubData		= (PFN_BUF_SUBDATA)		resolver("glBufferSubData");
+	p_glBindBufferBase		= (PFN_BIND_BUF_BASE)	resolver("glBindBufferBase");
+	p_glBindImageTexture	= (PFN_BIND_IMG_TEX)	resolver("glBindImageTexture");
+	p_glMemoryBarrier		= (PFN_MEM_BARRIER)		resolver("glMemoryBarrier");
+	p_glClearTexImage		= (PFN_CLEAR_TEX_IMG)	resolver("glClearTexImage");
+	p_glActiveTexture		= (PFN_ACTIVE_TEX)		resolver("glActiveTexture");
+
+	if (!p_glGenBuffers || !p_glDeleteBuffers || !p_glBindBuffer
+	||  !p_glBufferData || !p_glBufferSubData || !p_glBindBufferBase
+	||  !p_glBindImageTexture || !p_glMemoryBarrier || !p_glClearTexImage
+	||  !p_glActiveTexture)
+		return 0;
+
+	vs = compilar(GL_VERTEX_SHADER, fuente_vs_resolver, "vs de resolucion");
+	fs = compilar(GL_FRAGMENT_SHADER, fuente_fs_resolver, "fs de resolucion");
+
+	oit_prog = enlazar(vs, fs, "el programa de resolucion");
+
+	if (vs) p_glDeleteShader(vs);
+	if (fs) p_glDeleteShader(fs);
+
+	if (oit_prog == 0)
+		return 0;
+
+	u_res_fondo = p_glGetUniformLocation(oit_prog, "fondo");
+	u_res_presort = p_glGetUniformLocation(oit_prog, "presort");
+
+	/*
+		DCEMU_OIT_SOLO_FONDO=1: la resolucion emite el fondo y nada mas.
+
+		Es la sonda que separa "la lista esta vacia" de "el fondo no se
+		copio", que dan el mismo sintoma --pantalla negra-- y son dos fallas
+		distintas. Cuesta una comparacion contra un uniforme y vive en el
+		binario normal, como el resto de las sondas del arbol.
+	*/
+	{
+		GLint u = p_glGetUniformLocation(oit_prog, "solo_fondo");
+		const char * e = getenv("DCEMU_OIT_SOLO_FONDO");
+
+		p_glUseProgram(oit_prog);
+
+		if (u >= 0)
+			p_glUniform1i(u, (e != NULL) ? atoi(e) : 0);
+
+		p_glUseProgram(0);
+	}
+
+	p_glGenBuffers(1, &oit_nodos);
+	p_glGenBuffers(1, &oit_contador);
+
+	return 1;
+}
+
+int glmoderno_hay_oit(void) { return hay_oit; }
+
+int glmoderno_oit_dimensionar(int ancho, int alto)
+{
+	unsigned long long pedidos;
+
+	if (!hay_oit || ancho <= 0 || alto <= 0)
+		return 0;
+
+	if (oit_cabezas != 0 && ancho == oit_w && alto == oit_h)
+		return 1;
+
+	if (oit_cabezas != 0)
+		glDeleteTextures(1, &oit_cabezas);
+	if (oit_fondo != 0)
+		glDeleteTextures(1, &oit_fondo);
+
+	/* Una cabeza de lista por pixel. Entero sin signo de 32 bits porque la
+	   cabeza es un indice y el centinela de "lista vacia" es 0xFFFFFFFF. */
+	glGenTextures(1, &oit_cabezas);
+	glBindTexture(GL_TEXTURE_2D, oit_cabezas);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, ancho, alto, 0,
+		GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+	/* Y una copia de lo que dejo la tanda opaca, que es el destino sobre el
+	   que la resolucion mezcla. Va aparte porque leer y escribir la misma
+	   textura en la misma pasada no esta definido. */
+	glGenTextures(1, &oit_fondo);
+	glBindTexture(GL_TEXTURE_2D, oit_fondo);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ancho, alto, 0,
+		GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	pedidos = (unsigned long long) ancho * alto * OIT_CAPAS;
+
+	if (pedidos > OIT_NODOS_TOPE)
+		pedidos = OIT_NODOS_TOPE;
+
+	oit_max = (unsigned) pedidos;
+
+	p_glBindBuffer(GL_SHADER_STORAGE_BUFFER, oit_nodos);
+	p_glBufferData(GL_SHADER_STORAGE_BUFFER,
+		(GLsizeiptr) oit_max * 16, NULL, GL_DYNAMIC_DRAW);
+	p_glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+	{
+		GLuint cero = 0;
+
+		p_glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, oit_contador);
+		p_glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(GLuint), &cero,
+			GL_DYNAMIC_DRAW);
+		p_glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+	}
+
+	oit_w = ancho;
+	oit_h = alto;
+
+	fprintf(stderr, "gl: transparencia ordenada, %dx%d, %u nodos (%.0f MB)\n",
+		ancho, alto, oit_max, oit_max * 16.0 / (1024.0 * 1024.0));
+
+	if ((unsigned long long) ancho * alto * OIT_CAPAS > OIT_NODOS_TOPE)
+		fprintf(stderr, "gl: la reserva quedo en el tope; con muchas capas"
+			" translucidas se van a perder fragmentos\n");
+
+	p_glUseProgram(programa);
+	if (u_oit_max >= 0)
+		p_glUniform1i(u_oit_max, (GLint) oit_max);
+	p_glUseProgram(shader_puesto ? programa : 0);
+
+	return 1;
+}
+
+/*
+	Deja todo listo para la tanda translucida: la lista vacia, el contador en
+	cero y una copia de lo que dejo la tanda opaca.
+
+	La copia sale del framebuffer que esta ligado con glCopyTexSubImage2D, o
+	sea del FBO -- por eso la transparencia ordenada exige el destino propio y
+	no funciona dibujando en la ventana.
+*/
+void glmoderno_oit_empezar(int ancho, int alto, int presort)
+{
+	GLuint	vacio = 0xFFFFFFFFu;
+	GLuint	cero = 0;
+
+	if (!hay_oit || oit_cabezas == 0)
+		return;
+
+	if (u_res_presort >= 0)
+	{
+		p_glUseProgram(oit_prog);
+		p_glUniform1i(u_res_presort, presort ? 1 : 0);
+		p_glUseProgram(shader_puesto ? programa : 0);
+	}
+
+	p_glClearTexImage(oit_cabezas, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &vacio);
+
+	p_glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, oit_contador);
+	p_glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(GLuint), &cero);
+	p_glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+
+	/* La unidad 0 explicita: es la que usa el programa de la escena y la que
+	   va a leer la resolucion, y dejarlo al azar es pedir un fondo negro sin
+	   ningun sintoma que lo explique. */
+	p_glActiveTexture(0x84C0 /* GL_TEXTURE0 */);
+	glBindTexture(GL_TEXTURE_2D, oit_fondo);
+	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, ancho, alto);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	p_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, oit_nodos);
+	p_glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, oit_contador);
+	p_glBindImageTexture(0, oit_cabezas, 0, GL_FALSE, 0, GL_READ_WRITE,
+		GL_R32UI);
+}
+
+/*
+	Ordena y mezcla: un quad de pantalla completa con el shader de resolucion.
+
+	La barrera es obligatoria y no una precaucion: sin ella el driver puede
+	empezar a leer los nodos antes de que las escrituras de la tanda anterior
+	sean visibles, y el resultado depende de la carga de la GPU -- o sea que
+	falla distinto en cada corrida, que es la peor forma de fallar.
+*/
+void glmoderno_oit_resolver(void)
+{
+	if (!hay_oit || oit_prog == 0)
+		return;
+
+	p_glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT
+					| GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
+					| GL_ATOMIC_COUNTER_BARRIER_BIT
+					| GL_TEXTURE_FETCH_BARRIER_BIT);
+
+	p_glUseProgram(oit_prog);
+
+	if (u_res_fondo >= 0)
+		p_glUniform1i(u_res_fondo, 0);
+
+	p_glActiveTexture(0x84C0 /* GL_TEXTURE0 */);
+	glBindTexture(GL_TEXTURE_2D, oit_fondo);
+	glEnable(GL_TEXTURE_2D);
+
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_CULL_FACE);
+	glDepthMask(GL_FALSE);
+
+	/* El quad va en coordenadas de recorte directamente: el vertex shader de
+	   resolucion no aplica matriz, asi que no depende del glOrtho de la escena
+	   ni hay que salvarlo y reponerlo. */
+	glBegin(GL_QUADS);
+	glTexCoord2f(0.0f, 0.0f); glVertex4f(-1.0f, -1.0f, 0.0f, 1.0f);
+	glTexCoord2f(1.0f, 0.0f); glVertex4f( 1.0f, -1.0f, 0.0f, 1.0f);
+	glTexCoord2f(1.0f, 1.0f); glVertex4f( 1.0f,  1.0f, 0.0f, 1.0f);
+	glTexCoord2f(0.0f, 1.0f); glVertex4f(-1.0f,  1.0f, 0.0f, 1.0f);
+	glEnd();
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+	glEnable(GL_DEPTH_TEST);
+
+	p_glUseProgram(shader_puesto ? programa : 0);
+}
+
+void glmoderno_u_oit(int on)
+{
+	if (hay_shader && u_oit >= 0)
+		p_glUniform1i(u_oit, on ? 1 : 0);
+}
+
+void glmoderno_u_mezcla(int src, int dst)
+{
+	if (hay_shader && u_oit_mezcla >= 0)
+		p_glUniform1i(u_oit_mezcla,
+			(GLint) (((src & 7) << 4) | (dst & 7)));
 }
 
 void glmoderno_u_bump(int on, unsigned long param)
