@@ -398,3 +398,79 @@ dígito en todo:
   razonamiento de 6.6 dice que no pagan. No se tocan sin un número que lo pida.
 - 6.6 (P1/P2 en línea) queda cerrado: ya estaba adoptado por la corrección del contador,
   y su cero de velocidad es consistente con lo medido aquí — la llamada no es el costo.
+
+---
+
+# Fase 4, medida: la fusión vale 17,4 % cubriendo el 46 % — el recompilador se justifica (2026-08-07)
+
+El prototipo desechable existe (`fusion.c`, detrás de `-DDCEMU_FUSION`, elegido con
+`DCEMU_FUSION=1` dentro del binario) y contestó la pregunta que venía a contestar. La
+regla de decisión estaba escrita antes de medir: ≥15 % cubriendo ~50 % del volumen
+justifica el recompilador. **Salió 17,4 %.**
+
+## Qué se tradujo
+
+La sonda de forma, extendida para nombrar los bloques (los 16 más pesados salen ahora en
+el resumen de `--perf` con PC, largo y peso), dijo que los cuatro bloques más calientes
+de Crazy Taxi son **un solo lazo** — `0c1583f8 → 0c158400 → 0c158418` más el callback
+`0c156c30` — con las mismas 535,8 M de ejecuciones y el **47,2 % de todas las
+instrucciones**. Desensamblado, es el lazo de espera del juego: sondea dos contadores y
+llama por puntero a un callback que es un `RTS` pelado. 20 instrucciones y 35 ciclos por
+vuelta, diez de ellas cargas.
+
+Se tradujo a mano como C fusionado: registros del SH-4 en locales, las direcciones de
+los literales de PC plegadas a constantes, los ciclos de cada instrucción los de su
+manejador (incluida la rareza de la ranura del `RTS`, un `NOP` que no suma), y **los
+cortes del bloque periódico en las mismas fronteras de instrucción que el intérprete**
+— que es lo que hace la ejecución idéntica al dígito y por tanto medible. Todo lo no
+cubierto vuelve al intérprete en esa misma instrucción: el callback que no sea el `RTS`
+conocido, una dirección desalineada (el error lo levanta el camino de siempre), las dos
+salidas del lazo, la región modificada (verificada entera en la primera entrada y su
+primera palabra en cada una). La traza y el UBC apagan la fusión solos: ven instrucción
+por instrucción y el lazo fusionado no corre con ellos puestos.
+
+## La verificación y el número
+
+**La ejecución es la misma al dígito**: 22 279 918 865 instrucciones, 10 001 cuadros,
+9994 escenas y 1183 tiras por escena con la fusión y sin ella, y la captura de 60 s
+byte a byte idéntica. El 46,1 % de las instrucciones corrió fusionado
+(10 274 007 985, en 46,8 M de entradas de ~219 instrucciones ≈ 11 vueltas del lazo
+entre cortes del reloj — exactamente lo que da `RELOJ_GRANO`/35).
+
+Mismo binario, cuatro pares alternados con el orden invertido, calentamiento descartado:
+
+| | ms reales | velocidad |
+| --- | --- | --- |
+| con fusión | 98 030 / 97 945 / [97 803] / 98 042 | **1,83-1,84×** |
+| sin | 118 384 / 119 098 / 118 826 / 118 258 | 1,51-1,52× |
+
+**17,4 % (medias 97 955 contra 118 642), 4,4 contra 5,3 ns por instrucción**, con una
+dispersión del 0,24 % en el lado fusionado. La corrida entre corchetes ejecutó 1672
+instrucciones de más —la firma de un evento de XInput, que se lee global— y queda
+descartada por la regla de siempre; las tres parejas limpias son unánimes.
+
+## Las dos lecturas honestas, que son lo que la fase venía a comprar
+
+1. **El techo por porción es 1,6×, no los 3-4× de la aritmética de volumen.** Los 20 687
+   ms ganados sobre 10 274 M de instrucciones fusionadas son ~2,0 ns menos por
+   instrucción: de 5,3 a ~3,3. Este lazo es mitad cargas, y las cargas siguen pagando el
+   macro de `memread` entero — la fusión quita el despacho, el PC y los ciclos por
+   instrucción, no el acceso a memoria. La extrapolación honesta para código con esta
+   mezcla es **1,5-2× sobre el volumen cubierto**; código ALU/FPU denso fusionará mejor.
+2. **El 47 % de Crazy Taxi es espera, no trabajo.** El lazo traducido es el idle del
+   juego, así que el 17,4 % de CT es real pero CT no lo necesita (ya iba a 1,5×). Los
+   guests que sí lo necesitan —los Windows CE, 0,77-0,80×— tienen bloques más largos
+   (12,25 instrucciones de media) y de trabajo real. Con 1,6× sobre el 90 % del volumen,
+   DCDoom daría ~1,5× del intérprete: **cruza 1,0× con margen**; 60 fps pediría que los
+   bloques densos fusionen mejor que este lazo de cargas, que es lo esperable.
+
+## La decisión
+
+**La línea del recompilador (o de la biblioteca de bloques traducidos por anticipado) se
+abre**, con su propio plan cuando se escriba. El paso siguiente ya estaba definido: el
+segundo prototipo con lo que un guest con MMU exige — verificar las generaciones de
+página de la búsqueda al entrar al bloque (`mmu_utlb_gen[]` y la fetch-cache existen) y
+la semántica de reejecución cuando un acceso falta a mitad de bloque — porque ahí es
+donde el 1,6× puede achicarse y ahí es donde hace falta. La infraestructura de esta
+sonda (verificación de región, cortes exactos, salida al intérprete por instrucción) es
+exactamente la que ese prototipo reutiliza.

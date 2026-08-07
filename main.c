@@ -38,6 +38,9 @@
 #ifdef DCEMU_BLOQUES
 #include "bloques.h"
 #endif
+#ifdef DCEMU_FUSION
+#include "fusion.h"
+#endif
 #include "hilo_aica.h"
 #include "ubc.h"
 #include "wdt.h"
@@ -857,6 +860,19 @@ void main_loop(void)
 				// hace falta: !excepcion_vigilar implica fpu_deshabilitada en
 				// cero, que es la unica razon por la que run() mira algo.
 				// Ver docs/rendimiento-plan.md, fase 2.1.
+#ifdef DCEMU_FUSION
+				/* El prototipo de bloques fusionados (fase 4 de
+				   rendimiento-plan-2.md). Solo con el emulador en marcha
+				   plena: la traza y el UBC ven instruccion por instruccion,
+				   asi que el lazo fusionado no corre cuando estan puestos.
+				   Si corre, PC y ciclos quedan avanzados y se cae derecho al
+				   bloque periodico, igual que tras un despacho normal. */
+				if (fusion_activa && PC == FUSION_CT_ENTRADA
+					&& DebugMode == DBG_RUN && !traza_activa && !ubc_activa
+					&& fusion_lazo_ct())
+					;
+				else
+#endif
 				{
 					/* Por MMU_FETCH_PUNTERO y no por get_memory_pointer, aunque
 					   aqui la MMU este siempre apagada: !excepcion_vigilar
@@ -2383,6 +2399,9 @@ int main(int argc, char *argv[])
 	excepcion_sondas_iniciar();
 #ifdef DCEMU_BLOQUES
 	bloques_iniciar();
+#endif
+#ifdef DCEMU_FUSION
+	fusion_iniciar();
 #endif
 	mmu_sondas_iniciar();
 

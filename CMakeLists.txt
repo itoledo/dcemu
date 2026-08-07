@@ -72,6 +72,12 @@ option(DCEMU_BLOQUES "Compilar el cache de bloques predecodificados (medido: no 
 # main_loop() que quedaba sin medir, y a la vez la optimizacion si rinde.
 option(DCEMU_INLINE "Despachar en linea los manejadores mas frecuentes" OFF)
 
+# El prototipo desechable de la fase 4 de docs/rendimiento-plan-2.md: el lazo
+# mas caliente de Crazy Taxi traducido a mano como C fusionado, para medir el
+# techo del recompilador con un numero de este arbol. Dentro del binario lo
+# enciende DCEMU_FUSION=1, asi el A/B corre sobre una sola imagen.
+option(DCEMU_FUSION "Compilar el prototipo de bloques fusionados (sonda)" OFF)
+
 # Optimizacion de todo el programa (/GL al compilar, /LTCG al enlazar). Es la
 # fase 1.2 de docs/rendimiento-plan.md y aqui importa mas de lo normal: este
 # arbol tiene los bucles calientes en una unidad de traduccion y las funciones
@@ -310,6 +316,11 @@ endif()
 
 if(DCEMU_INLINE)
 	target_compile_definitions(dcemu PRIVATE DCEMU_INLINE)
+endif()
+
+if(DCEMU_FUSION)
+	target_compile_definitions(dcemu PRIVATE DCEMU_FUSION)
+	target_sources(dcemu PRIVATE fusion.c)
 endif()
 
 # Release con simbolos. Los flags por omision de CMake para Release son

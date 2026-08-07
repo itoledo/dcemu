@@ -587,6 +587,18 @@ void perf_resumen(void)
 			   **instrucciones**, no por veces: ver bloque_cmp(). */
 			fprintf(stderr, "perf:   cubren el 50/90/99 %% de las instrucciones:"
 				" %lu / %lu / %lu bloques\n", n50, n90, n99);
+
+			/* Los bloques con nombre, que es lo que el prototipo de la fase 4
+			   de rendimiento-plan-2.md necesita: PC de entrada, largo medio y
+			   peso. La tabla ya quedo ordenada por instrucciones. */
+			for (i = 0; i < 16 && i < bloq_usados; i++)
+				fprintf(stderr, "perf:   bloque %2lu: PC %08lx, largo medio"
+					" %5.1f, %12llu veces, %5.2f %% de las instrucciones\n",
+					i + 1, bloq_tabla[i].pc,
+					(double) bloq_tabla[i].instr / (double) bloq_tabla[i].veces,
+					bloq_tabla[i].veces,
+					100.0 * (double) bloq_tabla[i].instr
+						  / (double) perf_bloques_instr);
 		}
 
 		/* Un bloque perdido no falsea las corridas --esas se cuentan aparte--,
