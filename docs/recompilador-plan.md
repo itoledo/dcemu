@@ -545,8 +545,48 @@ plantillas nuevas: es que al dejar de duplicar bloques se empezaron a ejercitar,
 vez, los bloques que **empiezan en la cabeza de un lazo y pliegan su rama hacia atrás como
 arista interna**. El plegado (`tr_seguir_en`) es la parte más nueva y menos ejercitada.
 
-**`DCEMU_JIT=2` no es exacto hoy**, y hasta que lo sea ningún número de velocidad de este
-camino significa nada. Está detrás de `-DDCEMU_JIT=ON` y apagado por omisión; el binario del
-árbol no lo lleva. El siguiente paso es localizar la divergencia con la palanca de bisección
-sobre el banco corto de seis segundos, que es donde ya se ve (803 037 594 contra
-803 038 036).
+### La divergencia, localizada: traducir tiene efecto colateral
+
+La bisección con `DCEMU_JIT_PLANTILLAS=N` sobre el banco corto de seis segundos, contra la
+cuenta conocida (803 038 036):
+
+| N | qué agrega | cuenta |
+| --- | --- | --- |
+| 3 | `NOP`, `MOV #imm`, `MOV Rm,Rn` — **ningún acceso a memoria** | 803 038 036 ✓ |
+| 5 | las dos primeras lecturas | 803 038 433 |
+| 7 y arriba | todo lo demás | 803 037 883 |
+
+O sea: **aparece con el primer acceso a memoria**, no con las ramas.
+
+Antes de acusar a una plantilla hubo que descartar algo más básico, y ahí salió un hallazgo
+suelto: **`DCEMU_SIN_CACHE_MMU=1` cambia la cuenta del intérprete** (803 037 786 contra
+803 038 036). Ese interruptor debería ser semánticamente transparente — apaga cachés — y es
+el que la rama usa para su A/B. Con una palanca de velocidad de verdad neutra
+(`--captura-gl`, que cuesta 40 % de tiempo real) la cuenta **no se mueve** en cuatro
+corridas, así que el banco es determinista y no depende del reloj: el que cambia la
+ejecución es el interruptor. Queda anotado como pendiente propio.
+
+Y la causa en el JIT, que es de la familia que este árbol conoce: **algo que hace trabajo de
+más sin decirlo**.
+
+> El camino rápido con MMU emite la traducción en línea, y **traducir tiene efecto
+> colateral**: avanza `MMUCR.URC`. Si después la zona resulta no tener base directa
+> —registros, PVR, GD-ROM, AICA, colas de almacenamiento— el acceso caía al ayudante de
+> siempre, que **traduce otra vez**. URC avanzaba dos veces, y de URC depende qué entrada de
+> la UTLB reemplaza el `LDTLB` del guest: su camino de ejecución.
+
+Los bloques escritos a mano de la fase 0 no lo mostraron nunca porque sólo tocan RAM plana
+—la textura, el mapa de color y el framebuffer—; el traductor toca de todo. El arreglo es un
+segundo camino lento que entra por la **dirección física** (`memread_fisico`/
+`memwrite_fisico`, con sus watchpoints), sin volver a traducir: la alineación y el UBC ya los
+comprobó el camino rápido, así que lo único que faltaba era el despacho por zona.
+
+### Con eso, el traductor es exacto y cubre la mitad
+
+| guest | instrucciones | cuadros | escenas | captura | cobertura |
+| --- | --- | --- | --- | --- | --- |
+| DCDoom, 35 s | 5 433 038 875 | 1482 | 977 | `198B396F…` | **51,8 %** |
+| Crazy Taxi, 60 s | 7 571 150 058 | 3051 | 3044 | `95FC0052…` | **67,1 %** |
+
+Y el contador que delataba el error también vuelve al dígito: **2 018 173 538 traducciones,
+64,4 % ya resueltas, 850 557 faltas**, lo mismo que el intérprete.

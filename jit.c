@@ -99,6 +99,10 @@ typedef struct
 	void *					h_leer8s;
 	void *					h_escribir8;
 	void *					h_escribir32;
+	void *					h_leer32f;
+	void *					h_leer8sf;
+	void *					h_escribir8f;
+	void *					h_escribir32f;
 	/* PTEH y MMUCR viven adentro de regmem, que es un calloc de 16 MB: en
 	   Windows una reserva de ese tamano no sale del monton chico y puede caer
 	   a terabytes de la imagen, con lo cual no hay desplazamiento de 32 bits
@@ -165,6 +169,54 @@ void jit_escribir32(DWORD dir, DWORD valor)
 	DWORD v = valor;
 
 	WriteMemoryL(dir, &v);
+}
+
+/*
+	Los mismos, pero **con la direccion ya traducida**.
+
+	Existen por un error que costo la exactitud del traductor. El camino rapido
+	con MMU emite la traduccion en linea, y traducir **tiene efecto colateral**:
+	avanza MMUCR.URC, que es lo que decide que entrada de la UTLB reemplaza el
+	LDTLB del guest, o sea su camino de ejecucion. Si despues de traducir la
+	zona resulta no tener base directa --registros, PVR, GD-ROM, AICA, colas de
+	almacenamiento-- y se cae al ayudante de siempre, ese vuelve a traducir y
+	**URC avanza dos veces**. Los bloques escritos a mano de la fase 0 no lo
+	mostraron porque solo tocan RAM plana; el traductor toca de todo.
+
+	La alineacion y el UBC de operandos ya los comprobo el camino rapido, asi
+	que lo unico que falta es el despacho por zona, que es justo lo que hacen
+	memread_fisico()/memwrite_fisico() -- con sus watchpoints incluidos.
+*/
+DWORD jit_leer32_fis(DWORD fisica)
+{
+	DWORD v;
+
+	memread_fisico(fisica, &v, sizeof(DWORD));
+
+	return v;
+}
+
+DWORD jit_leer8s_fis(DWORD fisica)
+{
+	BYTE b;
+
+	memread_fisico(fisica, &b, sizeof(BYTE));
+
+	return (DWORD) SignExtend8(b);
+}
+
+void jit_escribir8_fis(DWORD fisica, DWORD valor)
+{
+	BYTE b = (BYTE) (valor & 0xFF);
+
+	memwrite_fisico(fisica, &b, sizeof(BYTE));
+}
+
+void jit_escribir32_fis(DWORD fisica, DWORD valor)
+{
+	DWORD v = valor;
+
+	memwrite_fisico(fisica, &v, sizeof(DWORD));
 }
 
 /* ------------------------------------------------------------------------ */
@@ -419,6 +471,10 @@ static int D(const void * p)
 #define D_LEER8S	D(&jit_estado.h_leer8s)
 #define D_ESCR8		D(&jit_estado.h_escribir8)
 #define D_ESCR32	D(&jit_estado.h_escribir32)
+#define D_LEER32F	D(&jit_estado.h_leer32f)
+#define D_LEER8SF	D(&jit_estado.h_leer8sf)
+#define D_ESCR8F	D(&jit_estado.h_escribir8f)
+#define D_ESCR32F	D(&jit_estado.h_escribir32f)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
@@ -561,13 +617,20 @@ static void gen_llamar(jit_gen * g, const void * destino, int disp_tabla)
 	predichas y sobre lineas de cache calientes; el macro de mem.h hace las
 	mismas dos ultimas.
 */
+/* El valor de una escritura se materializa por callback; la definicion vive
+   junto a gen_escribir(), pero gen_rapido_fin() ya la necesita. */
+typedef void (* jit_valor_f)(jit_gen * g, void * ctx, x64_reg dst);
+
 typedef struct
 {
-	x64_parche	lento[12];
+	x64_parche	lento[12];		/* al ayudante que traduce (direccion virtual) */
 	int			n_lento;
-	int			corto;		/* los saltos al camino lento caben en rel8 */
-	x64_reg		fis;		/* que registro lleva la direccion fisica */
+	x64_parche	lento_fis[2];	/* al ayudante que NO traduce (ya es fisica) */
+	int			n_lento_fis;
+	int			corto;			/* los saltos al camino lento caben en rel8 */
+	x64_reg		fis;			/* que registro lleva la direccion fisica */
 	x64_parche	listo;
+	x64_parche	listo2;
 } jit_acceso;
 
 /* Los tres modos de un acceso. PLANO y MMU son politica, no correccion: el
@@ -731,7 +794,8 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 	int alineacion, int modo)
 {
-	a->n_lento = 0;
+	a->n_lento     = 0;
+	a->n_lento_fis = 0;
 	a->corto   = (modo != JIT_ACC_MMU);		/* con la traduccion no cabe rel8 */
 	a->fis     = (modo == JIT_ACC_MMU) ? X64_R11 : X64_RCX;
 
@@ -757,21 +821,57 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 	jit_x64_shr_ri(&g->e, X64_RAX, 24);
 	jit_x64_mov64_rm_idx(&g->e, X64_RAX, CTX, X64_RAX, 8, disp_tabla);
 	jit_x64_test64_rr(&g->e, X64_RAX, X64_RAX);
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
+
+	/* Aca la traduccion ya corrio y ya avanzo URC: volver por el ayudante que
+	   traduce la avanzaria de nuevo, asi que esta salida usa la fisica. Sin
+	   MMU no hay traduccion y da lo mismo, asi que va por el camino comun. */
+	if (modo == JIT_ACC_MMU)
+		a->lento_fis[a->n_lento_fis++] = gen_guarda(g, a, X64_E);
+	else
+		a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
 
 	jit_x64_mov_rr(&g->e, X64_R8, a->fis);
 	jit_x64_and_ri(&g->e, X64_R8, 0x00FFFFFF);
 }
 
-/* Cierra el camino rapido y abre el lento. */
-static void gen_rapido_fin(jit_gen * g, jit_acceso * a)
+/*
+	Cierra el camino rapido y abre los lentos: primero el fisico --la
+	traduccion ya corrio, hay que entrar por la zona sin volver a traducir-- y
+	despues el virtual, que es el macro entero.
+*/
+static void gen_rapido_fin(jit_gen * g, jit_acceso * a, int disp_fis,
+	const void * ayudante_fis, jit_valor_f val, void * ctx)
 {
 	int i;
 
-	a->listo = jit_x64_jmp(&g->e);
+	a->listo  = jit_x64_jmp(&g->e);
+	a->listo2 = a->listo;
+	a->listo2.sitio = NULL;
+
+	if (a->n_lento_fis)
+	{
+		for (i = 0; i < a->n_lento_fis; i++)
+			jit_x64_fijar(&g->e, a->lento_fis[i]);
+
+		jit_x64_mov_rr(&g->e, X64_RCX, a->fis);
+
+		if (val != NULL)
+			val(g, ctx, X64_RDX);
+
+		gen_llamar(g, ayudante_fis, disp_fis);
+		a->listo2 = jit_x64_jmp(&g->e);
+	}
 
 	for (i = 0; i < a->n_lento; i++)
 		jit_x64_fijar(&g->e, a->lento[i]);
+}
+
+static void gen_acceso_cerrar(jit_gen * g, jit_acceso * a)
+{
+	jit_x64_fijar(&g->e, a->listo);
+
+	if (a->listo2.sitio != NULL)
+		jit_x64_fijar(&g->e, a->listo2);
 }
 
 /*
@@ -788,13 +888,14 @@ static void gen_leer32(jit_gen * g, x64_reg dst, int modo)
 	{
 		gen_rapido_inicio(g, &a, D_BASE_LEC, 3, modo);
 		jit_x64_mov_rm_idx(&g->e, X64_RAX, X64_RAX, X64_R8, 1, 0);
-		gen_rapido_fin(g, &a);
+		gen_rapido_fin(g, &a, D_LEER32F, (const void *) jit_leer32_fis,
+			NULL, NULL);
 	}
 
 	gen_llamar(g, (const void *) jit_leer32, D_LEER32);
 
 	if (modo != JIT_ACC_LENTO)
-		jit_x64_fijar(&g->e, a.listo);
+		gen_acceso_cerrar(g, &a);
 
 	if (dst != X64_RAX)
 		jit_x64_mov_rr(&g->e, dst, X64_RAX);
@@ -808,13 +909,14 @@ static void gen_leer8s(jit_gen * g, x64_reg dst, int modo)
 	{
 		gen_rapido_inicio(g, &a, D_BASE_LEC, 0, modo);
 		jit_x64_movsx_b_rm_idx(&g->e, X64_RAX, X64_RAX, X64_R8, 1, 0);
-		gen_rapido_fin(g, &a);
+		gen_rapido_fin(g, &a, D_LEER8SF, (const void *) jit_leer8s_fis,
+			NULL, NULL);
 	}
 
 	gen_llamar(g, (const void *) jit_leer8s, D_LEER8S);
 
 	if (modo != JIT_ACC_LENTO)
-		jit_x64_fijar(&g->e, a.listo);
+		gen_acceso_cerrar(g, &a);
 
 	if (dst != X64_RAX)
 		jit_x64_mov_rr(&g->e, dst, X64_RAX);
@@ -826,8 +928,6 @@ static void gen_leer8s(jit_gen * g, x64_reg dst, int modo)
 	anfitrion, y en los traducidos puede vivir en el contexto. Va al final
 	porque la traduccion de la MMU usa EDX para el avance de URC.
 */
-typedef void (* jit_valor_f)(jit_gen * g, void * ctx, x64_reg dst);
-
 /* El callback de la fase 0: el valor esta en un registro no volatil. */
 static void jit_valor_reg(jit_gen * g, void * ctx, x64_reg dst)
 {
@@ -852,7 +952,11 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 		else
 			jit_x64_mov8_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
 
-		gen_rapido_fin(g, &a);
+		gen_rapido_fin(g, &a,
+			ancho == 4 ? D_ESCR32F : D_ESCR8F,
+			ancho == 4 ? (const void *) jit_escribir32_fis
+					   : (const void *) jit_escribir8_fis,
+			val, ctx);
 	}
 
 	val(g, ctx, X64_RDX);
@@ -861,7 +965,7 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 		ancho == 4 ? D_ESCR32 : D_ESCR8);
 
 	if (modo != JIT_ACC_LENTO)
-		jit_x64_fijar(&g->e, a.listo);
+		gen_acceso_cerrar(g, &a);
 }
 
 static void gen_escribir8_reg(jit_gen * g, x64_reg valor, int modo)
@@ -3014,6 +3118,10 @@ void jit_iniciar(void)
 	jit_estado.h_leer8s     = (void *) jit_leer8s;
 	jit_estado.h_escribir8  = (void *) jit_escribir8;
 	jit_estado.h_escribir32 = (void *) jit_escribir32;
+	jit_estado.h_leer32f    = (void *) jit_leer32_fis;
+	jit_estado.h_leer8sf    = (void *) jit_leer8s_fis;
+	jit_estado.h_escribir8f = (void *) jit_escribir8_fis;
+	jit_estado.h_escribir32f = (void *) jit_escribir32_fis;
 	jit_estado.p_pteh       = (void *) PTEH;
 	jit_estado.p_mmucr      = (void *) MMUCR;
 
