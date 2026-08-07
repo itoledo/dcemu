@@ -62,6 +62,15 @@ extern unsigned char jit_mapa[8192];
 void jit_iniciar(void);
 
 /*
+	El muestreo de candidatos. Se llama desde el bloque periodico de
+	main_loop() --que corre cada RELOJ_GRANO ciclos, o sea unas 130
+	instrucciones--, asi que no cuesta nada en el camino caliente. Un PC visto
+	varias veces se marca en el mapa, y la proxima vez que el despacho lo vea
+	se traduce. Sin traductor (DCEMU_JIT=1) no hace nada.
+*/
+void jit_muestrear(DWORD pc);
+
+/*
 	Corre el bloque traducido cuya entrada es `pc`. Devuelve 1 si corrio (PC,
 	ciclos y registros ya avanzados: main_loop() sigue derecho al bloque
 	periodico) y 0 si no hay bloque, o si la verificacion de sus palabras

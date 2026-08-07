@@ -96,6 +96,8 @@ void jit_x64_mov_rm_idx  (x64_emisor * e, x64_reg dst, x64_reg base,
                           x64_reg indice, int escala, int disp);
 void jit_x64_mov64_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,
                           x64_reg indice, int escala, int disp);
+void jit_x64_mov_mr_idx  (x64_emisor * e, x64_reg base, x64_reg indice,
+                          int escala, int disp, x64_reg src);
 void jit_x64_mov8_mr_idx (x64_emisor * e, x64_reg base, x64_reg indice,
                           int escala, int disp, x64_reg src);
 void jit_x64_movsx_b_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,

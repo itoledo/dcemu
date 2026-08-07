@@ -386,12 +386,11 @@ esta fase ya mostró que las estimaciones a ojo sobre este bucle fallan: la espe
 
 ---
 
-# La fase 1, empezada: el diseño y la mesa puesta (2026-08-07)
+# La fase 1: el traductor automático anda, y es invisible (2026-08-07)
 
-**Estado: no implementada.** Lo que sigue son las decisiones ya tomadas y el material ya
-verificado, escrito antes de escribir el traductor para que la próxima sesión no lo
-re-derive. Lo único que entró al árbol es la **familia ALU generalizada del emisor**, que es
-lo que las plantillas necesitan y que se prueba sola.
+**Estado: el traductor existe y ejecuta idéntico al dígito en los dos guests. La cobertura
+es la que queda por comprar.** Lo que sigue son las decisiones tomadas, el material
+verificado y lo que la primera corrida midió.
 
 ## Lo que se generalizó en el emisor
 
@@ -460,3 +459,58 @@ entero con estas plantillas y sin ninguna rama con ranura, así que **la traducc
 tiene que dar los mismos dígitos que la manual**: 5 433 038 875 instrucciones, 1482 cuadros,
 `198B396F…` y los contadores de traducción de la MMU. El de Crazy Taxi necesita antes la
 guarda de destino visto para su `JSR`→`RTS`, así que no sirve de oráculo todavía.
+
+## Lo que la primera corrida dijo
+
+`DCEMU_JIT=2` traduce; `DCEMU_JIT=1` sigue corriendo los dos bloques escritos a mano de la
+fase 0, en el mismo binario, como oráculo.
+
+**La corrección está**: con el traductor puesto, DCDoom da **5 433 038 875 instrucciones,
+1482 cuadros y `198B396F…`**, y Crazy Taxi **7 571 150 058, 3051 cuadros, 3044 escenas, 1003
+tiras y `95FC0052…`** — los mismos dígitos y las mismas capturas byte a byte que el
+intérprete. Con 29 plantillas, asignación de registros por bloque, plegado de ramas
+internas, muestreo, crecimiento hacia atrás y verificación por entrada.
+
+**La cobertura no.** Los bloques salen de 1 a 2,4 instrucciones y cubren el 0,2 % de DCDoom.
+El censo dice exactamente por qué, que es para lo que existe:
+
+| palabra | veces que cortó un bloque | qué es |
+| --- | --- | --- |
+| `03AE`, `0636`, `0126` | 258 k cada una | `MOV.L` con índice `R0` (`movl27`, `movl24`) |
+| `8DC1`, `8D0D` | 135 k | `BT/S` |
+| `AFF3` | 93 k | `BRA` |
+| `6274` | 93 k | `MOV.B @Rm+,Rn` |
+| `000B` | 67 k | `RTS` |
+| `880A` | 49 k | `CMP/EQ #imm,R0` |
+| `644D`, `9173`, `4C00` | 32-35 k | `EXTU.W`, `MOV.W @(d,PC),Rn`, `SHLL` |
+
+O sea: **las tres formas indexadas por `R0` y las ramas con ranura**. Ninguna sorpresa, y
+ninguna adivinada — la lista salió de la corrida.
+
+## Los dos errores que costó, y los dos valen la pena escribir
+
+1. **La ranura de un `BF/S` se emite adentro del camino que toma, y ahí no hay
+   sincronización previa.** Si tocara memoria, una falta saldría por `longjmp` con el PC de
+   la rama y no el de la ranura, y el guest reejecutaría desde el lugar equivocado. Ahora un
+   `BF/S` cuya ranura acceda a memoria termina el bloque antes de él.
+2. **El crecimiento hacia atrás registra el bloque en la cabeza del lazo, que no es el PC que
+   se pidió** — y correrlo igual es ejecutar desde otro lado. Es el que dio **616
+   instrucciones de más sobre 803 millones**, con la captura y los cuadros idénticos: otra
+   vez la forma de fallo que solo se ve en el contador. Ahora el bloque queda traducido y esa
+   instrucción la hace el intérprete; el bloque se encuentra solo cuando el guest llega a su
+   entrada.
+
+> Los dos se detectaron con una corrida de seis segundos emulados contra una cuenta conocida.
+> Ese es el bucle de trabajo del traductor: no hace falta el banco entero para saber que una
+> plantilla está mal.
+
+## Lo que sigue, en orden
+
+1. **Las plantillas que el censo nombra.** Las tres `MOV.L` indexadas por `R0` primero: 775 k
+   cortes entre las tres.
+2. **Las ramas con ranura** (`BT/S`, `BRA`, `BSR`, `JMP`, `JSR`, `RTS`). Hoy terminan el
+   bloque, y por eso los bloques salen de dos instrucciones. Es lo que más cobertura compra.
+3. **El índice de bloques.** Con 4096 bloques hay ~4000 colisiones de mapeo directo: la tabla
+   por `(PC>>1) & 0xFFFF` se queda corta y hay que asociarla o agrandarla.
+4. **Recién ahí, medir.** Con bloques de dos instrucciones el despacho domina y cualquier
+   número de velocidad hoy mediría el andamiaje, no la traducción.

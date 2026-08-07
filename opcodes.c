@@ -572,3 +572,19 @@ void initopcodes()
 			&& manejador_sin_aborto(f));
 	}
 }
+/*
+	El mnemonico de una codificacion. Solo para diagnostico: el censo del
+	traductor lo usa para que su lista de "lo que corto bloques" se lea sin
+	tener que buscar la fila a mano. Recorre opcodes[] porque no hace falta
+	que sea rapido -- se llama al salir, doce veces.
+*/
+const char * opcodes_mnemonico(WORD instr)
+{
+	int i;
+
+	for (i = 0; opcodes[i].funcion != NULL; i++)
+		if ((instr & opcodes[i].mask) == opcodes[i].op)
+			return opcodes[i].opdesc;
+
+	return "?";
+}

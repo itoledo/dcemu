@@ -1064,6 +1064,14 @@ void main_loop(void)
 				reloj_total += ciclos;
 				intc_sh4_reintentar = 0;
 
+#ifdef DCEMU_JIT
+				/* De donde salen los candidatos del traductor. Aqui y no en el
+				   bucle de instrucciones: este bloque corre cada RELOJ_GRANO
+				   ciclos --unas 130 instrucciones-- asi que muestrear no
+				   cuesta nada en el camino caliente. Ver jit.h. */
+				jit_muestrear(PC);
+#endif
+
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan
 				// su propio resto, cada uno con su divisor. Ninguno entrega su
 				// interrupcion: solo dejan su bandera puesta.

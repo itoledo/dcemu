@@ -55,6 +55,7 @@ extern oplist_t oplist_pr1_sz0[65536];
 extern oplist_t oplist_pr1_sz1[65536];
 extern opcode_f * opfuncion[];
 
+
 #define OP_DESPACHAR(instr)			opfuncion[oplist[instr]](instr)
 #define OP_HANDLER(tabla, instr)	(opfuncion[(tabla)[instr]])
 #else
@@ -344,5 +345,10 @@ opcode_log_f OP_T_XMTRX_FVN;
    solo tipo hacia que disasm() resolviera todo con la formula del long y
    nombrara un literal que no era, lo que cuesta caro leyendo el boot ROM. */
 #define OP_T_AT_DISP_PC_RN_W	111	// @(disp, PC), Rn -- forma word: disp*2 sobre el PC
+
+/* El mnemonico de una codificacion, buscando en opcodes[]. Solo para
+   diagnostico -- el censo del traductor del JIT lo usa para que su lista de
+   "lo que corto bloques" se lea sin buscar la fila a mano. */
+const char * opcodes_mnemonico(WORD instr);
 
 #endif // _OPCODES_H_

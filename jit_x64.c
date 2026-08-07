@@ -234,6 +234,14 @@ void jit_x64_mov64_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,
 	modrm_m_idx(e, dst, base, indice, escala, disp);
 }
 
+void jit_x64_mov_mr_idx(x64_emisor * e, x64_reg base, x64_reg indice,
+	int escala, int disp, x64_reg src)
+{
+	rex_x(e, 0, src, indice, base, 0);
+	b1(e, 0x89);				/* MOV r/m32, r32 */
+	modrm_m_idx(e, src, base, indice, escala, disp);
+}
+
 void jit_x64_mov8_mr_idx(x64_emisor * e, x64_reg base, x64_reg indice,
 	int escala, int disp, x64_reg src)
 {

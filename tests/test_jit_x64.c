@@ -317,6 +317,10 @@ static void el_acceso_por_tabla_indexada(void)
 	jit_x64_mov8_mr_idx(&e, X64_RAX, X64_R8, 1, 0, X64_R13);
 	ESPERAR_EMITIDO(0x46, 0x88, 0x2C, 0x00);
 
+	arrancar();									/* mov [rax+r8], edx */
+	jit_x64_mov_mr_idx(&e, X64_RAX, X64_R8, 1, 0, X64_RDX);
+	ESPERAR_EMITIDO(0x42, 0x89, 0x14, 0x00);
+
 	arrancar();
 	jit_x64_test_ri8(&e, X64_RCX, 3);			/* test cl, 3 */
 	ESPERAR_EMITIDO(0xF6, 0xC1, 0x03);

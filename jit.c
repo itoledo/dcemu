@@ -61,6 +61,16 @@
 #include "perf.h"
 #include "jit_x64.h"
 
+/* Los manejadores reales, que es de donde las plantillas copian y contra
+   quienes se identifican. */
+#include "opcodes.h"
+#include "mov.h"
+#include "arith.h"
+#include "logic.h"
+#include "shift.h"
+#include "branch.h"
+#include "syscontrol.h"
+
 /* El emisor produce x86-64 y el contexto se direcciona por desplazamiento, asi
    que estas dos suposiciones son parte del contrato y no del ambiente. */
 typedef char jit_assert_64[(sizeof(void *) == 8) ? 1 : -1];
@@ -88,6 +98,7 @@ typedef struct
 	void *					h_leer32;
 	void *					h_leer8s;
 	void *					h_escribir8;
+	void *					h_escribir32;
 	/* PTEH y MMUCR viven adentro de regmem, que es un calloc de 16 MB: en
 	   Windows una reserva de ese tamano no sale del monton chico y puede caer
 	   a terabytes de la imagen, con lo cual no hay desplazamiento de 32 bits
@@ -149,13 +160,20 @@ void jit_escribir8(DWORD dir, DWORD valor)
 	WriteMemoryB(dir, &b);
 }
 
+void jit_escribir32(DWORD dir, DWORD valor)
+{
+	DWORD v = valor;
+
+	WriteMemoryL(dir, &v);
+}
+
 /* ------------------------------------------------------------------------ */
 /* El arena                                                                 */
 /* ------------------------------------------------------------------------ */
 
-/* Fase 0: dos bloques. El arena de 16 MB del plan llega con el traductor. */
-#define JIT_ARENA_TAM		(256u * 1024u)
-#define JIT_MAX_BLOQUES		8
+#define JIT_ARENA_TAM		(16u * 1024u * 1024u)
+#define JIT_MAX_BLOQUES		4096
+#define JIT_MAX_INSTR		64
 
 static unsigned char *	jit_arena     = NULL;
 static unsigned char *	jit_codigo    = NULL;	/* donde empieza el codigo */
@@ -172,10 +190,22 @@ typedef struct
 	const DWORD *	extra_dir;
 	const WORD *	extra_palabra;
 	int				n_extra;
+	/* Con que estado de la MMU se emitio: decide si sus accesos llevan la
+	   traduccion en linea o la forma plana, asi que si cambia el bloque no
+	   corre. En los escritos a mano es -1, "no importa". */
+	int				mmu;
+	WORD			copia[JIT_MAX_INSTR];	/* solo los traducidos */
+	unsigned long long veces;
 } jit_bloque;
 
 static jit_bloque	jit_bloques[JIT_MAX_BLOQUES];
 static int			jit_n_bloques = 0;
+
+/* Mapeo directo por PC: el mapa de bits dice "hay algo", esto dice que. Una
+   colision reemplaza, que es lo que hace que dos PC calientes que aliasan no
+   se turnen para siempre; el contador de reemplazos lo vigila. */
+static short				jit_indice[0x10000];
+static unsigned long long	jit_colisiones = 0;
 
 static void * jit_arena_reservar(unsigned tam)
 {
@@ -211,6 +241,7 @@ typedef struct
 
 static RUNTIME_FUNCTION *	jit_tabla_rt = NULL;
 static unsigned char *		jit_unwind   = NULL;
+static int					jit_unwind_puesto = 0;
 
 /*
 	UNWIND_INFO a mano: version 1, sin banderas, sin registro de marco, y los
@@ -256,6 +287,34 @@ static void jit_unwind_armar(unsigned char * ui, const jit_marco * m,
 
 #endif /* _WIN32 */
 
+/*
+	La tabla de funciones del bloque recien emitido. Se registra bloque por
+	bloque --RtlAddFunctionTable acepta varias tablas-- porque con el traductor
+	los bloques nacen a lo largo de la corrida y no todos al arrancar. Con
+	cientos de bloques lo que corresponde es RtlInstallFunctionTableCallback.
+*/
+static void jit_registrar_marco(const jit_bloque * b, unsigned largo)
+{
+#ifdef _WIN32
+	int i = (int) (b - jit_bloques);
+	RUNTIME_FUNCTION * rf = &jit_tabla_rt[i];
+
+	rf->BeginAddress      = (DWORD) ((unsigned char *) b->codigo - jit_arena);
+	rf->EndAddress        = rf->BeginAddress + largo;
+	rf->UnwindInfoAddress = (DWORD) (jit_unwind - jit_arena);
+
+	if (jit_unwind_puesto)
+		RtlAddFunctionTable(rf, 1, (DWORD64) (size_t) jit_arena);
+#else
+	(void) b; (void) largo;
+#endif
+}
+
+/* El prologo es byte a byte el mismo en todos los bloques, porque comparten la
+   informacion de desenrollado. Se mide una vez al arrancar. */
+static jit_marco	jit_marco_comun;
+static int			jit_marco_visto = 0;
+
 /* ------------------------------------------------------------------------ */
 /* Los desplazamientos desde rbx                                            */
 /* ------------------------------------------------------------------------ */
@@ -298,6 +357,7 @@ static int D(const void * p)
 #define D_LEER32	D(&jit_estado.h_leer32)
 #define D_LEER8S	D(&jit_estado.h_leer8s)
 #define D_ESCR8		D(&jit_estado.h_escribir8)
+#define D_ESCR32	D(&jit_estado.h_escribir32)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
@@ -699,24 +759,55 @@ static void gen_leer8s(jit_gen * g, x64_reg dst, int modo)
 		jit_x64_mov_rr(&g->e, dst, X64_RAX);
 }
 
-/* El valor viene en `valor`, que tiene que ser no volatil: en el camino lento
-   se copia a EDX recien antes de la llamada. */
-static void gen_escribir8(jit_gen * g, x64_reg valor, int modo)
+/*
+	El valor de una escritura se materializa **en el ultimo momento**, en EDX, y
+	por callback: en los bloques escritos a mano vive en un registro del
+	anfitrion, y en los traducidos puede vivir en el contexto. Va al final
+	porque la traduccion de la MMU usa EDX para el avance de URC.
+*/
+typedef void (* jit_valor_f)(jit_gen * g, void * ctx, x64_reg dst);
+
+/* El callback de la fase 0: el valor esta en un registro no volatil. */
+static void jit_valor_reg(jit_gen * g, void * ctx, x64_reg dst)
+{
+	x64_reg fuente = *(const x64_reg *) ctx;
+
+	if (fuente != dst)
+		jit_x64_mov_rr(&g->e, dst, fuente);
+}
+
+static void gen_escribir(jit_gen * g, int modo, int ancho,
+	jit_valor_f val, void * ctx)
 {
 	jit_acceso a;
 
 	if (modo != JIT_ACC_LENTO)
 	{
-		gen_rapido_inicio(g, &a, D_BASE_ESC, 0, modo);
-		jit_x64_mov8_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, valor);
+		gen_rapido_inicio(g, &a, D_BASE_ESC, ancho == 4 ? 3 : 0, modo);
+		val(g, ctx, X64_RDX);
+
+		if (ancho == 4)
+			jit_x64_mov_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
+		else
+			jit_x64_mov8_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
+
 		gen_rapido_fin(g, &a);
 	}
 
-	jit_x64_mov_rr(&g->e, X64_RDX, valor);
-	gen_llamar(g, (const void *) jit_escribir8, D_ESCR8);
+	val(g, ctx, X64_RDX);
+	gen_llamar(g, ancho == 4 ? (const void *) jit_escribir32
+							 : (const void *) jit_escribir8,
+		ancho == 4 ? D_ESCR32 : D_ESCR8);
 
 	if (modo != JIT_ACC_LENTO)
 		jit_x64_fijar(&g->e, a.listo);
+}
+
+static void gen_escribir8_reg(jit_gen * g, x64_reg valor, int modo)
+{
+	x64_reg v = valor;
+
+	gen_escribir(g, modo, 1, jit_valor_reg, &v);
 }
 
 static void gen_salir_en(jit_gen * g, DWORD pc_sig)
@@ -1056,7 +1147,7 @@ static void gen_bloque_ce(jit_gen * g)
 	   la primera escritura de la pagina, y por eso el volcado va antes. */
 	gen_sync(g, 0x0002EF52ul);
 	jit_x64_mov_rr(&g->e, X64_RCX, A(4));
-	gen_escribir8(g, A(2), JIT_ACC_MMU);
+	gen_escribir8_reg(g, A(2), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF54ul);
 
@@ -1101,18 +1192,1092 @@ static void gen_bloque_ce(jit_gen * g)
 	gen_epilogo(g);
 }
 
+
+/* ======================================================================== */
+/* El traductor automatico (fase 1 de docs/recompilador-plan.md)            */
+/* ======================================================================== */
+
+/*
+	Traduce por **identidad de manejador**: cada palabra se resuelve por
+	OP_HANDLER(oplist, instr) -- la expansion real de opcodes[] -- y se emite
+	con la plantilla de ESE manejador, con los ciclos copiados de su cuerpo. No
+	hay un segundo decodificador que pueda divergir del primero, y una fila mal
+	puesta en la tabla es una plantilla que no se usa, nunca una instruccion mal
+	decodificada. Una palabra sin plantilla termina el bloque y se anota en el
+	censo: esa lista es la que dice cual escribir despues.
+
+	Se enciende con DCEMU_JIT=2. Con DCEMU_JIT=1 corren los dos bloques escritos
+	a mano de la fase 0, que siguen siendo el oraculo en el mismo binario.
+*/
+
+static void jit_marcar(DWORD pc);
+static void jit_desmarcar(DWORD pc);
+
+#define JIT_SLOTS		5
+
+/* El bloque no cruza una frontera de 1 KB, que es la pagina mas chica del
+   SH-4: asi un solo puntero de busqueda cubre todas sus palabras y la
+   verificacion por entrada no puede leer de otra pagina, sea cual sea el
+   tamano con el que el guest la haya mapeado. */
+#define JIT_LIMITE_PAG	0x400u
+
+typedef struct jit_traduccion jit_traduccion;
+typedef struct jit_plantilla jit_plantilla;
+
+struct jit_traduccion
+{
+	DWORD					pc0;
+	WORD					palabra[JIT_MAX_INSTR];
+	const jit_plantilla *	pl[JIT_MAX_INSTR];
+	int						n;
+	int						modo;			/* JIT_ACC_PLANO o JIT_ACC_MMU */
+
+	signed char				slot[16];		/* indice en jit_a[], o -1 */
+
+	unsigned char *			etiqueta[JIT_MAX_INSTR];
+	x64_parche				adelante[JIT_MAX_INSTR];
+	int						adelante_i[JIT_MAX_INSTR];
+	int						n_adelante;
+};
+
+typedef void (* jit_emitir_f)(jit_gen * g, jit_traduccion * t, int i);
+
+struct jit_plantilla
+{
+	opcode_f *		f;
+	const char *	nombre;
+	int				ciclos;
+	unsigned char	accede;		/* toca memoria: hay que sincronizar antes */
+	unsigned char	rama;		/* decide el flujo por su cuenta */
+	jit_emitir_f	emitir;
+};
+
+#define TN(w)	(((w) >> 8) & 0x0F)
+#define TM(w)	(((w) >> 4) & 0x0F)
+
+/* ------------------------------------------------------------------------ */
+/* Acceso a los registros del guest, cacheados o no                         */
+/* ------------------------------------------------------------------------ */
+
+static int tr_h(const jit_traduccion * t, int n)
+{
+	return (t->slot[n] < 0) ? -1 : (int) jit_a[t->slot[n]];
+}
+
+static void tr_cargar(jit_gen * g, jit_traduccion * t, x64_reg dst, int n)
+{
+	int hn = tr_h(t, n);
+
+	if (hn < 0)
+		jit_x64_mov_rm(&g->e, dst, CTX, O_R(n));
+	else if ((x64_reg) hn != dst)
+		jit_x64_mov_rr(&g->e, dst, (x64_reg) hn);
+}
+
+static void tr_mover(jit_gen * g, jit_traduccion * t, int n, int m)
+{
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		tr_cargar(g, t, (x64_reg) hn, m);
+	else
+	{
+		tr_cargar(g, t, X64_RAX, m);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+/* R(n) op= R(m). Las tres formas de x86 evitan el rodeo por RAX cuando alguno
+   de los dos esta cacheado, que es el caso normal. */
+static void tr_alu_rr(jit_gen * g, jit_traduccion * t, x64_alu op, int n, int m)
+{
+	int hn = tr_h(t, n), hm = tr_h(t, m);
+
+	if (hn >= 0 && hm >= 0)
+		jit_x64_alu_rr(&g->e, op, (x64_reg) hn, (x64_reg) hm);
+	else if (hn >= 0)
+		jit_x64_alu_rm(&g->e, op, (x64_reg) hn, CTX, O_R(m));
+	else
+	{
+		tr_cargar(g, t, X64_RAX, m);
+		jit_x64_alu_mr(&g->e, op, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void tr_alu_ri(jit_gen * g, jit_traduccion * t, x64_alu op, int n, int imm)
+{
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_alu_ri(&g->e, op, (x64_reg) hn, imm);
+	else
+		jit_x64_alu_mi(&g->e, op, CTX, O_R(n), imm);
+}
+
+static void tr_shift(jit_gen * g, jit_traduccion * t, x64_shift op, int n, int c)
+{
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_shift_ri(&g->e, op, (x64_reg) hn, c);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_R(n));
+		jit_x64_shift_ri(&g->e, op, X64_RAX, c);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+/* ECX op= R(m), para componer una direccion. */
+static void tr_ecx_alu(jit_gen * g, jit_traduccion * t, x64_alu op, int m)
+{
+	int hm = tr_h(t, m);
+
+	if (hm >= 0)
+		jit_x64_alu_rr(&g->e, op, X64_RCX, (x64_reg) hm);
+	else
+		jit_x64_alu_rm(&g->e, op, X64_RCX, CTX, O_R(m));
+}
+
+/* El destino de una lectura, cacheado o no. */
+static void tr_leer_a(jit_gen * g, jit_traduccion * t, int n, int ancho)
+{
+	int		hn  = tr_h(t, n);
+	x64_reg dst = (hn >= 0) ? (x64_reg) hn : X64_RAX;
+
+	if (ancho == 4)
+		gen_leer32(g, dst, t->modo);
+	else
+		gen_leer8s(g, dst, t->modo);
+
+	if (hn < 0)
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+}
+
+/* El valor de una escritura: R(m) del bloque en curso. */
+typedef struct { jit_traduccion * t; int n; } jit_valor_tr;
+
+static void tr_valor(jit_gen * g, void * ctx, x64_reg dst)
+{
+	jit_valor_tr * v = (jit_valor_tr *) ctx;
+
+	tr_cargar(g, v->t, dst, v->n);
+}
+
+static void tr_escribir_de(jit_gen * g, jit_traduccion * t, int m, int ancho)
+{
+	jit_valor_tr v;
+
+	v.t = t;
+	v.n = m;
+
+	gen_escribir(g, t->modo, ancho, tr_valor, &v);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Las plantillas                                                           */
+/* ------------------------------------------------------------------------ */
+
+static void pl_nop(jit_gen * g, jit_traduccion * t, int i)
+{
+	(void) g; (void) t; (void) i;
+}
+
+static void pl_mov0(jit_gen * g, jit_traduccion * t, int i)		/* MOV #imm,Rn */
+{
+	WORD w   = t->palabra[i];
+	int  n   = TN(w);
+	int  hn  = tr_h(t, n);
+	int  imm = (int) (signed char) (w & 0xFF);
+
+	if (hn >= 0)
+		jit_x64_mov_ri(&g->e, (x64_reg) hn, (unsigned) imm);
+	else
+		jit_x64_mov_mi(&g->e, CTX, O_R(n), (unsigned) imm);
+}
+
+static void pl_mov3(jit_gen * g, jit_traduccion * t, int i)		/* MOV Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_mover(g, t, TN(w), TM(w));
+}
+
+/* MOV.L @(disp,PC),Rn -- la direccion es constante del bloque, que es uno de
+   los dos pliegues que el plan permite sin IR. El valor se sigue leyendo. */
+static void pl_movl2(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD  w   = t->palabra[i];
+	DWORD pc  = t->pc0 + (DWORD) (2 * i);
+	DWORD dir = (DWORD) (w & 0xFF) * 4 + (pc & 0xFFFFFFFCul) + 4;
+
+	jit_x64_mov_ri(&g->e, X64_RCX, dir);
+	tr_leer_a(g, t, TN(w), 4);
+}
+
+static void pl_movl9(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L @Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	tr_leer_a(g, t, TN(w), 4);
+}
+
+static void pl_movl21(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L @(d,Rm),Rn */
+{
+	WORD w = t->palabra[i];
+	int  d = (int) (w & 0x0F) * 4;
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+
+	if (d)
+		jit_x64_add_ri(&g->e, X64_RCX, d);
+
+	tr_leer_a(g, t, TN(w), 4);
+}
+
+static void pl_movb7(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B @Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	tr_leer_a(g, t, TN(w), 1);
+}
+
+static void pl_movb25(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B @(R0,Rm),Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TM(w));
+	tr_leer_a(g, t, TN(w), 1);
+}
+
+static void pl_movl6(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L Rm,@Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	tr_escribir_de(g, t, TM(w), 4);
+}
+
+static void pl_movb4(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B Rm,@Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	tr_escribir_de(g, t, TM(w), 1);
+}
+
+static void pl_add39(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_rr(g, t, X64_ADD, TN(w), TM(w));
+}
+
+static void pl_add40(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_ri(g, t, X64_ADD, TN(w), (int) (signed char) (w & 0xFF));
+}
+
+static void pl_and72(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_rr(g, t, X64_AND, TN(w), TM(w));
+}
+
+static void pl_and73(jit_gen * g, jit_traduccion * t, int i)	/* AND #imm,R0 */
+{
+	tr_alu_ri(g, t, X64_AND, 0, (int) (t->palabra[i] & 0xFF));
+}
+
+static void pl_not75(jit_gen * g, jit_traduccion * t, int i)	/* NOT Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+
+	if (hn >= 0)
+	{
+		tr_cargar(g, t, (x64_reg) hn, TM(w));
+		jit_x64_not_r(&g->e, (x64_reg) hn);
+	}
+	else
+	{
+		tr_cargar(g, t, X64_RAX, TM(w));
+		jit_x64_not_r(&g->e, X64_RAX);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void tr_cmp_t(jit_gen * g, jit_traduccion * t, int n, int m, x64_cond cc)
+{
+	int hn = tr_h(t, n), hm = tr_h(t, m);
+
+	if (hn >= 0 && hm >= 0)
+		jit_x64_cmp_rr(&g->e, (x64_reg) hn, (x64_reg) hm);
+	else if (hn >= 0)
+		jit_x64_cmp_rm(&g->e, (x64_reg) hn, CTX, O_R(m));
+	else if (hm >= 0)
+	{
+		tr_cargar(g, t, X64_RAX, n);
+		jit_x64_cmp_rr(&g->e, X64_RAX, (x64_reg) hm);
+	}
+	else
+	{
+		tr_cargar(g, t, X64_RAX, n);
+		jit_x64_cmp_rm(&g->e, X64_RAX, CTX, O_R(m));
+	}
+
+	gen_poner_t(g, cc);
+}
+
+static void pl_cmpeq44(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cmp_t(g, t, TN(w), TM(w), X64_E);
+}
+
+static void pl_cmphs45(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cmp_t(g, t, TN(w), TM(w), X64_AE);
+}
+
+static void pl_cmpge46(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cmp_t(g, t, TN(w), TM(w), X64_GE);
+}
+
+static void pl_cmphi47(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cmp_t(g, t, TN(w), TM(w), X64_A);
+}
+
+static void pl_cmpgt48(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cmp_t(g, t, TN(w), TM(w), X64_G);
+}
+
+/* TST Rm,Rn: T = ((Rn & Rm) == 0). */
+static void pl_tst80(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w), m = TM(w);
+	int  hn = tr_h(t, n), hm = tr_h(t, m);
+
+	if (n == m)
+	{
+		if (hn >= 0)
+			jit_x64_test_rr(&g->e, (x64_reg) hn, (x64_reg) hn);
+		else
+			jit_x64_cmp_mi(&g->e, CTX, O_R(n), 0);
+	}
+	else
+	{
+		tr_cargar(g, t, X64_RAX, n);
+
+		if (hm >= 0)
+			jit_x64_test_rr(&g->e, X64_RAX, (x64_reg) hm);
+		else
+		{
+			jit_x64_alu_rm(&g->e, X64_AND, X64_RAX, CTX, O_R(m));
+			jit_x64_test_rr(&g->e, X64_RAX, X64_RAX);
+		}
+	}
+
+	gen_poner_t(g, X64_E);
+}
+
+static void pl_tst81(jit_gen * g, jit_traduccion * t, int i)	/* TST #imm,R0 */
+{
+	tr_cargar(g, t, X64_RAX, 0);
+	jit_x64_test_ri(&g->e, X64_RAX, (int) (t->palabra[i] & 0xFF));
+	gen_poner_t(g, X64_E);
+}
+
+static void pl_extsw59(jit_gen * g, jit_traduccion * t, int i)	/* EXTS.W Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+	int  hm = tr_h(t, TM(w));
+
+	if (hm < 0)
+	{
+		tr_cargar(g, t, X64_RAX, TM(w));
+		hm = (int) X64_RAX;
+	}
+
+	if (hn >= 0)
+		jit_x64_movsx_w(&g->e, (x64_reg) hn, (x64_reg) hm);
+	else
+	{
+		jit_x64_movsx_w(&g->e, X64_RAX, (x64_reg) hm);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void pl_extub60(jit_gen * g, jit_traduccion * t, int i)	/* EXTU.B Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+	int  hm = tr_h(t, TM(w));
+
+	if (hm < 0)
+	{
+		tr_cargar(g, t, X64_RAX, TM(w));
+		hm = (int) X64_RAX;
+	}
+
+	if (hn >= 0)
+		jit_x64_movzx_b(&g->e, (x64_reg) hn, (x64_reg) hm);
+	else
+	{
+		jit_x64_movzx_b(&g->e, X64_RAX, (x64_reg) hm);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void pl_shll2(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_shift(g, t, X64_SHL, TN(t->palabra[i]), 2);
+}
+
+/* SHLR2 enmascara con 0x3FFFFFFF despues del corrimiento, como su cuerpo. */
+static void pl_shlr2(jit_gen * g, jit_traduccion * t, int i)
+{
+	int n = TN(t->palabra[i]);
+
+	tr_shift(g, t, X64_SHR, n, 2);
+	tr_alu_ri(g, t, X64_AND, n, 0x3FFFFFFF);
+}
+
+static void pl_shlr16(jit_gen * g, jit_traduccion * t, int i)
+{
+	int n = TN(t->palabra[i]);
+
+	tr_shift(g, t, X64_SHR, n, 16);
+	tr_alu_ri(g, t, X64_AND, n, 0x0000FFFF);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Las ramas                                                                */
+/* ------------------------------------------------------------------------ */
+
+/* Sigue en `dest`: si cae adentro del bloque se salta a su etiqueta (hacia
+   atras ya emitida, hacia adelante por parche pendiente); si no, se sale al
+   interprete. En los dos casos el corte va antes, con el PC de destino. */
+static void tr_seguir_en(jit_gen * g, jit_traduccion * t, DWORD dest)
+{
+	if (dest >= t->pc0 && dest < t->pc0 + (DWORD) (2 * t->n)
+		&& ((dest - t->pc0) & 1) == 0)
+	{
+		int j = (int) ((dest - t->pc0) / 2);
+
+		gen_corte(g, dest);
+
+		if (t->etiqueta[j] != NULL)
+			jit_x64_jmp_a(&g->e, t->etiqueta[j]);
+		else if (t->n_adelante < JIT_MAX_INSTR)
+		{
+			t->adelante_i[t->n_adelante] = j;
+			t->adelante[t->n_adelante]   = jit_x64_jmp(&g->e);
+			t->n_adelante++;
+		}
+		else
+			g->e.desborde = 1;
+
+		return;
+	}
+
+	gen_salir_en(g, dest);
+}
+
+static DWORD tr_destino8(const jit_traduccion * t, int i)
+{
+	WORD  w  = t->palabra[i];
+	DWORD pc = t->pc0 + (DWORD) (2 * i);
+
+	return (DWORD) (int) ((int) (signed char) (w & 0xFF) * 2) + pc + 4;
+}
+
+/* BF: salta si T == 0. Los dos caminos llevan su corte con el PC por donde
+   siguen, que es lo que hace que la entrega de interrupciones no se corra ni
+   un ciclo. */
+static void pl_bf(jit_gen * g, jit_traduccion * t, int i)
+{
+	x64_parche no_toma;
+
+	jit_x64_add_ri(&g->e, CYC, 2);
+	jit_x64_inc_r(&g->e, N);
+
+	jit_x64_test_mi8(&g->e, CTX, O_SR, 1);
+	no_toma = jit_x64_jcc(&g->e, X64_NE);
+	tr_seguir_en(g, t, tr_destino8(t, i));
+	jit_x64_fijar(&g->e, no_toma);
+
+	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+}
+
+/* BF/S: si toma, corre la ranura y salta; si no toma **la ranura no corre** y
+   la palabra siguiente se ejecuta despues como instruccion normal, que es la
+   que el conductor emite a continuacion. La ranura queda emitida dos veces,
+   una por camino. */
+static void pl_bfs(jit_gen * g, jit_traduccion * t, int i)
+{
+	const jit_plantilla * ranura = t->pl[i + 1];
+	x64_parche no_toma;
+
+	jit_x64_add_ri(&g->e, CYC, 2);
+	jit_x64_inc_r(&g->e, N);
+
+	jit_x64_test_mi8(&g->e, CTX, O_SR, 1);
+	no_toma = jit_x64_jcc(&g->e, X64_NE);
+
+	ranura->emitir(g, t, i + 1);
+
+	if (ranura->ciclos)
+		jit_x64_add_ri(&g->e, CYC, ranura->ciclos);
+
+	jit_x64_inc_r(&g->e, N);
+
+	tr_seguir_en(g, t, tr_destino8(t, i));
+	jit_x64_fijar(&g->e, no_toma);
+
+	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+}
+
+/* ------------------------------------------------------------------------ */
+/* La tabla de plantillas                                                   */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Una fila por manejador, con los ciclos copiados de su cuerpo. La fila no
+	repite la codificacion: el manejador se resuelve por OP_HANDLER() sobre la
+	tabla real. Los manejadores van en un arreglo aparte y en el mismo orden
+	para que la tabla se lea como una lista.
+*/
+static jit_plantilla jit_plantillas[] =
+{
+	{ NULL, "NOP",                0, 0, 0, pl_nop     },
+	{ NULL, "MOV #imm,Rn",        1, 0, 0, pl_mov0    },
+	{ NULL, "MOV Rm,Rn",          0, 0, 0, pl_mov3    },
+	{ NULL, "MOV.L @(d,PC),Rn",   2, 1, 0, pl_movl2   },
+	{ NULL, "MOV.L @Rm,Rn",       2, 1, 0, pl_movl9   },
+	{ NULL, "MOV.L Rm,@Rn",       2, 1, 0, pl_movl6   },
+	{ NULL, "MOV.L @(d,Rm),Rn",   1, 1, 0, pl_movl21  },
+	{ NULL, "MOV.B @Rm,Rn",       2, 1, 0, pl_movb7   },
+	{ NULL, "MOV.B Rm,@Rn",       2, 1, 0, pl_movb4   },
+	{ NULL, "MOV.B @(R0,Rm),Rn",  2, 1, 0, pl_movb25  },
+	{ NULL, "ADD Rm,Rn",          1, 0, 0, pl_add39   },
+	{ NULL, "ADD #imm,Rn",        1, 0, 0, pl_add40   },
+	{ NULL, "AND Rm,Rn",          1, 0, 0, pl_and72   },
+	{ NULL, "AND #imm,R0",        1, 0, 0, pl_and73   },
+	{ NULL, "NOT Rm,Rn",          1, 0, 0, pl_not75   },
+	{ NULL, "TST Rm,Rn",          1, 0, 0, pl_tst80   },
+	{ NULL, "TST #imm,R0",        1, 0, 0, pl_tst81   },
+	{ NULL, "CMP/EQ Rm,Rn",       1, 0, 0, pl_cmpeq44 },
+	{ NULL, "CMP/HS Rm,Rn",       1, 0, 0, pl_cmphs45 },
+	{ NULL, "CMP/GE Rm,Rn",       1, 0, 0, pl_cmpge46 },
+	{ NULL, "CMP/HI Rm,Rn",       1, 0, 0, pl_cmphi47 },
+	{ NULL, "CMP/GT Rm,Rn",       1, 0, 0, pl_cmpgt48 },
+	{ NULL, "EXTS.W Rm,Rn",       1, 0, 0, pl_extsw59 },
+	{ NULL, "EXTU.B Rm,Rn",       1, 0, 0, pl_extub60 },
+	{ NULL, "SHLL2 Rn",           1, 0, 0, pl_shll2   },
+	{ NULL, "SHLR2 Rn",           1, 0, 0, pl_shlr2   },
+	{ NULL, "SHLR16 Rn",          1, 0, 0, pl_shlr16  },
+	{ NULL, "BF",                 2, 0, 1, pl_bf      },
+	{ NULL, "BF/S",               2, 0, 1, pl_bfs     },
+};
+
+#define JIT_N_PLANTILLAS \
+	((int) (sizeof(jit_plantillas) / sizeof(jit_plantillas[0])))
+
+static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
+{
+	nop, mov0, mov3, movl2, movl9, movl6, movl21, movb7, movb4, movb25,
+	add39, add40, and72, and73, not75, tst80, tst81,
+	cmpeq44, cmphs45, cmpge46, cmphi47, cmpgt48, extsw59, extub60,
+	shll2, shlr2, shlr16, bf, bfs,
+};
+
+static const jit_plantilla * jit_plantilla_de(opcode_f * f)
+{
+	int i;
+
+	for (i = 0; i < JIT_N_PLANTILLAS; i++)
+		if (jit_plantillas[i].f == f)
+			return &jit_plantillas[i];
+
+	return NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* El censo de lo que corta los bloques                                     */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Sin esto la cobertura degrada en silencio, que es lo que este arbol llama
+	un tope callado. Cada palabra sin plantilla que termina un bloque se anota;
+	el resumen lista las que mas cortaron, y esa lista es la que dice cual
+	plantilla escribir despues en vez de adivinarlo.
+*/
+#define JIT_CENSO_N		48
+
+static WORD					jit_censo_op[JIT_CENSO_N];
+static unsigned long long	jit_censo_veces[JIT_CENSO_N];
+static int					jit_censo_n = 0;
+
+static void jit_censar(WORD instr)
+{
+	int i;
+
+	for (i = 0; i < jit_censo_n; i++)
+		if (jit_censo_op[i] == instr)
+		{
+			jit_censo_veces[i]++;
+			return;
+		}
+
+	if (jit_censo_n < JIT_CENSO_N)
+	{
+		jit_censo_op[jit_censo_n]    = instr;
+		jit_censo_veces[jit_censo_n] = 1;
+		jit_censo_n++;
+	}
+}
+
+/* ------------------------------------------------------------------------ */
+/* Asignacion de registros                                                  */
+/* ------------------------------------------------------------------------ */
+
+/* Cuantas veces toca cada registro del guest. Es la cuenta barata: los campos
+   n y m de cada palabra segun lo que su plantilla mira. Decide cuales cinco
+   van a registros del anfitrion, que es lo que la fase 0 hizo a mano. */
+static void tr_asignar_registros(jit_traduccion * t)
+{
+	int uso[16];
+	int i, s;
+
+	for (i = 0; i < 16; i++)
+	{
+		uso[i]     = 0;
+		t->slot[i] = -1;
+	}
+
+	for (i = 0; i < t->n; i++)
+	{
+		WORD w = t->palabra[i];
+		const jit_plantilla * p = t->pl[i];
+
+		if (p->rama || p->emitir == pl_nop)
+			continue;
+
+		if (p->emitir == pl_and73 || p->emitir == pl_tst81)
+		{
+			uso[0] += 2;
+			continue;
+		}
+
+		if (p->emitir == pl_movb25)
+			uso[0]++;
+
+		uso[TN(w)]++;
+
+		if (p->emitir != pl_mov0 && p->emitir != pl_movl2
+			&& p->emitir != pl_add40 && p->emitir != pl_shll2
+			&& p->emitir != pl_shlr2 && p->emitir != pl_shlr16)
+			uso[TM(w)]++;
+	}
+
+	for (s = 0; s < JIT_SLOTS; s++)
+	{
+		int mejor = -1, mejor_uso = 0;
+
+		for (i = 0; i < 16; i++)
+			if (t->slot[i] < 0 && uso[i] > mejor_uso)
+			{
+				mejor     = i;
+				mejor_uso = uso[i];
+			}
+
+		if (mejor < 0)
+			break;
+
+		t->slot[mejor] = (signed char) s;
+	}
+}
+
+/* ------------------------------------------------------------------------ */
+/* Prologo, sincronizacion y epilogo del traductor                          */
+/* ------------------------------------------------------------------------ */
+
+static void tr_prologo(jit_gen * g, jit_traduccion * t)
+{
+	int i;
+
+	for (i = 0; i < 8; i++)
+	{
+		jit_x64_push(&g->e, jit_empujados[i]);
+		g->marco.tras_push[i] = (unsigned char) jit_x64_largo(&g->e);
+	}
+
+	jit_x64_sub64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
+	g->marco.tras_sub = (unsigned char) jit_x64_largo(&g->e);
+	g->marco.tam      = g->marco.tras_sub;
+
+	jit_x64_mov64_ri(&g->e, CTX, (unsigned long long) (size_t) &core.context);
+	jit_x64_mov_rm(&g->e, CYC, CTX, O_CYC);
+	jit_x64_xor_rr(&g->e, N, N);
+
+	for (i = 0; i < 16; i++)
+		if (t->slot[i] >= 0)
+			jit_x64_mov_rm(&g->e, jit_a[t->slot[i]], CTX, O_R(i));
+}
+
+static void tr_volcar_regs(jit_gen * g, jit_traduccion * t)
+{
+	int i;
+
+	for (i = 0; i < 16; i++)
+		if (t->slot[i] >= 0)
+			jit_x64_mov_mr(&g->e, CTX, O_R(i), jit_a[t->slot[i]]);
+
+	jit_x64_mov_mr(&g->e, CTX, O_CYC, CYC);
+}
+
+static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k)
+{
+	tr_volcar_regs(g, t);
+	jit_x64_mov_mi(&g->e, CTX, O_PC, pc_k);
+	jit_x64_inc_r(&g->e, N);
+	gen_volcar_cuenta(g);
+}
+
+static void tr_epilogo(jit_gen * g, jit_traduccion * t)
+{
+	int i;
+
+	for (i = 0; i < g->n_salidas; i++)
+		jit_x64_fijar(&g->e, g->salidas[i]);
+
+	tr_volcar_regs(g, t);
+	gen_volcar_cuenta(g);
+
+	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
+
+	for (i = 7; i >= 0; i--)
+		jit_x64_pop(&g->e, jit_empujados[i]);
+
+	jit_x64_ret(&g->e);
+}
+
+
+/* ------------------------------------------------------------------------ */
+/* El conductor: descubrir, emitir, registrar                               */
+/* ------------------------------------------------------------------------ */
+
+static int					jit_traductor = 0;	/* DCEMU_JIT=2 */
+static unsigned long long	jit_traducidos = 0;
+static unsigned long long	jit_instr_bloque = 0;
+static unsigned long long	jit_fallidos = 0;
+
+/*
+	Descubrimiento: camina las palabras desde `pc` resolviendo cada una por
+	OP_HANDLER() y parando cuando una no tiene plantilla, cuando se acaba la
+	pagina de 1 KB o cuando se llega al tope de instrucciones.
+*/
+static int tr_descubrir(jit_traduccion * t, DWORD pc)
+{
+	const WORD *	codigo = (const WORD *) MMU_FETCH_PUNTERO(pc);
+	unsigned		cabe   = (JIT_LIMITE_PAG - (pc & (JIT_LIMITE_PAG - 1))) / 2;
+	int				max    = (int) (cabe < JIT_MAX_INSTR ? cabe : JIT_MAX_INSTR);
+	int				i;
+
+	t->pc0        = pc;
+	t->n          = 0;
+	t->n_adelante = 0;
+	t->modo       = mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO;
+
+	for (i = 0; i < max; i++)
+	{
+		WORD		instr = codigo[i];
+		opcode_f *	f     = OP_HANDLER(oplist, instr);
+		const jit_plantilla * p = jit_plantilla_de(f);
+
+		if (p == NULL)
+		{
+			jit_censar(instr);
+			break;
+		}
+
+		t->palabra[i] = instr;
+		t->pl[i]      = p;
+		t->n          = i + 1;
+	}
+
+	/*
+		La ranura de un BF/S se emite adentro del camino que toma, y ahi no hay
+		sincronizacion previa: si tocara memoria, una falta saldria por longjmp
+		con el PC de la rama y no el de la ranura, y el guest reejecutaria desde
+		el lugar equivocado. **Costo 616 instrucciones de divergencia en la
+		primera corrida del traductor**, con la captura y los cuadros iguales.
+		Asi que un BF/S cuya ranura acceda a memoria --o sea otra rama, o no
+		exista-- termina el bloque antes de el.
+	*/
+	for (i = 0; i < t->n; i++)
+		if (t->pl[i]->emitir == pl_bfs
+			&& (i + 1 >= t->n || t->pl[i + 1]->accede || t->pl[i + 1]->rama))
+		{
+			t->n = i;
+			break;
+		}
+
+	return t->n;
+}
+
+/*
+	Emision. Cada instruccion lleva lo mismo que en los bloques escritos a
+	mano: la sincronizacion previa si toca memoria, sus ciclos, su cuenta y su
+	corte del bloque periodico en la frontera siguiente.
+*/
+static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
+{
+	int i;
+
+	tr_prologo(g, t);
+
+	for (i = 0; i < t->n; i++)
+	{
+		const jit_plantilla * p = t->pl[i];
+		DWORD pc_i   = t->pc0 + (DWORD) (2 * i);
+		DWORD pc_sig = pc_i + 2;
+
+		t->etiqueta[i] = jit_x64_aqui(&g->e);
+
+		if (p->rama)
+		{
+			p->emitir(g, t, i);
+			continue;
+		}
+
+		if (p->accede)
+			tr_sync(g, t, pc_i);
+
+		p->emitir(g, t, i);
+
+		if (p->ciclos)
+			jit_x64_add_ri(&g->e, CYC, p->ciclos);
+
+		if (!p->accede)
+			jit_x64_inc_r(&g->e, N);
+
+		/* Sin ciclos nuevos la condicion del corte no pudo volverse cierta.
+		   Y tras la ultima instruccion no hace falta: el bloque termina. */
+		if (p->ciclos && i + 1 < t->n)
+			gen_corte(g, pc_sig);
+	}
+
+	/* Los saltos internos hacia adelante, ahora que estan todas las etiquetas. */
+	for (i = 0; i < t->n_adelante; i++)
+	{
+		unsigned char * destino = t->etiqueta[t->adelante_i[i]];
+		unsigned char * fin     = jit_x64_aqui(&g->e);
+		long long       rel;
+
+		if (destino == NULL)
+		{
+			g->e.desborde = 1;
+			continue;
+		}
+
+		rel = (long long) (destino - (t->adelante[i].sitio + 4));
+
+		if (rel < -2147483647LL || rel > 2147483647LL)
+		{
+			g->e.desborde = 1;
+			continue;
+		}
+
+		t->adelante[i].sitio[0] = (unsigned char) ((unsigned long long) rel & 0xFF);
+		t->adelante[i].sitio[1] = (unsigned char) (((unsigned long long) rel >> 8) & 0xFF);
+		t->adelante[i].sitio[2] = (unsigned char) (((unsigned long long) rel >> 16) & 0xFF);
+		t->adelante[i].sitio[3] = (unsigned char) (((unsigned long long) rel >> 24) & 0xFF);
+
+		(void) fin;
+	}
+
+	gen_salir_en(g, t->pc0 + (DWORD) (2 * t->n));
+	tr_epilogo(g, t);
+}
+
+/*
+	Traduce el bloque que empieza en `pc` y lo registra. Devuelve el bloque o
+	NULL; en cualquier caso el guest sigue corriendo, interpretado si no hubo
+	traduccion, que es la degradacion que el plan promete.
+
+	**El crecimiento hacia atras**: si la ultima instruccion es una rama cuyo
+	destino cae antes del comienzo y en la misma pagina, se retraduce desde
+	ahi. Es lo que corrige que el muestreo caiga en mitad de un lazo en vez de
+	en su cabeza, y sin eso el lazo saldria del bloque en cada vuelta.
+*/
+static jit_bloque * tr_traducir(DWORD pc)
+{
+	static jit_traduccion	t;			/* 3 KB: no va a la pila */
+	jit_gen					g;
+	unsigned				disponible;
+	jit_bloque *			b;
+	int						intento;
+	int						i;
+
+	if (jit_n_bloques >= JIT_MAX_BLOQUES)
+		return NULL;
+
+	for (intento = 0; intento < 2; intento++)
+	{
+		if (tr_descubrir(&t, pc) == 0)
+			return NULL;
+
+		if (intento == 0)
+		{
+			const jit_plantilla * ult = t.pl[t.n - 1];
+			DWORD dest;
+
+			if (!ult->rama)
+				break;
+
+			dest = tr_destino8(&t, t.n - 1);
+
+			if (dest < t.pc0
+				&& (dest & ~(JIT_LIMITE_PAG - 1)) == (t.pc0 & ~(JIT_LIMITE_PAG - 1)))
+			{
+				pc = dest;
+				continue;
+			}
+		}
+
+		break;
+	}
+
+	tr_asignar_registros(&t);
+
+	for (i = 0; i < JIT_MAX_INSTR; i++)
+		t.etiqueta[i] = NULL;
+
+	jit_codigo_us = (jit_codigo_us + 15u) & ~15u;
+
+	if (jit_codigo_us >= jit_codigo_tam)
+		return NULL;
+
+	disponible = jit_codigo_tam - jit_codigo_us;
+
+	memset(&g, 0, sizeof(g));
+	jit_x64_iniciar(&g.e, jit_codigo + jit_codigo_us, disponible);
+
+	tr_emitir_cuerpo(&g, &t);
+
+	if (g.e.desborde || !jit_disp_ok
+		|| memcmp(&jit_marco_comun, &g.marco, sizeof(jit_marco)) != 0)
+	{
+		jit_fallidos++;
+		return NULL;
+	}
+
+	b = &jit_bloques[jit_n_bloques++];
+
+	memset(b, 0, sizeof(*b));
+	b->pc         = t.pc0;
+	b->codigo     = (void (*)(void)) (jit_codigo + jit_codigo_us);
+	b->n_palabras = t.n;
+	b->mmu        = t.modo;
+
+	memcpy(b->copia, t.palabra, (size_t) t.n * sizeof(WORD));
+	b->palabras = b->copia;
+
+	jit_registrar_marco(b, jit_x64_largo(&g.e));
+
+	jit_codigo_us += jit_x64_largo(&g.e);
+
+	jit_marcar(b->pc);
+
+	{
+		unsigned idx = (b->pc >> 1) & 0xFFFFu;
+
+		if (jit_indice[idx] >= 0)
+			jit_colisiones++;
+
+		jit_indice[idx] = (short) (jit_n_bloques - 1);
+	}
+
+	jit_traducidos++;
+	jit_instr_bloque += (unsigned long long) t.n;
+
+	return b;
+}
+
+/* ------------------------------------------------------------------------ */
+/* El muestreo: de donde salen los candidatos                               */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El bloque periodico de main_loop() corre cada RELOJ_GRANO ciclos --unas 130
+	instrucciones-- asi que muestrear ahi no cuesta nada en el camino caliente.
+	Un PC visto JIT_CALOR veces se marca como candidato, y la proxima vez que
+	el despacho lo vea se traduce. La salida de cada bloque siembra ademas el
+	PC siguiente, que es una frontera de bloque de verdad y no una muestra.
+*/
+#define JIT_CALOR	8
+
+static unsigned char jit_calor[0x10000];
+
+void jit_muestrear(DWORD pc)
+{
+	unsigned idx;
+
+	if (!jit_traductor)
+		return;
+
+	idx = (pc >> 1) & 0xFFFFu;
+
+	if (jit_calor[idx] < JIT_CALOR)
+	{
+		jit_calor[idx]++;
+
+		if (jit_calor[idx] == JIT_CALOR)
+			jit_marcar(pc);
+	}
+}
+
 /* ------------------------------------------------------------------------ */
 /* Emision, registro y despacho                                             */
 /* ------------------------------------------------------------------------ */
-
-static jit_marco	jit_marco_comun;
-static int			jit_marco_visto = 0;
 
 static void jit_marcar(DWORD pc)
 {
 	unsigned i = ((pc >> 1) & 0xFFFFu);
 
 	jit_mapa[i >> 3] |= (unsigned char) (1u << (i & 7u));
+}
+
+static void jit_desmarcar(DWORD pc)
+{
+	unsigned i = ((pc >> 1) & 0xFFFFu);
+
+	jit_mapa[i >> 3] &= (unsigned char) ~(1u << (i & 7u));
 }
 
 /*
@@ -1173,21 +2338,15 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 	b->extra_dir     = extra_dir;
 	b->extra_palabra = extra_palabra;
 	b->n_extra       = n_extra;
+	b->mmu           = -1;
+	b->veces         = 0;
 
-#ifdef _WIN32
-	{
-		RUNTIME_FUNCTION * rf = &jit_tabla_rt[jit_n_bloques - 1];
-
-		rf->BeginAddress      = (DWORD) (jit_codigo + jit_codigo_us - jit_arena);
-		rf->EndAddress        = (DWORD) (jit_codigo + jit_codigo_us
-									+ jit_x64_largo(&g.e) - jit_arena);
-		rf->UnwindInfoAddress = (DWORD) (jit_unwind - jit_arena);
-	}
-#endif
+	jit_registrar_marco(b, jit_x64_largo(&g.e));
 
 	jit_codigo_us += jit_x64_largo(&g.e);
 
 	jit_marcar(pc);
+	jit_indice[(pc >> 1) & 0xFFFFu] = (short) (jit_n_bloques - 1);
 
 	return 1;
 }
@@ -1214,28 +2373,59 @@ static int jit_verificar(const jit_bloque * b)
 
 int jit_despachar(DWORD pc)
 {
-	int i;
+	short			i = jit_indice[(pc >> 1) & 0xFFFFu];
+	jit_bloque *	b = (i >= 0) ? &jit_bloques[i] : NULL;
 
-	for (i = 0; i < jit_n_bloques; i++)
+	if (b == NULL || b->pc != pc)
 	{
-		jit_bloque * b = &jit_bloques[i];
+		if (!jit_traductor)
+			return 0;
 
-		if (b->pc != pc)
-			continue;
+		b = tr_traducir(pc);
 
-		if (!jit_verificar(b))
+		if (b == NULL)
 		{
-			jit_rechazos++;
+			/* Que no se reintente en cada instruccion: el bit se apaga y ese
+			   PC vuelve al interprete hasta que el muestreo lo reproponga. */
+			jit_desmarcar(pc);
 			return 0;
 		}
 
-		jit_entradas++;
-		b->codigo();
-
-		return 1;
+		/*
+			**El bloque puede no empezar donde se pidio.** El crecimiento hacia
+			atras lo registra en la cabeza del lazo, que es lo que se queria;
+			pero entonces este PC no es su entrada y correrlo seria ejecutar
+			desde otro lado. Se deja traducido y esta instruccion la hace el
+			interprete: el bloque se encuentra solo cuando el guest llegue a su
+			entrada.
+		*/
+		if (b->pc != pc)
+			return 0;
 	}
 
-	return 0;
+	/* El modo con el que se emitio tiene que seguir valiendo: con la MMU
+	   encendida los accesos llevan la traduccion adentro. */
+	if (b->mmu >= 0 && b->mmu != (mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO))
+	{
+		jit_rechazos++;
+		return 0;
+	}
+
+	if (!jit_verificar(b))
+	{
+		jit_rechazos++;
+		return 0;
+	}
+
+	jit_entradas++;
+	b->veces++;
+	b->codigo();
+
+	/* La salida es una frontera de bloque de verdad: siembra la siguiente. */
+	if (jit_traductor)
+		jit_marcar(PC);
+
+	return 1;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1244,13 +2434,81 @@ int jit_despachar(DWORD pc)
 
 static void jit_resumen(void)
 {
-	if (jit_entradas || jit_rechazos)
-		fprintf(stderr, "jit: %llu instrucciones en %llu entradas"
-			" (%.1f por entrada), %llu rechazos por verificacion\n",
-			jit_estado.instr, jit_entradas,
-			jit_entradas ? (double) jit_estado.instr / (double) jit_entradas
-						 : 0.0,
-			jit_rechazos);
+	int i, j;
+
+	if (!jit_entradas && !jit_rechazos)
+		return;
+
+	fprintf(stderr, "jit: %llu instrucciones en %llu entradas"
+		" (%.1f por entrada), %llu rechazos por verificacion\n",
+		jit_estado.instr, jit_entradas,
+		jit_entradas ? (double) jit_estado.instr / (double) jit_entradas : 0.0,
+		jit_rechazos);
+
+	if (!jit_traductor)
+		return;
+
+	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
+		" uno), %u bytes, %llu emisiones fallidas, %llu colisiones de indice\n",
+		jit_traducidos,
+		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
+					   : 0.0,
+		jit_codigo_us, jit_fallidos, jit_colisiones);
+
+	/*
+		El censo de lo que corto los bloques, de mayor a menor. **Es lo que
+		dice cual plantilla escribir despues**: sin el, la cobertura degrada en
+		silencio y nadie sabe donde se fue.
+	*/
+	if (jit_censo_n)
+	{
+		fprintf(stderr, "jit: lo que mas corto bloques (palabra, veces,"
+			" mnemonico):\n");
+
+		for (i = 0; i < 12 && i < jit_censo_n; i++)
+		{
+			int mejor = -1;
+
+			for (j = 0; j < jit_censo_n; j++)
+				if (jit_censo_veces[j] != 0
+					&& (mejor < 0
+						|| jit_censo_veces[j] > jit_censo_veces[mejor]))
+					mejor = j;
+
+			if (mejor < 0)
+				break;
+
+			fprintf(stderr, "jit:   %04X  %8llu  %s\n",
+				jit_censo_op[mejor], jit_censo_veces[mejor],
+				opcodes_mnemonico(jit_censo_op[mejor]));
+
+			jit_censo_veces[mejor] = 0;
+		}
+	}
+
+	/* Y los bloques mas ejecutados, para saber si el muestreo encontro lo que
+	   habia que encontrar. */
+	fprintf(stderr, "jit: bloques mas ejecutados:\n");
+
+	for (i = 0; i < 8; i++)
+	{
+		int mejor = -1;
+
+		for (j = 0; j < jit_n_bloques; j++)
+			if (jit_bloques[j].veces != 0
+				&& (mejor < 0
+					|| jit_bloques[j].veces > jit_bloques[mejor].veces))
+				mejor = j;
+
+		if (mejor < 0)
+			break;
+
+		fprintf(stderr, "jit:   %08lx  %2d instr  %10llu veces\n",
+			(unsigned long) jit_bloques[mejor].pc,
+			jit_bloques[mejor].n_palabras, jit_bloques[mejor].veces);
+
+		jit_bloques[mejor].veces = 0;
+	}
 }
 
 static void jit_volcar(const char * archivo)
@@ -1277,9 +2535,12 @@ void jit_iniciar(void)
 {
 	const char * v = getenv("DCEMU_JIT");
 	unsigned	 desplazamiento;
+	int			 i;
 
 	if (v == NULL || atoi(v) == 0)
 		return;
+
+	jit_traductor = (atoi(v) >= 2);
 
 	jit_arena = (unsigned char *) jit_arena_reservar(JIT_ARENA_TAM);
 
@@ -1314,14 +2575,56 @@ void jit_iniciar(void)
 	jit_estado.h_leer32     = (void *) jit_leer32;
 	jit_estado.h_leer8s     = (void *) jit_leer8s;
 	jit_estado.h_escribir8  = (void *) jit_escribir8;
+	jit_estado.h_escribir32 = (void *) jit_escribir32;
 	jit_estado.p_pteh       = (void *) PTEH;
 	jit_estado.p_mmucr      = (void *) MMUCR;
 
-	if (!jit_emitir(JIT_CT_ENTRADA, gen_bloque_ct,
-			jit_ct_palabras, 20,
-			jit_ct_extra_dir, jit_ct_extra_palabra, 2)
-	 || !jit_emitir(JIT_CE_ENTRADA, gen_bloque_ce,
-			jit_ce_palabras, 17, NULL, NULL, 0))
+	for (i = 0; i < 0x10000; i++)
+		jit_indice[i] = -1;
+
+	/* Las filas de la tabla de plantillas se ligan a los manejadores reales
+	   aca: la tabla se escribe como una lista y el orden de los dos arreglos
+	   es lo unico que las une, asi que un desajuste seria una plantilla usada
+	   para otra instruccion. La comprobacion de tamano lo impide. */
+	for (i = 0; i < JIT_N_PLANTILLAS; i++)
+		jit_plantillas[i].f = jit_manejadores[i];
+
+	/*
+		El marco tiene que conocerse antes de registrar el primer bloque,
+		porque el UNWIND_INFO lo describe -- y con el traductor los bloques
+		nacen a lo largo de la corrida. Se emite un prologo de mentira sobre un
+		buffer aparte para medirlo.
+	*/
+	{
+		unsigned char	molde[64];
+		jit_gen			g;
+		jit_traduccion	vacio;
+
+		memset(&g, 0, sizeof(g));
+		memset(&vacio, 0, sizeof(vacio));
+
+		for (i = 0; i < 16; i++)
+			vacio.slot[i] = -1;
+
+		jit_x64_iniciar(&g.e, molde, sizeof(molde));
+		tr_prologo(&g, &vacio);
+
+		jit_marco_comun = g.marco;
+		jit_marco_visto = 1;
+	}
+
+#ifdef _WIN32
+	jit_unwind_armar(jit_unwind, &jit_marco_comun, jit_empujados, 8,
+		JIT_MARCO_RSP);
+	jit_unwind_puesto = 1;
+#endif
+
+	if (!jit_traductor
+		&& (!jit_emitir(JIT_CT_ENTRADA, gen_bloque_ct,
+				jit_ct_palabras, 20,
+				jit_ct_extra_dir, jit_ct_extra_palabra, 2)
+		 || !jit_emitir(JIT_CE_ENTRADA, gen_bloque_ce,
+				jit_ce_palabras, 17, NULL, NULL, 0)))
 	{
 		fprintf(stderr, "jit: el emisor se quejo; sigue el interprete\n");
 		jit_n_bloques = 0;
@@ -1329,31 +2632,14 @@ void jit_iniciar(void)
 		return;
 	}
 
-#ifdef _WIN32
-	jit_unwind_armar(jit_unwind, &jit_marco_comun, jit_empujados, 8,
-		JIT_MARCO_RSP);
-
-	/*
-		Sin esto el primer longjmp desde adentro de un bloque se lleva el
-		proceso, y eso es el camino normal del bloque con MMU. Si falla, el
-		JIT no arranca: correr sin la tabla seria correr sabiendo que la
-		primera falta rompe.
-	*/
-	if (!RtlAddFunctionTable(jit_tabla_rt, (DWORD) jit_n_bloques,
-			(DWORD64) (size_t) jit_arena))
-	{
-		fprintf(stderr, "jit: RtlAddFunctionTable fallo; sigue el"
-			" interprete\n");
-		jit_n_bloques = 0;
-		memset(jit_mapa, 0, sizeof(jit_mapa));
-		return;
-	}
-#endif
-
 	jit_activo = 1;
 
-	fprintf(stderr, "jit: %d bloques emitidos, %u bytes (DCEMU_JIT=1)\n",
-		jit_n_bloques, jit_codigo_us);
+	if (jit_traductor)
+		fprintf(stderr, "jit: traductor automatico, %d plantillas"
+			" (DCEMU_JIT=2)\n", JIT_N_PLANTILLAS);
+	else
+		fprintf(stderr, "jit: %d bloques a mano, %u bytes (DCEMU_JIT=1)\n",
+			jit_n_bloques, jit_codigo_us);
 
 	v = getenv("DCEMU_JIT_VOLCADO");
 
