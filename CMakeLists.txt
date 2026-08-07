@@ -78,6 +78,15 @@ option(DCEMU_INLINE "Despachar en linea los manejadores mas frecuentes" OFF)
 # enciende DCEMU_FUSION=1, asi el A/B corre sobre una sola imagen.
 option(DCEMU_FUSION "Compilar el prototipo de bloques fusionados (sonda)" OFF)
 
+# El recompilador dinamico (docs/recompilador-plan.md). En la fase 0 son el
+# emisor x64, el arena y los dos bloques de fusion.c emitidos a mano por el
+# JIT; la vara de aceptacion es reproducir los A/B de esas sondas. Detras de
+# una opcion y encendido con DCEMU_JIT=1 por la misma razon que la fusion: el
+# A/B corre sobre una sola imagen y la disposicion del binario no entra como
+# variable. Compilar con DCEMU_FUSION=ON y DCEMU_JIT=ON a la vez da la
+# comparacion de tres --interprete, C fusionado, JIT-- en un solo binario.
+option(DCEMU_JIT "Compilar el recompilador dinamico (fase 0)" OFF)
+
 # Optimizacion de todo el programa (/GL al compilar, /LTCG al enlazar). Es la
 # fase 1.2 de docs/rendimiento-plan.md y aqui importa mas de lo normal: este
 # arbol tiene los bucles calientes en una unidad de traduccion y las funciones
@@ -321,6 +330,11 @@ endif()
 if(DCEMU_FUSION)
 	target_compile_definitions(dcemu PRIVATE DCEMU_FUSION)
 	target_sources(dcemu PRIVATE fusion.c)
+endif()
+
+if(DCEMU_JIT)
+	target_compile_definitions(dcemu PRIVATE DCEMU_JIT)
+	target_sources(dcemu PRIVATE jit.c jit_x64.c)
 endif()
 
 # Release con simbolos. Los flags por omision de CMake para Release son

@@ -44,6 +44,7 @@ static const dc_suite * const suites[] =
 	&suite_arm7,
 	&suite_vmu,
 	&suite_dsp,
+	&suite_jit_x64,
 	&suite_cobertura,	/* al final: mira lo que ejecutaron las demas */
 };
 

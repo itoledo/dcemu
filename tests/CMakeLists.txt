@@ -29,6 +29,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/mmu.c
 	${CMAKE_SOURCE_DIR}/mov.c
 	${CMAKE_SOURCE_DIR}/opciones.c
+	${CMAKE_SOURCE_DIR}/jit_x64.c
 	${CMAKE_SOURCE_DIR}/opcodes.c
 	${CMAKE_SOURCE_DIR}/perf.c
 	${CMAKE_SOURCE_DIR}/sh4emu.c
@@ -62,6 +63,7 @@ set(DCEMU_PRUEBAS
 	test_dsp.c
 	test_arm7.c
 	test_g2dma.c
+	test_jit_x64.c
 	test_gdrom.c
 	test_logic.c
 	test_mmu.c

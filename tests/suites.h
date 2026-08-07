@@ -51,4 +51,8 @@ extern const dc_suite suite_vmu;
 /* El DSP de efectos del AICA (aicadsp.h). */
 extern const dc_suite suite_dsp;
 
+/* El emisor de x86-64 del recompilador (jit_x64.h). No es del SH-4: es la
+   herramienta con la que se traduce, y se compara contra el manual de Intel. */
+extern const dc_suite suite_jit_x64;
+
 #endif /* _SUITES_H_ */

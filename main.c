@@ -41,6 +41,9 @@
 #ifdef DCEMU_FUSION
 #include "fusion.h"
 #endif
+#ifdef DCEMU_JIT
+#include "jit.h"
+#endif
 #include "hilo_aica.h"
 #include "ubc.h"
 #include "wdt.h"
@@ -873,6 +876,19 @@ void main_loop(void)
 					;
 				else
 #endif
+#ifdef DCEMU_JIT
+				/* El JIT (fase 0 de docs/recompilador-plan.md). Mismas
+				   condiciones que la sonda y por el mismo motivo: la traza y
+				   el UBC ven instruccion por instruccion, asi que el codigo
+				   emitido no corre cuando estan puestos. El primer filtro es
+				   el mapa de bits; la busqueda real solo se paga con el bit
+				   puesto. */
+				if (jit_activo && JIT_MARCADO(PC)
+					&& DebugMode == DBG_RUN && !traza_activa && !ubc_activa
+					&& jit_despachar(PC))
+					;
+				else
+#endif
 				{
 					/* Por MMU_FETCH_PUNTERO y no por get_memory_pointer, aunque
 					   aqui la MMU este siempre apagada: !excepcion_vigilar
@@ -962,6 +978,17 @@ void main_loop(void)
 						&& instr == 0x6173
 						&& DebugMode == DBG_RUN && !traza_activa && !ubc_activa
 						&& fusion_bloque_ce())
+						;
+					else
+#endif
+#ifdef DCEMU_JIT
+					/* El JIT con MMU: corre con el salto armado y la
+					   instantanea invalidada, asi que un acceso que falte sale
+					   por longjmp con el contexto ya en el estado
+					   pre-instruccion (jit.c). */
+					if (jit_activo && JIT_MARCADO(PC)
+						&& DebugMode == DBG_RUN && !traza_activa && !ubc_activa
+						&& jit_despachar(PC))
 						;
 					else
 #endif
@@ -2416,6 +2443,9 @@ int main(int argc, char *argv[])
 #endif
 #ifdef DCEMU_FUSION
 	fusion_iniciar();
+#endif
+#ifdef DCEMU_JIT
+	jit_iniciar();
 #endif
 	mmu_sondas_iniciar();
 

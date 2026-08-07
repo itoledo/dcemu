@@ -1,10 +1,11 @@
 # Plan: el recompilador dinámico
 
-Estado: **propuesto**. Escrito el 2026-08-07 sobre `rendimiento-hilos`, el mismo día en
-que las dos sondas de la fase 4 de [`rendimiento-plan-2.md`](rendimiento-plan-2.md) le
-dieron a este plan sus números. Nada de esto está implementado; las dos sondas
-(`fusion.c`) son el precedente, la prueba de concepto y la vara de aceptación de la
-fase 0.
+Estado: **fase 0 hecha** (2026-08-07, el mismo día en que se escribió el plan); el resto,
+propuesto. Las dos sondas de la fase 4 de [`rendimiento-plan-2.md`](rendimiento-plan-2.md)
+le dieron a este plan sus números y son la vara de aceptación de la fase 0. El resultado de
+esa fase está al final, en «La fase 0, hecha»: **el emisor, el caché y la convención
+existen y no mienten**, y la primera medición ya corrigió una premisa de este documento —
+la llamada al ayudante de memoria **sí** era el costo.
 
 La forma es **un JIT de verdad**: traducción de bloques del SH-4 a código x64 emitido en
 tiempo de ejecución. La alternativa —bloques traducidos por anticipado a C, compilados
@@ -73,10 +74,18 @@ establecieron cómo, y esto asciende de técnica a invariante del JIT:
 - **La memoria es la de siempre.** El código emitido no reimplementa `memread`: llama a
   ayudantes (`jit_leer32()`, `jit_escribir8()`, ...) que envuelven los macros reales —
   alineación, la traducción con su avance de URC, watchpoints, UBC de operandos, ruta
-  lenta, todo viaja gratis. **La llamada no es el costo: está medido** (6.6 quitó 688
-  millones de llamadas y el reloj no se movió; el 2,2× de la sonda CE ya carga la
-  traducción por acceso). Inlinear el camino rápido de RAM plana en el código emitido
-  es una optimización de fase tardía, con su A/B, no una premisa.
+  lenta, todo viaja gratis.
+
+  > **Corregido por la fase 0.** Este plan decía «la llamada no es el costo: está medido»,
+  > apoyándose en la fase 6.6 de `rendimiento-plan.md`. **Es falso para el código emitido**,
+  > y Crazy Taxi lo aisló: ese bloque no tiene MMU, ni sincronizaciones, ni registros fuera
+  > de los cacheados, así que su única diferencia estructural con el C de la sonda era que
+  > el C **expande el macro** y el JIT **llamaba** — y eso valía **2,2 ns (≈9 ciclos) por
+  > acceso, la mitad de la ganancia del bloque**. El camino rápido en línea dejó de ser
+  > una optimización de fase tardía y pasó a ser parte del emisor. Lo que no cambia es la
+  > regla de fondo: **en línea va solo el caso plano** (alineación, MMU apagada, UBC de
+  > operandos apagado, zona con base directa) y **todo lo demás cae al ayudante**, que es
+  > el macro entero. No hay una segunda copia de las reglas de `mem.h` que pueda derivar.
 - **Las palabras del bloque se verifican en cada entrada** contra la copia que la
   traducción guardó, por el puntero de página que la búsqueda de `main_loop()` ya
   resolvió. Código automodificado, otro proceso en la misma VA, otra imagen: la
@@ -138,6 +147,16 @@ volcándolos. Los ayudantes de memoria se llaman con la convención del anfitri�
 `longjmp` de una falta desenrolla el marco emitido sin cooperación — por eso el volcado
 pre-acceso es al contexto y no a la pila.
 
+**Y por eso el código emitido lleva información de desenrollado** (fase 0). En Windows x64
+`longjmp` no restaura registros y ya: desenrolla de verdad, preguntándole a
+`RtlLookupFunctionEntry` por cada marco. Un marco sin entrada se toma por hoja — RIP en
+`[RSP]`, `RSP += 8` —, que no es el de un bloque que empuja ocho registros y baja `rsp`:
+**sin la tabla, la primera falta dentro de un bloque se lleva el proceso**, y ese es el
+camino normal del guest con MMU (850 557 faltas en el banco). Se instala con
+`RtlAddFunctionTable` sobre el arena, describiendo el prólogo; con cientos de bloques lo
+que corresponde es `RtlInstallFunctionTableCallback`. De paso es lo que le permite a
+`traza_caida_instalar()` cruzar el código emitido.
+
 ### El caché de código y el ciclo de vida
 
 - **Un arena de tamaño fijo** (16 MB, `VirtualAlloc` con `PAGE_EXECUTE_READWRITE` en
@@ -175,7 +194,7 @@ cada bloque.
 
 | # | qué | prueba de aceptación | decide |
 | --- | --- | --- | --- |
-| 0 | El emisor mínimo y el caché; **los dos bloques de `fusion.c` emitidos a mano por el JIT** (traduce esos PC y nada más) | reproduce los A/B de las sondas: mismos números, ejecución al dígito | que el emisor y la convención existen y no mienten |
+| 0 | **hecha** — el emisor mínimo y el caché; los dos bloques de `fusion.c` emitidos a mano por el JIT | ejecución al dígito ✓ en los dos guests; el A/B: Crazy Taxi al 98,5 % de la sonda ✓, DCDoom al 60 % ✗ | que el emisor y la convención existen y no mienten ✓ |
 | 1 | El traductor automático con ~30 plantillas de enteros; DCDoom entero | cuentas al dígito, `198B396F…`, `mmu-mapeo`, `basic/mmu/*`, A/B alternado con PGO reentrenado | **la fase entera: si DCDoom no cruza 1,0×, parar y entender** |
 | 2 | Sega Rally 2 y el resto de los Windows CE; las plantillas de FPU con guarda de modo | banco de SR2 (`1B28D0D9…`), `dcemu_sh4json` bit a bit por plantilla de FPU, `.wav` donde aplique | la generalidad: segundo guest sin tocar el motor |
 | 3 | El parque entero y el barrido de 150 demos | barrido con corrida de control; capturas de los juegos byte a byte | la adopción por omisión |
@@ -228,3 +247,104 @@ sobre esos mismos bloques (fase 0) y después reemplazarlas por medidas, fase po
 con las barandas de siempre: `ctest`, `dcemu_sh4json` bit a bit, el barrido con su
 corrida de control, las capturas y el `.wav`, y ninguna cifra de velocidad antes de que
 el trabajo salga idéntico al dígito.
+
+---
+
+# La fase 0, hecha (2026-08-07)
+
+El emisor (`jit_x64.c/h`, con su suite en `tests/test_jit_x64.c`), el arena con su
+información de desenrollado, los ayudantes de memoria, el despacho por mapa de bits y los
+**dos bloques de `fusion.c` emitidos a mano por el JIT** (`jit.c/h`). Detrás de
+`-DDCEMU_JIT=ON` y encendido con `DCEMU_JIT=1`, igual que la fusión y por el mismo motivo:
+el A/B corre sobre una sola imagen. Compilando con `-DDCEMU_FUSION=ON -DDCEMU_JIT=ON` a la
+vez, el mismo binario da la comparación de tres — intérprete, C fusionado, JIT.
+
+## La ejecución es idéntica al dígito, y esa es la mitad que importa
+
+Tres modos, dos guests, contadores y capturas:
+
+| banco | instrucciones | cuadros | escenas | captura | porción cubierta |
+| --- | --- | --- | --- | --- | --- |
+| DCDoom, 35 s | 5 433 038 875 | 1482 | 977 | `198B396F…` | 476 702 040 en 2 090 557 entradas |
+| Crazy Taxi, 60 s | 7 571 150 058 | 3051 | 3044 | `95FC0052…` | 3 408 680 950 en 15 533 821 entradas |
+
+**Las tres columnas de cada fila son el mismo número en los tres modos**, la porción
+cubierta incluida: el JIT y el C fusionado entran y salen de sus bloques en los mismos
+sitios, la misma cantidad de veces. Cero rechazos por verificación de palabras en todas las
+corridas. Y `198B396F…` es la línea base documentada del árbol, o sea que el JIT tampoco se
+desvió del intérprete.
+
+Eso cubre lo que la fase venía a decidir: la convención de llamada, el volcado pre-acceso,
+los cortes del bloque periódico en cada frontera, los ciclos por manejador, el conteo del
+intento antes del acceso y la verificación por entrada **son correctos tal como el plan los
+escribió**. Y el camino de falta también: el bloque con MMU sale por `longjmp` 850 557 veces
+por corrida desde adentro del código emitido, y el proceso no se cae ni la cuenta se corre.
+
+## El A/B, y lo que corrigió del plan
+
+Un binario, órdenes rotados dentro de cada ronda, sin `--captura-gl` ni `--perf`. Tres
+rondas en Crazy Taxi, cuatro en DCDoom; rangos disjuntos entre modos salvo donde se indica.
+
+| banco | intérprete | C fusionado | JIT |
+| --- | --- | --- | --- |
+| Crazy Taxi, 180 s | 131 998 ms | 108 828 ms (**−17,55 %**) | **109 172 ms (−17,29 %)** |
+| DCDoom, 35 s | 53 316 ms | 50 979 ms (**−4,38 %**) | 51 912 ms (−2,63 %) |
+
+Crazy Taxi cumple la vara: **el 98,5 % de la ganancia de la sonda**, con una de las tres
+corridas del JIT (108 507) por debajo de la de fusión (108 569) — los dos rangos se tocan,
+así que la diferencia está en el borde del ruido. La sonda, de paso, reprodujo su propio
+número documentado (17,55 % contra 17,4 %).
+
+**Pero la primera versión no daba eso: daba 119 742 ms, o sea la mitad de la ganancia.** Y
+Crazy Taxi es el bloque que permite atribuirlo sin adivinar: no tiene MMU, no tiene
+sincronizaciones, y sus cinco registros vivos están todos cacheados en registros del
+anfitrión igual que en el C. **La única diferencia estructural era que el C expande el macro
+de `memread` y el JIT llamaba a un ayudante.** 11 261 ms sobre 5137 M de accesos son
+**2,2 ns (≈9 ciclos) por llamada**. Con el camino rápido plano emitido en línea la brecha
+cayó a 344 ms.
+
+Eso es el hallazgo de la fase, y contradice una premisa escrita en este mismo plan («la
+llamada no es el costo: está medido»). La medición vieja que la sostenía era de otra cosa.
+
+Otros dos, ambos de los que no se descubren leyendo:
+
+- **`longjmp` desenrolla de verdad en Windows x64.** Ver «Convención de llamada» arriba: sin
+  `RtlAddFunctionTable` la primera falta dentro de un bloque se lleva el proceso. Es la clase
+  de cosa que no aparece en el guest sin MMU y aparece en el primer segundo del que la tiene.
+- **El `CALL` directo no alcanza.** El emisor prefiere `call rel32` (cinco bytes, sin carga)
+  y cae en `call [rbx+disp]` si el destino queda a más de 2 GB. **Con `VirtualAlloc` sin
+  dirección preferida el arena cae a terabytes de la imagen**, así que hoy todas las llamadas
+  van por la tabla. Pedir el arena cerca de la imagen es un pendiente barato; no se hizo para
+  no meter un cambio sin medir después de la tanda.
+
+Y una decisión de diseño que la medición enderezó: **la suma a `perf_instrucciones` se
+especializa al emitir**. La primera versión llevaba un puntero al destino (a
+`perf_instrucciones` o a un pozo) para evitar la rama, y pagaba una carga dependiente y un
+segundo lee-modifica-escribe en cada sincronización. `perf_activa` no puede cambiar durante
+la corrida y el bloque se emite después de leerla, así que la suma se emite o no se emite.
+
+## Lo que queda de la fase 0
+
+**El bloque con MMU está al 60 % de la sonda, y la causa está identificada pero no medida
+por separado.** Ahí el camino rápido en línea no se emite: con la MMU encendida nunca se
+tomaría y sus guardas serían costo puro, así que los seis accesos por vuelta siguen pasando
+por el ayudante. La llamada cuesta lo mismo que en Katana; lo que cambia es que del otro lado
+hay una traducción entera, así que **inlinear `MMU_TRADUCIR_EN_SITIO` es el primer trabajo del
+que sigue** — y es delicado, porque el avance de `URC` decide qué entrada reemplaza el `LDTLB`
+del guest, o sea su camino de ejecución. El resto de la diferencia son peepholes que MSVC hace
+y un emisor por plantillas no: mantener `intc_sh4_reintentar` en un registro entre cortes que
+no cruzan una llamada, R5-R7 fuera del contexto, un solo lee-modifica-escribe para `SR.T`.
+
+La atribución honesta de esos 933 ms no está hecha. El experimento que la haría en una tanda:
+una variante del bloque CE de `fusion.c` que llame a `jit_leer32()` en vez de expandir el
+macro, para separar «la llamada» del resto sobre el guest con MMU.
+
+## Qué cambia esto para las fases siguientes
+
+- **La fase 1 arranca con el camino de memoria en línea ya en el emisor**, no como
+  optimización de la fase 4. La fase 4 se queda con el encadenamiento y los superbloques.
+- **La proyección de DCDoom depende de la traducción en línea.** Con el bloque con MMU al
+  60 % de la sonda, la aritmética del plan (~1,5×) baja a ~1,3×. Sigue cruzando 1,0×, que es
+  el umbral de éxito de la fase 1, pero los 60 fps dejan de estar a la vista sin ese trabajo.
+- **La vara del despacho sigue sin medirse**: los menús no entraron en esta tanda, y con dos
+  bloques el mapa de bits no dice nada. Va con la fase 1.

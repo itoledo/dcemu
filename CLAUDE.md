@@ -92,7 +92,9 @@ ctest --test-dir build -C Debug --output-on-failure
 file, plus one for the dispatch-table expansion), plus suites that are not opcodes:
 `sistema` (PDTRA handshake, flash synthesis, RTC), `gdrom` (the drive's state machine,
 driven exactly as the boot ROM drives it), `ta` (the TA parameter format — the
-classification table and the reassembly of the 64-byte parameters), `mmu`, `wdt`, `tmu`,
+classification table and the reassembly of the 64-byte parameters), `jit_x64` (the x86-64
+emitter of the recompiler, compared byte for byte against Intel's encodings — it is not
+SH-4 at all, it is the tool the translation is made with), `mmu`, `wdt`, `tmu`,
 `vram` (the two windows of PVR video RAM), `ubc` (the hardware breakpoint controller,
 driven with the same register sequences KOS's driver uses), `vmu` (the memory card, driven with
 the exact frames KOS's `vmu.c` sends), and `aica`, `arm7` and `g2dma`.
@@ -103,7 +105,8 @@ symbols the code references, which keeps SDL and OpenGL out of the link. SDL *he
 still needed to compile (`opcodes.h` pulls in `main.h`).
 
 **Several files are SDL-free on purpose so the suites can link them for real**: `sistema.c`,
-`vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`, `cdda.c`, `vmu.c`. Keep them that way. `cdda.c` is
+`vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`, `cdda.c`, `vmu.c`, `jit_x64.c`. Keep them
+that way. `cdda.c` is
 linked because `aica.c` calls it once per sample; `tests/dobles.c` supplies an `iso_leer_audio()`
 that reports no audio tracks, so it stays silent and never touches the filesystem.
 
@@ -235,6 +238,8 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_INLINE` (compilación) | despacha en línea los diez manejadores más frecuentes, sin llamada indirecta. **Medido: cuesta 19 %** aunque cubra el 35,3 % de las instrucciones — el bucle caliente engorda más de lo que ahorran las llamadas |
 | `DCEMU_SONDA_BLOQUES=1` | caché de bloques predecodificados: saltea la búsqueda de la palabra y la de la tabla de 65536 punteros. **Medido y no sirve** — ruido en juego, −3,3 % en menús—, así que sólo existe con `-DDCEMU_BLOQUES=ON`. Queda para volver a correr el A/B sin rehacer la idea |
 | `DCEMU_FUSION=1` | el lazo más caliente de Crazy Taxi corre como C fusionado (registros en locales, sin despacho por instrucción). **Sólo existe con `-DDCEMU_FUSION=ON`**: es la sonda que decidió el recompilador — **17,4 % cubriendo el 46 % del volumen**, ejecución idéntica al dígito. Ver `rendimiento-plan-2.md`, fase 4 |
+| `DCEMU_JIT=1` | el recompilador dinámico corre sus bloques traducidos. **Sólo existe con `-DDCEMU_JIT=ON`**, como la fusión y por lo mismo: el A/B corre sobre una sola imagen. La fase 0 emite a mano los dos bloques de `fusion.c` (`docs/recompilador-plan.md`) — Crazy Taxi al **98,5 % de la ganancia de la sonda**, DCDoom al 60 %, con la ejecución idéntica al dígito y las capturas byte a byte. Compilando con `-DDCEMU_FUSION=ON -DDCEMU_JIT=ON` el mismo binario da la comparación de tres |
+| `DCEMU_JIT_VOLCADO=ARCHIVO` | vuelca el código emitido en crudo y lista dónde quedó cada bloque, para desensamblarlo (`objdump -D -b binary -m i386:x86-64`). Es el desarme del riesgo «el emisor mismo» del lado del binario; del lado del código lo es `tests/test_jit_x64.c` |
 | `DCEMU_MMU_DATOS=N` | entradas de la caché de traducciones resueltas (4096 por omisión, tope 8192). Para barrer el tamaño sin recompilar |
 | `DCEMU_SONDA_SETJMP_POR_INSTRUCCION=1` | vuelve a armar el salto de excepción una vez por instrucción, como era antes (13,5 % más lento) |
 | `DCEMU_SIN_ELISION_INSTANTANEA=1` | vuelve a copiar la instantánea en **todas** las instrucciones, no solo en las que pueden abortar. Es el A/B de la elisión (fase 1 de `rendimiento-plan-2.md`): **vale 2,5 % en DCDoom**, ≈0 sin MMU |
@@ -1123,7 +1128,8 @@ bitmap font renderer, driven by `DebugMode` (`DBG_STOP`/`DBG_RUN`/`DBG_STEP`). `
 Los `*-plan.md` son bitácoras de trabajo, no referencia: `bios-boot-plan.md`,
 `pendientes-plan.md` (los apartados A.x que citan las notas), `mmu-plan.md`, `aica-plan.md`,
 `arm7-plan.md`, `clock-plan.md`, `rendimiento-plan.md`, `rendimiento-plan-2.md`,
-`recompilador-plan.md` (el JIT: propuesto, con las sondas de fusión como fase 0),
+`recompilador-plan.md` (el JIT: **fase 0 hecha**, el emisor y los dos bloques de las sondas
+emitidos; el resto propuesto),
 `hilos-plan.md`, `interprete-plan.md`, `msvc-build-plan.md`. `demos-kos.md` es el estado de las 135 demos y `sh4-conformidad.md` la
 conformidad del núcleo contra el manual. Los PDF de `docs/` son la documentación de Sega y el
 manual del SH-4.
