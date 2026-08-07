@@ -20,23 +20,24 @@ No se inventó nada: cada punto viene anotado en un documento o en el código.
 
 ## El estado del que se parte
 
-Actualizado el 2 de agosto de 2026.
+Actualizado el 6 de agosto de 2026.
 
 | | |
 | --- | --- |
-| Demos de KOS que funcionan | **104** de 135 (100 en lo visual y cuatro que además suenan) |
-| Fallan por algo que falta emular | **3**: CDDA y dos de sonido con causa propia |
+| Demos de KOS que funcionan | **105+** de 135 (cinco suenan; `basic_cdda` volvió con `--disco=`); quedan 33 sin revisar una a una — el hito F |
+| Fallan por algo que falta emular | **0** — `hello-opus` y `libdream-spu` resultaron rotas del lado del guest (ver `docs/demos-kos.md`) |
 | No aplican: piden periféricos | 28 |
 | Filas de `opcodes[]` implementadas | 239 de 239, con **615 casos unitarios** en verde |
-| El núcleo contra SingleStepTests/sh4 | **116.500 casos, 0 fallos** |
+| El núcleo contra SingleStepTests/sh4 | **113.191 ok, 0 fallos**, bit a bit |
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
-| mame4all | arranca desde el `.iso` y dibuja su menú |
-| **Los cuatro juegos comerciales** | **corren**: Crazy Taxi (A.3), Virtua Tennis (A.6), Capcom vs. SNK (A.7) y Virtua Tenis 2 (A.8) — todos con título y attract/menú |
-| Parpadeo de los juegos de Katana | **resuelto** (A.11): inicializaban el TA dos veces por cuadro y la mitad de los cuadros salía negra |
-| Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12, la tabla del factor de destino); la sombra en sí **sigue sin dibujarse** y el pipeline ya está agotado etapa por etapa (A.13) |
+| **Los juegos comerciales** | **catorce corren**, con hasta gameplay; Quake III se queda en «SELECT DEVICE» (entrada, no cuelgue) |
+| El sonido | **el capítulo completo**: DSP, FEG, LFO, CDDA, ADPCM largo — vía B cerrada |
+| Rendimiento | Crazy Taxi 1,59×, DCDoom 31 fps (`docs/rendimiento-plan.md`, fase 6) |
+| Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12); la sombra en sí **sigue sin dibujarse**, pipeline agotado (A.13), bloqueada en el momento del usuario |
+| Rectángulo de DOA2 sobre la sombra | cuatro mecanismos descartados; bloqueado en el momento del usuario (memoria `bugs-visuales-sin-candidato`) |
 
-Ya no falla nada del PVR ni del núcleo SH-4. Lo que queda se reparte en cinco vías que casi
-no se tocan entre sí, así que el orden es negociable salvo donde se dice lo contrario.
+Ya no falla nada del PVR, del núcleo SH-4 ni del AICA. Lo que queda del plan original es el
+hito F (C.5 y C.9) y la vía E; lo nuevo que abrió el parque de juegos vive en sus notas.
 
 ## Los hitos
 
@@ -46,7 +47,7 @@ juego del disco"):
 | hito | qué se ve | vía | estado |
 | --- | --- | --- | --- |
 | **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026 (Crazy Taxi, A.3) y por cuadruplicado el 2 (VT A.6, CvS A.7, VT2 A.8)** |
-| **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026: suenan cuatro** |
+| **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026, y la vía entera cerrada el 6: suenan cinco, con el chip completo (DSP, FEG, LFO, CDDA, ADPCM largo)** |
 | **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | pendiente |
 
 El hito D era el que importaba: es lo único que separaba a dcemu de "corre homebrew" a "corre
@@ -1692,19 +1693,24 @@ pausa y ninguno más.
 
 ---
 
-## Vía B — El AICA (hito E)
+## Vía B — El AICA (hito E) — **cerrada el 2026-08-06: el capítulo de sonido está completo**
 
 > **Esta vía tiene su propio plan desarrollado: [aica-plan.md](aica-plan.md)**, escrito contra el
 > documento de arquitectura de Sega. Lo que sigue es el resumen del que salió.
 >
-> **Hecha hasta la fase 4, y el hito E está alcanzado: cuatro demos suenan** (1 de agosto de
-> 2026). Están el G2-DMA, el bloque de registros, el ARM7DI y los 64 canales con PCM y ADPCM,
-> más `--captura-audio` para medirlo en un archivo. Quedan la fase 5 (CDDA) y la 6 (el DSP);
-> ver "Lo que quedó" y "Lo que sigue faltando" en ese plan.
-
-Siete demos fallan y ninguna suena. El camino de subida del firmware funciona —`libdream-spu`
-reporta `Load OK, starting ARM`, o sea que los 2 MB de RAM de sonido y la ventana física se
-comportan—; lo que falta es el chip.
+> **Todo lo que este resumen enumera está implementado**: el G2-DMA, el bloque de registros, el
+> ARM7DI, los 64 canales con PCM y ADPCM (incluido el flujo largo con su semántica propia), la
+> envolvente, **el LFO**, paneo y volumen, **el filtro FEG**, **el DSP de efectos de 128 pasos**,
+> el CDDA por sus dos vías de mando, la interrupción de intervalo de muestra, y
+> `--captura-audio` como la medida. Cinco demos de KOS suenan (`basic_cdda` con `--disco=`);
+> `hello-opus` y `libdream-spu` resultaron rotas del lado del guest tal como se compilan hoy
+> (ver `docs/demos-kos.md`). Del chip queda una sola pieza tratada distinto de como es, con
+> centinela: la velocidad del `CD_SCAN`. La referencia viva es `docs/notas-aica.md`.
+>
+> **La lección que esta vía dejó dos veces**: «casi nadie lo usa» fue una premisa sin medir para
+> el DSP (falsa: tres juegos lo programan), para el FEG (falso «sólo DOA2»: siete juegos de
+> catorce) y para el LFO (falso «nadie»: ChuChu Rocket) — cada censo extendido volteó al
+> anterior. Lo que queda sin emular queda **con centinela**, nunca mudo.
 
 ### B.-1 — El mapa de registros está documentado
 
@@ -2088,11 +2094,14 @@ Lo que quedó de esa lista: la causa I por sí sola y el patrón de qNaN que gen
 (`H'7FBFFFFF` en simple, `H'7FF7FFFF FFFFFFFF` en doble). Los dos siguen siendo baratos de
 describir y caros o inocuos de arreglar, en ese orden.
 
-### D.2 — Las dos filas de `SGR`
+### D.2 — Las dos filas de `SGR` — **zanjado: quedan como desviación documentada**
 
 `LDC Rm,SGR` (0x403A) y `LDC.L @Rm+,SGR` (0x4036) vienen marcadas `// INSERTADA` por los
-autores originales y el resumen del manual lista SGR solo para `STC`. Es una consulta al
-manual y, si no existen, dos filas menos y un `NOIMP` más. Lo más barato de toda la lista.
+autores originales y el resumen del manual lista SGR solo para `STC`. La consulta se hizo
+durante la suite del núcleo: las dos filas son de existencia dudosa y quedaron implementadas y
+**anotadas como una de las tres desviaciones deliberadas** en `tests/README.md` — el mismo
+cajón que las partes no emuladas de la FPU. Si SingleStepTests algún día las contradice, el
+corredor lo dirá.
 
 ### D.3 — Errores de dirección por acceso desalineado — **resuelto el 2026-08-06**
 
@@ -2121,15 +2130,26 @@ intactos, y **DCDoom byte-idéntico a su referencia** (`198B396F…`, 35 s con `
 guest con MMU ni nota la comprobación. El A/B de tiempo sobre el banco de Crazy Taxi está en
 esta misma fecha, más abajo.
 
-### D.4 — MMU, fases 6 y 7
+### D.4 — MMU, fases 6 y 7 — **resueltas; queda un residuo anotado**
 
-- **Fase 6**: las store queues resuelven por `QACR0`/`QACR1` y no respetan `MMUCR.SQMD`.
-  Acotado.
-- **Fase 7**: la búsqueda de instrucción sigue siendo `get_memory_pointer(PC)` sin traducir y
-  sin ITLB; los arreglos de la ITLB se leen y escriben y nadie los consulta. **Es la única
-  cosa de esta vía que toca el camino caliente**, así que va con medición antes y después.
-- `MMUCR.URC` no se incrementa, así que no hay reemplazo por LRU.
-- La traducción recorre las 64 entradas desempaquetando al vuelo. Está bien por ahora.
+Todo lo que esta sección listaba está hecho y documentado en `CLAUDE.md` y
+`docs/mmu-plan.md`:
+
+- **Fase 6**: con la MMU encendida el destino del flush de las SQ sale de la UTLB
+  (`mmu_traducir_sq()`, §4.6 del manual) — enmascarar primero por QACR es la regla de MMU
+  apagada, y era lo que mataba al ddraw de Windows CE.
+- **Fase 7**: la búsqueda de instrucción traduce (`MMU_FETCH_PUNTERO()`, con la ranura del RTE
+  buscada antes de escribir SR, que es la regla del manual).
+- `MMUCR.URC` avanza en cada acceso a la UTLB — con su caso en la suite
+  (`urc_avanza_con_cada_acceso_a_la_utlb`) — y **también en los aciertos de las cachés de
+  traducción**, que es una de las dos reglas que las sostienen.
+- El recorrido de las 64 entradas quedó detrás de tres cachés de traducción, medidas en 1,8×
+  sobre DCDoom (`docs/rendimiento-plan.md`, fase 5; `DCEMU_SIN_CACHE_MMU=1` es el A/B).
+
+**El residuo**: los arreglos de la ITLB siguen siendo respaldo sin lector — el fetch consulta
+la UTLB directo, que es lo que el chip hace al rellenar la ITLB, así que el comportamiento
+coincide salvo para un guest que escriba los arreglos de la ITLB **a mano** y espere que el
+fetch los vea. Ninguno de los que corren lo hace.
 
 ### D.5 — Reloj — **el entrelazado resuelto el 2026-08-06; el resto queda como aproximación anotada**
 
@@ -2180,13 +2200,17 @@ la variante x64. Ninguna bloquea nada.
    queda cerrada; lo que sigue de los juegos es jugarlos y anotar residuos, que es C.5 con
    otro parque.
 4. ~~**Vía D.1**~~ — **hecho el 1 de agosto de 2026**, y no costó una llamada: la pasada de
-   SingleStepTests trajo RM y DN y otros nueve arreglos del núcleo. Queda **D.2**, las dos
-   filas de `SGR`, que sigue siendo lo más barato de la lista.
-5. **Vía B** — el hito E. Es la más grande de todas y empieza por una decisión, no por código.
-6. **Vía C.5, D.3-D.5, E** — cuando no haya nada mejor.
+   SingleStepTests trajo RM y DN y otros nueve arreglos del núcleo.
+5. ~~**Vía B**~~ — **cerrada el 2026-08-06**: el chip completo, con el DSP, el FEG, el LFO, el
+   CDDA y el ADPCM de flujo largo, cada pieza con su censo de clientes y su A/B de `.wav`.
+6. ~~**Vía D.2-D.5**~~ — **zanjadas el 2026-08-06**: el desalineado se levanta (D.3), el campo
+   del entrelazado existe (D.5), SGR quedó como desviación documentada (D.2) y la MMU cerró
+   sus fases con el trabajo de rendimiento (D.4).
 
-La vía B se puede adelantar entera si el sonido pesa más que el vídeo; no depende de nada de
-lo anterior. Lo que **no** conviene es empezarla sin haber resuelto B.0.
+**Lo que queda de esta lista es el hito F (C.5, más C.9) y la vía E** — y el parque nuevo de
+residuos de juego que la vía A dejó como sucesora: la sombra de VT2 (A.13) y el rectángulo de
+DOA2, los dos bloqueados en el momento del usuario; Quake III en «SELECT DEVICE»; los cuadros
+repetidos de DCDoom.
 
 ## Cómo se prueba, en general
 
@@ -2208,9 +2232,10 @@ Lo de siempre en este árbol, y por escrito porque cada punto ya costó tiempo u
   causas, cada una tapando a la siguiente (el banco de registros, el modelo de eventos del
   ASIC, el hook de la lectora, la lista en curso del TA). A.0 fue lo que permitió verlas
   por separado.
-- **Que la vía B se coma el proyecto.** Un ARM7DI más 64 canales más ADPCM es comparable a lo
-  que ya hay escrito del PVR. Si se entra, se entra por fases con veredicto en cada una, y la
-  primera es "la aserción de `snd_iface.c:84` deja de saltar".
+- ~~**Que la vía B se coma el proyecto.**~~ No se lo comió: entró por fases con veredicto en
+  cada una, como estaba previsto, y cerró completa el 2026-08-06. Lo que el pronóstico no vio
+  fue el riesgo real de esa vía: **las premisas de omisión sin medir** («casi nadie usa el
+  DSP/FEG/LFO»), que cayeron una por una cuando el censo las tocó.
 - **Que la vía D rompa lo que funciona.** RM cambia el resultado de *toda* aritmética de punto
   flotante del guest. Es el mismo riesgo que tuvo `DIV1` en su momento —para mejor, pero
   cambia— así que se verifica contra el barrido entero, no contra la demo que lo motivó.
@@ -2225,10 +2250,11 @@ Muy gruesa, en sesiones de trabajo:
 | A.0 (la tabla) | 0,5 | hecha, y rehecha el 1 de agosto — ver A.0b |
 | A.1-A.2 (el hito D) | 2 a 8, sin piso claro | **hecho: 1-2 de agosto, los cuatro juegos (A.3, A.6-A.8)** |
 | D.1 (RM, DN) | 1 | hecho el 1 de agosto |
-| D.2 (las dos filas de `SGR`) | 0,5 | pendiente, lo más barato de todo |
-| B (el AICA completo) | 8 a 15 | hasta la fase 4; quedan CDDA y el DSP |
-| C.5 (revisar las 33) | 1 | pendiente |
-| D.3-D.5, E | 3 | pendiente |
+| D.2 (las dos filas de `SGR`) | 0,5 | zanjado: desviación documentada en `tests/README.md` |
+| B (el AICA completo) | 8 a 15 | **hecho: cerrada el 6 de agosto, chip completo** |
+| C.5 (revisar las 33) + C.9 | 1 | **pendiente — es el grueso del hito F** |
+| D.3-D.5 | 3 | **hecho el 6 de agosto** (D.4 cayó con el trabajo de rendimiento) |
+| E (entorno: `roto.bin`, guichan, libcdio, x64) | 1-2 | pendiente, nada bloquea |
 
 El rango de A resultó honesto en las dos puntas: cada causa una vez encontrada fue barata
 (un syscall, una demora, un latch), y encontrarlas costó lo que costó — cuatro causas

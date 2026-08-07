@@ -6,11 +6,12 @@ emulación del chip gráfico PowerVR2 traducida a OpenGL, sobre SDL.
 Se publica con el historial completo recuperado del repositorio CVS original: el tronco
 llega hasta febrero de 2007, y el trabajo posterior arranca desde ahí.
 
-Corre **juegos comerciales**: Crazy Taxi, Virtua Tennis, Capcom vs. SNK y Virtua Tennis 2
-arrancan desde sus `.cdi` y llegan a su pantalla de título y su attract en 3D. Corre además
-**Doom**, **MAME** y 104 de los 135 ejemplos de
-[KallistiOS](https://github.com/KallistiOS/KallistiOS) —de los 31 restantes, 28 piden
-periféricos que no se emulan y 3 esperan CDDA o el DSP de audio—. Y **arranca desde el boot
+Corre **catorce juegos comerciales** —Crazy Taxi 1 y 2, Virtua Tennis 1 y 2, Tennis 2K2,
+Capcom vs. SNK, Street Fighter III, Sega Rally 2, Dave Mirra, Mat Hoffman, 4X4 EVO, Dead or
+Alive 2, Quake III y **Doom** (Windows CE)— desde sus `.cdi` o `.gdi`, con sonido, y varios
+hasta el gameplay. Corre además **MAME** y 105 de los 135 ejemplos de
+[KallistiOS](https://github.com/KallistiOS/KallistiOS) —de los restantes, 28 piden
+periféricos que no se emulan y dos están rotos en el propio ejemplo—. Y **arranca desde el boot
 ROM real**: con `--bios` reproduce la animación del remolino con su campanada, llega al menú
 y carga el `1ST_READ.BIN` de un `.cdi` de juego por su cuenta, como una consola. El
 inventario al día está en [docs/demos-kos.md](docs/demos-kos.md) y lo que queda abierto en
@@ -22,19 +23,20 @@ inventario al día está en [docs/demos-kos.md](docs/demos-kos.md) y lo que qued
 |---|---|
 | CPU SH-4, enteros | Completo — despacho por tabla de saltos, delay slots, bancos de registros. Las 239 filas de la tabla, con 615 casos de prueba, y 116.500 casos de SingleStepTests/sh4 en verde |
 | FPU SH-4 | Simples, dobles y las gráficas (`FSCA`, `FIPR`, `FTRV`), con los campos Cause y Flag de FPSCR, sus excepciones, y los modos DN y RM |
-| MMU | TLB, traducción, excepciones y reejecución. Sin traducir la búsqueda de instrucción |
+| MMU | TLB, traducción —también de la búsqueda de instrucción—, excepciones y reejecución, con tres cachés de traducción medidas en 1,8× (corre Windows CE) |
 | Store queues | Sí — es la vía por la que el juego envía geometría al tile accelerator |
 | Interrupciones | INTC, eventos ASIC, los tres timers del TMU, el watchdog y el DMAC |
 | UBC | Completo — los dos canales de breakpoint por hardware, con máscara, dato y secuencia |
 | PVR2 / TA | Los quince tipos de vértice, todos los formatos de textura, sprites, volúmenes modificadores, render a textura, plano de fondo y las dos ventanas de la RAM de vídeo |
 | Maple | DMA y estado del control, alimentado desde teclado o gamepad (XInput) |
-| GD-ROM | La lectora de verdad: registros ATA, comandos SPI y DMA por G2, más los hooks de syscall. `.iso`, `.cdi` (DiscJuggler) y bin/cue mediante libcdio |
+| GD-ROM | La lectora de verdad: registros ATA, comandos SPI y DMA por G2, más los hooks de syscall. `.iso`, `.cdi` (DiscJuggler) y `.gdi`, con CD-DA desde las pistas de audio |
 | BIOS | Flash y RTC con escritura y persistencia, handshake del cable de vídeo, syscalls de fuente, flash y GD-ROM |
 | SCIF (serial) | Salida redirigida a `logs/serial.txt` |
 | DMA del SH-4 | Los cuatro canales del DMAC y el CH2 del Holly, que es el que alimenta al TA |
-| AICA / sonido | El chip entero: el ARM7DI de adentro, los 64 canales (PCM8/16 y ADPCM), envolventes, temporizadores, su INTC y el G2-DMA. Suena el boot ROM y las demos de KOS; `--captura-audio` lo vuelca a `.wav`. Faltan CDDA, el DSP y el LFO |
+| AICA / sonido | El chip completo: el ARM7DI de adentro, los 64 canales (PCM8/16, ADPCM y su flujo largo), envolventes, **el DSP de efectos de 128 pasos**, **el filtro FEG**, **el LFO**, CD-DA, temporizadores, su INTC y el G2-DMA. `--captura-audio` lo vuelca a `.wav`, que es la medida |
 | Interrupciones del ASIC | Por nivel, derivadas de `SB_ISTNRM` contra las máscaras, con demoras de transferencia — lo que exige el despacho de un-bit-por-entrada de Katana |
-| VMU, módem/BBA, red | No emulados — la detección de la BBA falla limpio y los juegos siguen sin red |
+| VMU | La Visual Memory de la ranura 1: 128 KB con el sistema de archivos que la ROM y los juegos esperan, persistente en `bios/vmu-a1.bin` (`--vmu=`, `--sin-vmu`) |
+| Módem/BBA, red | No emulados — la detección de la BBA falla limpio y los juegos siguen sin red |
 
 Incluye un depurador dentro del emulador (F12): desensamblador, vista de registros, volcado
 de memoria y ejecución paso a paso.
@@ -92,8 +94,8 @@ ctest --test-dir build -C Debug --output-on-failure
 
 Son 615 casos que cubren las 239 filas de la tabla de instrucciones —una suite comprueba
 que no quede ninguna sin ejercitar— más lo que no son opcodes: la lectora, el TA, la MMU,
-el UBC, los timers, el watchdog, las dos ventanas de la RAM de vídeo, y el AICA con su
-ARM7DI y el G2-DMA. Un segundo binario, `dcemu_sh4json`, corre el núcleo contra los
+el UBC, los timers, el watchdog, las dos ventanas de la RAM de vídeo, la VMU, y el AICA con
+su ARM7DI, su DSP de efectos y el G2-DMA. Un segundo binario, `dcemu_sh4json`, corre el núcleo contra los
 116.500 casos de [SingleStepTests/sh4](https://github.com/SingleStepTests/sh4) (92 MB,
 fuera del repo; sin ellos la prueba se salta sola). Encontraron 16
 desviaciones respecto del manual del
