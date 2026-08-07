@@ -466,8 +466,9 @@ descartada por la regla de siempre; las tres parejas limpias son unánimes.
 
 ## La decisión
 
-**La línea del recompilador (o de la biblioteca de bloques traducidos por anticipado) se
-abre**, con su propio plan cuando se escriba. El paso siguiente ya estaba definido: el
+**La línea del recompilador se abre** — el plan es
+[`recompilador-plan.md`](recompilador-plan.md), escrito el mismo día: un JIT de verdad,
+con estas dos sondas como precedente y vara de aceptación de su fase 0. El paso siguiente ya estaba definido: el
 segundo prototipo con lo que un guest con MMU exige — verificar las generaciones de
 página de la búsqueda al entrar al bloque (`mmu_utlb_gen[]` y la fetch-cache existen) y
 la semántica de reejecución cuando un acceso falta a mitad de bloque — porque ahí es

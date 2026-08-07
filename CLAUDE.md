@@ -1122,8 +1122,9 @@ bitmap font renderer, driven by `DebugMode` (`DBG_STOP`/`DBG_RUN`/`DBG_STEP`). `
 
 Los `*-plan.md` son bitácoras de trabajo, no referencia: `bios-boot-plan.md`,
 `pendientes-plan.md` (los apartados A.x que citan las notas), `mmu-plan.md`, `aica-plan.md`,
-`arm7-plan.md`, `clock-plan.md`, `rendimiento-plan.md`, `hilos-plan.md`, `interprete-plan.md`,
-`msvc-build-plan.md`. `demos-kos.md` es el estado de las 135 demos y `sh4-conformidad.md` la
+`arm7-plan.md`, `clock-plan.md`, `rendimiento-plan.md`, `rendimiento-plan-2.md`,
+`recompilador-plan.md` (el JIT: propuesto, con las sondas de fusión como fase 0),
+`hilos-plan.md`, `interprete-plan.md`, `msvc-build-plan.md`. `demos-kos.md` es el estado de las 135 demos y `sh4-conformidad.md` la
 conformidad del núcleo contra el manual. Los PDF de `docs/` son la documentación de Sega y el
 manual del SH-4.
 
