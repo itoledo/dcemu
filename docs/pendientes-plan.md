@@ -24,7 +24,7 @@ Actualizado el 7 de agosto de 2026.
 
 | | |
 | --- | --- |
-| Demos de KOS que funcionan | **105+** de 135 (cinco suenan; `basic_cdda` volvió con `--disco=`); quedan 33 sin revisar una a una — el hito F |
+| Demos de KOS que funcionan | **105+** de 135 (cinco suenan; `basic_cdda` volvió con `--disco=`); **la deuda de verificación pagada**: las 33 revisadas a ojo el 2026-08-07, cero fallos del PVR, un hallazgo (C.10, `cdrom-stream`) |
 | Fallan por algo que falta emular | **0** — `hello-opus` y `libdream-spu` resultaron rotas del lado del guest (ver `docs/demos-kos.md`) |
 | No aplican: piden periféricos | 28 |
 | Filas de `opcodes[]` implementadas | 239 de 239, con **615 casos unitarios** en verde |
@@ -49,7 +49,7 @@ juego del disco"):
 | --- | --- | --- | --- |
 | **D** | un juego comercial dibuja su primer cuadro | A | **alcanzado el 1 de agosto de 2026 (Crazy Taxi, A.3) y por cuadruplicado el 2 (VT A.6, CvS A.7, VT2 A.8)** |
 | **E** | una demo de KOS suena | B | **alcanzado el 1 de agosto de 2026, y la vía entera cerrada el 6: suenan cinco, con el chip completo (DSP, FEG, LFO, CDDA, ADPCM largo)** |
-| **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | pendiente |
+| **F** | las 135 demos revisadas una por una, sin deuda de verificación | C | **la deuda pagada el 2026-08-07** (C.5, barrido nocturno completo con cero regresiones); quedan C.9 (el texto de kgl-tunnel) y el hallazgo nuevo C.10 (cdrom-stream) |
 
 El hito D era el que importaba: es lo único que separaba a dcemu de "corre homebrew" a "corre
 un juego". Crazy Taxi (los dos rips) muestra su pantalla de carga, el aviso de VMU, responde
@@ -1871,11 +1871,22 @@ mudo y copiaba su "identificador" escribiendo alrededor de la dirección 0x10 �
 `--traza-mem` como ocho escrituras sin emular en `0x10`-`0x17`. Con la respuesta puesta,
 desaparecen. ICON (la 2) y el vector sin nombre de `0x8C0000E0` siguen mudos, y se ven.
 
-### C.5 — La deuda de verificación de las demos
+### C.5 — La deuda de verificación de las demos — **resuelto el 2026-08-07**
 
-33 binarios están en "dibujan; la captura tiene contenido pero no se revisó una por una". No
-es un fallo, es que nadie las miró. Una pasada con `--captura-gl` y el ojo cierra el hito F y
-puede destapar cosas —así salieron el filtro de textura y el recorte del volcado—.
+Las 33 se revisaron una por una, a ojo, en el barrido nocturno del 7 de agosto (ver
+`docs/demos-kos.md`, «El barrido del 2026-08-07»): **cero fallos del PVR**, 26 verificadas,
+3 reclasificadas como periféricos, y las salvedades anotadas (las dos libdream que salen a
+la BIOS por la puerta 2D, `vmu_lcd` correcta en negro). La pasada destapó una cosa, como
+prometía — y es C.10.
+
+### C.10 — cdrom-stream: el flujo por DMA del driver propio de KOS
+
+`cdrom-stream` reporta «Failed to request DMA transfer» **también con disco montado**
+(`--disco=` con el `.gdi` de CT2), así que no es la bandeja vacía. KOS pide el flujo por
+DMA de la lectora —el protocolo de stream que los hooks ya hablan para el boot ROM y para
+Windows CE— y algo de esa petición dcemu la contesta sin querer decirlo. Es el único
+hallazgo del barrido completo que apunta al emulador; el método es el de siempre
+(`--traza-mem` + el anillo de qué contesta la lectora).
 
 ### C.9 — kgl-tunnel: la niebla salió, el texto no
 

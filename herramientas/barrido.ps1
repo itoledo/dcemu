@@ -22,7 +22,12 @@ param(
 	[string] $Demos    = "kosdemos",
 	[int]    $Segundos = 8,
 	[string] $Exe      = ".\dcemu.exe",
-	[string[]] $Extra  = @()
+	[string[]] $Extra  = @(),
+	# Una tarjeta VMU propia del barrido, **borrada antes de cada demo**: una
+	# corrida puede escribir la tarjeta, y sin esto la captura de la demo N
+	# depende de que demos corrieron antes. Con la tarjeta fresca (el formateo
+	# lleva fecha fija) y DCEMU_RTC_FIJO, cada demo es reproducible por si sola.
+	[string] $Vmu      = ""
 )
 
 if (-not (Test-Path $Exe))   { throw "no encuentro $Exe; se corre desde el directorio del ejecutable" }
@@ -44,6 +49,11 @@ foreach ($b in $bins) {
 	# emulados; --salir-tras es el corte que importa.
 	$args = @($b.FullName, "--salir-tras=$Segundos", "--captura-gl=$bmp") + $Extra
 
+	if ($Vmu -ne "") {
+		Remove-Item -LiteralPath $Vmu -Force -EA SilentlyContinue
+		$args += "--vmu=$Vmu"
+	}
+
 	$p = Start-Process -FilePath $Exe -ArgumentList $args -PassThru -NoNewWindow `
 			-RedirectStandardOutput "$Salida\$nombre.out"
 
@@ -53,6 +63,14 @@ foreach ($b in $bins) {
 	} else {
 		$rv = $p.ExitCode
 	}
+
+	# El serial y el stderr de la corrida, que caen en el directorio de trabajo
+	# (logs/serial.txt) y junto al ejecutable (stderr.txt, SDL 1.2) y cada demo
+	# pisa los del anterior. Es de donde sale el veredicto de las de consola;
+	# docs/demos-kos.md siempre dijo "aparte se guarda logs/serial.txt" y este
+	# script no lo guardaba.
+	Copy-Item "logs\serial.txt" "$Salida\$nombre.serial.txt" -EA SilentlyContinue
+	Copy-Item (Join-Path (Split-Path $Exe) "stderr.txt") "$Salida\$nombre.stderr.txt" -EA SilentlyContinue
 
 	if (Test-Path $bmp) {
 		$h = (Get-FileHash $bmp -Algorithm SHA256).Hash

@@ -88,6 +88,74 @@ lista que ya venía —el bit de mipmap, Flip y Clamp de las UV—: **el parque 
 cazar una regresión en ninguna de esas rutas, porque no las ejerce.** Para esas, la línea base
 son los juegos, y por eso conviene medirlos junto con los demos.
 
+## El barrido del 2026-08-07: la deuda de verificación, pagada
+
+El barrido entero de los 131 binarios, de noche y con horas: **131 de 131 con captura, cero
+timeouts**, y las 33 demos que llevaban semanas en «dibujan pero nadie las miró» revisadas
+**una por una, a ojo**. Es el grueso del hito F (C.5).
+
+**La línea base nueva es más fuerte que las anteriores.** `barrido.ps1` guarda ahora el
+serial y el stderr de cada demo (el documento siempre dijo que se guardaba; el script no lo
+hacía), y acepta `-Vmu`: una tarjeta propia del barrido, **borrada antes de cada demo**, así
+que cada captura es reproducible por sí sola en vez de depender de qué demos escribieron la
+tarjeta antes. Se corrió con `DCEMU_RTC_FIJO=1`. Resultados en
+`build/Release/barrido-2026-08-07/`.
+
+**Contra el barrido del 08-01, cero regresiones de veredicto**: comparando las marcas de
+resultado (SUCCEEDED/SUCCESS/PASSED/FAIL/panic) de los 131 seriales, lo único que cambia es
+qué hilo gana una carrera de `trylock` en `spinlock_test`. Las ~45 «últimas líneas» que
+difieren son todas la misma cosa: la enumeración de Maple ahora sigue hasta
+`A1: Visual Memory` — la VMU en el bus, el cambio de configuración documentado, no una
+regresión.
+
+**Y una diferencia que es una mejora medible**: `basic-dma-speedtest` reporta el PVR DMA a
+**783 MiB/s donde antes decía 33 825**. Es la demora del CH2 DMA que trajo A.6 el 2 de
+agosto, cayendo justo en el ancho de banda del bus real (~800 MB/s). El resto de sus siete
+líneas queda igual.
+
+### Las 33, una por una
+
+**Veintiséis dibujan bien y pasan a verificadas a ojo**: `2ndmix` (cubos arcoíris,
+estrellas y su saludo), `cpp-clock` (su reloj; la fecha rara es el RTC fijo), `cpp-dcplib`
+(la fuente PLIB entera, con el letrero perfecto — dato para C.9: el texto de PLIB sí sale
+aquí), `libdream-320x240` y `libdream-640x480` (sus patrones de prueba), `libdream-keyboard`
+(su patrón; el teclado Maple no se emula y no hay teclas que mostrar), `lua-basic` (REPL de
+Lua 5.5 con su prompt), las cinco `parallax-*` restantes (`delay_cube` con su estela de
+puntos, `font` con el letrero y su atlas, `raster_melt` con su JPEG decodificado impecable,
+`rotocube`, `sinus`), `parallax-serpent_dma` (la serpiente de esferas a 60 fps con HUD),
+`pthread-general` (sus dos paneles desde dos hilos), `pvr-modifier_volume_zclip` (el volumen
+recortado en la pared de ladrillos), `pvr-plasma`, los tres `pvr-pvrmark*` (su lluvia de
+polígonos, subiendo la escalera de carga — a los 8 s van por 2 M polígonos/s),
+`sound-ghettoplay-vorbis` (la interfaz completa sobre su piso 3D; sin disco no hay canciones
+que listar), `sound-hello-mp3` y `sound-hello-ogg` (reproduciendo desde su romdisk),
+`tsunami-banner` (el estandarte con su textura de fuego), `vmu-vmu_beep` (su UI completa),
+`vmu-vmu_game` y `vmu-vmu_pkg` — estas dos dicen **«VMU found. Press Start.»**, que es la
+tarjeta emulada haciéndose ver; lo que sigue es interactivo y queda fuera del banco a
+ciegas.
+
+**Tres son periféricos correctamente informados** y se reclasifican con los que piden
+hardware: `filesystem-sd-mke2fs` («Could not initialize the SD card»), `mie-basic` («No MIE
+device») y `rumble` («Please attach a rumbler!»). Dibujan su mensaje y esperan; eso es lo
+correcto.
+
+**Dos hacen su trabajo por la puerta 2D y salen a la BIOS**: `libdream-rgb888` (su imagen va
+por el framebuffer, que `--captura-gl` no ve — es territorio de F5) y `libdream-vmu`, que
+ahora enumera la tarjeta (antes: «No VMU present!») y termina; la captura de ambas es el
+remolino del boot ROM, el patrón documentado de «terminó sola».
+
+**Una es correcta en negro**: `vmu-vmu_lcd` dibuja en el LCD de la tarjeta, no en pantalla,
+y el LCD se acepta pero no se muestra. Su prima `libdream-lcd` (antes «no aplica») ahora
+encuentra la VMU y reporta `got error -2` en cada escritura: el driver de libdream de 2000
+no se conforma con la respuesta que a KOS le basta — residuo anotado.
+
+**Y un hallazgo, el único del barrido que apunta al emulador**: `cdrom-stream` reporta
+«Failed to request DMA transfer» **también con disco montado** (`--disco=` con el `.gdi` de
+CT2), así que no era la bandeja vacía. Es el flujo por DMA del GD pedido por el driver
+propio de KOS; queda como pendiente nuevo (C.10 en `docs/pendientes-plan.md`).
+
+De la lista vieja de 33, `plasma` y `roto` no son binarios del parque: son `pvr-plasma`
+(cubierta arriba) y `demos/roto` (vive en la vía E).
+
 ## Cómo se mide
 
 **Desde el 31 de julio de 2026, con `--captura-gl`**, no capturando la ventana:
@@ -737,15 +805,14 @@ texto, por la razón que explica la sección de MMU: no es del emulador.
 corresponde es el patrón XOR y esperar Start. Su `flashrom_get_region: unknown code '00111'`
 viene del contenido de `bios/flash.bin`, no de un fallo del emulador.
 
-### Dibujan; la captura tiene contenido pero no se revisó una por una (33)
+### Dibujan; la captura tiene contenido pero no se revisó una por una — **vaciada el 2026-08-07**
 
-`2ndmix`, `cdrom-stream`, `cpp-clock`, `cpp-dcplib`, `filesystem-sd-mke2fs`,
-`libdream-320x240`, `libdream-640x480`, `libdream-keyboard`, `libdream-rgb888`, `lua-basic`,
-`mie-basic`, `parallax-delay_cube`, `parallax-font`, `parallax-raster_melt`,
-`parallax-rotocube`, `parallax-serpent_dma`, `parallax-sinus`, `plasma`, `pthread-general`,
-`pvr-modifier_volume_zclip`, `pvr-plasma`, `pvr-pvrmark`, `pvr-pvrmark_strips`,
-`pvr-pvrmark_strips_direct`, `roto`, `rumble`, `sound-ghettoplay-vorbis`, `sound-hello-mp3`,
-`sound-hello-ogg`, `tsunami-banner`, `vmu-vmu_beep`, `vmu-vmu_game`, `vmu-vmu_pkg`.
+La lista de 33 quedó revisada entera, a ojo, en el barrido nocturno del 7 de agosto — ver
+«El barrido del 2026-08-07» arriba. Veintiséis pasan a verificadas, tres se reclasifican
+como periféricos correctamente informados (`filesystem-sd-mke2fs`, `mie-basic`, `rumble`),
+`vmu-vmu_lcd` es correcta en negro (dibuja en el LCD de la tarjeta), `libdream-rgb888` y
+`libdream-vmu` hacen su trabajo por el framebuffer y salen a la BIOS, y el único hallazgo
+contra el emulador es `cdrom-stream` (C.10).
 
 **`tsunami-genmenu` salió de esta lista el 1 de agosto de 2026**, y no por una regresión: la
 geometría llega perfectamente —160 tiras, 640 vértices, todos de tipo 3, con textura y color— pero
