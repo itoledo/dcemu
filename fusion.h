@@ -30,6 +30,10 @@
    Crazy Taxi ejecuta (el anillo de PC lo muestra asi). */
 #define FUSION_CT_ENTRADA	0x0C1583F8ul
 
+/* Y la del bloque con MMU: el blit de columnas de DOOM, en el espacio de
+   usuario de DCDOOM.EXE. Virtual: cada acceso traduce. */
+#define FUSION_CE_ENTRADA	0x0002EF3Eul
+
 extern int fusion_activa;
 
 void fusion_iniciar(void);
@@ -39,5 +43,10 @@ void fusion_iniciar(void);
    sigue derecho al bloque periodico) y 0 si la verificacion del codigo fallo
    y no toco nada (main_loop() despacha normal). */
 int fusion_lazo_ct(void);
+
+/* Idem para el bloque con MMU, desde FUSION_CE_ENTRADA. Corre con el salto de
+   excepcion armado: si un acceso falta, el longjmp sale por adentro y el
+   contexto ya lleva el estado pre-instruccion exacto (ver fusion.c). */
+int fusion_bloque_ce(void);
 
 #endif /* _FUSION_H_ */

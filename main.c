@@ -951,6 +951,20 @@ void main_loop(void)
 				{
 					WORD instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
 
+#ifdef DCEMU_FUSION
+					/* El bloque fusionado con MMU (fase 4 de
+					   rendimiento-plan-2.md). Corre con el salto armado y la
+					   instantanea invalidada: un acceso que falte sale por
+					   longjmp con el contexto ya en el estado pre-instruccion
+					   (fusion.c). La primera palabra se compara aca; el resto
+					   lo verifica el bloque. */
+					if (fusion_activa && PC == FUSION_CE_ENTRADA
+						&& instr == 0x6173
+						&& DebugMode == DBG_RUN && !traza_activa && !ubc_activa
+						&& fusion_bloque_ce())
+						;
+					else
+#endif
 					if (excepcion_elision && excepcion_instr_exenta[instr])
 					{
 						/*

@@ -474,3 +474,75 @@ la semántica de reejecución cuando un acceso falta a mitad de bloque — porqu
 donde el 1,6× puede achicarse y ahí es donde hace falta. La infraestructura de esta
 sonda (verificación de región, cortes exactos, salida al intérprete por instrucción) es
 exactamente la que ese prototipo reutiliza.
+
+---
+
+# La sonda con MMU: 2,2× por porción — mejor que en Katana (2026-08-07)
+
+El segundo prototipo corrió el mismo día. Se tradujo el bloque 2 de DCDoom
+(`0002ef3e`, 8,9 % de las instrucciones): **el blit de columnas de DOOM** — la textura,
+el mapa de color y el framebuffer, seis accesos traducidos por vuelta de 17
+instrucciones, en el espacio de usuario de DCDOOM.EXE. Trabajo real, que es la mitad que
+el lazo de espera de Crazy Taxi no podía medir.
+
+## Las dos respuestas que la sonda vino a buscar
+
+**1. La semántica de reejecución sin instantánea funciona, y es la «salida 3» de la fase
+5 lograda estáticamente.** Antes de cada acceso, el bloque vuelca al contexto los locales
+mutados, los ciclos acumulados y el PC de esa instrucción; la instantánea quedó
+invalidada a la entrada. Si el acceso falta —fallo de TLB, protección, primera escritura—
+el `longjmp` sale por adentro de la función, `falta_reponer()` no restaura nada y el
+contexto **ya es** el estado pre-instrucción exacto: la excepción entra igual que en el
+intérprete y la instrucción se reejecuta interpretada. El volcado (~10 stores) reemplaza
+a la copia de 176 bytes, que es justo lo que el recompilador necesitaba que fuera cierto.
+
+**2. La validez del código con MMU se resuelve barato.** El bloque vive en una página
+mínima, así que la traducción de la búsqueda de la entrada —que `main_loop()` ya hizo,
+con su falta posible por el camino de siempre— cubre las 17 palabras, y se verifican
+todas contra la tabla en cada entrada. Otro proceso en la misma VA, un parche, otra
+imagen: la comparación falla y el bloque vuelve al intérprete sin tocar nada.
+
+## El error que costó una tarde, y lo que enseña
+
+La primera corrida dio la captura y los cuadros idénticos pero **6,7 millones de
+instrucciones menos** que la línea base. Los demás contadores decidieron el diagnóstico
+en una corrida: pasos del ARM, faltas, traducciones y fallos de búsqueda **idénticos al
+dígito** — la ejecución era exacta y lo roto era el *conteo*: el contador se volcaba al
+salir, y una entrada que terminaba en falta salía por `longjmp` **por encima** del
+volcado. Y el intérprete cuenta el intento abortado (`run()` cuenta antes de despachar),
+así que el arreglo es contar el intento en el volcado pre-acceso, como hace `run()`.
+Con eso: **5 433 038 875 al dígito**, 1482 cuadros, 977 escenas, `198B396F…`.
+
+> Un desglose con varios contadores independientes convierte «diverge y no sé por qué»
+> en «diverge exactamente esto» en una corrida. Es la enésima vez que paga.
+
+## El A/B
+
+Mismo binario, cuatro pares alternados, banco de DCDoom. El 8,8 % de las instrucciones
+corrió fusionado (476,7 M en 2,09 M de entradas):
+
+| | ms reales | media |
+| --- | --- | --- |
+| con fusión | 48 254 / 47 541 / 47 823 / 48 127 | **47 936** |
+| sin | 50 220 / 50 470 / 50 172 / 50 352 | 50 304 |
+
+**4,7 % cubriendo el 8,8 %, rangos disjuntos.** Por porción: la parte fusionada pasa de
+9,3 a ~4,3 ns por instrucción — **2,2×, mejor que el 1,6× de Katana**, porque el
+intérprete vigilado paga más por instrucción (la instantánea de las que la conservan, el
+armado, `run()`) y el volcado de locales es mucho más barato que todo eso. La traducción
+por acceso se paga igual en los dos lados (el macro de la fase 3), así que el 2,2× ya la
+carga.
+
+(Los absolutos del binario de fusión van ~10 % debajo del árbol normal — disposición y
+código sin perfil; el A/B no lo sufre porque las dos ramas son la misma imagen. Si la
+sonda se promoviera a algo más, PGO se reentrena como siempre.)
+
+## Lo que esto cierra
+
+El riesgo grande de la línea del recompilador era la MMU — que la reejecución y la
+validez del código se comieran el factor. **Salió al revés: el guest con MMU es donde la
+fusión más paga.** Extrapolando con 2,2× sobre el 90 % del volumen que 91 bloques cubren
+en DCDoom: ~1,9× del intérprete — DCDoom pasaría de 0,80× a **~1,5×, cruzando consola con
+margen y a la vista de los 60 fps** (que piden 1,42×). La extrapolación es aritmética,
+no medida; pero las dos incógnitas que podían tumbarla —el costo de la reejecución y el
+de la validez— ya no son incógnitas.
