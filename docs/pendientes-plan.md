@@ -1879,14 +1879,39 @@ Las 33 se revisaron una por una, a ojo, en el barrido nocturno del 7 de agosto (
 la BIOS por la puerta 2D, `vmu_lcd` correcta en negro). La pasada destapó una cosa, como
 prometía — y es C.10.
 
-### C.10 — cdrom-stream: el flujo por DMA del driver propio de KOS
+### C.10 — cdrom-stream: el flujo por DMA del driver propio de KOS — **la parte de dcemu, resuelta el 2026-08-07**
 
-`cdrom-stream` reporta «Failed to request DMA transfer» **también con disco montado**
-(`--disco=` con el `.gdi` de CT2), así que no es la bandeja vacía. KOS pide el flujo por
-DMA de la lectora —el protocolo de stream que los hooks ya hablan para el boot ROM y para
-Windows CE— y algo de esa petición dcemu la contesta sin querer decirlo. Es el único
-hallazgo del barrido completo que apunta al emulador; el método es el de siempre
-(`--traza-mem` + el anillo de qué contesta la lectora).
+`cdrom-stream` reportaba «Failed to request DMA transfer» también con disco montado, así
+que no era la bandeja vacía. Eran dos cosas encadenadas, y la primera es la forma de fallo
+de siempre — **aceptado sin hacer nada y sin decirlo**:
+
+- **Los comandos de flujo viejos (28 DMA, 37 PIO) caían al `default` del SEND_COMMAND**: id
+  válido, petición «hecha», ningún flujo registrado — y el `REQ_DMA_TRANS` que seguía se
+  rechazaba contra un id que no era de ningún flujo. dcemu solo hablaba la pareja nueva
+  (38/39, la que usa Windows CE); KOS usa la vieja, con una diferencia de parámetros:
+  `{sector, cuántos}` sin el `adelanto`, así que leer la tercera word sería leer la pila
+  del guest. Ahora los cuatro comparten el bloque.
+- **El callback de fin de DMA (r7=5) compartía registro con el PIO (r7=11)** y nunca se
+  invocaba. KOS registra los dos a la vez — el DMA desde su manejador de la interrupción
+  G1, una vez por pedazo — y espera la invocación. Ahora tiene registro propio y el
+  MAINLOOP lo entrega con el mismo mecanismo del PIO (PC al callback, PR intacto).
+  Verificado que wsegacd registra por r7=11: DCDoom conserva su hash canónico byte a byte.
+
+Con eso **el flujo entero corre**: la traza muestra el registro (8 sectores desde 45150),
+las dos mitades de 8192 a sus destinos físicos, los `CHECK_DMA_TRANS` contestando 8192 y 0,
+y el COMPLETED cobrado una sola vez. Los progresos que la demo verifica pasan todos.
+
+**El rojo restante es de KOS, no de dcemu**: `stream_enabled` no se pone en verdadero en
+ningún camino de su `cdrom.c` — verificado contra el master de upstream, idéntico — así que
+su propio manejador de interrupción nunca llama al r7=5 (cero apariciones en la traza) y el
+conteo de callbacks de la demo no puede ser distinto de cero **ni en una consola real** con
+el KOS actual. Misma categoría que `hello-opus`: rota tal como se distribuye. La entrega
+del callback queda implementada y dormida hasta que KOS corrija su bandera; vale la pena
+reportarlo upstream.
+
+Observación anotada de paso: el `GETTOC` con la bandeja vacía contesta una TOC — la demo
+pasó su «No disc present» sin disco. Una lectora real contestaría error; ningún guest del
+parque depende de eso hoy.
 
 ### C.9 — kgl-tunnel: la niebla salió, el texto no
 

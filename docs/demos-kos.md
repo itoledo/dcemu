@@ -151,7 +151,12 @@ no se conforma con la respuesta que a KOS le basta — residuo anotado.
 **Y un hallazgo, el único del barrido que apunta al emulador**: `cdrom-stream` reporta
 «Failed to request DMA transfer» **también con disco montado** (`--disco=` con el `.gdi` de
 CT2), así que no era la bandeja vacía. Es el flujo por DMA del GD pedido por el driver
-propio de KOS; queda como pendiente nuevo (C.10 en `docs/pendientes-plan.md`).
+propio de KOS; quedó como C.10 y **la parte de dcemu se resolvió el mismo día**: los
+comandos de flujo viejos (28/37) caían al `default` del hook — id válido, ningún flujo
+registrado. Con ellos cableados el flujo entero corre y todos los chequeos de tamaño de la
+demo pasan; el rojo que queda («callback fails: 0») es **un bug del propio KOS**
+(`stream_enabled` nunca se pone en verdadero, verificado contra upstream), que impide el
+conteo de callbacks también en una consola real. Ver C.10 en `docs/pendientes-plan.md`.
 
 De la lista vieja de 33, `plasma` y `roto` no son binarios del parque: son `pvr-plasma`
 (cubierta arriba) y `demos/roto` (vive en la vía E).

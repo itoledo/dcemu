@@ -252,6 +252,15 @@ de más de una página tiene que trocearse (`memwrite_paginado()`: `memwrite` tr
 llamada, y una pieza de 36 KB roció datos del WAD sobre el propio directorio de páginas del
 proceso — CE se detuvo con "Halting system" por excepción anidada).
 
+**KOS habla la pareja vieja de esos comandos** (28 DMA / 37 PIO, `cdrom_stream_start`), que es
+la misma máquina con dos diferencias (2026-08-07, C.10): sus parámetros son `{sector, cuántos}`
+**sin** el `adelanto` — leer la tercera word sería leer la pila del guest — y su callback de fin
+de DMA llega por r7=5, que ahora tiene registro propio (compartía variable con el PIO de r7=11 y
+KOS registra los dos a la vez) y se entrega en el MAINLOOP por el mismo mecanismo. Esa entrega
+está implementada y **dormida**: el `cdrom.c` de KOS nunca enciende su `stream_enabled`
+(verificado contra upstream), así que su manejador jamás llama al r7=5 — el conteo de callbacks
+de `cdrom-stream` falla también en consola real, y todo lo demás de la demo pasa.
+
 ### `hack_gdrom()`
 
 Sirve `GDROM_SEND_COMMAND` (lecturas de sector, TOC) directamente desde la imagen montada por

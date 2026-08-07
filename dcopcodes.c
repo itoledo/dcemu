@@ -47,10 +47,19 @@ static DWORD multi_sector = 0;		/* proximo sector del flujo */
 static DWORD multi_desplaz = 0;		/* offset dentro de ese sector */
 static DWORD multi_restante = 0;	/* bytes que faltan entregar */
 static DWORD multi_total = 0;
-static DWORD multi_callback = 0;	/* lo registra G1_DMA_END (r7=5) o
-									   SET_PIO_CALLBACK (r7=11) */
+static DWORD multi_callback = 0;	/* lo registra SET_PIO_CALLBACK (r7=11) */
 static DWORD multi_callback_arg = 0;
-static int   multi_es_pio = 0;		/* el flujo vino del 39 y no del 38 */
+static int   multi_es_pio = 0;		/* el flujo vino de un PIO (37/39) */
+
+/* El callback de fin de DMA (r7=5) va en su propio registro: KOS registra los
+   DOS a la vez -- el PIO por r7=11 al armar el callback y el DMA por r7=5
+   desde su manejador de la interrupcion G1, una vez por pedazo -- y con un
+   solo registro compartido se pisaban. El aviso se entrega en el MAINLOOP,
+   como el PIO: dma_cb_pendiente marca que un pedazo DMA termino y su callback
+   no se cobro. */
+static DWORD dma_callback = 0;
+static DWORD dma_callback_arg = 0;
+static int   dma_cb_pendiente = 0;
 
 /* El flujo ya se vacio y una consulta lo vio, pero el COMPLETED todavia no se
    cobro. Existe porque el driver de la BIOS entrega el COMPLETED UNA SOLA VEZ
@@ -607,6 +616,8 @@ void hack_gdrom()
 				pio_pedido     = 0;
 				pio_hecho      = 0;
 				multi_completo = 0;
+				dma_callback     = 0;
+				dma_cb_pendiente = 0;
 				break;
 
 				case 30: // REQ_MODE: los parametros de la lectora, 32 bytes
@@ -797,37 +808,53 @@ void hack_gdrom()
 				}
 				break;
 
+				case 28: // GDCC_DMAREAD_STREAM: el flujo viejo, sin adelanto
+				case 37: // GDCC_PIOREAD_STREAM: idem, tirado con la CPU
 				case 38: // GDCC_MULTI_DMAREAD: lectura en flujo, sin destino
 				case 39: // GDCC_MULTI_PIOREAD: lo mismo, pero se tira con la CPU
 				{
-					/* Los dos dejan el mismo estado: la peticion queda en
-					   CONTINUE y el guest tira de a pedazos -- por r7=6 el 38,
-					   por r7=12 el 39. El "adelanto" es el Next Address del
+					/* Los cuatro dejan el mismo estado: la peticion queda en
+					   CONTINUE y el guest tira de a pedazos -- por r7=6 los DMA,
+					   por r7=12 los PIO. El "adelanto" es el Next Address del
 					   CD_READ2 (31h) del protocolo SPI (docs/cdif131e.pdf,
 					   8.2): la posicion de pre-lectura, cuyo error no se
 					   informa en este comando; aca no hay nada que adelantar.
-					   DCDoom recorre DOOM.WAD entero por el 39. */
+					   DCDoom recorre DOOM.WAD entero por el 39.
+
+					   28 y 37 son la pareja vieja de 38 y 39, y la diferencia
+					   visible aqui es una sola: sus parametros son {sector,
+					   cuantos} y no llevan adelanto, asi que leer la tercera
+					   word seria leer la pila del guest. Es lo que usa el
+					   driver de KOS (cdrom_stream_start); el comando caia al
+					   default -- id valido, peticion "hecha", ningun flujo
+					   registrado -- y el REQ_DMA_TRANS que seguia se rechazaba
+					   contra un id que no era de ningun flujo. cdrom-stream lo
+					   dijo con todas las letras (C.10). */
 					int		secstart = 0, secnum = 0;
+					int		viejo = (R(4) == 28 || R(4) == 37);
 					DWORD	adelanto = 0;	/* seekAhead; solo Windows CE lo pasa */
 
 					memread(R(5), &secstart, sizeof(int));
 					memread(R(5) + 4, &secnum, sizeof(int));
-					memread(R(5) + 8, &adelanto, sizeof(DWORD));
+
+					if (!viejo)
+						memread(R(5) + 8, &adelanto, sizeof(DWORD));
 
 					multi_id       = com;
 					multi_sector   = (DWORD) secstart;
 					multi_desplaz  = 0;
 					multi_restante = 2048 * (DWORD) secnum;
 					multi_total    = multi_restante;
-					multi_es_pio   = (R(4) == 39);
+					multi_es_pio   = (R(4) == 39 || R(4) == 37);
 					multi_completo = 0;
 					com_multi_ultima = com;
 					com_transferido = 0;
 
 					if (traza_activa)
-						fprintf(stderr, "hack: MULTI_%sREAD %d sectores desde %d"
+						fprintf(stderr, "hack: %s %d sectores desde %d"
 							" (flujo, adelanto=%lu)\n",
-							(R(4) == 38) ? "DMA" : "PIO",
+							multi_es_pio ? (viejo ? "PIOREAD_STREAM" : "MULTI_PIOREAD")
+							             : (viejo ? "DMAREAD_STREAM" : "MULTI_DMAREAD"),
 							secnum, secstart, (unsigned long) adelanto);
 				}
 				break;
@@ -1093,12 +1120,17 @@ void hack_gdrom()
 			R(0) = 0;
 			break;
 
-			case 5: // GDROM_G1_DMA_END: registrar el callback de fin de DMA
-			/* En la consola el driver lo llama cuando termina un pedazo del
-			   flujo; aca el aviso va por la interrupcion (ASIC_EVT_GDROM_DMA)
-			   que REQ_DMA_TRANS levanta, asi que solo se registra. */
-			multi_callback     = R(4);
-			multi_callback_arg = R(5);
+			case 5: // GDROM_G1_DMA_END: el callback de fin de DMA
+			/* Windows CE lo registra una vez y espera la interrupcion
+			   (ASIC_EVT_GDROM_DMA) por su cuenta. KOS lo llama DESDE su
+			   manejador de esa interrupcion, una vez por pedazo del flujo, y
+			   espera que el driver invoque el callback -- cdrom-stream cuenta
+			   las invocaciones y con cero da el test por fallado (C.10). Se
+			   registra aqui y se entrega en el proximo MAINLOOP, el mismo
+			   modelo del callback PIO: mismo hilo y mismo proceso que piden el
+			   pedazo, que es lo que hace valida la VA del argumento. */
+			dma_callback     = R(4);
+			dma_callback_arg = R(5);
 			R(0) = 0;
 			break;
 
@@ -1166,6 +1198,13 @@ void hack_gdrom()
 				   instante, la interrupcion le gana al driver que vuelve del
 				   disparo (la leccion del CH2 DMA con Virtua Tennis). */
 				intc_add(ASIC_EVT_GDROM_DMA, tam / 200 + 10);
+
+				/* El pedazo termino: su callback (r7=5) queda por entregar en
+				   el proximo MAINLOOP. KOS lo registra recien DENTRO de su
+				   manejador de la interrupcion de arriba, asi que a esta
+				   altura puede no existir todavia; por eso es una marca y no
+				   una llamada. */
+				dma_cb_pendiente = 1;
 
 				/* El pedazo que vacia el flujo termina el COMANDO, y el fin de
 				   comando es la interrupcion externa del GD-ROM, como en la
@@ -1445,6 +1484,33 @@ void hack_gdrom()
 			PC   = multi_callback;
 			return;
 		}
+	}
+
+	/* El aviso de fin de pedazo DMA, por el mismo camino que el PIO de
+	   arriba: un MAINLOOP con un pedazo cobrable "llama" al callback que
+	   r7=5 registro, con PR intacto para que su RTS vuelva al llamador del
+	   MAINLOOP. Windows CE no pasa por aca (registra el callback pero su
+	   flujo es el PIO del 39); KOS cuenta estas invocaciones. */
+	if (R(6) == 0 && R(7) == 2 && dma_cb_pendiente && dma_callback != 0)
+	{
+		dma_cb_pendiente = 0;
+
+		if (traza_activa)
+		{
+			static int vistos = 0;
+
+			if (vistos < 24)
+			{
+				vistos++;
+				fprintf(stderr, "hack: MAINLOOP llama al callback de fin de"
+					" DMA %08lx(%08lx)\n", (unsigned long) dma_callback,
+					(unsigned long) dma_callback_arg);
+			}
+		}
+
+		R(4) = dma_callback_arg;
+		PC   = dma_callback;
+		return;
 	}
 
 	PC = PR;
