@@ -88,6 +88,15 @@ typedef struct
 	void *					h_leer32;
 	void *					h_leer8s;
 	void *					h_escribir8;
+	/* PTEH y MMUCR viven adentro de regmem, que es un calloc de 16 MB: en
+	   Windows una reserva de ese tamano no sale del monton chico y puede caer
+	   a terabytes de la imagen, con lo cual no hay desplazamiento de 32 bits
+	   desde el contexto que los alcance. Se guardan los punteros aca -- una
+	   carga mas por acceso, sobre esta misma linea de cache -- en vez de
+	   hornear la direccion. Lo descubrio el emisor negandose a emitir el
+	   bloque, que es exactamente para lo que existe esa comprobacion. */
+	void *					p_pteh;
+	void *					p_mmucr;
 } jit_estado_t;
 
 static jit_estado_t jit_estado;
@@ -295,6 +304,19 @@ static int D(const void * p)
 #define D_BASE_LEC	D(&mem_base_lectura[0])
 #define D_BASE_ESC	D(&mem_base_escritura[0])
 
+/* Lo que la traduccion emitida en linea mira. PTEH y MMUCR son punteros a
+   regmem, ligados una sola vez en regmem_setup() --que corre mucho antes que
+   jit_iniciar()--, asi que lo que se hornea es la direccion a la que apuntan y
+   no una segunda indireccion en el camino caliente. */
+#define D_MACRO_PROBAR	D(&mmu_macro_probar)
+#define D_DATOS_MASCARA	D(&mmu_datos_mascara)
+#define D_MMU_DATOS		D(&mmu_datos[0])
+#define D_UTLB_GEN		D(&mmu_utlb_gen[0])
+#define D_P_PTEH		D(&jit_estado.p_pteh)
+#define D_P_MMUCR		D(&jit_estado.p_mmucr)
+#define D_PERF_TRADUCE	D(&perf_mmu_traduce)
+#define D_PERF_ACIERTO	D(&perf_mmu_datos_acierto)
+
 /* ------------------------------------------------------------------------ */
 /* El generador                                                             */
 /* ------------------------------------------------------------------------ */
@@ -420,37 +442,203 @@ static void gen_llamar(jit_gen * g, const void * destino, int disp_tabla)
 */
 typedef struct
 {
-	x64_parche	lento[4];
+	x64_parche	lento[12];
 	int			n_lento;
+	int			corto;		/* los saltos al camino lento caben en rel8 */
+	x64_reg		fis;		/* que registro lleva la direccion fisica */
 	x64_parche	listo;
 } jit_acceso;
 
-/* La direccion va en ECX. `alineacion` es la mascara que tiene que dar cero
-   (0 para los accesos de un byte, que no la piden). */
+/* Los tres modos de un acceso. PLANO y MMU son politica, no correccion: el
+   ayudante siempre esta detras y decide todo lo que el camino rapido no cubre.
+   Con la MMU encendida el camino plano nunca se tomaria, y con ella apagada la
+   traduccion emitida seria codigo muerto -- por eso son modos y no uno solo.
+   En la fase 1 el modo sale de la clave del bloque; aqui va a mano, que con dos
+   bloques escritos a mano es lo mismo. */
+#define JIT_ACC_LENTO	0
+#define JIT_ACC_PLANO	1
+#define JIT_ACC_MMU		2
+
+static x64_parche gen_guarda(jit_gen * g, jit_acceso * a, x64_cond cc)
+{
+	return a->corto ? jit_x64_jcc_corto(&g->e, cc) : jit_x64_jcc(&g->e, cc);
+}
+
+/*
+	La traduccion de datos emitida en linea: el acierto de mmu_datos[], que es
+	MMU_TRADUCIR_EN_SITIO de mmu.h copiado condicion por condicion.
+
+	**Lo que lo hace correcto y no una segunda implementacion de la MMU** es que
+	solo se emite el ACIERTO: las cuatro comparaciones de la etiqueta, el
+	permiso, la VPN y la generacion, el avance de URC y la composicion de la
+	fisica. Cualquiera que falle cae al ayudante, que expande el macro entero y
+	de ahi a mmu_traducir(), que decide todo lo demas -- fallos, permisos,
+	primera escritura, P1/P2/P4 -- como siempre.
+
+	Los dos efectos que **no** son el resultado y que igual hay que reproducir,
+	porque de ellos depende que la ejecucion siga siendo la misma:
+
+	 - **URC avanza tambien en el acierto.** De URC depende que entrada de la
+	   UTLB reemplaza el LDTLB del guest, o sea su camino de ejecucion. Un
+	   acierto que no lo avance no se nota en una captura: se nota mil millones
+	   de instrucciones despues.
+	 - **los contadores de --perf se incrementan igual**, o la verificacion de
+	   trabajo entre corridas cambia de significado con el interruptor. Van
+	   especializados al emitir, como el contador de instrucciones.
+
+	La direccion virtual queda intacta en ECX --el camino lento la necesita-- y
+	la fisica sale en R11D.
+*/
+static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
+{
+	x64_parche sin_urb;
+	const int  DAT = D_MMU_DATOS;
+
+	/* if (!mmu_macro_probar) -> mmu_traducir() */
+	jit_x64_cmp_mi(&g->e, CTX, D_MACRO_PROBAR, 0);
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
+
+	/* r9 = ((dir >> 12) & mmu_datos_mascara) * sizeof(mmu_datos_t), en bytes:
+	   el elemento no mide una potencia de dos, asi que el indice viaja ya
+	   multiplicado y la escala del SIB es 1. */
+	jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
+	jit_x64_shr_ri(&g->e, X64_RAX, 12);
+	jit_x64_and_rm(&g->e, X64_RAX, CTX, D_DATOS_MASCARA);
+	jit_x64_imul_rri(&g->e, X64_RAX, X64_RAX, (int) sizeof(mmu_datos_t));
+	jit_x64_mov_rr(&g->e, X64_R9, X64_RAX);
+
+	/* edx = ASID_DE(*PTEH) | ((SR_MD == 0) << 8) | MMU_CACHE_VALIDA */
+	jit_x64_mov64_rm(&g->e, X64_R8, CTX, D_P_PTEH);
+	jit_x64_mov_rm(&g->e, X64_RDX, X64_R8, 0);
+	jit_x64_and_ri(&g->e, X64_RDX, 0xFF);
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_SR);
+	jit_x64_shr_ri(&g->e, X64_RAX, 30);			/* MD es el bit 30 */
+	jit_x64_and_ri(&g->e, X64_RAX, 1);
+	jit_x64_xor_ri(&g->e, X64_RAX, 1);
+	jit_x64_shl_ri(&g->e, X64_RAX, 8);
+	jit_x64_or_ri(&g->e, X64_RDX, (int) MMU_CACHE_VALIDA);
+	jit_x64_add_rr(&g->e, X64_RDX, X64_RAX);	/* los bits son disjuntos */
+
+	/* etiqueta */
+	jit_x64_cmp_rm_idx(&g->e, X64_RDX, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, etiqueta));
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+
+	/* permisos */
+	jit_x64_test_mi_idx(&g->e, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, permisos), (int) permiso_bit);
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
+
+	/* (dir & ~mascara) == vpn */
+	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, mascara));
+	jit_x64_not_r(&g->e, X64_RAX);
+	jit_x64_and_rr(&g->e, X64_RAX, X64_RCX);
+	jit_x64_cmp_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, vpn));
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+
+	/* mmu_utlb_gen[entrada] == gen */
+	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, entrada));
+	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_RAX, 4, D_UTLB_GEN);
+	jit_x64_cmp_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, gen));
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+
+	/* --- MMU_URC_AVANZAR() --- */
+	jit_x64_mov64_rm(&g->e, X64_R8, CTX, D_P_MMUCR);
+	jit_x64_mov_rm(&g->e, X64_RAX, X64_R8, 0);
+	jit_x64_mov_rr(&g->e, X64_RDX, X64_RAX);
+	jit_x64_shr_ri(&g->e, X64_RDX, 10);
+	jit_x64_and_ri(&g->e, X64_RDX, 0x3F);
+	jit_x64_add_ri(&g->e, X64_RDX, 1);
+	jit_x64_and_ri(&g->e, X64_RDX, 0x3F);		/* _urc */
+	jit_x64_mov_rr(&g->e, X64_R10, X64_RAX);
+	jit_x64_shr_ri(&g->e, X64_R10, 18);
+	jit_x64_and_ri(&g->e, X64_R10, 0x3F);		/* URB */
+	jit_x64_test_rr(&g->e, X64_R10, X64_R10);
+	sin_urb = jit_x64_jcc_corto(&g->e, X64_E);
+	jit_x64_cmp_rr(&g->e, X64_RDX, X64_R10);
+	{
+		x64_parche distinto = jit_x64_jcc_corto(&g->e, X64_NE);
+
+		jit_x64_xor_rr(&g->e, X64_RDX, X64_RDX);
+		jit_x64_fijar(&g->e, distinto);
+	}
+	jit_x64_fijar(&g->e, sin_urb);
+	jit_x64_and_ri(&g->e, X64_RAX, (int) 0xFFFF03FFul);	/* ~0x0000FC00 */
+	jit_x64_shl_ri(&g->e, X64_RDX, 10);
+	jit_x64_add_rr(&g->e, X64_RAX, X64_RDX);
+	jit_x64_mov_mr(&g->e, X64_R8, 0, X64_RAX);
+
+	if (perf_activa)
+	{
+		jit_x64_add64_mi(&g->e, CTX, D_PERF_TRADUCE, 1);
+		jit_x64_add64_mi(&g->e, CTX, D_PERF_ACIERTO, 1);
+	}
+
+	/* r11d = base | (dir & mascara) */
+	jit_x64_mov_rm_idx(&g->e, X64_R11, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, mascara));
+	jit_x64_and_rr(&g->e, X64_R11, X64_RCX);
+	jit_x64_or_rm_idx(&g->e, X64_R11, CTX, X64_R9, 1,
+		DAT + (int) offsetof(mmu_datos_t, base));
+}
+
+/*
+	El camino rapido de memread/memwrite, emitido en linea.
+
+	**Existe porque la fase 0 lo midio.** El plan daba por sentado que la
+	llamada al ayudante no era el costo; el A/B de los bloques dijo lo
+	contrario: en Crazy Taxi --que no tiene MMU, ni sincronizaciones, ni
+	registros fuera de los cacheados-- la unica diferencia estructural con el C
+	de la sonda es que el C **expande el macro** y el JIT **llamaba**, y eso
+	valia 2,2 ns (unos 9 ciclos) por acceso. Con 0,5 accesos por instruccion,
+	la mitad de la ganancia del bloque.
+
+	Lo que se emite es exactamente el caso rapido del macro y nada mas:
+	alineacion, UBC de operandos apagado, la traduccion si corresponde, y la
+	zona con base directa en mem_base_lectura/mem_base_escritura. **Cualquier
+	otra cosa cae al ayudante**, que es el macro entero -- watchpoints, UBC,
+	camino lento, el error de direccion, mmu_traducir() --, asi que la semantica
+	sigue siendo la de mem.h.
+
+	Las pruebas de guarda son comparaciones contra cero perfectamente predichas
+	y sobre lineas de cache calientes; el macro de mem.h hace las mismas.
+*/
 static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
-	int alineacion)
+	int alineacion, int modo)
 {
 	a->n_lento = 0;
+	a->corto   = (modo != JIT_ACC_MMU);		/* con la traduccion no cabe rel8 */
+	a->fis     = (modo == JIT_ACC_MMU) ? X64_R11 : X64_RCX;
 
 	if (alineacion)
 	{
 		jit_x64_test_ri8(&g->e, X64_RCX, alineacion);
-		a->lento[a->n_lento++] = jit_x64_jcc_corto(&g->e, X64_NE);
+		a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
 	}
 
 	jit_x64_cmp_mi(&g->e, CTX, D_MMU, 0);
-	a->lento[a->n_lento++] = jit_x64_jcc_corto(&g->e, X64_NE);
+	a->lento[a->n_lento++] = gen_guarda(g, a,
+		(modo == JIT_ACC_MMU) ? X64_E : X64_NE);
+
 	jit_x64_cmp_mi(&g->e, CTX, D_UBC_OP, 0);
-	a->lento[a->n_lento++] = jit_x64_jcc_corto(&g->e, X64_NE);
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+
+	if (modo == JIT_ACC_MMU)
+		gen_traducir_mmu(g, a,
+			(disp_tabla == D_BASE_ESC) ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER);
 
 	/* rax = la base de la zona; r8 = el desplazamiento dentro de ella. */
-	jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
+	jit_x64_mov_rr(&g->e, X64_RAX, a->fis);
 	jit_x64_shr_ri(&g->e, X64_RAX, 24);
 	jit_x64_mov64_rm_idx(&g->e, X64_RAX, CTX, X64_RAX, 8, disp_tabla);
 	jit_x64_test64_rr(&g->e, X64_RAX, X64_RAX);
-	a->lento[a->n_lento++] = jit_x64_jcc_corto(&g->e, X64_E);
+	a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
 
-	jit_x64_mov_rr(&g->e, X64_R8, X64_RCX);
+	jit_x64_mov_rr(&g->e, X64_R8, a->fis);
 	jit_x64_and_ri(&g->e, X64_R8, 0x00FFFFFF);
 }
 
@@ -466,49 +654,45 @@ static void gen_rapido_fin(jit_gen * g, jit_acceso * a)
 }
 
 /*
-	Los tres accesos que los bloques de la fase 0 usan. La direccion llega en
-	ECX y el resultado sale en EAX -- los dos caminos convergen ahi, que es lo
-	que permite que el punto de union sea uno solo.
-
-	`en_linea` es politica, no correccion: con la MMU encendida el camino rapido
-	nunca se toma y sus guardas serian costo puro, asi que el bloque con MMU no
-	lo pide. En la fase 1 esa decision sale de la clave de modo del bloque (que
-	el plan ya lista entre sus metadatos), no de una bandera puesta a mano.
+	Los tres accesos que los bloques de la fase 0 usan. La direccion virtual
+	llega en ECX --y ahi se queda, porque el camino lento la necesita sin
+	traducir-- y el resultado sale en EAX: los dos caminos convergen ahi, que es
+	lo que permite que el punto de union sea uno solo.
 */
-static void gen_leer32(jit_gen * g, x64_reg dst, int en_linea)
+static void gen_leer32(jit_gen * g, x64_reg dst, int modo)
 {
 	jit_acceso a;
 
-	if (en_linea)
+	if (modo != JIT_ACC_LENTO)
 	{
-		gen_rapido_inicio(g, &a, D_BASE_LEC, 3);
+		gen_rapido_inicio(g, &a, D_BASE_LEC, 3, modo);
 		jit_x64_mov_rm_idx(&g->e, X64_RAX, X64_RAX, X64_R8, 1, 0);
 		gen_rapido_fin(g, &a);
 	}
 
 	gen_llamar(g, (const void *) jit_leer32, D_LEER32);
 
-	if (en_linea)
+	if (modo != JIT_ACC_LENTO)
 		jit_x64_fijar(&g->e, a.listo);
 
 	if (dst != X64_RAX)
 		jit_x64_mov_rr(&g->e, dst, X64_RAX);
 }
 
-static void gen_leer8s(jit_gen * g, x64_reg dst, int en_linea)
+static void gen_leer8s(jit_gen * g, x64_reg dst, int modo)
 {
 	jit_acceso a;
 
-	if (en_linea)
+	if (modo != JIT_ACC_LENTO)
 	{
-		gen_rapido_inicio(g, &a, D_BASE_LEC, 0);
+		gen_rapido_inicio(g, &a, D_BASE_LEC, 0, modo);
 		jit_x64_movsx_b_rm_idx(&g->e, X64_RAX, X64_RAX, X64_R8, 1, 0);
 		gen_rapido_fin(g, &a);
 	}
 
 	gen_llamar(g, (const void *) jit_leer8s, D_LEER8S);
 
-	if (en_linea)
+	if (modo != JIT_ACC_LENTO)
 		jit_x64_fijar(&g->e, a.listo);
 
 	if (dst != X64_RAX)
@@ -517,13 +701,13 @@ static void gen_leer8s(jit_gen * g, x64_reg dst, int en_linea)
 
 /* El valor viene en `valor`, que tiene que ser no volatil: en el camino lento
    se copia a EDX recien antes de la llamada. */
-static void gen_escribir8(jit_gen * g, x64_reg valor, int en_linea)
+static void gen_escribir8(jit_gen * g, x64_reg valor, int modo)
 {
 	jit_acceso a;
 
-	if (en_linea)
+	if (modo != JIT_ACC_LENTO)
 	{
-		gen_rapido_inicio(g, &a, D_BASE_ESC, 0);
+		gen_rapido_inicio(g, &a, D_BASE_ESC, 0, modo);
 		jit_x64_mov8_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, valor);
 		gen_rapido_fin(g, &a);
 	}
@@ -531,7 +715,7 @@ static void gen_escribir8(jit_gen * g, x64_reg valor, int en_linea)
 	jit_x64_mov_rr(&g->e, X64_RDX, valor);
 	gen_llamar(g, (const void *) jit_escribir8, D_ESCR8);
 
-	if (en_linea)
+	if (modo != JIT_ACC_LENTO)
 		jit_x64_fijar(&g->e, a.listo);
 }
 
@@ -640,7 +824,7 @@ static const WORD  jit_ct_extra_palabra[2] = { 0x000B, 0x0009 };
 static void gen_ct_leer_const(jit_gen * g, DWORD dir, int rn)
 {
 	jit_x64_mov_ri(&g->e, X64_RCX, dir);
-	gen_leer32(g, A(rn), 1);
+	gen_leer32(g, A(rn), JIT_ACC_PLANO);
 }
 
 /* MOV.L @Rm, Rn, con la guarda de alineacion: una direccion desalineada
@@ -656,7 +840,7 @@ static void gen_ct_leer_ind(jit_gen * g, int rm, int rn, DWORD pc_esta)
 	jit_x64_fijar(&g->e, ok);
 
 	jit_x64_mov_rr(&g->e, X64_RCX, A(rm));
-	gen_leer32(g, A(rn), 1);
+	gen_leer32(g, A(rn), JIT_ACC_PLANO);
 }
 
 static void gen_bloque_ct(jit_gen * g)
@@ -692,7 +876,7 @@ static void gen_bloque_ct(jit_gen * g)
 	jit_x64_mov_mi(&g->e, CTX, O_PR, 0x0C158400ul);
 	jit_x64_mov_rr(&g->e, X64_RCX, A(3));
 	jit_x64_add_ri(&g->e, X64_RCX, 4);
-	gen_leer32(g, A(4), 1);
+	gen_leer32(g, A(4), JIT_ACC_PLANO);
 	jit_x64_add_ri(&g->e, CYC, 3 + 1);
 	jit_x64_add_ri(&g->e, N, 2);
 	gen_corte(g, 0x0C156C30ul);
@@ -820,7 +1004,7 @@ static void gen_bloque_ce(jit_gen * g)
 	/* 0002ef40: MOV.L @R11, R3 */
 	gen_sync(g, 0x0002EF40ul);
 	jit_x64_mov_rm(&g->e, X64_RCX, CTX, O_R(11));
-	gen_leer32(g, A(3), 0);
+	gen_leer32(g, A(3), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF42ul);
 
@@ -831,7 +1015,7 @@ static void gen_bloque_ce(jit_gen * g)
 	/* 0002ef44: MOV.L @R8, R2 */
 	gen_sync(g, 0x0002EF44ul);
 	jit_x64_mov_rm(&g->e, X64_RCX, CTX, O_R(8));
-	gen_leer32(g, A(2), 0);
+	gen_leer32(g, A(2), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF46ul);
 
@@ -847,7 +1031,7 @@ static void gen_bloque_ce(jit_gen * g)
 	gen_sync(g, 0x0002EF4Aul);
 	jit_x64_mov_rr(&g->e, X64_RCX, A(0));
 	jit_x64_add_rr(&g->e, X64_RCX, A(3));
-	gen_leer8s(g, A(3), 0);
+	gen_leer8s(g, A(3), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF4Cul);
 
@@ -859,7 +1043,7 @@ static void gen_bloque_ce(jit_gen * g)
 	gen_sync(g, 0x0002EF4Eul);
 	jit_x64_mov_rr(&g->e, X64_RCX, A(0));
 	jit_x64_add_rr(&g->e, X64_RCX, A(2));
-	gen_leer8s(g, A(2), 0);
+	gen_leer8s(g, A(2), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF50ul);
 
@@ -872,14 +1056,14 @@ static void gen_bloque_ce(jit_gen * g)
 	   la primera escritura de la pagina, y por eso el volcado va antes. */
 	gen_sync(g, 0x0002EF52ul);
 	jit_x64_mov_rr(&g->e, X64_RCX, A(4));
-	gen_escribir8(g, A(2), 0);
+	gen_escribir8(g, A(2), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF54ul);
 
 	/* 0002ef54: MOV.L @R10, R1 */
 	gen_sync(g, 0x0002EF54ul);
 	jit_x64_mov_rm(&g->e, X64_RCX, CTX, O_R(10));
-	gen_leer32(g, A(1), 0);
+	gen_leer32(g, A(1), JIT_ACC_MMU);
 	jit_x64_add_ri(&g->e, CYC, 2);
 	gen_corte(g, 0x0002EF56ul);
 
@@ -962,7 +1146,13 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 	generar(&g);
 
 	if (g.e.desborde || !jit_disp_ok)
+	{
+		fprintf(stderr, "jit: el bloque %08lx no se emitio (desborde=%d,"
+			" desplazamientos=%d, %u bytes de %u)\n",
+			(unsigned long) pc, g.e.desborde, jit_disp_ok,
+			jit_x64_largo(&g.e), disponible);
 		return 0;
+	}
 
 	/* Los dos bloques tienen que compartir el prologo, porque comparten la
 	   informacion de desenrollado. */
@@ -1124,6 +1314,8 @@ void jit_iniciar(void)
 	jit_estado.h_leer32     = (void *) jit_leer32;
 	jit_estado.h_leer8s     = (void *) jit_leer8s;
 	jit_estado.h_escribir8  = (void *) jit_escribir8;
+	jit_estado.p_pteh       = (void *) PTEH;
+	jit_estado.p_mmucr      = (void *) MMUCR;
 
 	if (!jit_emitir(JIT_CT_ENTRADA, gen_bloque_ct,
 			jit_ct_palabras, 20,

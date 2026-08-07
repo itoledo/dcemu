@@ -113,12 +113,33 @@ void jit_x64_add_rm  (x64_emisor * e, x64_reg dst, x64_reg base, int disp);
 void jit_x64_add_mr  (x64_emisor * e, x64_reg base, int disp, x64_reg src);
 void jit_x64_add_mi  (x64_emisor * e, x64_reg base, int disp, int imm);
 void jit_x64_and_ri  (x64_emisor * e, x64_reg dst, int imm);
+void jit_x64_or_ri   (x64_emisor * e, x64_reg dst, int imm);
+void jit_x64_xor_ri  (x64_emisor * e, x64_reg dst, int imm);
+void jit_x64_and_rr  (x64_emisor * e, x64_reg dst, x64_reg src);
+void jit_x64_and_rm  (x64_emisor * e, x64_reg dst, x64_reg base, int disp);
+void jit_x64_or_rm   (x64_emisor * e, x64_reg dst, x64_reg base, int disp);
+void jit_x64_not_r   (x64_emisor * e, x64_reg dst);
+void jit_x64_shl_ri  (x64_emisor * e, x64_reg dst, int cuenta);
+void jit_x64_imul_rri(x64_emisor * e, x64_reg dst, x64_reg src, int imm);
 void jit_x64_xor_rr  (x64_emisor * e, x64_reg dst, x64_reg src);
+
+/* Las mismas, con indice escalado: el arreglo de la cache de traducciones de
+   la MMU tiene elementos que no miden una potencia de dos, asi que el indice
+   viaja ya multiplicado y la escala es 1. */
+void jit_x64_cmp_rm_idx (x64_emisor * e, x64_reg a, x64_reg base,
+                         x64_reg indice, int escala, int disp);
+void jit_x64_and_rm_idx (x64_emisor * e, x64_reg dst, x64_reg base,
+                         x64_reg indice, int escala, int disp);
+void jit_x64_or_rm_idx  (x64_emisor * e, x64_reg dst, x64_reg base,
+                         x64_reg indice, int escala, int disp);
+void jit_x64_test_mi_idx(x64_emisor * e, x64_reg base, x64_reg indice,
+                         int escala, int disp, int imm);
 void jit_x64_shr_ri  (x64_emisor * e, x64_reg dst, int cuenta);
 void jit_x64_inc_r   (x64_emisor * e, x64_reg dst);
 
 /* De 64 bits: los acumuladores del JIT son unsigned long long. */
 void jit_x64_add64_mr(x64_emisor * e, x64_reg base, int disp, x64_reg src);
+void jit_x64_add64_mi(x64_emisor * e, x64_reg base, int disp, int imm);
 void jit_x64_add64_ri(x64_emisor * e, x64_reg dst, int imm);
 void jit_x64_sub64_ri(x64_emisor * e, x64_reg dst, int imm);
 
@@ -131,6 +152,8 @@ void jit_x64_or_mr8  (x64_emisor * e, x64_reg base, int disp, x64_reg src);
 
 void jit_x64_cmp_rr  (x64_emisor * e, x64_reg a, x64_reg b);
 void jit_x64_cmp_ri  (x64_emisor * e, x64_reg a, int imm);
+void jit_x64_cmp_rm  (x64_emisor * e, x64_reg a, x64_reg base, int disp);
+void jit_x64_test_rr (x64_emisor * e, x64_reg a, x64_reg b);
 void jit_x64_cmp_mi  (x64_emisor * e, x64_reg base, int disp, int imm);
 void jit_x64_test_ri (x64_emisor * e, x64_reg a, int imm);
 void jit_x64_test_ri8(x64_emisor * e, x64_reg a, int imm8);

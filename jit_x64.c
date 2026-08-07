@@ -344,6 +344,103 @@ void jit_x64_and_ri(x64_emisor * e, x64_reg dst, int imm)
 	alu_ri(e, 0, 4, dst, imm);
 }
 
+void jit_x64_or_ri(x64_emisor * e, x64_reg dst, int imm)
+{
+	alu_ri(e, 0, 1, dst, imm);
+}
+
+void jit_x64_xor_ri(x64_emisor * e, x64_reg dst, int imm)
+{
+	alu_ri(e, 0, 6, dst, imm);
+}
+
+void jit_x64_and_rr(x64_emisor * e, x64_reg dst, x64_reg src)
+{
+	rex(e, 0, src, dst, 0);
+	b1(e, 0x21);				/* AND r/m32, r32 */
+	modrm_rr(e, src, dst);
+}
+
+void jit_x64_and_rm(x64_emisor * e, x64_reg dst, x64_reg base, int disp)
+{
+	rex(e, 0, dst, base, 0);
+	b1(e, 0x23);				/* AND r32, r/m32 */
+	modrm_m(e, dst, base, disp);
+}
+
+void jit_x64_or_rm(x64_emisor * e, x64_reg dst, x64_reg base, int disp)
+{
+	rex(e, 0, dst, base, 0);
+	b1(e, 0x0B);				/* OR r32, r/m32 */
+	modrm_m(e, dst, base, disp);
+}
+
+void jit_x64_not_r(x64_emisor * e, x64_reg dst)
+{
+	rex(e, 0, 0, dst, 0);
+	b1(e, 0xF7);				/* NOT r/m32 */
+	modrm_rr(e, 2, dst);
+}
+
+void jit_x64_shl_ri(x64_emisor * e, x64_reg dst, int cuenta)
+{
+	rex(e, 0, 0, dst, 0);
+	b1(e, 0xC1);				/* SHL r/m32, imm8 */
+	modrm_rr(e, 4, dst);
+	b1(e, (unsigned) cuenta);
+}
+
+void jit_x64_imul_rri(x64_emisor * e, x64_reg dst, x64_reg src, int imm)
+{
+	rex(e, 0, dst, src, 0);
+
+	if (cabe_en_8(imm))
+	{
+		b1(e, 0x6B);			/* IMUL r32, r/m32, imm8 */
+		modrm_rr(e, dst, src);
+		b1(e, (unsigned) imm);
+	}
+	else
+	{
+		b1(e, 0x69);			/* IMUL r32, r/m32, imm32 */
+		modrm_rr(e, dst, src);
+		b4(e, (unsigned) imm);
+	}
+}
+
+void jit_x64_cmp_rm_idx(x64_emisor * e, x64_reg a, x64_reg base,
+	x64_reg indice, int escala, int disp)
+{
+	rex_x(e, 0, a, indice, base, 0);
+	b1(e, 0x3B);				/* CMP r32, r/m32 */
+	modrm_m_idx(e, a, base, indice, escala, disp);
+}
+
+void jit_x64_and_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,
+	x64_reg indice, int escala, int disp)
+{
+	rex_x(e, 0, dst, indice, base, 0);
+	b1(e, 0x23);				/* AND r32, r/m32 */
+	modrm_m_idx(e, dst, base, indice, escala, disp);
+}
+
+void jit_x64_or_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,
+	x64_reg indice, int escala, int disp)
+{
+	rex_x(e, 0, dst, indice, base, 0);
+	b1(e, 0x0B);				/* OR r32, r/m32 */
+	modrm_m_idx(e, dst, base, indice, escala, disp);
+}
+
+void jit_x64_test_mi_idx(x64_emisor * e, x64_reg base, x64_reg indice,
+	int escala, int disp, int imm)
+{
+	rex_x(e, 0, 0, indice, base, 0);
+	b1(e, 0xF7);				/* TEST r/m32, imm32 */
+	modrm_m_idx(e, 0, base, indice, escala, disp);
+	b4(e, (unsigned) imm);
+}
+
 void jit_x64_xor_rr(x64_emisor * e, x64_reg dst, x64_reg src)
 {
 	rex(e, 0, src, dst, 0);
@@ -371,6 +468,11 @@ void jit_x64_add64_mr(x64_emisor * e, x64_reg base, int disp, x64_reg src)
 	rex(e, 1, src, base, 0);
 	b1(e, 0x01);
 	modrm_m(e, src, base, disp);
+}
+
+void jit_x64_add64_mi(x64_emisor * e, x64_reg base, int disp, int imm)
+{
+	alu_mi(e, 1, 0, base, disp, imm);
 }
 
 void jit_x64_add64_ri(x64_emisor * e, x64_reg dst, int imm)
@@ -406,6 +508,20 @@ void jit_x64_cmp_rr(x64_emisor * e, x64_reg a, x64_reg b)
 {
 	rex(e, 0, b, a, 0);
 	b1(e, 0x39);				/* CMP r/m32, r32 -- compara a contra b */
+	modrm_rr(e, b, a);
+}
+
+void jit_x64_cmp_rm(x64_emisor * e, x64_reg a, x64_reg base, int disp)
+{
+	rex(e, 0, a, base, 0);
+	b1(e, 0x3B);				/* CMP r32, r/m32 */
+	modrm_m(e, a, base, disp);
+}
+
+void jit_x64_test_rr(x64_emisor * e, x64_reg a, x64_reg b)
+{
+	rex(e, 0, b, a, 0);
+	b1(e, 0x85);				/* TEST r/m32, r32 */
 	modrm_rr(e, b, a);
 }
 
