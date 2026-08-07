@@ -23,6 +23,19 @@
 #   herramientas\perfil-pmu.ps1 -Modos tiempo   # solo el perfil de tiempo
 #
 # Deja perfil-<banco>-<modo>.csv por cada modo.
+#
+# **Dos de los tres modos salen vacios en esta maquina y el CSV chico no lo
+# grita** (medido el 2026-08-07, la primera vez que hubo consola elevada):
+#
+#   - `cuentas`: los eventos Pmc SI quedan en el .etl, pero la accion `-a pmc`
+#     de esta version de xperf agrega cero filas. La agregacion la hace
+#     herramientas/pmu-analizar.py sobre el volcado crudo -- ver su encabezado.
+#   - `fallos`: `-PmcProfile` no graba ningun evento en este hibrido P+E; el
+#     reporte sale con las tablas vacias. La atribucion por funcion sale igual
+#     del .etl de `cuentas`, porque cada par Pmc/SampledProfile trae el PC.
+#
+# Los resultados de la primera corrida completa estan en
+# docs/interprete-plan.md, "0.1, por fin".
 
 param(
 	[string]   $Banco  = "crazytaxi",

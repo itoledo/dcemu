@@ -33,7 +33,7 @@ Actualizado el 7 de agosto de 2026.
 | **Los juegos comerciales** | **diecisiete corren**, con hasta gameplay; Quake III se queda en «SELECT DEVICE» (entrada, no cuelgue). Los tres nuevos (18 Wheeler en juego, Tony Hawk 2, Capcom vs. SNK 2) llegaron con el backend `.chd` del 7 de agosto — ver `docs/notas-gdrom.md` |
 | Formatos de imagen | `.iso`, `.cdi`, `.gdi` y `.chd` (libchdr en `deps/`), validado `.chd` contra `.gdi` byte a byte |
 | El sonido | **el capítulo completo**: DSP, FEG, LFO, CDDA, ADPCM largo — vía B cerrada |
-| Rendimiento | Crazy Taxi 1,59×, DCDoom 31 fps (`docs/rendimiento-plan.md`, fase 6) |
+| Rendimiento | Crazy Taxi 1,59×, DCDoom 31 fps (`docs/rendimiento-plan.md`, fase 6). El perfil con contadores de hardware **está tomado** (2026-08-07): IPC 3,4-3,9, despacho predicho, LLC sin fallar — el intérprete va limitado por volumen; ver `docs/interprete-plan.md`, «0.1, por fin» |
 | Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12); la sombra en sí **sigue sin dibujarse**, pipeline agotado (A.13), bloqueada en el momento del usuario |
 | Rectángulo de DOA2 sobre la sombra | cuatro mecanismos descartados; bloqueado en el momento del usuario (memoria `bugs-visuales-sin-candidato`) |
 

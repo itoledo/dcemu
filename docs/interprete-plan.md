@@ -218,6 +218,10 @@ separan bastante. Era la razón de agregar el contador.
 
 ## 0.1 — El perfil de muestreo: pendiente, y por qué
 
+**Hecho el 2026-08-07** — ver la sección final de este documento, «0.1, por fin»: IPC
+3,4-3,9, el despacho predicho casi siempre, la LLC sin fallar. Lo que sigue es la historia
+de por qué esperó.
+
 **Necesita una consola elevada** y por eso no se hizo desde acá. El logger del kernel de
 ETW es lo que toma las muestras y Windows no lo habilita sin privilegios: `wpr` contesta
 `Failed to enable the policy to profile system performance` y no graba nada.
@@ -318,7 +322,7 @@ Con A refutado y 0.1 esperando una consola elevada, el orden que queda es:
 
 | # | qué | estado |
 | --- | --- | --- |
-| 0.1 | perfil de muestreo | **lo único que puede decidir el resto**; necesita elevación |
+| 0.1 | perfil de muestreo | **hecho el 2026-08-07** (ver la sección final): decidió — el intérprete va limitado por volumen, no por fallos |
 | B | cachear el puntero de búsqueda | el plan lo ataba a A, y A murió. Solo, la cuenta no cierra: `mem_zone[]` son 2 KB y está caliente, así que la carga que ahorra ya es un acierto de L1 |
 | D | el acumulador de ciclos | esperando 0.1 |
 | C | reorganizar `core` | **no**, hasta que haya perfil optimizado |
@@ -1329,3 +1333,93 @@ no la da —si acaso la refuerza, porque el mismo cambio rinde donde el conjunto
 chico y no rinde donde es grande—. Si la diferencia es de conjunto de trabajo, el que crece
 es el **del guest** —su código, sus datos, sus texturas—, y eso no se arregla ordenando
 estructuras del anfitrión.
+
+---
+
+# 0.1, por fin: contadores de hardware sobre Release+PGO (2026-08-07)
+
+La consola elevada llegó y el paso 1.1 se corrió entero: los tres bancos —DCDoom, Crazy
+Taxi y Virtua Tennis, con la receta de siempre y la traza arrancando ya en juego—, sobre el
+binario Release con el PGO recién reentrenado. Los CSV crudos quedan en la raíz
+(`perfil-<banco>-<modo>.csv`, fuera de git) y los `.etl` en `%TEMP%`.
+
+## Cómo se midió, y las dos trampas del camino
+
+De los tres modos de `perfil-pmu.ps1`, **dos volvieron vacíos y el script dijo «listo»
+igual**: la acción `-a pmc` de esta versión de xperf agrega cero filas (los eventos sí
+están en el `.etl`), y `-PmcProfile` no graba **ningún** evento en este procesador híbrido.
+La sonda que confirma lo que vino a probar, otra vez. Se recuperó todo del volcado crudo
+(`-a dumper -symbols`): cada interrupción de perfil deja un par de filas
+`Pmc`/`SampledProfile` con los cuatro contadores y el PC, y
+`herramientas/pmu-analizar.py` las une y agrega — es la agregación que `-a pmc` debía
+hacer.
+
+La segunda trampa la delató el propio resultado: **las filas `Pmc` traen lecturas
+acumulativas del contador de su núcleo, no deltas.** Sumarlas tal cual dio 7,2
+exa-instrucciones y el mismo IPC —3,47— en todas las funciones, que es el cociente de dos
+acumulados grandes y es imposible como atribución. El delta real es lectura menos lectura
+anterior *del mismo núcleo* (que viene en la fila `SampledProfile` del par), y con eso los
+números cierran por tres lados: la frecuencia da los ~5,2 GHz del P-core, los ciclos por
+instrucción emulada reproducen los ns/instr de la fase 6, y el reparto por función coincide
+con el del modo `tiempo`.
+
+## Los tres números
+
+Hilo principal de dcemu, ventana de traza ya en juego:
+
+| banco | IPC | fallos de salto /1000 instr | fallos de LLC /1000 instr |
+| --- | --- | --- | --- |
+| DCDoom (MMU) | **3,89** | 0,27 | 0,09 |
+| Crazy Taxi | **3,39** | 1,03 | 0,17 |
+| Virtua Tennis | **3,41** | 0,91 | 0,16 |
+
+Y el volumen, derivado con los ns/instr de la fase 6 a ~5,2 GHz:
+
+| banco | ciclos / instr emulada | instr de anfitrión / instr emulada |
+| --- | --- | --- |
+| Crazy Taxi, Virtua Tennis | ~26-27 | **~90** |
+| DCDoom | ~46 | **~180** |
+
+El propio encabezado de `perfil-pmu.ps1` dejó escrita la regla de decisión antes de medir:
+*«IPC bajo con pocos fallos de caché significa dependencias y llamadas indirectas; alto
+significa que simplemente hay mucho trabajo»*. Salió **alto**. El intérprete retira 3,4-3,9
+instrucciones por ciclo con el predictor acertando el despacho casi siempre —un fallo cada
+1000-3700 instrucciones de anfitrión, o sea **uno cada 11-20 instrucciones emuladas**, que a
+~17 ciclos el fallo son un 2 % de los ciclos en DCDoom y un ~6 % en los Katana— y con la
+LLC prácticamente sin fallar. No está parado esperando nada: **está ocupado ejecutando ~90
+(Katana) o ~180 (DCDoom) instrucciones de anfitrión por cada una emulada.**
+
+## Lo que decide
+
+- **La motivación clásica del recompilador —el salto indirecto que no se predice— queda
+  refutada en esta máquina.** El predictor del 13900, con el layout de PGO, se traga la
+  tabla de 65536 entradas. Y eso **explica el cero del caché de bloques** (arriba): quitaba
+  búsquedas que ya eran aciertos de L1 detrás de un salto ya predicho.
+- **El candidato C —reorganizar `core` por caché— queda muerto.** Con 0,09-0,17 fallos de
+  LLC por mil no hay presión de DRAM que ordenar; lo que la alineación ya cobró (2,4 %) era
+  de líneas L1, y no hay una segunda cosecha visible.
+- **La pregunta de los 8,4 contra 14,4 ns se acota**: en juego la LLC casi no falla, así
+  que si la diferencia es de conjunto de trabajo vive en L1/L2 (este juego de contadores no
+  los ve), no en memoria.
+- **Un recompilador sigue siendo la única palanca grande, pero por la razón contraria a la
+  esperada**: no arreglaría fallos —no los hay— sino **volumen**. Traducir de verdad —fundir
+  la extracción de operandos, el avance de PC, las ocho comprobaciones del bucle— puede
+  bajar de ~90 a ~15-25 instrucciones de anfitrión por emulada; cualquier variante que solo
+  acelere el despacho no tiene de dónde cobrar, que es exactamente lo que el caché de
+  bloques ya midió. La expectativa de 2-2,5× total del plan se sostiene por Amdahl
+  (intérprete 71,6-93 %), y **DCDoom es donde más paga**: con el intérprete al 93 % y
+  0,73×, llegar a velocidad de consola pide apenas ~1,5× del intérprete — un recorte de un
+  tercio del volumen, sin necesitar los 4× de la literatura.
+
+## El reparto adentro, de paso
+
+El modo `tiempo` (muestreo con la traza ya en juego) da el reparto que el plan pedía en
+fase 0: `main_loop` con los manejadores calientes inlineados por LTCG+PGO se lleva el
+**42 % exclusivo** del hilo en Crazy Taxi y el **60 %** en DCDoom; las islas con nombre son
+el ARM7 y sus familias de opcodes (`arm7_paso`, `op_datos`, `op_bloque`,
+`op_transferencia`, más `aicadsp_paso` — el ~15 % conocido), la MMU en DCDoom
+(`mmu_traducir` 8,6 % + `utlb_buscar` 0,9 %), el driver de GL en Crazy Taxi
+(`nvoglv64.dll`, ~6,7 %) y los manejadores de FPU, que son los de peor IPC del árbol (2,86-2,89
+en `fmul195`/`ftrv`, con 1,7 fallos/ki — dependencias de datos, no despacho). Y una
+verruga honesta: `perf_ahora` —el `QueryPerformanceCounter` de `--perf`— pesa ~1,3 % de la
+corrida que lo mide.
