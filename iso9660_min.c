@@ -28,6 +28,13 @@ struct min_iso_s
 {
 	FILE *			fp;			/* la pista del volumen: es la que se cierra */
 	FILE *			fp_activo;	/* la que eligio posicionar() */
+
+	/* En el modo lector no hay archivo: los sectores los entrega esta
+	   funcion, ya como 2048 de usuario. Con `lector` puesto, `fp` es NULL y
+	   nada de la geometria de abajo se usa. */
+	min_iso_lector_t	lector;
+	void *				lector_ctx;
+
 	unsigned int	root_lba;
 	unsigned int	root_size;		/* en bytes */
 	unsigned int	sectores;		/* tamano del volumen */
@@ -167,13 +174,49 @@ min_iso_t * min_iso_open(const char * path)
 	return min_iso_open_pista(path, 0, 0, MIN_ISO_BLOCKSIZE, 0);
 }
 
+/* La validacion comun a las tres formas de abrir: leer el descriptor de
+   volumen primario por el camino que la instancia ya tenga armado, comprobarlo
+   y quedarse con el directorio raiz. NULL si no valida (y libera `iso`). */
+static min_iso_t * min_iso_validar(min_iso_t * iso, const char * nombre)
+{
+	unsigned char pvd[MIN_ISO_BLOCKSIZE];
+	const unsigned char * root;
+
+	if (min_iso_seek_read(iso, pvd, iso->lba_base + PVD_LBA, 1)
+	    != MIN_ISO_BLOCKSIZE)
+	{
+		fprintf(stderr, "min_iso_open: no se pudo leer el descriptor de volumen\n");
+		min_iso_close(iso);
+		return NULL;
+	}
+
+	if (pvd[0] != PVD_TIPO || memcmp(&pvd[1], "CD001", 5) != 0)
+	{
+		fprintf(stderr, "min_iso_open: %s no parece una imagen iso9660\n", nombre);
+		min_iso_close(iso);
+		return NULL;
+	}
+
+	root = &pvd[PVD_ROOT_OFFSET];
+	iso->root_lba  = leer_le32(&root[DR_EXTENT]);
+	iso->root_size = leer_le32(&root[DR_SIZE]);
+	iso->sectores  = leer_le32(&pvd[PVD_ESPACIO_OFFSET]);
+
+	if (iso->root_size == 0)
+	{
+		fprintf(stderr, "min_iso_open: directorio raiz vacio\n");
+		min_iso_close(iso);
+		return NULL;
+	}
+
+	return iso;
+}
+
 min_iso_t * min_iso_open_pista(const char * path, unsigned int lba_base,
                                long long base, unsigned int sector_crudo,
                                unsigned int desplazamiento)
 {
 	min_iso_t * iso;
-	unsigned char pvd[MIN_ISO_BLOCKSIZE];
-	const unsigned char * root;
 
 	iso = (min_iso_t *) calloc(1, sizeof(min_iso_t));
 	if (iso == NULL)
@@ -192,34 +235,26 @@ min_iso_t * min_iso_open_pista(const char * path, unsigned int lba_base,
 		return NULL;
 	}
 
-	if (posicionar(iso, lba_base + PVD_LBA) != 0 ||
-	    fread(pvd, 1, MIN_ISO_BLOCKSIZE, iso->fp_activo) != MIN_ISO_BLOCKSIZE)
-	{
-		fprintf(stderr, "min_iso_open: no se pudo leer el descriptor de volumen\n");
-		min_iso_close(iso);
+	return min_iso_validar(iso, path);
+}
+
+min_iso_t * min_iso_open_lector(min_iso_lector_t lector, void * ctx,
+                                unsigned int lba_base)
+{
+	min_iso_t * iso;
+
+	if (lector == NULL)
 		return NULL;
-	}
 
-	if (pvd[0] != PVD_TIPO || memcmp(&pvd[1], "CD001", 5) != 0)
-	{
-		fprintf(stderr, "min_iso_open: %s no parece una imagen iso9660\n", path);
-		min_iso_close(iso);
+	iso = (min_iso_t *) calloc(1, sizeof(min_iso_t));
+	if (iso == NULL)
 		return NULL;
-	}
 
-	root = &pvd[PVD_ROOT_OFFSET];
-	iso->root_lba  = leer_le32(&root[DR_EXTENT]);
-	iso->root_size = leer_le32(&root[DR_SIZE]);
-	iso->sectores  = leer_le32(&pvd[PVD_ESPACIO_OFFSET]);
+	iso->lector     = lector;
+	iso->lector_ctx = ctx;
+	iso->lba_base   = lba_base;
 
-	if (iso->root_size == 0)
-	{
-		fprintf(stderr, "min_iso_open: directorio raiz vacio\n");
-		min_iso_close(iso);
-		return NULL;
-	}
-
-	return iso;
+	return min_iso_validar(iso, "el lector");
 }
 
 void min_iso_close(min_iso_t * iso)
@@ -253,6 +288,14 @@ int min_iso_agregar_pista(min_iso_t * iso, const char * path,
 
 	if (iso == NULL || sectores == 0)
 		return 1;
+
+	/* En el modo lector las pistas ya las enruta el lector: registrar una
+	   aqui desviaria sus sectores a un archivo que no existe. */
+	if (iso->lector != NULL)
+	{
+		fprintf(stderr, "min_iso: un volumen con lector no lleva pistas\n");
+		return 1;
+	}
 
 	if (iso->n_pistas >= MIN_ISO_PISTAS_MAX)
 	{
@@ -288,7 +331,26 @@ long min_iso_seek_read(min_iso_t * iso, void * buf, unsigned int lba, unsigned i
 	long			total = 0;
 	unsigned int	i;
 
-	if (iso == NULL || iso->fp == NULL)
+	if (iso == NULL)
+		return -1;
+
+	/* En el modo lector cada sector lo entrega la funcion, ya como 2048 de
+	   usuario; toda la geometria vive del lado del lector. */
+	if (iso->lector != NULL)
+	{
+		for (i = 0; i < nblocks; i++)
+		{
+			if (!iso->lector(iso->lector_ctx, lba + i, p))
+				break;
+
+			total += MIN_ISO_BLOCKSIZE;
+			p += MIN_ISO_BLOCKSIZE;
+		}
+
+		return total;
+	}
+
+	if (iso->fp == NULL)
 		return -1;
 
 	/* Con sectores de 2048 limpios se pueden pedir todos de una; con sectores

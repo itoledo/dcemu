@@ -23,6 +23,14 @@ set(CMAKE_CXX_STANDARD 17)
 # (bin/cue y lectora fisica). Ver fase 5 del plan.
 option(DCEMU_USE_GUICHAN "Compilar la ventana de log con guichan" OFF)
 option(DCEMU_USE_LIBCDIO "Compilar el backend libcdio (bin/cue, lectora fisica)" OFF)
+
+# El backend .chd (chdman, de MAME), sobre libchdr, que viene vendorizado en
+# deps/libchdr con sus tres dependencias (lzma, miniz, zstd) porque sus
+# binarios publicados son de MinGW y aqui se compila con MSVC. Es el commit
+# 6cde5348 de https://github.com/rtissera/libchdr, sin cambios. Apagado, chd.c
+# se compila igual pero como stub que informa que esta compilacion no lo trae,
+# igual que la ruta libcdio.
+option(DCEMU_USE_CHD "Compilar el backend .chd (libchdr, en deps/)" ON)
 option(DCEMU_CONSOLE "Dejar la consola abierta para ver los mensajes a stderr" ON)
 option(DCEMU_BUILD_TESTS "Compilar las pruebas unitarias de opcodes (tests/)" ON)
 
@@ -214,6 +222,7 @@ set(DCEMU_SOURCES
 	iso9660_min.c
 	cdi.c
 	gdi.c
+	chd.c
 	mando.c
 	log.c
 	logic.c
@@ -272,6 +281,18 @@ endif()
 
 if(DCEMU_USE_LIBCDIO)
 	target_compile_definitions(dcemu PRIVATE USE_LIBCDIO)
+endif()
+
+if(DCEMU_USE_CHD)
+	# EXCLUDE_FROM_ALL deja fuera lo que libchdr define y dcemu no enlaza (su
+	# benchmark de tests/, la variante compartida); chdr-static se compila por
+	# ser dependencia. Sin /GL: mezclar objetos con y sin el en el enlace LTCG
+	# es valido, y asi el codigo de terceros queda fuera del perfil de PGO.
+	set(BUILD_SHARED_LIBS OFF)
+	add_subdirectory(deps/libchdr EXCLUDE_FROM_ALL)
+
+	target_compile_definitions(dcemu PRIVATE DCEMU_USE_CHD)
+	target_link_libraries(dcemu PRIVATE chdr-static)
 endif()
 
 if(DCEMU_DESPACHO_COMPACTO)

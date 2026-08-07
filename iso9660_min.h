@@ -37,6 +37,22 @@ min_iso_t * min_iso_open_pista(const char * path, unsigned int lba_base,
                                long long base, unsigned int sector_crudo,
                                unsigned int desplazamiento);
 
+/*
+	Y la tercera forma: un volumen cuyos sectores no viven en un archivo sino
+	detras de una funcion. Es lo que necesita un .chd, donde los sectores salen
+	de hunks comprimidos y no hay ningun descriptor que posicionar.
+
+	`lector(ctx, lba, buf)` deja en `buf` los 2048 bytes de usuario del sector
+	`lba` --absoluto del disco, misma numeracion que arriba-- y devuelve 1 si
+	leyo. Toda la geometria de sectores crudos, pistas y offsets queda del lado
+	del lector; por eso aca no hay sector_crudo ni desplazamiento, y
+	min_iso_agregar_pista() no aplica (el lector ya enruta entre pistas).
+*/
+typedef int (*min_iso_lector_t)(void * ctx, unsigned int lba, void * buf);
+
+min_iso_t * min_iso_open_lector(min_iso_lector_t lector, void * ctx,
+                                unsigned int lba_base);
+
 /* Cuantas pistas de datos puede tener una imagen. Un GD-ROM prensado llega a
    catorce pistas, de las que solo unas pocas son de datos. */
 #define MIN_ISO_PISTAS_MAX	16

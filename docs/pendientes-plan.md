@@ -20,7 +20,7 @@ No se inventó nada: cada punto viene anotado en un documento o en el código.
 
 ## El estado del que se parte
 
-Actualizado el 6 de agosto de 2026.
+Actualizado el 7 de agosto de 2026.
 
 | | |
 | --- | --- |
@@ -30,7 +30,8 @@ Actualizado el 6 de agosto de 2026.
 | Filas de `opcodes[]` implementadas | 239 de 239, con **615 casos unitarios** en verde |
 | El núcleo contra SingleStepTests/sh4 | **113.191 ok, 0 fallos**, bit a bit |
 | Arranque por boot ROM | llega al menú, arranca el juego del disco y salta |
-| **Los juegos comerciales** | **catorce corren**, con hasta gameplay; Quake III se queda en «SELECT DEVICE» (entrada, no cuelgue) |
+| **Los juegos comerciales** | **diecisiete corren**, con hasta gameplay; Quake III se queda en «SELECT DEVICE» (entrada, no cuelgue). Los tres nuevos (18 Wheeler en juego, Tony Hawk 2, Capcom vs. SNK 2) llegaron con el backend `.chd` del 7 de agosto — ver `docs/notas-gdrom.md` |
+| Formatos de imagen | `.iso`, `.cdi`, `.gdi` y `.chd` (libchdr en `deps/`), validado `.chd` contra `.gdi` byte a byte |
 | El sonido | **el capítulo completo**: DSP, FEG, LFO, CDDA, ADPCM largo — vía B cerrada |
 | Rendimiento | Crazy Taxi 1,59×, DCDoom 31 fps (`docs/rendimiento-plan.md`, fase 6) |
 | Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12); la sombra en sí **sigue sin dibujarse**, pipeline agotado (A.13), bloqueada en el momento del usuario |

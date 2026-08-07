@@ -394,3 +394,74 @@ frontera conocida de ese camino, donde cae cualquier disco. Ver `docs/bios-boot-
 modos de repetición del TSP, ni los códigos de mezcla 2 y 3, ni el Offset Color — todo eso sólo lo
 muestra un juego. Cinco juegos más son cinco sitios más donde esos caminos se recorren, y el trabajo
 gráfico reciente se validó contra seis. Cuesta espacio: el disco pasó de 13,8 GB libres a 8,3.
+
+## El backend `.chd` (2026-08-07)
+
+`chd.c`/`chd.h`, sobre libchdr (vendorizada en `deps/libchdr` con sus tres dependencias — lzma,
+miniz, zstd — porque sus binarios publicados son de MinGW y aquí se compila con MSVC; commit
+`6cde5348` del upstream). Es el otro formato en que está preservada la biblioteca, y el de las
+colecciones actuales: un solo archivo comprimido por juego, los sectores en «hunks» (aquí de 8
+frames de 2448 bytes: 2352 de sector más 96 de subcanal) y las pistas descritas en metadatos de
+texto, una entrada por pista.
+
+### La interpretación de los metadatos se validó antes de escribir el backend
+
+La aritmética no está en ninguna especificación: está en cómo chdman escribe y en cómo la leen
+los consumidores probados (la referencia fue flycast, `core/imgread/chd.cpp`). Antes de tocar
+dcemu, una sonda aparte volcó los metadatos de las ocho imágenes y aplicó esa aritmética, y la
+tabla resultante se comparó contra los `.gdi` del árbol — **el mismo juego en los dos
+contenedores tiene que dar la misma tabla**. Crazy Taxi 2 (`.gdi`: LBA 0/450/45000) y Virtua
+Tennis (0/600/45000) calzaron exactos. Las reglas, todas confirmadas por esa comparación:
+
+- el FAD de cada pista se **acumula** desde 150, y el campo `FRAMES` **incluye el relleno**
+  (`PAD:`), que es como la pista 3 cae sola en el LBA 45000 y el total cierra en 549 300;
+- `sectores` para la TOC es `FRAMES` menos `PAD`;
+- dentro del archivo cada pista empieza en un frame múltiplo de 4 (`CD_TRACK_PADDING` de MAME):
+  con pistas no múltiplo de 4, el frame inicial de la pista 3 es 45004, no 45000;
+- hay **cuatro tags de metadatos** y se prueban en orden (`CHT2`, `CHTR`, `CHGT`, `CHGD`); los
+  dos últimos dicen GD-ROM, y las ocho imágenes de la mano son `CHGD` v5;
+- con el tag `CHGD` el **audio está guardado con los bytes de cada muestra invertidos** (el
+  orden del Red Book); con el `CHGT` viejo no, porque salió de un chdman parcheado anterior.
+
+### Dónde encaja en el árbol: un lector por callback
+
+Un `.chd` no tiene un archivo que posicionar — los sectores salen de hunks comprimidos — así que
+`min_iso_*` ganó una tercera forma de abrir: `min_iso_open_lector()`, donde cada sector de 2048
+lo entrega una función. Toda la geometría (pistas, modos, desplazamientos, el enrutado entre
+pistas de datos que en un `.gdi` hace `min_iso_agregar_pista()`) queda del lado de `chd.c`, que
+además hereda dos reglas del `.gdi`: la pista del volumen es **la primera de datos del área de
+alta densidad**, y el modo de una pista de 2352 se lee **del byte 15 del propio sector**, no de
+los metadatos. Las reglas de formato siguen al contenido, no a la extensión: un `.chd` de GD-ROM
+trae el ejecutable en claro como un `.gdi`, uno de MIL-CD lo traería cifrado como un `.cdi`
+(`iso_ejecutable_cifrado()`, `iso_es_gdrom()`).
+
+### Verificación
+
+- **Crazy Taxi 2 y Virtua Tennis, `.chd` contra `.gdi`, byte a byte**: la captura a los 20 s
+  emulados (`--sin-audio --sin-vmu`) es idéntica por los dos contenedores.
+- **DCDoom por `.cdi` sigue dando su hash canónico** (`198B396F…`), que es lo que prueba que la
+  reestructuración de `min_iso` no movió el parque existente. Las 23 suites en verde.
+- **Tres juegos nuevos arrancan**: 18 Wheeler llega **a juego** (vista de cabina, 6102 tiras por
+  escena — ojo: sus primeros ~45 s emulados son una secuencia de arranque que dibuja 1 tira por
+  escena y la captura sale negra; no está colgado, espera START), Tony Hawk's Pro Skater 2
+  muestra su intro (y ejercita el reparto de datos en dos pistas del área alta — la forma de
+  Dave Mirra — con datos en la 3 y en la 5), y Capcom vs. SNK 2 llega a su pantalla de tarjeta
+  de memoria. Capcom vs. SNK y Virtua Tennis 2 (Europe) arrancan a las suyas.
+- **El audio se validó por datos, no de oído**: la pista 2 de Crazy Taxi 2 extraída del `.chd`
+  con la inversión aplicada calza byte a byte contra el `track02.raw` del `.gdi`... corrida
+  **1456 bytes = 364 muestras**. El corrimiento es sub-sector — un error de mapeo de frames
+  daría múltiplos de 2352 — y es la corrección de offset de lectora que redump aplica y el rip
+  TOSEC no: **los dos rips difieren, los dos backends entregan fielmente el suyo**. Por eso el
+  A/B de `basic_cdda` con `--disco=` da un `.wav` distinto por contenedor (mismo largo, misma
+  envolvente, pico 32132 idéntico) y eso no es un bug.
+
+### Lo que queda anotado sin ejercitar
+
+- **Un `.chd` de MIL-CD** (tag `CHT2`, multisesión): la última pista se anuncia tras el hueco
+  estándar entre sesiones (11 400 frames, la regla de flycast), porque chdman guarda las pistas
+  pegadas y el ISO9660 de un selfboot lleva sus LBA absolutos de donde la grabadora lo puso.
+  Ninguna imagen a mano lo ejercita.
+- **Un pregap distinto de 0** en los metadatos diría que delante de la pista hay frames que no
+  están en el archivo; ninguna imagen que circule lo trae y el lector lo rechaza con aviso en
+  vez de inventar la resta.
+- El tag `CHGT` viejo (audio sin invertir) está contemplado y sin material que lo pruebe.

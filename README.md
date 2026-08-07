@@ -6,10 +6,10 @@ emulación del chip gráfico PowerVR2 traducida a OpenGL, sobre SDL.
 Se publica con el historial completo recuperado del repositorio CVS original: el tronco
 llega hasta febrero de 2007, y el trabajo posterior arranca desde ahí.
 
-Corre **catorce juegos comerciales** —Crazy Taxi 1 y 2, Virtua Tennis 1 y 2, Tennis 2K2,
-Capcom vs. SNK, Street Fighter III, Sega Rally 2, Dave Mirra, Mat Hoffman, 4X4 EVO, Dead or
-Alive 2, Quake III y **Doom** (Windows CE)— desde sus `.cdi` o `.gdi`, con sonido, y varios
-hasta el gameplay. Corre además **MAME** y 105 de los 135 ejemplos de
+Corre **diecisiete juegos comerciales** —Crazy Taxi 1 y 2, Virtua Tennis 1 y 2, Tennis 2K2,
+Capcom vs. SNK 1 y 2, Street Fighter III, Sega Rally 2, Dave Mirra, Mat Hoffman, Tony Hawk 2,
+18 Wheeler, 4X4 EVO, Dead or Alive 2, Quake III y **Doom** (Windows CE)— desde sus `.cdi`,
+`.gdi` o `.chd`, con sonido, y varios hasta el gameplay. Corre además **MAME** y 105 de los 135 ejemplos de
 [KallistiOS](https://github.com/KallistiOS/KallistiOS) —de los restantes, 28 piden
 periféricos que no se emulan y dos están rotos en el propio ejemplo—. Y **arranca desde el boot
 ROM real**: con `--bios` reproduce la animación del remolino con su campanada, llega al menú
@@ -29,7 +29,7 @@ inventario al día está en [docs/demos-kos.md](docs/demos-kos.md) y lo que qued
 | UBC | Completo — los dos canales de breakpoint por hardware, con máscara, dato y secuencia |
 | PVR2 / TA | Los quince tipos de vértice, todos los formatos de textura, sprites, volúmenes modificadores, render a textura, plano de fondo y las dos ventanas de la RAM de vídeo |
 | Maple | DMA y estado del control, alimentado desde teclado o gamepad (XInput) |
-| GD-ROM | La lectora de verdad: registros ATA, comandos SPI y DMA por G2, más los hooks de syscall. `.iso`, `.cdi` (DiscJuggler) y `.gdi`, con CD-DA desde las pistas de audio |
+| GD-ROM | La lectora de verdad: registros ATA, comandos SPI y DMA por G2, más los hooks de syscall. `.iso`, `.cdi` (DiscJuggler), `.gdi` y `.chd` (libchdr), con CD-DA desde las pistas de audio |
 | BIOS | Flash y RTC con escritura y persistencia, handshake del cable de vídeo, syscalls de fuente, flash y GD-ROM |
 | SCIF (serial) | Salida redirigida a `logs/serial.txt` |
 | DMA del SH-4 | Los cuatro canales del DMAC y el CH2 del Holly, que es el que alimenta al TA |
@@ -109,7 +109,7 @@ flotante). El detalle, y lo que sigue sin emularse a propósito, está en
 ## Uso
 
 ```sh
-dcemu [opciones] [1st_read.bin | imagen.iso | imagen.cdi]   # por omisión: 1st_read.bin
+dcemu [opciones] [1st_read.bin | imagen.iso | .cdi | .gdi | .chd]   # por omisión: 1st_read.bin
 ```
 
 Requiere en el directorio de trabajo: `bios/bios.bin` (no se distribuye), `font.png` y
@@ -182,6 +182,8 @@ Componentes de terceros incluidos en el árbol:
 
 - [SIMDx86](https://sourceforge.net/projects/simdx86/) — Patrick Baggett (LGPL)
 - [libcdio / libiso9660](https://www.gnu.org/software/libcdio/) — GNU (GPL)
+- [libchdr](https://github.com/rtissera/libchdr) — Romain Tisserand y otros (BSD/MIT, con
+  lzma, miniz y zstd en `deps/libchdr/deps/`)
 - [stb_image](https://github.com/nothings/stb) — Sean Barrett (dominio público / MIT)
 - BFont — renderizador de fuentes de mapa de bits para SDL
 - En `dcemu-exp`, `1strdchk.c` es un port del *1st_read.bin File Checker 1.5* de LyingWake

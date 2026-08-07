@@ -169,7 +169,7 @@ games are the test.
 ## Run
 
 ```sh
-dcemu.exe [opciones] [1st_read.bin | image.iso | image.cue]   # default argument: 1st_read.bin
+dcemu.exe [opciones] [1st_read.bin | imagen.iso | .cdi | .gdi | .chd]   # default: 1st_read.bin
 ```
 
 Needs, relative to the working directory: `bios/bios.bin` (not in the repo), `font.png`
@@ -862,10 +862,18 @@ paths report the same disc. Data goes out either as chained DRQ blocks or throug
 
 `iso.c` picks a backend by extension: `.iso` is a flat ISO9660 read by `iso9660_min.c`, `.cdi`
 (DiscJuggler) goes through `cdi.c`, `.gdi` (a text index plus one raw file per track) through
-`gdi.c`, anything else needs `USE_LIBCDIO`, which this build does not have. **`.cdi` and `.gdi`
-share everything above the open** — the same track table, TOC, sessions and
-`min_iso_open_pista()`, selected by `ES_MULTIPISTA()`; the only line that differs is which file
-holds the data track. A `.gdi` does not record whether a 2352-byte data track is mode 1 or
+`gdi.c`, `.chd` (chdman, the format of current collections) through `chd.c` over libchdr —
+vendored in `deps/libchdr` because its published binaries are MinGW — and anything else needs
+`USE_LIBCDIO`, which this build does not have. **`.cdi`, `.gdi` and `.chd` share everything
+above the open** — the same track table, TOC and sessions, selected by `ES_MULTIPISTA()`. The
+first two differ only in which file holds the data track (`min_iso_open_pista()`); a `.chd` has
+no file to seek — sectors live in compressed hunks — so it opens the third way,
+`min_iso_open_lector()`, where a callback in `chd.c` serves each 2048-byte sector and owns all
+track geometry. The CHD metadata arithmetic (cumulative FADs with PAD inside FRAMES, 4-frame
+file padding, `CHGD` audio byteswapped) is validated against the tree's `.gdi`s — same game,
+both containers, byte-identical captures — and written up in `docs/notas-gdrom.md`. Whether the
+image is a GD-ROM comes from its metadata tag, not the extension: a MIL-CD `.chd` keeps the
+scrambled executable and the CD rules. A `.gdi` does not record whether a 2352-byte data track is mode 1 or
 mode 2, and that decides where the 2048 user bytes start (16 or 24), so it is read from the
 sector's own header rather than assumed. `iso_init()` lists every track with its LBA, size, mode and file offset — that
 listing is the first thing to look at.
@@ -907,7 +915,16 @@ modes, nor blend codes 2 and 3, nor the Offset Color. Five more commercial games
 those paths get walked. `roms/` now holds them extracted — mind the disk, it went from 13.8 GB free
 to 8.3.
 
-`docs/notas-gdrom.md` has the layout table, the `.cdi` format, the five
+**The `.chd` backend added three more (2026-08-07)**, from the eight redump-named CHDs in
+`E:\Juegos\roms\dreamcast`: **18 Wheeler reaches gameplay** (its first ~45 emulated seconds draw
+one strip per scene and capture black — that is its boot sequence waiting for START, not a hang),
+**Tony Hawk's Pro Skater 2** shows its intro (and is the one image exercising data spread over
+two high-density tracks, the Dave Mirra shape), and **Capcom vs. SNK 2** reaches its memory-card
+screen. The other five CHDs are second containers for games already running — which is what made
+them the guardrail: Crazy Taxi 2 and Virtua Tennis are **byte-identical** `.chd` against `.gdi`
+at 20 emulated seconds.
+
+`docs/notas-gdrom.md` has the layout table, the `.cdi` format, the `.chd` metadata rules, the five
 drive bugs and the damaged Virtua Tennis rip — **damaged rip, not damaged region**: the same USA
 version off a three-track `.gdi` plays fine, so the rule is "try another rip", not "avoid the USA
 release".

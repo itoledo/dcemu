@@ -20,6 +20,7 @@
 #include "iso9660_min.h"
 #include "cdi.h"
 #include "gdi.h"
+#include "chd.h"
 #include "iso.h"
 #include "scramble.h"
 
@@ -30,7 +31,7 @@
 
 // formatos
 enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDI, FORMATO_GDI,
-                  FORMATO_CDIO } formato_imagen;
+                  FORMATO_CHD, FORMATO_CDIO } formato_imagen;
 #define ISO_DEFAULT_LBA 150
 
 /*
@@ -43,7 +44,8 @@ enum en_formato { FORMATO_NULL, FORMATO_ISO9660, FORMATO_CDI, FORMATO_GDI,
 	todos en un archivo, un .gdi uno por pista. Eso se resuelve al abrir y no
 	vuelve a importar.
 */
-#define ES_MULTIPISTA(f)	((f) == FORMATO_CDI || (f) == FORMATO_GDI)
+#define ES_MULTIPISTA(f)	((f) == FORMATO_CDI || (f) == FORMATO_GDI \
+                          || (f) == FORMATO_CHD)
 
 // variables iso9660
 min_iso_t * iso;
@@ -61,6 +63,12 @@ static unsigned int iso_lba_base = ISO_DEFAULT_LBA;
 #define GD_LBA_ALTA_DENSIDAD	45000
 
 static int iso_gd_presentar = 0;
+
+/* 1 si el .chd montado describe un GD-ROM (lo dice su tag de metadatos). Un
+   .chd tambien puede ser la conversion de un MIL-CD, y las reglas de abajo
+   --tipo de disco, ejecutable cifrado-- van con lo que el archivo describe,
+   no con la extension. */
+static int iso_chd_gd = 0;
 
 /* Modo de la pista de datos del .cdi: lo pide iso_get_mode(). */
 static int iso_modo_pista = 1;
@@ -234,6 +242,51 @@ int iso_init(char * sDevice)
 					gdi.pistas[cual].desplazamiento);
 	}
 	else
+	if (strncmp(&sDevice[strlen(sDevice) - 4], ".chd", 4) == 0)
+	{
+		/*
+			CHD (chdman, de MAME): las pistas en hunks comprimidos y su
+			descripcion en metadatos de texto. chd.c saca la tabla de pistas
+			--validada contra los .gdi: el mismo juego en los dos contenedores
+			da la misma tabla-- y entrega sectores ya descomprimidos, asi que
+			el lector ISO9660 se abre en su forma de callback: no hay ningun
+			archivo que posicionar, y el enrutado entre pistas de datos --que
+			en un .gdi hace min_iso_agregar_pista()-- ya lo hace chd.c.
+		*/
+		struct cdi_t				chd;
+		const struct cdi_pista_t *	pista;
+		int							cual, k;
+
+		if (chd_abrir(sDevice, &chd, &cual, &iso_chd_gd) != 0)
+			return 1;
+
+		pista = &chd.pistas[cual];
+
+		fprintf(stderr, "iso_init: usando %s (%s), %d pista%s; la de datos "
+			"empieza en el LBA %u, %u sectores de %u bytes en modo %u\n",
+			sDevice, iso_chd_gd ? "GD-ROM" : "CD", chd.n,
+			(chd.n == 1) ? "" : "s",
+			pista->lba, pista->sectores, pista->sector_crudo, pista->modo);
+
+		for (k = 0; k < chd.n; k++)
+			fprintf(stderr, "iso_init:   pista %d: LBA %u, %u sectores de %u, "
+				"modo %u (%s), frame %llu del chd\n", k + 1,
+				chd.pistas[k].lba, chd.pistas[k].sectores,
+				chd.pistas[k].sector_crudo, chd.pistas[k].modo,
+				chd.pistas[k].modo ? "datos" : "audio",
+				(unsigned long long) chd.pistas[k].offset);
+
+		formato_imagen = FORMATO_CHD;
+		iso_lba_base   = pista->lba;
+		iso_modo_pista = (int) pista->modo;
+		iso_cdi        = chd;
+
+		iso = min_iso_open_lector(chd_leer_usuario, NULL, pista->lba);
+
+		if (iso == NULL)
+			return 1;
+	}
+	else
 	{
 #ifdef USE_LIBCDIO
 	    char * s;
@@ -305,6 +358,7 @@ int iso_get_lba()
 		   esto son los 150 de siempre. */
 		case FORMATO_ISO9660:	return ISO_DEFAULT_LBA;
 		case FORMATO_GDI:
+		case FORMATO_CHD:
 		case FORMATO_CDI:		return (int) (iso_lba_base + ISO_DEFAULT_LBA);
 #ifdef USE_LIBCDIO
 		case FORMATO_CDIO:		return cdio_get_track_lba(cdio, 1);
@@ -365,13 +419,22 @@ int iso_gd_presentando(void)
 */
 int iso_ejecutable_cifrado(void)
 {
-	/* Ver iso.h: es una regla de formato, no del contenido. */
+	/* Ver iso.h: es una regla de formato, no del contenido. Un .chd hereda la
+	   del formato del que salio: el rip de un GD-ROM trae el ejecutable en
+	   claro como un .gdi, la conversion de un MIL-CD lo trae cifrado como un
+	   .cdi. Que es cada cual lo dice su tag de metadatos. */
+	if (formato_imagen == FORMATO_CHD)
+		return !iso_chd_gd;
+
 	return formato_imagen != FORMATO_GDI;
 }
 
 int iso_es_gdrom()
 {
-	if (formato_imagen == FORMATO_GDI)
+	/* La misma comprobacion que el .gdi: que el archivo diga GD-ROM no basta
+	   si la pista del volumen no esta en el area de alta densidad. */
+	if (formato_imagen == FORMATO_GDI
+	 || (formato_imagen == FORMATO_CHD && iso_chd_gd))
 		return iso_lba_base >= GD_LBA_ALTA_DENSIDAD;
 
 	return ES_MULTIPISTA(formato_imagen) && iso_gd_presentar;
@@ -473,6 +536,12 @@ int iso_leer_audio(void * destino, int fad, int n)
 
 	if (n <= 0)
 		return 0;
+
+	/* En un .chd los sectores no viven en un archivo: chd.c aplica estas
+	   mismas reglas --FAD fuera de pista o en una de datos, 0; recorte al
+	   final de la pista-- y ademas endereza los bytes del audio. */
+	if (formato_imagen == FORMATO_CHD)
+		return chd_leer_audio(destino, fad, n);
 
 	cual = iso_pista_de_fad(fad);
 
@@ -633,6 +702,7 @@ int iso_num_sectores()
 	{
 		case FORMATO_ISO9660:
 		case FORMATO_GDI:
+		case FORMATO_CHD:
 		case FORMATO_CDI:		return (int) min_iso_sectores(iso);
 #ifdef USE_LIBCDIO
 		/* cdio_get_track_lsn de la pista de lead-out (0xAA) da donde termina
@@ -714,6 +784,7 @@ int iso_read_sector(char * target, int secstart, int secnum)
 
 		case FORMATO_ISO9660:
 		case FORMATO_GDI:
+		case FORMATO_CHD:
 		case FORMATO_CDI:
 		{
 			/*
@@ -838,6 +909,7 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 
 		case FORMATO_ISO9660:
 		case FORMATO_GDI:
+		case FORMATO_CHD:
 		case FORMATO_CDI:
 		{
 			if (!min_iso_stat_root(iso, fname, &lsn, &size, &secsize))
@@ -869,6 +941,7 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 			   de la BIOS. */
 			case FORMATO_ISO9660:
 			case FORMATO_GDI:
+			case FORMATO_CHD:
 			case FORMATO_CDI:
 				if (min_iso_seek_read(iso, mempos, lsn, secsize) > 0)
 					fprintf(stderr, "archivo leido exitosamente.\n");
@@ -913,6 +986,7 @@ int cargar_ip_bin(unsigned char * mempos)
 
 		case FORMATO_ISO9660:
 		case FORMATO_GDI:
+		case FORMATO_CHD:
 		case FORMATO_CDI:
 		{
 			/* IP.BIN no es un archivo del sistema de archivos: son los 16
