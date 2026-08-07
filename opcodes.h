@@ -71,6 +71,15 @@ extern oplist_t oplist_pr1_sz1[65536];
 #endif
 extern int idx_NOIMP;
 
+/*
+	1 si la codificacion resuelve, en los cuatro modos de PR/SZ, a un manejador
+	auditado como incapaz de abortar (la lista `manejadores_sin_aborto` de
+	opcodes.c). main_loop() la consulta con excepcion_vigilar puesto para no
+	tomar la instantanea que no haria falta. Fase 1 de
+	docs/rendimiento-plan-2.md.
+*/
+extern unsigned char excepcion_instr_exenta[65536];
+
 // opcodes con restricci�n
 /* extern int idx_FADD;
 extern int idx_FSUB;

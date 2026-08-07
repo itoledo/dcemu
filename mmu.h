@@ -215,6 +215,104 @@ void mmu_sondas_iniciar(void);
 	    : mmu_fetch_resolver(pc)))
 
 /* ------------------------------------------------------------------------ */
+/* El camino rapido de datos, en el macro (fase 3 de rendimiento-plan-2.md) */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El acierto de la cache de traducciones resueltas, expandido dentro de
+	memread()/memwrite() en vez de pagar la entrada a mmu_traducir() en cada
+	acceso. Mismo precedente que MMU_FETCH_PUNTERO: el macro vive aca pero se
+	expande en llamadores que ya incluyen sh4emu.h (SR_MD, PTEH, MMUCR) y
+	perf.h (PERF_CONTAR).
+
+	Lo que compra sobre la llamada: el bit de permiso es una constante en el
+	sitio de expansion, y el acierto queda dentro del manejador, sin cruzar la
+	frontera de la llamada. Lo que NO cambia, y es lo que lo hace correcto:
+
+	 - **el acierto cuenta como acceso a la UTLB y avanza URC**, igual que en
+	   mmu_traducir() -- de URC depende que entrada reemplaza el LDTLB del
+	   guest, o sea su camino de ejecucion;
+	 - **los contadores de --perf se incrementan igual** que por la llamada,
+	   para que la verificacion de trabajo entre corridas no cambie de
+	   significado con el interruptor;
+	 - el fallo -- y todo lo que no es un acierto limpio: P1/P2/P4, permisos
+	   sin validar, generacion vencida -- cae en mmu_traducir(), que decide
+	   todo igual que siempre.
+
+	DCEMU_SIN_MMU_MACRO=1 lo apaga en el mismo binario (la sonda del A/B);
+	DCEMU_SIN_CACHE_MMU=1 tambien lo apaga, porque sin la cache el sondeo no
+	tendria que acertar nunca.
+*/
+extern int mmu_macro_probar;
+
+/* La etiqueta de las caches de traduccion. Compartida con mmu.c. */
+#define ASID_DE(e)			((e) & 0x000000FF)
+#define MMU_CACHE_VALIDA	0x00010000ul	/* bit fuera del ASID y del modo */
+
+#define MMU_DATOS_N			8192			/* tope; el efectivo lo da la mascara */
+#define MMU_DATOS_LEER		1u
+#define MMU_DATOS_ESCRIBIR	2u
+
+typedef struct
+{
+	DWORD	vpn;			/* direccion & ~mascara */
+	DWORD	mascara;
+	DWORD	etiqueta;		/* ASID | usuario << 8 | VALIDA */
+	DWORD	base;			/* la fisica de la pagina, ya compuesta */
+	DWORD	permisos;		/* que tipos de acceso ya pasaron todas las pruebas */
+	int		entrada;		/* de que entrada de la UTLB salio */
+	DWORD	gen;			/* y con que generacion */
+} mmu_datos_t;
+
+extern mmu_datos_t	mmu_datos[MMU_DATOS_N];
+extern DWORD		mmu_datos_mascara;
+extern DWORD		mmu_utlb_gen[MMU_UTLB_ENTRADAS];
+
+/* Un acceso a la UTLB avanza URC -- acierto de cache incluido. Un solo cuerpo
+   para el macro y para mmu.c (urc_avanzar). */
+#define MMU_URC_AVANZAR()												\
+	do																	\
+	{																	\
+		DWORD _urc = (MMUCR_URC(*MMUCR) + 1) & 0x3F;					\
+																		\
+		if (MMUCR_URB(*MMUCR) && _urc == MMUCR_URB(*MMUCR))				\
+			_urc = 0;													\
+																		\
+		*MMUCR = (*MMUCR & ~0x0000FC00ul) | (_urc << 10);				\
+	} while (0)
+
+/* De perf.h, que los llamadores ya incluyen via mem.h. */
+#define MMU_TRADUCIR_EN_SITIO(var, permiso_bit, escritura)				\
+	do																	\
+	{																	\
+		mmu_datos_t *	_mm_e;											\
+		DWORD			_mm_tag;										\
+																		\
+		if (!mmu_macro_probar)											\
+		{																\
+			(var) = mmu_traducir((var), (escritura));					\
+			break;														\
+		}																\
+																		\
+		_mm_e   = &mmu_datos[((var) >> 12) & mmu_datos_mascara];		\
+		_mm_tag = ASID_DE(*PTEH) | ((DWORD) (SR_MD == 0) << 8)			\
+				| MMU_CACHE_VALIDA;										\
+																		\
+		if (_mm_e->etiqueta == _mm_tag									\
+			&& (_mm_e->permisos & (permiso_bit))						\
+			&& ((var) & ~_mm_e->mascara) == _mm_e->vpn					\
+			&& mmu_utlb_gen[_mm_e->entrada] == _mm_e->gen)				\
+		{																\
+			MMU_URC_AVANZAR();											\
+			PERF_CONTAR(perf_mmu_traduce);								\
+			PERF_CONTAR(perf_mmu_datos_acierto);						\
+			(var) = _mm_e->base | ((var) & _mm_e->mascara);				\
+		}																\
+		else															\
+			(var) = mmu_traducir((var), (escritura));					\
+	} while (0)
+
+/* ------------------------------------------------------------------------ */
 /* Excepciones                                                              */
 /* ------------------------------------------------------------------------ */
 

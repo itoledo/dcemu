@@ -44,15 +44,14 @@ DWORD mmu_utlb_dat2[MMU_UTLB_ENTRADAS];
 	comparando la generacion, que es una carga sobre un arreglo de 256 bytes
 	siempre caliente.
 */
-static DWORD mmu_utlb_gen[MMU_UTLB_ENTRADAS];
+DWORD mmu_utlb_gen[MMU_UTLB_ENTRADAS];
 
 /* Nombres cortos para uso interno; el formato lo define mmu.h. */
 #define BIT_V			MMU_BIT_V
 
 /* Campos de una entrada de direcciones que hacen falta para la busqueda
-   asociativa. */
+   asociativa. ASID_DE viene de mmu.h: lo comparte el macro del camino rapido. */
 #define VPN_DE(e)		((e) & 0xFFFFFC00)
-#define ASID_DE(e)		((e) & 0x000000FF)
 #define BIT_SH			MMU_BIT_SH
 #define BIT_D_DIR		MMU_BIT_D_DIR
 #define BIT_D_DAT		MMU_BIT_D_DAT
@@ -443,12 +442,8 @@ static DWORD fallar(DWORD codigo, DWORD vector, DWORD direccion)
 */
 static void urc_avanzar(void)
 {
-	DWORD urc = (MMUCR_URC(*MMUCR) + 1) & 0x3F;
-
-	if (MMUCR_URB(*MMUCR) && urc == MMUCR_URB(*MMUCR))
-		urc = 0;
-
-	*MMUCR = (*MMUCR & ~0x0000FC00ul) | (urc << 10);
+	/* Un solo cuerpo con el del macro del camino rapido (mmu.h). */
+	MMU_URC_AVANZAR();
 }
 
 static int utlb_encontrar_ex(DWORD direccion, int usuario, int sv,
@@ -541,7 +536,8 @@ static int utlb_encontrar(DWORD direccion, int usuario, int sv, DWORD * mascara_
 	de 4 KB ocuparia entonces cuatro ranuras con la misma respuesta.
 */
 #define MMU_CACHE_N			256					/* medido: ver docs/rendimiento-plan.md, 6.1 */
-#define MMU_CACHE_VALIDA	0x00010000ul		/* bit fuera de ASID y del modo */
+
+/* MMU_CACHE_VALIDA viene de mmu.h: la comparte el macro del camino rapido. */
 
 typedef struct
 {
@@ -565,27 +561,15 @@ static mmu_cache_t	mmu_cache[MMU_CACHE_N];
 	DOOM --. Con el permiso aparte, una pagina ocupa una ranura y cada tipo de
 	acceso se valida por separado la primera vez.
 */
-#define MMU_DATOS_N			8192		/* el tope; el efectivo lo fija la mascara */
-#define MMU_DATOS_LEER		1u
-#define MMU_DATOS_ESCRIBIR	2u
-
-typedef struct
-{
-	DWORD	vpn;			/* direccion & ~mascara */
-	DWORD	mascara;
-	DWORD	etiqueta;		/* ASID | usuario << 8 | VALIDA */
-	DWORD	base;			/* la fisica de la pagina, ya compuesta */
-	DWORD	permisos;		/* que tipos de acceso ya pasaron todas las pruebas */
-	int		entrada;		/* de que entrada de la UTLB salio */
-	DWORD	gen;			/* y con que generacion */
-} mmu_datos_t;
-
-static mmu_datos_t	mmu_datos[MMU_DATOS_N];
+/* El tipo, el tope y los bits de permiso viven en mmu.h: los comparte el macro
+   del camino rapido (MMU_TRADUCIR_EN_SITIO), que sondea esta cache desde
+   adentro de memread()/memwrite(). */
+mmu_datos_t	mmu_datos[MMU_DATOS_N];
 
 /* Cuantas entradas se usan de verdad. Variable y no constante para poder barrer
    el tamano dentro de un mismo binario: comparar dos compilaciones mete el
    layout como variable. DCEMU_MMU_DATOS=N (potencia de dos). */
-static DWORD		mmu_datos_mascara = MMU_DATOS_N - 1;
+DWORD		mmu_datos_mascara = MMU_DATOS_N - 1;
 
 /*
 	Y la de busqueda de instrucciones, detras de la pagina unica que ya habia.
@@ -613,6 +597,12 @@ static mmu_fetch_t	mmu_fetch_cache[MMU_FETCH_N];
 /* El interruptor para aislar una regresion y para el A/B, en la misma familia
    que DCEMU_SIN_DIBUJO y DCEMU_SIN_AICA. Se lee una vez al arrancar. */
 static int mmu_cache_apagada = 0;
+
+/* El sondeo de la cache dentro del macro de memread/memwrite (fase 3 de
+   rendimiento-plan-2.md). Encendido por omision; DCEMU_SIN_MMU_MACRO=1 es el
+   A/B en el mismo binario, y DCEMU_SIN_CACHE_MMU lo apaga tambien porque sin
+   cache el sondeo no acertaria nunca. */
+int mmu_macro_probar = 1;
 
 /*
 	Vaciar las tres cachas. Es lo que hay que hacer cuando **cambia el contenido
@@ -646,6 +636,14 @@ void mmu_sondas_iniciar(void)
 	const char * v = getenv("DCEMU_SIN_CACHE_MMU");
 
 	mmu_cache_apagada = (v != NULL && atoi(v) != 0);
+
+	v = getenv("DCEMU_SIN_MMU_MACRO");
+
+	mmu_macro_probar = !(mmu_cache_apagada || (v != NULL && atoi(v) != 0));
+
+	if (!mmu_macro_probar)
+		fprintf(stderr, "mmu: sondeo en el macro APAGADO"
+			" (todo acceso entra por mmu_traducir)\n");
 
 	v = getenv("DCEMU_MMU_DATOS");
 

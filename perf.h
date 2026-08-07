@@ -236,6 +236,7 @@ extern unsigned long long perf_mmu_fetch_acierto2;	/* ... de esos, los que atien
 extern unsigned long long perf_mmu_falta;			/* traducciones que abortaron */
 extern unsigned long long perf_instantaneas;		/* instantaneas tomadas */
 extern unsigned long long perf_instantaneas_usadas;	/* ... y restauradas */
+extern unsigned long long perf_instantaneas_elididas;	/* salteadas por la elision */
 
 /*
 	La forma de ejecucion del guest: lo que decide si un cache de bloques --o un

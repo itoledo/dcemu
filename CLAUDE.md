@@ -230,11 +230,14 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_SIN_DIBUJO=1` / `DCEMU_SIN_VOLUMEN=1` / `DCEMU_SIN_FILTRO_MIP=1` | aíslan una etapa del render para medirla |
 | `DCEMU_SIN_CDDA=1` | la lectora contesta el audio de CD como siempre pero no entrega muestras. Calla la salida, no el mecanismo: apagarlo entero cambiaría el camino del guest que sondea su música |
 | `DCEMU_SIN_CACHE_MMU=1` | apaga las tres cachés de traducción de la MMU. **Valen 1,8× en DCDoom**; es el interruptor del A/B y para aislar una regresión |
+| `DCEMU_SIN_MMU_MACRO=1` | todo acceso de datos entra por `mmu_traducir()` en vez de sondear la caché dentro del macro de `memread`/`memwrite`. Es el A/B de la fase 3 de `rendimiento-plan-2.md`: **vale 1,6 % en DCDoom**, ≈0 sin MMU |
 | `DCEMU_FORMA=1` | forma de ejecución del guest: longitud de los bloques básicos, cuántos distintos y con qué reincidencia. **Sólo existe si se compiló con `-DDCEMU_FORMA=ON`**, porque el gancho cuesta 4,4 % (ver `docs/interprete-plan.md`) |
 | `DCEMU_INLINE` (compilación) | despacha en línea los diez manejadores más frecuentes, sin llamada indirecta. **Medido: cuesta 19 %** aunque cubra el 35,3 % de las instrucciones — el bucle caliente engorda más de lo que ahorran las llamadas |
 | `DCEMU_SONDA_BLOQUES=1` | caché de bloques predecodificados: saltea la búsqueda de la palabra y la de la tabla de 65536 punteros. **Medido y no sirve** — ruido en juego, −3,3 % en menús—, así que sólo existe con `-DDCEMU_BLOQUES=ON`. Queda para volver a correr el A/B sin rehacer la idea |
 | `DCEMU_MMU_DATOS=N` | entradas de la caché de traducciones resueltas (4096 por omisión, tope 8192). Para barrer el tamaño sin recompilar |
 | `DCEMU_SONDA_SETJMP_POR_INSTRUCCION=1` | vuelve a armar el salto de excepción una vez por instrucción, como era antes (13,5 % más lento) |
+| `DCEMU_SIN_ELISION_INSTANTANEA=1` | vuelve a copiar la instantánea en **todas** las instrucciones, no solo en las que pueden abortar. Es el A/B de la elisión (fase 1 de `rendimiento-plan-2.md`): **vale 2,5 % en DCDoom**, ≈0 sin MMU |
+| `DCEMU_SONDA_ELISION_VERIFICAR=1` | toma la instantánea siempre y solo **contrasta** la clasificación de `opcodes.c` contra los abortos reales: cualquier reporte del cable trampa es una fila mal auditada, con la corrección intacta |
 | `DCEMU_SONDA_SIN_BANCOS_FPU=1` | la instantánea de excepciones no copia los bancos de coma flotante |
 | `DCEMU_SONDA_SIN_INSTANTANEA=1` | la instantánea no copia nada. **Rompe el guest a propósito**: sirve para saber que el mecanismo es portante, no para cronometrar |
 | `DCEMU_SIN_MEMO_ARM=1` | apaga la memoización de barridos de sondeo del ARM7. Encendida elide **6,8 % de los pasos del ARM** y vale **0,5 %** de la corrida; en DCDoom no elide nada. Ver `docs/arm7-plan.md` |

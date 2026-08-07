@@ -500,6 +500,10 @@ static void falta_reponer(void)
 	excepcion_salto_armado = 0;
 	en_ranura_retardo = 0;
 
+	/* El longjmp se salteo el bajado del cable trampa de la elision; el
+	   reporte, si correspondia, ya salio en excepcion_abortar(). */
+	excepcion_exenta_en_curso = 0;
+
 	/*
 		Un error de direccion del camino rapido llega SIN instantanea: no se
 		tomo ninguna, y restaurar la ultima que hubo seria reponer el estado de
@@ -914,14 +918,52 @@ void main_loop(void)
 				// de armado, que dice si una falta debe saltar o solo
 				// registrarse. Ver docs/rendimiento-plan.md, fase 6.3.
 				//
-				// Se toma en TODAS. Saltarla en las que "no pueden abortar"
-				// --clasificando opcodes[] por tipo de operando-- se intento y
-				// se revirtio: rompe a DCDoom en silencio. Ver
-				// docs/rendimiento-plan.md, fase 6.3.
-				excepcion_instantanea_tomar();
+				// La instantanea se toma **despues** de buscar la instruccion,
+				// para poder saltearla en las codificaciones que opcodes.c
+				// audito como incapaces de abortar (la elision, fase 1 de
+				// docs/rendimiento-plan-2.md). Eso obliga a declarar antes que
+				// no hay instantanea vigente: la busqueda puede faltar, y si
+				// faltara con la instantanea de la instruccion ANTERIOR
+				// todavia marcada valida, la reposicion la restauraria --
+				// desharia una instruccion que si se ejecuto entera. El
+				// contenido de la copia no cambia por el orden: la busqueda no
+				// toca core.context (URC vive en regmem).
+				excepcion_instantanea_invalidar();
 
 				excepcion_salto_armado = 1;
-				core.execute(*(WORD *) MMU_FETCH_PUNTERO(PC));
+
+				{
+					WORD instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
+
+					if (excepcion_elision && excepcion_instr_exenta[instr])
+					{
+						/*
+							Manejador auditado en opcodes.c: no puede abortar,
+							asi que no hay nada que deshacer y la copia entera
+							sobra. El intento anterior de esta elision
+							clasificaba por tipo de operando y rompio a DCDoom
+							en silencio; de ahi las dos redes: el cable trampa
+							(excepcion_abortar reporta a los gritos si algo
+							aborta igual) y DCEMU_SONDA_ELISION_VERIFICAR=1,
+							que toma la instantanea de todos modos y solo
+							contrasta la clasificacion.
+						*/
+						PERF_CONTAR(perf_instantaneas_elididas);
+
+						if (excepcion_sonda_elision_verificar)
+							excepcion_instantanea_tomar();
+
+						excepcion_exenta_en_curso = 1;
+						core.execute(instr);
+						excepcion_exenta_en_curso = 0;
+					}
+					else
+					{
+						excepcion_instantanea_tomar();
+						core.execute(instr);
+					}
+				}
+
 				excepcion_salto_armado = 0;
 
 				/* Este es el camino del unico guest con MMU del arbol, asi que

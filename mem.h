@@ -3,6 +3,7 @@
 
 #include "options.h"
 #include "mmu.h"
+#include "perf.h"			/* PERF_CONTAR, que MMU_TRADUCIR_EN_SITIO usa */
 
 #include "traza.h"			/* watchpoint_escritura(), watchpoint_dir */
 
@@ -227,7 +228,8 @@ void excepcion_direccion(DWORD direccion, int escritura);
 		unsigned long _mmu_d = _ubc_d; \
 		unsigned char * _md_b; \
 		MEM_ALINEADO(_ubc_d, (size), 0); \
-		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_LECTURA); \
+		if (mmu_activa) \
+			MMU_TRADUCIR_EN_SITIO(_mmu_d, MMU_DATOS_LEER, MMU_LECTURA); \
 		_md_b = mem_base_lectura[_mmu_d >> 24]; \
 		if (_md_b) \
 			MEM_DIRECTO_LEER(_md_b + ((_mmu_d) & 0xFFFFFF), (target), (size)); \
@@ -243,7 +245,8 @@ void excepcion_direccion(DWORD direccion, int escritura);
 		unsigned long _mmu_d = _ubc_d; \
 		unsigned char * _md_b; \
 		MEM_ALINEADO(_ubc_d, (size), 1); \
-		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_ESCRITURA); \
+		if (mmu_activa) \
+			MMU_TRADUCIR_EN_SITIO(_mmu_d, MMU_DATOS_ESCRIBIR, MMU_ESCRITURA); \
 		_md_b = mem_base_escritura[_mmu_d >> 24]; \
 		if (_md_b) \
 			MEM_DIRECTO_ESCRIBIR(_md_b + ((_mmu_d) & 0xFFFFFF), (source), (size)); \

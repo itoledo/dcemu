@@ -299,6 +299,84 @@ static void noimp_avanza_pc_sin_colgar(void)
 	ESPERAR_PC_SIGUIENTE();
 }
 
+/* ------------------------------------------- la tabla de la elision (fase 1) */
+
+/*
+	excepcion_instr_exenta[] dice que codificaciones pueden correr sin
+	instantanea con la MMU encendida. Los canarios codifican la INTENCION,
+	independiente de como initopcodes() llena la tabla: los puros de registro
+	tienen que estar exentos, y todo lo que toca memoria, salta, es FPU o entra
+	a una excepcion propia tiene que necesitar la instantanea. El intento
+	anterior de esta clasificacion se equivoco exactamente en los saltos con
+	ranura de retardo (RTS, BRA), asi que esos estan aqui con nombre propio.
+*/
+static void la_tabla_de_la_elision_exime_solo_a_los_puros(void)
+{
+	static const WORD exentas[] =
+	{
+		0xE000,		/* MOV #imm, Rn */
+		0x6003,		/* MOV Rm, Rn */
+		0x300C,		/* ADD Rm, Rn */
+		0x7000,		/* ADD #imm, Rn */
+		0x3000,		/* CMP/EQ Rm, Rn */
+		0x2008,		/* TST Rm, Rn */
+		0x4000,		/* SHLL Rn */
+		0x6009,		/* SWAP.W Rm, Rn */
+		0x4010,		/* DT Rn */
+		0x0009,		/* NOP */
+		0x0029,		/* MOVT Rn */
+		0xC700,		/* MOVA @(disp,PC), R0: calcula la direccion, no la toca */
+	};
+	static const WORD con_instantanea[] =
+	{
+		0x6002,		/* MOV.L @Rm, Rn: memoria */
+		0x2002,		/* MOV.L Rm, @Rn: memoria */
+		0xD000,		/* MOV.L @(disp,PC), Rn: el literal es una lectura */
+		0x000F,		/* MAC.L: memoria */
+		0x401B,		/* TAS.B: memoria */
+		0xCD00,		/* AND.B #imm, @(R0,GBR): memoria */
+		0x000B,		/* RTS: la ranura de retardo ejecuta cualquier cosa */
+		0xA000,		/* BRA: idem */
+		0x8D00,		/* BT/S: idem */
+		0x400B,		/* JSR: idem */
+		0x002B,		/* RTE: idem */
+		0xC300,		/* TRAPA: entra a una excepcion */
+		0x0083,		/* PREF: el volcado de SQ traduce y puede faltar */
+		0x00C3,		/* MOVCA.L: memoria */
+		0x001B,		/* SLEEP */
+		0x4007,		/* LDC.L @Rm+, SR: memoria */
+		0x4022,		/* STS.L PR, @-Rn: memoria */
+		0xF000,		/* FADD: FPU (con Enable puestos aborta) */
+		0xF009,		/* FMOV.S @Rm+, FRn: FPU y memoria */
+		0x406A,		/* LDS Rm, FPSCR: transferencia de FPU */
+		0x0001,		/* NOIMP */
+		0xFFFF,		/* BIOS_HACK */
+	};
+	int i;
+	int mal = 0;
+
+	arnes_reset();
+
+	for (i = 0; i < (int) (sizeof(exentas) / sizeof(exentas[0])); i++)
+		if (!excepcion_instr_exenta[exentas[i]])
+		{
+			dc_anotar(__FILE__, __LINE__, "0x%04X deberia estar exenta",
+					  (unsigned int) exentas[i]);
+			mal++;
+		}
+
+	for (i = 0; i < (int) (sizeof(con_instantanea) / sizeof(con_instantanea[0])); i++)
+		if (excepcion_instr_exenta[con_instantanea[i]])
+		{
+			dc_anotar(__FILE__, __LINE__,
+					  "0x%04X NO deberia estar exenta: puede abortar",
+					  (unsigned int) con_instantanea[i]);
+			mal++;
+		}
+
+	ESPERAR_U32(mal, 0);
+}
+
 /* ------------------------------------------------- opcode 0xFFFF (BIOS) */
 
 /* 0xFFFF no es una instruccion del SH-4. main() escribe esa palabra en los
@@ -355,6 +433,7 @@ static const dc_caso casos[] =
 	CASO(ninguna_instruccion_queda_sin_implementar),
 	CASO(los_encodings_invalidos_caen_en_noimp),
 	CASO(noimp_avanza_pc_sin_colgar),
+	CASO(la_tabla_de_la_elision_exime_solo_a_los_puros),
 	CASO(el_hack_de_la_bios_lee_sectores),
 };
 

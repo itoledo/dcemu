@@ -62,6 +62,7 @@ unsigned long long perf_mmu_fetch_fallo		= 0;
 unsigned long long perf_mmu_falta			= 0;
 unsigned long long perf_instantaneas		= 0;
 unsigned long long perf_instantaneas_usadas	= 0;
+unsigned long long perf_instantaneas_elididas = 0;
 unsigned long long perf_ns_traducir			= 0;
 unsigned long long perf_ns_instantanea		= 0;
 
@@ -601,7 +602,7 @@ void perf_resumen(void)
 		La MMU. Solo sale si el guest la encendio alguna vez, porque en todo lo
 		demas del arbol estas lineas serian seis ceros. Ver perf.h.
 	*/
-	if (perf_instantaneas || perf_mmu_traduce)
+	if (perf_instantaneas || perf_instantaneas_elididas || perf_mmu_traduce)
 	{
 		fprintf(stderr, "perf: MMU\n");
 
@@ -619,6 +620,15 @@ void perf_resumen(void)
 			perf_instantaneas_usadas
 				? (double) perf_instantaneas / (double) perf_instantaneas_usadas
 				: 0.0);
+
+		/* La elision (fase 1 de rendimiento-plan-2.md): instrucciones cuyo
+		   manejador auditado no puede abortar, asi que la copia se salteo. */
+		fprintf(stderr, "perf:   ... elididas         %12llu"
+			" (%.2f por instruccion)\n",
+			perf_instantaneas_elididas,
+			perf_instrucciones
+				? (double) perf_instantaneas_elididas
+				  / (double) perf_instrucciones : 0.0);
 
 		/* Aciertos = instrucciones - fallos: el acierto no se cuenta porque
 		   vive en el camino de cada instruccion. Ver mmu_fetch_resolver(). */

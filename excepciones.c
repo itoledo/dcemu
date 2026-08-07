@@ -422,6 +422,11 @@ void excepcion_abortar(DWORD codigo, DWORD vector)
 	excepcion_codigo = codigo;
 	excepcion_vector = vector;
 
+	/* El cable trampa de la elision: esto no deberia poder pasar, y si pasa
+	   la lista de opcodes.c esta mal y hay que saberlo ya. Camino frio. */
+	if (excepcion_exenta_en_curso)
+		excepcion_exenta_reportar(codigo);
+
 	if (excepcion_salto_armado)
 	{
 		excepcion_salto_armado = 0;
@@ -446,6 +451,12 @@ void excepcion_direccion(DWORD direccion, int escritura)
 
 	excepcion_codigo = escritura ? EXC_DIR_ESCRITURA : EXC_DIR_LECTURA;
 	excepcion_vector = EXC_VEC_GENERAL;
+
+	/* El mismo cable trampa que en excepcion_abortar(): una instruccion exenta
+	   no accede a memoria, asi que llegar aca con la bandera puesta es una
+	   clasificacion equivocada. */
+	if (excepcion_exenta_en_curso)
+		excepcion_exenta_reportar(excepcion_codigo);
 
 	if (excepcion_salto_armado)
 	{
@@ -521,6 +532,12 @@ int excepcion_sonda_sin_bancos     = 0;
 int excepcion_sonda_sin_instantanea = 0;
 int excepcion_sonda_setjmp_instr   = 0;
 
+/* La elision de la instantanea y sus dos llaves. Ver excepciones.h y la lista
+   auditada en opcodes.c. */
+int excepcion_elision                 = 1;
+int excepcion_sonda_elision_verificar = 0;
+int excepcion_exenta_en_curso         = 0;
+
 void excepcion_sondas_iniciar(void)
 {
 	const char * v;
@@ -536,10 +553,53 @@ void excepcion_sondas_iniciar(void)
 	v = getenv("DCEMU_SONDA_SETJMP_POR_INSTRUCCION");
 	excepcion_sonda_setjmp_instr = (v != NULL && atoi(v) != 0);
 
+	/* El interruptor de la elision (para el A/B en el mismo binario) y su modo
+	   de verificacion (instantanea siempre, la clasificacion solo se
+	   contrasta). */
+	v = getenv("DCEMU_SIN_ELISION_INSTANTANEA");
+	excepcion_elision = !(v != NULL && atoi(v) != 0);
+
+	v = getenv("DCEMU_SONDA_ELISION_VERIFICAR");
+	excepcion_sonda_elision_verificar = (v != NULL && atoi(v) != 0);
+
+	if (excepcion_sonda_elision_verificar)
+		fprintf(stderr, "sonda: elision en modo verificacion (la instantanea"
+			" se toma siempre; solo se contrasta la clasificacion)\n");
+
 	if (excepcion_sonda_sin_bancos || excepcion_sonda_sin_instantanea)
 		fprintf(stderr, "sonda: instantanea %s\n",
 			excepcion_sonda_sin_instantanea ? "APAGADA (el guest puede divergir)"
 											: "sin los bancos de FPU");
+}
+
+/*
+	El cable trampa de la elision. Que una instruccion clasificada como exenta
+	aborte significa que la lista `manejadores_sin_aborto` de opcodes.c esta
+	mal, y la diferencia entre este reporte y el silencio es la diferencia
+	entre encontrar el error en la primera corrida y perseguir una corrupcion
+	sin sintoma, que es como fallo el intento anterior (rendimiento-plan.md,
+	6.3). Camino frio: solo corre cuando ya hay un aborto en marcha.
+*/
+void excepcion_exenta_reportar(DWORD codigo)
+{
+	static int avisos = 0;
+
+	if (avisos >= 20)
+		return;
+
+	avisos++;
+	fprintf(stderr, "excepciones: ABORTO (EXPEVT %03lx) dentro de una"
+		" instruccion clasificada como exenta, PC %08lx: la lista de opcodes.c"
+		" esta MAL.%s\n",
+		(unsigned long) codigo, (unsigned long) PC,
+		excepcion_sonda_elision_verificar
+			? " (modo verificacion: la instantanea se tomo igual y el estado"
+			  " se repone)"
+			: " El estado del guest queda a medio mutar.");
+
+	if (avisos == 20)
+		fprintf(stderr, "excepciones: 20 reportes de elision; no se informan"
+			" mas\n");
 }
 
 /*

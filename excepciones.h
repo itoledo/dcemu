@@ -160,6 +160,31 @@ extern int excepcion_sonda_setjmp_instr;
 void excepcion_sondas_iniciar(void);
 
 /*
+	La elision de la instantanea (fase 1 de docs/rendimiento-plan-2.md): con
+	excepcion_vigilar puesto, main_loop() no toma instantanea para las
+	codificaciones que opcodes.c audito como incapaces de abortar
+	(excepcion_instr_exenta[]). No hay nada que deshacer, asi que no copiar es
+	correcto -- siempre que la auditoria lo sea, y para eso estan las otras dos
+	piezas:
+
+	  - el cable trampa: excepcion_exenta_en_curso vale 1 mientras corre una
+	    instruccion exenta, y un aborto que llegue igual se reporta a los
+	    gritos (excepcion_exenta_reportar) en vez de corromper en silencio,
+	    que es como fallo el intento anterior;
+	  - DCEMU_SONDA_ELISION_VERIFICAR=1 toma la instantanea igual --correccion
+	    intacta-- y solo contrasta la clasificacion contra los abortos de una
+	    corrida entera. Es la corrida previa a confiar en la lista.
+
+	DCEMU_SIN_ELISION_INSTANTANEA=1 la apaga en el mismo binario, que es la
+	unica forma de A/B que este arbol acepta.
+*/
+extern int excepcion_elision;
+extern int excepcion_sonda_elision_verificar;
+extern int excepcion_exenta_en_curso;
+
+void excepcion_exenta_reportar(DWORD codigo);
+
+/*
 	Los bancos de coma flotante entran en la instantanea solo si la instruccion
 	puede escribirlos. Lo decide run(), con es_instruccion_fpu(); el porque de
 	que sea ahi y no en main_loop() esta en excepciones.c.

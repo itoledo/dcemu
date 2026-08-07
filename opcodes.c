@@ -297,6 +297,69 @@ struct st_cmd opcodes[] =
 	{ 0, 0, NULL, 0, (void *) NULL }
 };
 
+/*
+	La elision de la instantanea (fase 1 de docs/rendimiento-plan-2.md).
+
+	Manejadores que una lectura de su cuerpo demostro incapaces de llegar a
+	excepcion_abortar() o excepcion_direccion(): sin memread/memwrite, sin FPU,
+	sin ranura de retardo, sin excepcion propia. Con excepcion_vigilar puesto,
+	main_loop() no toma instantanea para las codificaciones que resuelven a uno
+	de estos, porque no hay nada que deshacer.
+
+	**La clasificacion describe a los manejadores de dcemu, no al chip.** OCBP/
+	OCBWB (y OCBI, que apunta a `nop`) pueden faltar en hardware real, pero aqui
+	son no-ops --no hay cache de operandos-- y un manejador que no hace nada no
+	tiene nada que deshacer. Si alguno gana un cuerpo real algun dia, su funcion
+	nueva no estara en esta lista y la codificacion vuelve sola a "necesita".
+
+	El intento anterior clasificaba por TIPO DE OPERANDO y rompio a DCDoom en
+	silencio con todas las suites en verde (rendimiento-plan.md, 6.3). El
+	agujero de ese enfoque: RTS es OP_T_NA y BRA es OP_T_LABEL12 --tipos "sin
+	memoria"-- pero su ranura de retardo ejecuta una instruccion arbitraria con
+	core.execute() anidado, y si esa falta, la instantanea que se restaura es
+	**la del salto**. Por eso (a) la lista es de funciones auditadas cuerpo por
+	cuerpo, (b) ningun salto esta en ella, y (c) una fila nueva de opcodes[]
+	queda como "necesita" por omision: el mecanismo no puede aflojarse solo.
+
+	Auditados el 2026-08-07 contra mov.c, arith.c, logic.c, shift.c y
+	syscontrol.c. El cable trampa de excepcion_abortar() reporta a los gritos
+	cualquier aborto que ocurra igual, y DCEMU_SONDA_ELISION_VERIFICAR=1
+	contrasta la lista contra una corrida entera sin arriesgar el estado.
+*/
+static opcode_f * const manejadores_sin_aborto[] =
+{
+	/* mov.c: registro a registro (MOVA calcula la direccion, no la toca) */
+	mov0, mov3, mova34, movt35, swapb36, swapw37, xtrct38,
+	/* arith.c: todo menos MAC.L/MAC.W, que leen memoria */
+	add39, add40, addc41, addv, cmpeq43, cmpeq44, cmphs45, cmpge46,
+	cmphi47, cmpgt48, cmppz49, cmppl50, cmpstr51, div1s52, div0s53,
+	div0u54, dmulsl55, dmulul56, dt, extsb58, extsw59, extub60, extuw61,
+	mull, mulsw65, muluw66, neg67, negc68, sub69, subc70, subv71,
+	/* logic.c: las formas de registro; TAS.B y las .B de @(R0,GBR) no */
+	and72, and73, not75, or76, or77, tst80, tst81, xor83, xor84,
+	/* shift.c entero */
+	rotl86, rotr87, rotcl88, rotcr89, shad90, shal91, shar92, shld93,
+	shll94, shlr95, shll2, shlr2, shll8, shlr8, shll16, shlr16,
+	/* syscontrol.c: los puros. `nop` cubre tambien a OCBI, que apunta a el */
+	nop, ocbp140, ocbwb141, clrmac113, clrs114, clrt115, sets144, sett145,
+	lds130, lds131, lds132, sts163, sts164, sts165,
+};
+
+static int manejador_sin_aborto(opcode_f * f)
+{
+	size_t i;
+
+	for (i = 0;
+		 i < sizeof(manejadores_sin_aborto) / sizeof(manejadores_sin_aborto[0]);
+		 i++)
+		if (manejadores_sin_aborto[i] == f)
+			return 1;
+
+	return 0;
+}
+
+unsigned char excepcion_instr_exenta[65536];
+
 int find_opcode(DWORD mempos)
 {
 	int i, ret = -1;
@@ -487,4 +550,25 @@ void initopcodes()
 		}
 	}
 	oplist = oplist_pr0_sz0;
+
+	/*
+		La tabla de la elision (ver manejadores_sin_aborto arriba), en una
+		pasada final sobre las cuatro tablas ya armadas y no dentro del bucle
+		de filas: una codificacion solo es exenta si **los cuatro modos de
+		PR/SZ** resuelven al mismo manejador auditado. Asi la exencion es
+		independiente del modo por construccion y no hereda las sutilezas de
+		orden del solapamiento de filas -- las restringidas son todas de FPU y
+		ninguna esta en la lista, pero esto no depende de que eso siga siendo
+		cierto.
+	*/
+	for (i2 = 0; i2 < 65536; i2++)
+	{
+		opcode_f * f = OP_HANDLER(oplist_pr0_sz0, i2);
+
+		excepcion_instr_exenta[i2] = (unsigned char)
+			(  f == OP_HANDLER(oplist_pr0_sz1, i2)
+			&& f == OP_HANDLER(oplist_pr1_sz0, i2)
+			&& f == OP_HANDLER(oplist_pr1_sz1, i2)
+			&& manejador_sin_aborto(f));
+	}
 }
