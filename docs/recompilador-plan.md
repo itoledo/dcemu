@@ -514,3 +514,39 @@ ninguna adivinada — la lista salió de la corrida.
    por `(PC>>1) & 0xFFFF` se queda corta y hay que asociarla o agrandarla.
 4. **Recién ahí, medir.** Con bloques de dos instrucciones el despacho domina y cualquier
    número de velocidad hoy mediría el andamiaje, no la traducción.
+
+## La segunda tanda: 52 % de cobertura, y una divergencia sin localizar
+
+50 plantillas (las 29 más las que el censo nombró: las tres `MOV.L` indexadas por `R0`,
+`@Rm+`, `@-Rn`, `BT`, `BT/S`, `BRA`, `BSR`, `JMP`, `JSR`, `RTS`, `CMP/EQ #imm`, `EXTU.W`,
+`EXTS.B` y los corrimientos). Con eso:
+
+- **El censo se secó**: lo que más corta bloques ahora aparece 42 veces, no 258 000.
+- Los bloques pasaron de 2,4 a **7,8 instrucciones** y la cobertura de 0,25 % a **51,8 %**
+  (2 813 M de 5 433 M en DCDoom).
+
+Y en el camino, **dos fugas del andamiaje que no tienen nada que ver con las plantillas**:
+
+1. **El índice de bloques estaba recortado a `(PC >> 1) & 0xFFFF`**, igual que el filtro. Eso
+   distingue 128 KB de espacio de PC y DCDoom ejecuta en cuatro ventanas a la vez, así que
+   los bloques se pisaban entre ellos. Ahora es una tabla hash sobre el PC entero — y el
+   primer intento tomó los bits **bajos** del producto multiplicativo, que es una permutación
+   de los 15 bits de abajo del PC: el mismo recorte que venía a sacar.
+2. **El crecimiento hacia atrás duplicaba bloques sin fin.** Cuando el bloque se registra en
+   la cabeza del lazo, ese PC no es el que se pidió, así que el despacho devuelve 0 — pero el
+   bit seguía puesto, y la visita siguiente volvía a traducir la misma cabeza. 16 384 bloques
+   de los que 16 123 ni entraban en la tabla.
+
+**Y con eso apareció una divergencia: −11 002 instrucciones sobre 5433 millones**, con la
+captura `198B396F…` y los 1482 cuadros intactos. La bisección por `DCEMU_JIT_PLANTILLAS=N`
+—que se agregó para esto— dice lo que importa: **con las 29 plantillas de la primera tanda,
+que estaban verificadas exactas, la cuenta también diverge ahora**. O sea que no son las
+plantillas nuevas: es que al dejar de duplicar bloques se empezaron a ejercitar, por primera
+vez, los bloques que **empiezan en la cabeza de un lazo y pliegan su rama hacia atrás como
+arista interna**. El plegado (`tr_seguir_en`) es la parte más nueva y menos ejercitada.
+
+**`DCEMU_JIT=2` no es exacto hoy**, y hasta que lo sea ningún número de velocidad de este
+camino significa nada. Está detrás de `-DDCEMU_JIT=ON` y apagado por omisión; el binario del
+árbol no lo lleva. El siguiente paso es localizar la divergencia con la palanca de bisección
+sobre el banco corto de seis segundos, que es donde ya se ve (803 037 594 contra
+803 038 036).

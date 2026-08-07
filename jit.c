@@ -172,7 +172,7 @@ void jit_escribir32(DWORD dir, DWORD valor)
 /* ------------------------------------------------------------------------ */
 
 #define JIT_ARENA_TAM		(16u * 1024u * 1024u)
-#define JIT_MAX_BLOQUES		4096
+#define JIT_MAX_BLOQUES		16384
 #define JIT_MAX_INSTR		64
 
 static unsigned char *	jit_arena     = NULL;
@@ -201,11 +201,34 @@ typedef struct
 static jit_bloque	jit_bloques[JIT_MAX_BLOQUES];
 static int			jit_n_bloques = 0;
 
-/* Mapeo directo por PC: el mapa de bits dice "hay algo", esto dice que. Una
-   colision reemplaza, que es lo que hace que dos PC calientes que aliasan no
-   se turnen para siempre; el contador de reemplazos lo vigila. */
-static short				jit_indice[0x10000];
+/*
+	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
+	dice que -- y **tiene que estar indexada por el PC entero**, no por
+	(PC >> 1) & 0xFFFF como el filtro: ese recorte distingue 128 KB de espacio
+	de PC, y DCDoom ejecuta en cuatro ventanas a la vez (0x8C..., 0xAC...,
+	0x0000..., 0x01E7...). Con mapeo directo recortado se pisaban entre ellas
+	--16 146 reemplazos sobre 16 384 bloques-- y la cobertura se quedaba en el
+	0,25 % con el censo ya seco: los bloques existian y no se encontraban.
+
+	Direccionamiento abierto con sondeo lineal corto: si en ocho sitios no
+	entra, ese bloque no se indexa y su PC sigue interpretado.
+*/
+#define JIT_HASH_N		32768
+#define JIT_HASH_SONDEO	8
+
+static short				jit_hash[JIT_HASH_N];
 static unsigned long long	jit_colisiones = 0;
+
+/* Los bits **altos** del producto, que es donde el hash multiplicativo mezcla:
+   tomar los bajos deja una permutacion de los 15 bits de abajo del PC, o sea
+   exactamente el recorte que este cambio venia a sacar. Costo 16 123 de 16 384
+   bloques sin lugar en la tabla, con la cobertura clavada. */
+static unsigned jit_hash_de(DWORD pc)
+{
+	unsigned h = (unsigned) ((pc >> 1) * 2654435761u);
+
+	return (h >> (32 - 15)) & (JIT_HASH_N - 1);
+}
 
 static void * jit_arena_reservar(unsigned tam)
 {
@@ -286,6 +309,44 @@ static void jit_unwind_armar(unsigned char * ui, const jit_marco * m,
 }
 
 #endif /* _WIN32 */
+
+static jit_bloque * jit_buscar(DWORD pc)
+{
+	unsigned h = jit_hash_de(pc);
+	int i;
+
+	for (i = 0; i < JIT_HASH_SONDEO; i++)
+	{
+		short b = jit_hash[(h + (unsigned) i) & (JIT_HASH_N - 1)];
+
+		if (b < 0)
+			return NULL;
+
+		if (jit_bloques[b].pc == pc)
+			return &jit_bloques[b];
+	}
+
+	return NULL;
+}
+
+static void jit_insertar(int idx)
+{
+	unsigned h = jit_hash_de(jit_bloques[idx].pc);
+	int i;
+
+	for (i = 0; i < JIT_HASH_SONDEO; i++)
+	{
+		unsigned k = (h + (unsigned) i) & (JIT_HASH_N - 1);
+
+		if (jit_hash[k] < 0)
+		{
+			jit_hash[k] = (short) idx;
+			return;
+		}
+	}
+
+	jit_colisiones++;
+}
 
 /*
 	La tabla de funciones del bloque recien emitido. Se registra bloque por
@@ -1249,6 +1310,7 @@ struct jit_plantilla
 	int				ciclos;
 	unsigned char	accede;		/* toca memoria: hay que sincronizar antes */
 	unsigned char	rama;		/* decide el flujo por su cuenta */
+	unsigned char	ranura;		/* lleva ranura de retardo */
 	jit_emitir_f	emitir;
 };
 
@@ -1761,6 +1823,324 @@ static void pl_bfs(jit_gen * g, jit_traduccion * t, int i)
 	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
 }
 
+
+/* --- las formas indexadas por R0 ---------------------------------------- */
+
+static void pl_movl27(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L @(R0,Rm),Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TM(w));
+	tr_leer_a(g, t, TN(w), 4);
+}
+
+static void pl_movl24(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L Rm,@(R0,Rn) */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TN(w));
+	tr_escribir_de(g, t, TM(w), 4);
+}
+
+static void pl_movb22(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B Rm,@(R0,Rn) */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TN(w));
+	tr_escribir_de(g, t, TM(w), 1);
+}
+
+/* --- post-incremento y pre-decremento ----------------------------------- */
+
+/*
+	@Rm+ : lee y **despues** incrementa, y no incrementa cuando n == m. Si la
+	lectura falta, el contexto todavia tiene el R(m) viejo porque el volcado
+	previo lo dejo asi -- la reejecucion sale exacta sin instantanea.
+*/
+static void tr_leer_mas(jit_gen * g, jit_traduccion * t, int i, int ancho)
+{
+	WORD w = t->palabra[i];
+	int  n = TN(w), m = TM(w);
+
+	tr_cargar(g, t, X64_RCX, m);
+	tr_leer_a(g, t, n, ancho);
+
+	if (n != m)
+		tr_alu_ri(g, t, X64_ADD, m, ancho);
+}
+
+static void pl_movb13(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B @Rm+,Rn */
+{
+	tr_leer_mas(g, t, i, 1);
+}
+
+static void pl_movl15(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L @Rm+,Rn */
+{
+	tr_leer_mas(g, t, i, 4);
+}
+
+/*
+	@-Rn : decrementa y escribe. El decremento se calcula en un registro suelto
+	y **R(n) se compromete recien despues** de que la escritura volvio: si
+	faltara, el contexto tiene que mostrar el R(n) de antes, y con R(n) en el
+	contexto (no cacheado) decrementarlo antes lo arruinaria.
+*/
+static void pl_movl12(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L Rm,@-Rn */
+{
+	WORD w = t->palabra[i];
+	int  n = TN(w);
+
+	tr_cargar(g, t, X64_RCX, n);
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RCX, 4);
+	tr_escribir_de(g, t, TM(w), 4);
+	tr_alu_ri(g, t, X64_SUB, n, 4);
+}
+
+/* --- aritmetica y corrimientos que el censo pidio ------------------------ */
+
+static void pl_cmpeq43(jit_gen * g, jit_traduccion * t, int i)	/* CMP/EQ #imm,R0 */
+{
+	int imm = (int) (signed char) (t->palabra[i] & 0xFF);
+	int h0  = tr_h(t, 0);
+
+	if (h0 >= 0)
+		jit_x64_alu_ri(&g->e, X64_CMP, (x64_reg) h0, imm);
+	else
+		jit_x64_alu_mi(&g->e, X64_CMP, CTX, O_R(0), imm);
+
+	gen_poner_t(g, X64_E);
+}
+
+static void pl_extuw61(jit_gen * g, jit_traduccion * t, int i)	/* EXTU.W Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+	int  hm = tr_h(t, TM(w));
+
+	if (hm < 0)
+	{
+		tr_cargar(g, t, X64_RAX, TM(w));
+		hm = (int) X64_RAX;
+	}
+
+	if (hn >= 0)
+		jit_x64_movzx_w(&g->e, (x64_reg) hn, (x64_reg) hm);
+	else
+	{
+		jit_x64_movzx_w(&g->e, X64_RAX, (x64_reg) hm);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void pl_extsb58(jit_gen * g, jit_traduccion * t, int i)	/* EXTS.B Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+	int  hm = tr_h(t, TM(w));
+
+	if (hm < 0)
+	{
+		tr_cargar(g, t, X64_RAX, TM(w));
+		hm = (int) X64_RAX;
+	}
+
+	if (hn >= 0)
+		jit_x64_movsx_b(&g->e, (x64_reg) hn, (x64_reg) hm);
+	else
+	{
+		jit_x64_movsx_b(&g->e, X64_RAX, (x64_reg) hm);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+/* SHLL y SHLR de uno dejan el bit que sale en T; el corrimiento de x86 ya lo
+   pone en CF, asi que el setcc sale del mismo flag. */
+static void pl_shll94(jit_gen * g, jit_traduccion * t, int i)	/* SHLL Rn */
+{
+	int n  = TN(t->palabra[i]);
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_shift_ri(&g->e, X64_SHL, (x64_reg) hn, 1);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_R(n));
+		jit_x64_shift_ri(&g->e, X64_SHL, X64_RAX, 1);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+
+	gen_poner_t(g, X64_B);		/* CF = el bit que salio */
+}
+
+static void pl_shlr95(jit_gen * g, jit_traduccion * t, int i)	/* SHLR Rn */
+{
+	int n  = TN(t->palabra[i]);
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_shift_ri(&g->e, X64_SHR, (x64_reg) hn, 1);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_R(n));
+		jit_x64_shift_ri(&g->e, X64_SHR, X64_RAX, 1);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+
+	gen_poner_t(g, X64_B);
+}
+
+static void pl_shll8(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_shift(g, t, X64_SHL, TN(t->palabra[i]), 8);
+}
+
+static void pl_shlr8(jit_gen * g, jit_traduccion * t, int i)
+{
+	int n = TN(t->palabra[i]);
+
+	tr_shift(g, t, X64_SHR, n, 8);
+	tr_alu_ri(g, t, X64_AND, n, 0x00FFFFFF);
+}
+
+static void pl_shll16(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_shift(g, t, X64_SHL, TN(t->palabra[i]), 16);
+}
+
+/* --- las ramas que faltaban --------------------------------------------- */
+
+/* BT: salta si T == 1. El espejo de BF. */
+static void pl_bt104(jit_gen * g, jit_traduccion * t, int i)
+{
+	x64_parche no_toma;
+
+	jit_x64_add_ri(&g->e, CYC, 2);
+	jit_x64_inc_r(&g->e, N);
+
+	jit_x64_test_mi8(&g->e, CTX, O_SR, 1);
+	no_toma = jit_x64_jcc(&g->e, X64_E);
+	tr_seguir_en(g, t, tr_destino8(t, i));
+	jit_x64_fijar(&g->e, no_toma);
+
+	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+}
+
+/* La ranura de una rama condicional, emitida adentro del camino que toma. */
+static void tr_emitir_ranura(jit_gen * g, jit_traduccion * t, int i)
+{
+	const jit_plantilla * r = t->pl[i];
+
+	r->emitir(g, t, i);
+
+	if (r->ciclos)
+		jit_x64_add_ri(&g->e, CYC, r->ciclos);
+
+	jit_x64_inc_r(&g->e, N);
+}
+
+static void pl_bts105(jit_gen * g, jit_traduccion * t, int i)	/* BT/S */
+{
+	x64_parche no_toma;
+
+	jit_x64_add_ri(&g->e, CYC, 2);
+	jit_x64_inc_r(&g->e, N);
+
+	jit_x64_test_mi8(&g->e, CTX, O_SR, 1);
+	no_toma = jit_x64_jcc(&g->e, X64_E);
+	tr_emitir_ranura(g, t, i + 1);
+	tr_seguir_en(g, t, tr_destino8(t, i));
+	jit_x64_fijar(&g->e, no_toma);
+
+	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+}
+
+static DWORD tr_destino12(const jit_traduccion * t, int i)
+{
+	WORD  w  = t->palabra[i];
+	DWORD pc = t->pc0 + (DWORD) (2 * i);
+	int   d  = (int) (w & 0x0FFF);
+
+	if (d & 0x0800)
+		d |= ~0x0FFF;
+
+	return (DWORD) (d * 2) + pc + 4;
+}
+
+/* BRA / BSR: siempre saltan, con destino constante, asi que el salto puede
+   plegarse como arista del bloque. */
+static void pl_bra(jit_gen * g, jit_traduccion * t, int i)
+{
+	jit_x64_add_ri(&g->e, CYC, 2);
+	jit_x64_inc_r(&g->e, N);
+	tr_emitir_ranura(g, t, i + 1);
+	tr_seguir_en(g, t, tr_destino12(t, i));
+}
+
+static void pl_bsr108(jit_gen * g, jit_traduccion * t, int i)
+{
+	DWORD pc = t->pc0 + (DWORD) (2 * i);
+
+	jit_x64_add_ri(&g->e, CYC, 2);
+	jit_x64_inc_r(&g->e, N);
+	jit_x64_mov_mi(&g->e, CTX, O_PR, pc + 4);
+	tr_emitir_ranura(g, t, i + 1);
+	tr_seguir_en(g, t, tr_destino12(t, i));
+}
+
+/*
+	JMP / JSR / RTS: el destino es dinamico, asi que el bloque termina siempre.
+	**El destino se captura antes de la ranura** --que puede escribir el mismo
+	registro-- y se guarda derecho en el PC del contexto, que hace de lugar
+	seguro: ninguna plantilla de ranura lo toca, y ninguna puede acceder a
+	memoria (tr_descubrir lo impide), asi que no hay sincronizacion que lo pise.
+*/
+static void tr_salto_dinamico(jit_gen * g, jit_traduccion * t, int i,
+	int ciclos, int reg_destino, int guardar_pr)
+{
+	DWORD pc = t->pc0 + (DWORD) (2 * i);
+
+	jit_x64_add_ri(&g->e, CYC, ciclos);
+	jit_x64_inc_r(&g->e, N);
+
+	if (reg_destino >= 0)
+		tr_cargar(g, t, X64_RAX, reg_destino);
+	else
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PR);
+
+	if (guardar_pr)
+		jit_x64_mov_mi(&g->e, CTX, O_PR, pc + 4);
+
+	jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
+
+	tr_emitir_ranura(g, t, i + 1);
+
+	/* El PC ya esta puesto: solo hay que salir. */
+	if (g->n_salidas < JIT_MAX_SALIDAS)
+		g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
+	else
+		g->e.desborde = 1;
+}
+
+static void pl_jmp110(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_salto_dinamico(g, t, i, 3, TN(t->palabra[i]), 0);
+}
+
+static void pl_jsr111(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_salto_dinamico(g, t, i, 3, TN(t->palabra[i]), 1);
+}
+
+static void pl_rts112(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_salto_dinamico(g, t, i, 3, -1, 0);
+}
+
 /* ------------------------------------------------------------------------ */
 /* La tabla de plantillas                                                   */
 /* ------------------------------------------------------------------------ */
@@ -1773,35 +2153,56 @@ static void pl_bfs(jit_gen * g, jit_traduccion * t, int i)
 */
 static jit_plantilla jit_plantillas[] =
 {
-	{ NULL, "NOP",                0, 0, 0, pl_nop     },
-	{ NULL, "MOV #imm,Rn",        1, 0, 0, pl_mov0    },
-	{ NULL, "MOV Rm,Rn",          0, 0, 0, pl_mov3    },
-	{ NULL, "MOV.L @(d,PC),Rn",   2, 1, 0, pl_movl2   },
-	{ NULL, "MOV.L @Rm,Rn",       2, 1, 0, pl_movl9   },
-	{ NULL, "MOV.L Rm,@Rn",       2, 1, 0, pl_movl6   },
-	{ NULL, "MOV.L @(d,Rm),Rn",   1, 1, 0, pl_movl21  },
-	{ NULL, "MOV.B @Rm,Rn",       2, 1, 0, pl_movb7   },
-	{ NULL, "MOV.B Rm,@Rn",       2, 1, 0, pl_movb4   },
-	{ NULL, "MOV.B @(R0,Rm),Rn",  2, 1, 0, pl_movb25  },
-	{ NULL, "ADD Rm,Rn",          1, 0, 0, pl_add39   },
-	{ NULL, "ADD #imm,Rn",        1, 0, 0, pl_add40   },
-	{ NULL, "AND Rm,Rn",          1, 0, 0, pl_and72   },
-	{ NULL, "AND #imm,R0",        1, 0, 0, pl_and73   },
-	{ NULL, "NOT Rm,Rn",          1, 0, 0, pl_not75   },
-	{ NULL, "TST Rm,Rn",          1, 0, 0, pl_tst80   },
-	{ NULL, "TST #imm,R0",        1, 0, 0, pl_tst81   },
-	{ NULL, "CMP/EQ Rm,Rn",       1, 0, 0, pl_cmpeq44 },
-	{ NULL, "CMP/HS Rm,Rn",       1, 0, 0, pl_cmphs45 },
-	{ NULL, "CMP/GE Rm,Rn",       1, 0, 0, pl_cmpge46 },
-	{ NULL, "CMP/HI Rm,Rn",       1, 0, 0, pl_cmphi47 },
-	{ NULL, "CMP/GT Rm,Rn",       1, 0, 0, pl_cmpgt48 },
-	{ NULL, "EXTS.W Rm,Rn",       1, 0, 0, pl_extsw59 },
-	{ NULL, "EXTU.B Rm,Rn",       1, 0, 0, pl_extub60 },
-	{ NULL, "SHLL2 Rn",           1, 0, 0, pl_shll2   },
-	{ NULL, "SHLR2 Rn",           1, 0, 0, pl_shlr2   },
-	{ NULL, "SHLR16 Rn",          1, 0, 0, pl_shlr16  },
-	{ NULL, "BF",                 2, 0, 1, pl_bf      },
-	{ NULL, "BF/S",               2, 0, 1, pl_bfs     },
+	{ NULL, "NOP",                0, 0, 0, 0, pl_nop },
+	{ NULL, "MOV #imm,Rn",        1, 0, 0, 0, pl_mov0 },
+	{ NULL, "MOV Rm,Rn",          0, 0, 0, 0, pl_mov3 },
+	{ NULL, "MOV.L @(d,PC),Rn",   2, 1, 0, 0, pl_movl2 },
+	{ NULL, "MOV.L @Rm,Rn",       2, 1, 0, 0, pl_movl9 },
+	{ NULL, "MOV.L Rm,@Rn",       2, 1, 0, 0, pl_movl6 },
+	{ NULL, "MOV.L @(d,Rm),Rn",   1, 1, 0, 0, pl_movl21 },
+	{ NULL, "MOV.B @Rm,Rn",       2, 1, 0, 0, pl_movb7 },
+	{ NULL, "MOV.B Rm,@Rn",       2, 1, 0, 0, pl_movb4 },
+	{ NULL, "MOV.B @(R0,Rm),Rn",  2, 1, 0, 0, pl_movb25 },
+	{ NULL, "ADD Rm,Rn",          1, 0, 0, 0, pl_add39 },
+	{ NULL, "ADD #imm,Rn",        1, 0, 0, 0, pl_add40 },
+	{ NULL, "AND Rm,Rn",          1, 0, 0, 0, pl_and72 },
+	{ NULL, "AND #imm,R0",        1, 0, 0, 0, pl_and73 },
+	{ NULL, "NOT Rm,Rn",          1, 0, 0, 0, pl_not75 },
+	{ NULL, "TST Rm,Rn",          1, 0, 0, 0, pl_tst80 },
+	{ NULL, "TST #imm,R0",        1, 0, 0, 0, pl_tst81 },
+	{ NULL, "CMP/EQ Rm,Rn",       1, 0, 0, 0, pl_cmpeq44 },
+	{ NULL, "CMP/HS Rm,Rn",       1, 0, 0, 0, pl_cmphs45 },
+	{ NULL, "CMP/GE Rm,Rn",       1, 0, 0, 0, pl_cmpge46 },
+	{ NULL, "CMP/HI Rm,Rn",       1, 0, 0, 0, pl_cmphi47 },
+	{ NULL, "CMP/GT Rm,Rn",       1, 0, 0, 0, pl_cmpgt48 },
+	{ NULL, "EXTS.W Rm,Rn",       1, 0, 0, 0, pl_extsw59 },
+	{ NULL, "EXTU.B Rm,Rn",       1, 0, 0, 0, pl_extub60 },
+	{ NULL, "SHLL2 Rn",           1, 0, 0, 0, pl_shll2 },
+	{ NULL, "SHLR2 Rn",           1, 0, 0, 0, pl_shlr2 },
+	{ NULL, "SHLR16 Rn",          1, 0, 0, 0, pl_shlr16 },
+	{ NULL, "BF",                 2, 0, 1, 0, pl_bf },
+	{ NULL, "BF/S",               2, 0, 1, 1, pl_bfs },
+	{ NULL, "MOV.L @(R0,Rm),Rn",  2, 1, 0, 0, pl_movl27 },
+	{ NULL, "MOV.L Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movl24 },
+	{ NULL, "MOV.B Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movb22 },
+	{ NULL, "MOV.B @Rm+,Rn",      1, 1, 0, 0, pl_movb13 },
+	{ NULL, "MOV.L @Rm+,Rn",      1, 1, 0, 0, pl_movl15 },
+	{ NULL, "MOV.L Rm,@-Rn",      1, 1, 0, 0, pl_movl12 },
+	{ NULL, "CMP/EQ #imm,R0",     1, 0, 0, 0, pl_cmpeq43 },
+	{ NULL, "EXTU.W Rm,Rn",       1, 0, 0, 0, pl_extuw61 },
+	{ NULL, "EXTS.B Rm,Rn",       1, 0, 0, 0, pl_extsb58 },
+	{ NULL, "SHLL Rn",            1, 0, 0, 0, pl_shll94 },
+	{ NULL, "SHLR Rn",            1, 0, 0, 0, pl_shlr95 },
+	{ NULL, "SHLL8 Rn",           1, 0, 0, 0, pl_shll8 },
+	{ NULL, "SHLR8 Rn",           1, 0, 0, 0, pl_shlr8 },
+	{ NULL, "SHLL16 Rn",          1, 0, 0, 0, pl_shll16 },
+	{ NULL, "BT",                 2, 0, 1, 0, pl_bt104 },
+	{ NULL, "BT/S",               2, 0, 1, 1, pl_bts105 },
+	{ NULL, "BRA",                2, 0, 1, 1, pl_bra },
+	{ NULL, "BSR",                2, 0, 1, 1, pl_bsr108 },
+	{ NULL, "JMP @Rn",            3, 0, 1, 1, pl_jmp110 },
+	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111 },
+	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -1813,13 +2214,23 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	add39, add40, and72, and73, not75, tst80, tst81,
 	cmpeq44, cmphs45, cmpge46, cmphi47, cmpgt48, extsw59, extub60,
 	shll2, shlr2, shlr16, bf, bfs,
+	movl27, movl24, movb22, movb13, movl15, movl12,
+	cmpeq43, extuw61, extsb58,
+	shll94, shlr95, shll8, shlr8, shll16,
+	bt104, bts105, bra, bsr108, jmp110, jsr111, rts112,
 };
+
+/* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
+   para bisecar: una plantilla infiel se delata en la cuenta de instrucciones,
+   pero la cuenta no dice cual, y probar de a una es la forma barata de
+   averiguarlo. Por omision, todas. */
+static int jit_n_activas = JIT_N_PLANTILLAS;
 
 static const jit_plantilla * jit_plantilla_de(opcode_f * f)
 {
 	int i;
 
-	for (i = 0; i < JIT_N_PLANTILLAS; i++)
+	for (i = 0; i < jit_n_activas; i++)
 		if (jit_plantillas[i].f == f)
 			return &jit_plantillas[i];
 
@@ -1884,8 +2295,18 @@ static void tr_asignar_registros(jit_traduccion * t)
 		WORD w = t->palabra[i];
 		const jit_plantilla * p = t->pl[i];
 
+		if (p->emitir == pl_jmp110 || p->emitir == pl_jsr111)
+		{
+			uso[TN(w)]++;
+			continue;
+		}
+
 		if (p->rama || p->emitir == pl_nop)
 			continue;
+
+		if (p->emitir == pl_movl27 || p->emitir == pl_movl24
+			|| p->emitir == pl_movb22)
+			uso[0]++;
 
 		if (p->emitir == pl_and73 || p->emitir == pl_tst81)
 		{
@@ -2040,7 +2461,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		exista-- termina el bloque antes de el.
 	*/
 	for (i = 0; i < t->n; i++)
-		if (t->pl[i]->emitir == pl_bfs
+		if (t->pl[i]->ranura
 			&& (i + 1 >= t->n || t->pl[i + 1]->accede || t->pl[i + 1]->rama))
 		{
 			t->n = i;
@@ -2173,6 +2594,14 @@ static jit_bloque * tr_traducir(DWORD pc)
 		break;
 	}
 
+	/* Puede que la cabeza del lazo ya este traducida: no duplicarla. */
+	{
+		jit_bloque * ya = jit_buscar(t.pc0);
+
+		if (ya != NULL)
+			return ya;
+	}
+
 	tr_asignar_registros(&t);
 
 	for (i = 0; i < JIT_MAX_INSTR; i++)
@@ -2214,14 +2643,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 	jit_marcar(b->pc);
 
-	{
-		unsigned idx = (b->pc >> 1) & 0xFFFFu;
-
-		if (jit_indice[idx] >= 0)
-			jit_colisiones++;
-
-		jit_indice[idx] = (short) (jit_n_bloques - 1);
-	}
+	jit_insertar(jit_n_bloques - 1);
 
 	jit_traducidos++;
 	jit_instr_bloque += (unsigned long long) t.n;
@@ -2346,7 +2768,7 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 	jit_codigo_us += jit_x64_largo(&g.e);
 
 	jit_marcar(pc);
-	jit_indice[(pc >> 1) & 0xFFFFu] = (short) (jit_n_bloques - 1);
+	jit_insertar(jit_n_bloques - 1);
 
 	return 1;
 }
@@ -2373,10 +2795,9 @@ static int jit_verificar(const jit_bloque * b)
 
 int jit_despachar(DWORD pc)
 {
-	short			i = jit_indice[(pc >> 1) & 0xFFFFu];
-	jit_bloque *	b = (i >= 0) ? &jit_bloques[i] : NULL;
+	jit_bloque * b = jit_buscar(pc);
 
-	if (b == NULL || b->pc != pc)
+	if (b == NULL)
 	{
 		if (!jit_traductor)
 			return 0;
@@ -2400,7 +2821,14 @@ int jit_despachar(DWORD pc)
 			entrada.
 		*/
 		if (b->pc != pc)
+		{
+			/* Y este PC deja de proponerse, o cada visita volveria a traducir
+			   la cabeza del lazo: un bloque duplicado por vuelta hasta agotar
+			   el arena. Costo 16 384 bloques de los que 16 123 no entraban
+			   siquiera en la tabla, con la cobertura clavada en 0,25 %. */
+			jit_desmarcar(pc);
 			return 0;
+		}
 	}
 
 	/* El modo con el que se emitio tiene que seguir valiendo: con la MMU
@@ -2421,9 +2849,12 @@ int jit_despachar(DWORD pc)
 	b->veces++;
 	b->codigo();
 
-	/* La salida es una frontera de bloque de verdad: siembra la siguiente. */
+	/* La salida es una frontera de bloque de verdad, asi que siembra la
+	   siguiente -- pero por el contador de calor y no derecho: sembrar cada
+	   salida gasta un bloque por PC visto una sola vez, y los bloques son un
+	   recurso finito. */
 	if (jit_traductor)
-		jit_marcar(PC);
+		jit_muestrear(PC);
 
 	return 1;
 }
@@ -2449,7 +2880,7 @@ static void jit_resumen(void)
 		return;
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
-		" uno), %u bytes, %llu emisiones fallidas, %llu colisiones de indice\n",
+		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
@@ -2542,6 +2973,13 @@ void jit_iniciar(void)
 
 	jit_traductor = (atoi(v) >= 2);
 
+	{
+		const char * n = getenv("DCEMU_JIT_PLANTILLAS");
+
+		if (n != NULL && atoi(n) > 0 && atoi(n) < JIT_N_PLANTILLAS)
+			jit_n_activas = atoi(n);
+	}
+
 	jit_arena = (unsigned char *) jit_arena_reservar(JIT_ARENA_TAM);
 
 	if (jit_arena == NULL)
@@ -2579,8 +3017,8 @@ void jit_iniciar(void)
 	jit_estado.p_pteh       = (void *) PTEH;
 	jit_estado.p_mmucr      = (void *) MMUCR;
 
-	for (i = 0; i < 0x10000; i++)
-		jit_indice[i] = -1;
+	for (i = 0; i < JIT_HASH_N; i++)
+		jit_hash[i] = -1;
 
 	/* Las filas de la tabla de plantillas se ligan a los manejadores reales
 	   aca: la tabla se escribe como una lista y el orden de los dos arreglos
