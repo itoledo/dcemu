@@ -271,6 +271,66 @@ void jit_x64_movzx_b(x64_emisor * e, x64_reg dst, x64_reg src)
 /* Aritmetica y logica                                                      */
 /* ------------------------------------------------------------------------ */
 
+void jit_x64_alu_rr(x64_emisor * e, x64_alu op, x64_reg dst, x64_reg src)
+{
+	rex(e, 0, src, dst, 0);
+	b1(e, (unsigned) (op * 8 + 1));		/* op r/m32, r32 */
+	modrm_rr(e, src, dst);
+}
+
+void jit_x64_alu_rm(x64_emisor * e, x64_alu op, x64_reg dst, x64_reg base, int disp)
+{
+	rex(e, 0, dst, base, 0);
+	b1(e, (unsigned) (op * 8 + 3));		/* op r32, r/m32 */
+	modrm_m(e, dst, base, disp);
+}
+
+void jit_x64_alu_mr(x64_emisor * e, x64_alu op, x64_reg base, int disp, x64_reg src)
+{
+	rex(e, 0, src, base, 0);
+	b1(e, (unsigned) (op * 8 + 1));
+	modrm_m(e, src, base, disp);
+}
+
+void jit_x64_shift_ri(x64_emisor * e, x64_shift op, x64_reg dst, int cuenta)
+{
+	rex(e, 0, 0, dst, 0);
+
+	if (cuenta == 1)
+	{
+		b1(e, 0xD1);					/* op r/m32, 1 */
+		modrm_rr(e, (int) op, dst);
+		return;
+	}
+
+	b1(e, 0xC1);						/* op r/m32, imm8 */
+	modrm_rr(e, (int) op, dst);
+	b1(e, (unsigned) cuenta);
+}
+
+void jit_x64_neg_r(x64_emisor * e, x64_reg dst)
+{
+	rex(e, 0, 0, dst, 0);
+	b1(e, 0xF7);						/* NEG r/m32 */
+	modrm_rr(e, 3, dst);
+}
+
+void jit_x64_movsx_b(x64_emisor * e, x64_reg dst, x64_reg src)
+{
+	rex(e, 0, dst, src, src >= 4);
+	b1(e, 0x0F);
+	b1(e, 0xBE);						/* MOVSX r32, r/m8 */
+	modrm_rr(e, dst, src);
+}
+
+void jit_x64_movzx_w(x64_emisor * e, x64_reg dst, x64_reg src)
+{
+	rex(e, 0, dst, src, 0);
+	b1(e, 0x0F);
+	b1(e, 0xB7);						/* MOVZX r32, r/m16 */
+	modrm_rr(e, dst, src);
+}
+
 void jit_x64_add_rr(x64_emisor * e, x64_reg dst, x64_reg src)
 {
 	rex(e, 0, src, dst, 0);
@@ -313,6 +373,16 @@ static void alu_mi(x64_emisor * e, int w, int ext, x64_reg base, int disp, int i
 		modrm_m(e, ext, base, disp);
 		b4(e, (unsigned) imm);
 	}
+}
+
+void jit_x64_alu_ri(x64_emisor * e, x64_alu op, x64_reg dst, int imm)
+{
+	alu_ri(e, 0, (int) op, dst, imm);
+}
+
+void jit_x64_alu_mi(x64_emisor * e, x64_alu op, x64_reg base, int disp, int imm)
+{
+	alu_mi(e, 0, (int) op, base, disp, imm);
 }
 
 void jit_x64_add_ri(x64_emisor * e, x64_reg dst, int imm)

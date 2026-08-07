@@ -425,6 +425,107 @@ static void el_desborde_se_reporta(void)
 	ESPERAR_U32((unsigned) e.desborde, 1);
 }
 
+/*
+	La familia ALU completa, que es sobre lo que el traductor automatico monta
+	sus plantillas: una sola tabla da las cinco formas de las ocho operaciones,
+	y el opcode base de cada una es su numero de extension por ocho. Si esa
+	relacion se rompiera, cada plantilla emitiria la operacion equivocada -- con
+	la codificacion bien formada, que es lo peor: el guest divergiria sin que
+	nada se queje.
+*/
+static void la_familia_alu_completa(void)
+{
+	arrancar();
+	jit_x64_alu_rr(&e, X64_SUB, X64_RAX, X64_RCX);		/* sub eax, ecx */
+	ESPERAR_EMITIDO(0x29, 0xC8);
+
+	arrancar();
+	jit_x64_alu_rm(&e, X64_OR, X64_RAX, X64_RBX, 0x10);	/* or eax, [rbx+10h] */
+	ESPERAR_EMITIDO(0x0B, 0x43, 0x10);
+
+	arrancar();											/* xor [rbx+20h], r12d */
+	jit_x64_alu_mr(&e, X64_XOR, X64_RBX, 0x20, X64_R12);
+	ESPERAR_EMITIDO(0x44, 0x31, 0x63, 0x20);
+
+	arrancar();
+	jit_x64_alu_ri(&e, X64_AND, X64_RDI, 0x7F);			/* and edi, 7Fh */
+	ESPERAR_EMITIDO(0x83, 0xE7, 0x7F);
+
+	arrancar();										/* cmp dword [rbx+10h], 0 */
+	jit_x64_alu_mi(&e, X64_CMP, X64_RBX, 0x10, 0);
+	ESPERAR_EMITIDO(0x83, 0x7B, 0x10, 0x00);
+
+	arrancar();
+	jit_x64_cmp_rm(&e, X64_RAX, X64_RBX, 8);			/* cmp eax, [rbx+8] */
+	ESPERAR_EMITIDO(0x3B, 0x43, 0x08);
+
+	arrancar();
+	jit_x64_test_rr(&e, X64_RAX, X64_RCX);				/* test eax, ecx */
+	ESPERAR_EMITIDO(0x85, 0xC8);
+
+	arrancar();
+	jit_x64_not_r(&e, X64_RAX);							/* not eax */
+	ESPERAR_EMITIDO(0xF7, 0xD0);
+
+	arrancar();
+	jit_x64_neg_r(&e, X64_RCX);							/* neg ecx */
+	ESPERAR_EMITIDO(0xF7, 0xD9);
+
+	arrancar();
+	jit_x64_imul_rri(&e, X64_RAX, X64_RAX, 28);			/* imul eax, eax, 28 */
+	ESPERAR_EMITIDO(0x6B, 0xC0, 0x1C);
+
+	arrancar();									/* add qword [rbx+1000h], 1 */
+	jit_x64_add64_mi(&e, X64_RBX, 0x1000, 1);
+	ESPERAR_EMITIDO(0x48, 0x83, 0x83, 0x00, 0x10, 0x00, 0x00, 0x01);
+}
+
+static void corrimientos_y_extensiones(void)
+{
+	arrancar();
+	jit_x64_shift_ri(&e, X64_SHL, X64_R12, 2);			/* shl r12d, 2 */
+	ESPERAR_EMITIDO(0x41, 0xC1, 0xE4, 0x02);
+
+	/* Por uno hay forma propia, de dos bytes. */
+	arrancar();
+	jit_x64_shift_ri(&e, X64_SAR, X64_RAX, 1);			/* sar eax, 1 */
+	ESPERAR_EMITIDO(0xD1, 0xF8);
+
+	arrancar();
+	jit_x64_movsx_b(&e, X64_RAX, X64_RCX);				/* movsx eax, cl */
+	ESPERAR_EMITIDO(0x0F, 0xBE, 0xC1);
+
+	/* Con RDI de fuente hace falta el REX pelado, o seria BH. */
+	arrancar();
+	jit_x64_movsx_b(&e, X64_RAX, X64_RDI);				/* movsx eax, dil */
+	ESPERAR_EMITIDO(0x40, 0x0F, 0xBE, 0xC7);
+
+	arrancar();
+	jit_x64_movzx_w(&e, X64_RAX, X64_RCX);				/* movzx eax, cx */
+	ESPERAR_EMITIDO(0x0F, 0xB7, 0xC1);
+}
+
+/* Las formas con indice que pide la cache de traducciones de la MMU, cuyo
+   elemento no mide una potencia de dos: el indice viaja ya multiplicado. */
+static void las_formas_con_indice_de_la_mmu(void)
+{
+	arrancar();								/* cmp edx, [rbx+r9+100h] */
+	jit_x64_cmp_rm_idx(&e, X64_RDX, X64_RBX, X64_R9, 1, 0x100);
+	ESPERAR_EMITIDO(0x42, 0x3B, 0x94, 0x0B, 0x00, 0x01, 0x00, 0x00);
+
+	arrancar();								/* test dword [rbx+r9+10h], 1 */
+	jit_x64_test_mi_idx(&e, X64_RBX, X64_R9, 1, 0x10, 1);
+	ESPERAR_EMITIDO(0x42, 0xF7, 0x44, 0x0B, 0x10, 0x01, 0x00, 0x00, 0x00);
+
+	arrancar();								/* or r11d, [rbx+r9+100h] */
+	jit_x64_or_rm_idx(&e, X64_R11, X64_RBX, X64_R9, 1, 0x100);
+	ESPERAR_EMITIDO(0x46, 0x0B, 0x9C, 0x0B, 0x00, 0x01, 0x00, 0x00);
+
+	arrancar();								/* and eax, [rbx+r9+4] */
+	jit_x64_and_rm_idx(&e, X64_RAX, X64_RBX, X64_R9, 1, 4);
+	ESPERAR_EMITIDO(0x42, 0x23, 0x44, 0x0B, 0x04);
+}
+
 /* ------------------------------------------------------------------------ */
 
 static const dc_caso casos[] =
@@ -439,6 +540,9 @@ static const dc_caso casos[] =
 	CASO(llamadas_pilas_y_retorno),
 	CASO(la_llamada_directa_solo_si_alcanza),
 	CASO(el_acceso_por_tabla_indexada),
+	CASO(la_familia_alu_completa),
+	CASO(corrimientos_y_extensiones),
+	CASO(las_formas_con_indice_de_la_mmu),
 	CASO(el_prologo_de_los_bloques_mide_dieciseis_bytes),
 	CASO(saltos_hacia_adelante_y_hacia_atras),
 	CASO(el_desborde_se_reporta),

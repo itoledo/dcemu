@@ -107,6 +107,37 @@ void jit_x64_movzx_b (x64_emisor * e, x64_reg dst, x64_reg src);	/* de 8 bits */
 
 /* --- aritmetica y logica ----------------------------------------------- */
 
+/*
+	La familia entera de x86, en su numeracion de extension de opcode: el
+	opcode base de cada una es ese numero por ocho, asi que las cinco formas
+	--registro/registro, registro/memoria, memoria/registro y las dos con
+	inmediato-- salen de una sola tabla. Es lo que hace que agregar una
+	plantilla del traductor sea una linea y no cinco funciones.
+*/
+typedef enum
+{
+	X64_ADD = 0, X64_OR = 1, X64_ADC = 2, X64_SBB = 3,
+	X64_AND = 4, X64_SUB = 5, X64_XOR = 6, X64_CMP = 7
+} x64_alu;
+
+void jit_x64_alu_rr(x64_emisor * e, x64_alu op, x64_reg dst, x64_reg src);
+void jit_x64_alu_rm(x64_emisor * e, x64_alu op, x64_reg dst, x64_reg base, int disp);
+void jit_x64_alu_mr(x64_emisor * e, x64_alu op, x64_reg base, int disp, x64_reg src);
+void jit_x64_alu_ri(x64_emisor * e, x64_alu op, x64_reg dst, int imm);
+void jit_x64_alu_mi(x64_emisor * e, x64_alu op, x64_reg base, int disp, int imm);
+
+/* Corrimientos por cuenta inmediata, en la misma numeracion. */
+typedef enum
+{
+	X64_ROL = 0, X64_ROR = 1, X64_RCL = 2, X64_RCR = 3,
+	X64_SHL = 4, X64_SHR = 5, X64_SAR = 7
+} x64_shift;
+
+void jit_x64_shift_ri(x64_emisor * e, x64_shift op, x64_reg dst, int cuenta);
+void jit_x64_neg_r   (x64_emisor * e, x64_reg dst);
+void jit_x64_movsx_b (x64_emisor * e, x64_reg dst, x64_reg src);
+void jit_x64_movzx_w (x64_emisor * e, x64_reg dst, x64_reg src);
+
 void jit_x64_add_rr  (x64_emisor * e, x64_reg dst, x64_reg src);
 void jit_x64_add_ri  (x64_emisor * e, x64_reg dst, int imm);
 void jit_x64_add_rm  (x64_emisor * e, x64_reg dst, x64_reg base, int disp);

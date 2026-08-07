@@ -383,3 +383,80 @@ esta fase ya mostró que las estimaciones a ojo sobre este bucle fallan: la espe
   que decide de qué lado cae.
 - **La vara del despacho sigue sin medirse**: los menús no entraron en estas tandas, y con dos
   bloques el mapa de bits no dice nada. Va con la fase 1.
+
+---
+
+# La fase 1, empezada: el diseño y la mesa puesta (2026-08-07)
+
+**Estado: no implementada.** Lo que sigue son las decisiones ya tomadas y el material ya
+verificado, escrito antes de escribir el traductor para que la próxima sesión no lo
+re-derive. Lo único que entró al árbol es la **familia ALU generalizada del emisor**, que es
+lo que las plantillas necesitan y que se prueba sola.
+
+## Lo que se generalizó en el emisor
+
+Las ocho operaciones enteras de x86 en sus cinco formas —registro/registro,
+registro/memoria, memoria/registro y las dos con inmediato— salen de una sola tabla, porque
+**el opcode base de cada una es su número de extensión por ocho**. Con eso una plantilla del
+traductor es una línea (`tr_alu_rr(g, t, X64_SUB, n, m)`) y no cinco funciones. Van también
+los corrimientos por cuenta inmediata, `NEG`, `NOT`, `IMUL` con inmediato, `MOVSX`/`MOVZX` de
+byte y palabra, y las formas con índice escalado. Cada una con su caso en
+`tests/test_jit_x64.c`, byte a byte contra el manual: **si esa relación de «base por ocho» se
+rompiera, cada plantilla emitiría la operación equivocada con la codificación bien formada**,
+que es el peor modo de fallar — el guest divergiría sin que nada se queje.
+
+## Las decisiones del traductor
+
+- **Traducción por identidad de manejador**, como dice la arquitectura: cada palabra se
+  resuelve por `OP_HANDLER(oplist, instr)` y se emite con la plantilla de *ese* manejador. La
+  fila de la tabla no repite la codificación, así que una fila mal puesta es una plantilla
+  que no se usa — nunca una instrucción mal decodificada.
+- **El bloque no cruza una frontera de 1 KB**, que es la página más chica del SH-4. Así un
+  solo puntero de búsqueda cubre todas sus palabras y la verificación por entrada no puede
+  leer de otra página, sea cual sea el tamaño con el que el guest la haya mapeado.
+- **Asignación de registros por bloque**: se cuenta cuántas veces toca cada `R0..R15` y los
+  cinco más usados van a los registros del anfitrión. Es lo que la fase 0 hizo a mano y
+  rindió; nada más fino hasta que un perfil lo pida.
+- **El modo del bloque incluye `mmu_activa`**, que es lo que decide si el acceso se emite en
+  su forma plana o con la traducción. En la fase 0 eso era una bandera puesta a mano; acá
+  sale del estado real al traducir, y el despachador la verifica al entrar.
+- **Semilla y crecimiento hacia atrás.** Un muestreo en el bloque periódico (que corre cada
+  ~400 ciclos y por lo tanto no cuesta nada en el camino caliente) marca candidatos, y la
+  salida de cada bloque siembra el siguiente, que es una frontera de bloque de verdad. Y
+  cuando el descubrimiento termina en una rama hacia atrás cuyo destino cae **antes** del
+  comienzo, se retraduce desde ahí: es lo que corrige que el muestreo caiga en mitad de un
+  lazo en vez de en su cabeza.
+- **Ramas**: `BF` y `BF/S` con destino adentro del bloque se pliegan como aristas (hacia
+  atrás por etiqueta ya emitida, hacia adelante por parche pendiente); con destino afuera,
+  salen al intérprete. Los dos caminos llevan su corte con el PC por donde siguen. En `BF/S`
+  la ranura se emite **dos veces**, una por camino, porque al no tomar no corre y la palabra
+  siguiente se ejecuta después como instrucción normal. Los saltos con ranura que quedan
+  fuera de la v1 —`BRA`, `BSR`, `JMP`, `JSR`, `RTS`— terminan el bloque.
+- **El censo de lo que corta.** Cada palabra sin plantilla que termina un bloque se anota; el
+  resumen lista las que más cortaron. Sin eso la cobertura degrada en silencio, que es lo que
+  este árbol llama un tope callado — y esa lista es la que dice qué plantilla escribir
+  después, en vez de adivinarlo.
+
+## Las 29 plantillas de la primera tanda, con sus ciclos verificados
+
+Sacados del cuerpo real de cada manejador, no de memoria. Los que no aparecen acá se dejaron
+afuera **porque su cuerpo no se leyó**, no porque no sirvan.
+
+| ciclos | manejadores |
+| --- | --- |
+| 0 | `nop`, `mov3` (MOV Rm,Rn — la rareza que ya conocían las sondas) |
+| 1 | `mov0`, `movl21`, `add39`, `add40`, `and72`, `and73`, `not75`, `tst80`, `tst81`, `cmpeq44`, `cmphs45`, `cmpge46`, `cmphi47`, `cmpgt48`, `extsw59`, `extub60`, `shll2`, `shlr2`, `shlr16` |
+| 2 | `movl2`, `movl9`, `movl6`, `movb7`, `movb4`, `movb25`, `bf`, `bfs` |
+
+Dos detalles que se pagan si se copian de la intuición en vez del código: **`movl21`
+(`MOV.L @(disp,Rm),Rn`) suma 1 ciclo y no 2**, y **`shlr2` enmascara con `0x3FFFFFFF`** después
+del corrimiento.
+
+## La prueba de aceptación
+
+El oráculo es la fase 0, en el mismo binario: `DCEMU_JIT=1` corre los dos bloques escritos a
+mano y `DCEMU_JIT=2` correría el traductor. El bloque de DCDoom (`0002ef3e`) se traduce
+entero con estas plantillas y sin ninguna rama con ranura, así que **la traducción automática
+tiene que dar los mismos dígitos que la manual**: 5 433 038 875 instrucciones, 1482 cuadros,
+`198B396F…` y los contadores de traducción de la MMU. El de Crazy Taxi necesita antes la
+guarda de destino visto para su `JSR`→`RTS`, así que no sirve de oráculo todavía.
