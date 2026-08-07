@@ -590,3 +590,55 @@ comprobó el camino rápido, así que lo único que faltaba era el despacho por 
 
 Y el contador que delataba el error también vuelve al dígito: **2 018 173 538 traducciones,
 64,4 % ya resueltas, 850 557 faltas**, lo mismo que el intérprete.
+
+## El primer número honesto del traductor
+
+Un binario, órdenes rotados, cuatro rondas en DCDoom y tres en Crazy Taxi. `DCEMU_JIT=1` son
+los dos bloques escritos a mano de la fase 0; `DCEMU_JIT=2`, el traductor.
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 54 049 ms | 52 272 (−3,3 %) | **46 602 (−13,8 %)** |
+| Crazy Taxi, 180 s | 133 312 ms | 110 985 (−16,8 %) | **138 560 (+3,9 %)** |
+
+**Gana 13,8 % en el guest con MMU y pierde 3,9 % en Katana**, con 51,8 % y 65 % del volumen
+traducido. Y la causa está en la misma línea del informe:
+
+| | instrucciones por entrada |
+| --- | --- |
+| bloque a mano de Crazy Taxi | **219,4** |
+| traductor, Crazy Taxi | **4,3** |
+| traductor, DCDoom | 6,7 |
+
+**Lo que se paga por entrada es lo que decide.** Cada entrada cuesta el filtro del mapa de
+bits, la búsqueda en la tabla, la verificación de las palabras (un `memcmp`), el prólogo de
+ocho empujes más la carga de los registros mapeados, y el epílogo entero. Repartido entre
+4,3 instrucciones eso se come la traducción; repartido entre 219 desaparece. Por eso el
+bloque a mano de Crazy Taxi rinde 16,8 % y el traductor sobre el mismo juego pierde: **no es
+que traduzca peor, es que entra y sale 3371 millones de veces**.
+
+Y Crazy Taxi es el caso extremo por un motivo conocido: su lazo caliente es el `JSR`→`RTS`
+del callback, o sea un salto indirecto cada pocas instrucciones. El bloque a mano lo pliega
+con una guarda de destino conocido; el traductor todavía no.
+
+Por porción, DCDoom pasa de ~9,95 a ~7,30 ns por instrucción cubierta: **1,36×**, contra el
+2,2× que la sonda de la fase 0 midió sobre su bloque de 17 instrucciones sin entradas. La
+diferencia entre 1,36× y 2,2× **es** el costo por entrada.
+
+## Lo que sigue, ordenado por lo que la medición dice
+
+1. **Encadenar bloques.** Saltar de un bloque al siguiente sin volver a `main_loop` es lo que
+   quita el prólogo, el epílogo, la búsqueda y la verificación de la mayoría de las entradas.
+   Estaba escrito como fase 4 «solo si el perfil lo pide»: el perfil lo pide.
+2. **La verificación por entrada.** 3371 millones de `memcmp` en Crazy Taxi. La regla —
+   verificar al entrar, no vigilar las escrituras — sigue siendo la correcta, pero con
+   encadenamiento la mayoría de las entradas desaparecen y las que queden pueden verificarse
+   contra una generación de página en vez de palabra por palabra.
+3. **El prólogo, a medida.** Ocho empujes por entrada cuando el bloque usa dos registros. Cada
+   bloque ya tiene su propia `RUNTIME_FUNCTION`; darle su propio `UNWIND_INFO` permite empujar
+   solo lo que usa.
+4. **La guarda de destino visto para los saltos indirectos**, que es lo que alarga los bloques
+   de Katana.
+
+Nada de esto es un problema de diseño ni de las plantillas: **el traductor es exacto y cubre
+la mitad del volumen**. Lo que falta es amortizar la entrada.
