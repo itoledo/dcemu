@@ -642,3 +642,43 @@ diferencia entre 1,36× y 2,2× **es** el costo por entrada.
 
 Nada de esto es un problema de diseño ni de las plantillas: **el traductor es exacto y cubre
 la mitad del volumen**. Lo que falta es amortizar la entrada.
+
+## Encadenar en el despachador: rinde, y dice dónde está el resto
+
+Lo primero de la lista era encadenar. La forma barata y segura: **el despachador corre el
+bloque siguiente él mismo** mientras el corte no corresponda, en vez de volver a `main_loop`
+por cada bloque. La condición es exactamente la de `main_loop` y se evalúa donde `main_loop`
+la evaluaría, así que la ejecución es la misma — y lo es: los dos guests siguen dando sus
+dígitos y sus capturas.
+
+Mismo binario, órdenes rotados, cuatro rondas en DCDoom y tres en Crazy Taxi:
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 53 737 ms | 52 228 (−2,8 %) | **46 130 (−14,15 %)** |
+| Crazy Taxi, 180 s | 133 323 ms | 110 794 (−16,9 %) | **136 263 (+2,20 %)** |
+
+Contra el A/B anterior —−13,78 % y +3,94 %— el encadenamiento vale **0,4 puntos en DCDoom y
+1,7 en Crazy Taxi**. Rinde, y es poco: lo que quita es el viaje a `main_loop` (buscar la
+instrucción, el filtro, la llamada), y eso resulta ser la parte chica.
+
+**Y eso mismo dice dónde está el resto.** El costo por entrada sigue en unos 10 ns —44
+ciclos— y lo que queda adentro de la frontera del bloque es, por aritmética sobre 3393
+millones de entradas de Crazy Taxi (no medido pieza por pieza):
+
+| pieza | por entrada | sobre la corrida |
+| --- | --- | --- |
+| la llamada indirecta `b->codigo()` y su `ret` | ~20 ciclos de fallo de predicción | **~12 %** |
+| el lee-modifica-escribe del contador | ~6 ciclos serializados | ~3,5 % |
+| ocho empujes y ocho sacadas | ~16 operaciones | ~2,5 % |
+| la búsqueda en la tabla y el `memcmp` de verificación | | resto |
+
+**El salto indirecto es la pieza grande, y la única forma de quitarlo es el encadenamiento de
+verdad**: un `jmp rel32` directo del bloque al sucesor, parcheado cuando el sucesor existe,
+con los registros no volátiles establecidos una sola vez por un trampolín en vez de por
+bloque. Eso quita de un saque la predicción fallida, los empujes y las sacadas, y deja el
+contador y la verificación como lo único por entrada.
+
+Es un cambio de forma —los bloques dejan de ser funciones de C— y por eso no entró acá. Pero
+la medición ya no deja dudas de que es el próximo paso, y de que sin él el traductor se queda
+donde está: **gana donde el intérprete es caro (la MMU) y pierde donde es barato**.

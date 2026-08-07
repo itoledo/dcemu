@@ -2897,70 +2897,96 @@ static int jit_verificar(const jit_bloque * b)
 	return 1;
 }
 
+/*
+	Corre bloques **encadenados**: mientras el corte del bloque periodico no
+	corresponda, el bloque siguiente se despacha aca mismo en vez de volver a
+	main_loop.
+
+	Es lo que la primera medicion del traductor pidio. Sus bloques hacen 4,3
+	instrucciones por entrada contra las 219 del bloque escrito a mano, y lo que
+	se paga por entrada --el viaje a main_loop con su busqueda de instruccion,
+	el filtro, la tabla, la verificacion, el prologo y el epilogo-- salia unos
+	46 ciclos. Encadenar quita de esos el viaje entero.
+
+	**La condicion es exactamente la de main_loop**, evaluada donde main_loop la
+	evaluaria: si el bloque dejo el reloj pasado de RELOJ_GRANO o hay una
+	entrega pendiente, se sale y el bloque periodico corre antes de la
+	instruccion siguiente. Si no, main_loop tampoco lo habria corrido, asi que
+	seguir de largo es la misma ejecucion.
+*/
 int jit_despachar(DWORD pc)
 {
-	jit_bloque * b = jit_buscar(pc);
+	int corridos = 0;
 
-	if (b == NULL)
+	for (;;)
 	{
-		if (!jit_traductor)
-			return 0;
-
-		b = tr_traducir(pc);
+		jit_bloque * b = jit_buscar(pc);
 
 		if (b == NULL)
 		{
-			/* Que no se reintente en cada instruccion: el bit se apaga y ese
-			   PC vuelve al interprete hasta que el muestreo lo reproponga. */
-			jit_desmarcar(pc);
-			return 0;
+			if (corridos || !jit_traductor)
+				break;
+
+			b = tr_traducir(pc);
+
+			if (b == NULL)
+			{
+				/* Que no se reintente en cada instruccion: el bit se apaga y
+				   ese PC vuelve al interprete hasta que el muestreo lo
+				   reproponga. */
+				jit_desmarcar(pc);
+				break;
+			}
+
+			/*
+				**El bloque puede no empezar donde se pidio.** El crecimiento
+				hacia atras lo registra en la cabeza del lazo, que es lo que se
+				queria; pero entonces este PC no es su entrada y correrlo seria
+				ejecutar desde otro lado. Se deja traducido y esta instruccion
+				la hace el interprete: el bloque se encuentra solo cuando el
+				guest llegue a su entrada. Y este PC deja de proponerse, o cada
+				visita volveria a traducir la misma cabeza.
+			*/
+			if (b->pc != pc)
+			{
+				jit_desmarcar(pc);
+				break;
+			}
 		}
 
-		/*
-			**El bloque puede no empezar donde se pidio.** El crecimiento hacia
-			atras lo registra en la cabeza del lazo, que es lo que se queria;
-			pero entonces este PC no es su entrada y correrlo seria ejecutar
-			desde otro lado. Se deja traducido y esta instruccion la hace el
-			interprete: el bloque se encuentra solo cuando el guest llegue a su
-			entrada.
-		*/
-		if (b->pc != pc)
+		/* El modo con el que se emitio tiene que seguir valiendo: con la MMU
+		   encendida los accesos llevan la traduccion adentro. */
+		if (b->mmu >= 0
+			&& b->mmu != (mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO))
 		{
-			/* Y este PC deja de proponerse, o cada visita volveria a traducir
-			   la cabeza del lazo: un bloque duplicado por vuelta hasta agotar
-			   el arena. Costo 16 384 bloques de los que 16 123 no entraban
-			   siquiera en la tabla, con la cobertura clavada en 0,25 %. */
-			jit_desmarcar(pc);
-			return 0;
+			jit_rechazos++;
+			break;
 		}
-	}
 
-	/* El modo con el que se emitio tiene que seguir valiendo: con la MMU
-	   encendida los accesos llevan la traduccion adentro. */
-	if (b->mmu >= 0 && b->mmu != (mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO))
-	{
-		jit_rechazos++;
-		return 0;
-	}
+		if (!jit_verificar(b))
+		{
+			jit_rechazos++;
+			break;
+		}
 
-	if (!jit_verificar(b))
-	{
-		jit_rechazos++;
-		return 0;
-	}
+		jit_entradas++;
+		b->veces++;
+		b->codigo();
+		corridos = 1;
 
-	jit_entradas++;
-	b->veces++;
-	b->codigo();
-
-	/* La salida es una frontera de bloque de verdad, asi que siembra la
-	   siguiente -- pero por el contador de calor y no derecho: sembrar cada
-	   salida gasta un bloque por PC visto una sola vez, y los bloques son un
-	   recurso finito. */
-	if (jit_traductor)
+		/* La salida es una frontera de bloque de verdad, asi que siembra la
+		   siguiente -- pero por el contador de calor y no derecho: sembrar cada
+		   salida gasta un bloque por PC visto una sola vez, y los bloques son
+		   un recurso finito. */
 		jit_muestrear(PC);
 
-	return 1;
+		if (core.context.cycles >= RELOJ_GRANO || intc_sh4_reintentar)
+			break;
+
+		pc = PC;
+	}
+
+	return corridos;
 }
 
 /* ------------------------------------------------------------------------ */
