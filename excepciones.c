@@ -431,6 +431,32 @@ void excepcion_abortar(DWORD codigo, DWORD vector)
 	logxmsg(LOG_MEM, "excepcion: %03x fuera de una instruccion\n", codigo);
 }
 
+int excepcion_salto_valido = 0;
+int excepcion_sin_instantanea = 0;
+
+void excepcion_direccion(DWORD direccion, int escritura)
+{
+	if (!excepcion_salto_valido)
+		return;
+
+	/* Como en la falta de TLB: TEA lleva la direccion y PTEH.VPN su pagina,
+	   con el ASID intacto. */
+	*TEA  = direccion;
+	*PTEH = (direccion & 0xFFFFFC00) | (*PTEH & 0x000000FF);
+
+	excepcion_codigo = escritura ? EXC_DIR_ESCRITURA : EXC_DIR_LECTURA;
+	excepcion_vector = EXC_VEC_GENERAL;
+
+	if (excepcion_salto_armado)
+	{
+		excepcion_salto_armado = 0;
+		longjmp(excepcion_salto, 1);
+	}
+
+	excepcion_sin_instantanea = 1;
+	longjmp(excepcion_salto, 1);
+}
+
 void excepcion_actualizar_vigilancia(void)
 {
 	/* SR.FD apaga la FPU entera; cualquier bit de Enable arma la trampa de

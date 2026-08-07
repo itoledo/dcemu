@@ -130,8 +130,10 @@ herramienta que lo encontró — ver `docs/notas-herramientas.md`.
 `pvr_scanline` y nada más, así que cualquiera que esperara vsync esperaba para siempre — ahí es
 donde se sentaba el boot ROM real (`0x8C00CB2E`, `TST #0x2000` sobre este registro). El vsync está
 ahora encendido durante las primeras `SPG_WIDTH.vswidth` líneas del cuadro y el blanking va desde
-`SPG_VBLANK.vbstart` hasta `vbend`, dando la vuelta pasado el final; hsync y campo quedan en cero,
-ya que dcemu no sigue posición horizontal ni entrelazado. Encontrar esto también sacó a luz que
+`SPG_VBLANK.vbstart` hasta `vbend`, dando la vuelta pasado el final. El número de campo alterna
+por vuelta del contador cuando `SPG_CONTROL` pide entrelazado (bit 4) — `pvr_campo`, D.5 — y en
+progresivo queda en 0; hsync sigue en cero, dcemu no lleva posición horizontal. Encontrar esto
+también sacó a luz que
 **`SPG_VBLANK` y `SPG_WIDTH` tenían case de lectura pero no de escritura**, así que
 `pvr_spg_vblank` y `pvr_spg_width` conservaban los valores por omisión de `reg.c` sin importar lo
 que el guest programara.
@@ -216,6 +218,19 @@ moría por un `memwrite` que debía ser `memwrite_fisico`.
 lo que contesta el boot ROM real — `bios.bin` lleva esa constante dos veces y nunca `0xA0100020` —
 así que es correcto, pero un guest que mapee las páginas bajas tapa su propia fuente.
 `basic/mmu/pvrmap` hace exactamente eso y pierde su texto; en hardware pasaría igual.
+
+**El error de dirección por acceso desalineado se levanta desde el 2026-08-06** (D.3): palabra
+fuera de 2n, longword fuera de 4n, quadword fuera de 8n — 0x0E0 lectura / 0x100 escritura, TEA y
+PTEH.VPN como en la falta de TLB, por VBR+0x100. La comprobación vive en la cabeza de
+`memread`/`memwrite`, antes de traducir, y con el tamaño literal se pliega en compilación. Tres
+decisiones anotadas en `excepcion_direccion()`: con la instantánea armada el aborto es el de
+siempre; en el camino rápido **no hay instantánea** y se entra con el estado que haya (el software
+real termina en un panic, no en un RTE que reintenta); y fuera de `main_loop()` la comprobación es
+**inerte** — la válvula `excepcion_salto_valido` que deja en paz al arnés de SingleStepTests, cuyo
+material aleatorio está lleno de accesos desalineados que Reicast no hace fallar. El error de
+dirección **de instrucción** (PC impar) sigue sin levantarse: exigiría una rama por instrucción en
+el fetch o una por salto en `branch.c`, y ningún guest sano salta a impar — queda anotado como el
+residuo de D.3.
 
 ---
 

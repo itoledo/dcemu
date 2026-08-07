@@ -982,6 +982,16 @@ around the access, so `main_loop()` snapshots state before each instruction and 
 `excepcion_vigilar` decides whether the loop snapshots at all — 1 if the MMU translates, `SR.FD`
 is set, or any FPSCR Enable bit is on. Zero in everything that runs today.
 
+**Misaligned data accesses raise the address error** (0x0E0 read / 0x100 write, TEA and
+PTEH.VPN like a TLB fault), checked at the head of `memread`/`memwrite` before translation.
+Three deliberate rules in `excepcion_direccion()`: with the snapshot armed it aborts cleanly;
+on the fast path there is no snapshot and the exception enters **with the state as it is**
+(real software panics there, it does not retry); and outside `main_loop()` the check is inert
+(`excepcion_salto_valido`) — that valve is what keeps the SingleStepTests harness intact, since
+its random material is full of misaligned accesses that Reicast, the source of its expected
+results, never faults. The *instruction* address error (odd PC) is not raised — the documented
+residue.
+
 `ubc.c/h` is the SH-4's user break controller, driven the way KOS's driver drives it: two
 channels with address masks and optional ASID, channel B optionally comparing data,
 `BRCR.SEQ` chaining them. `CMFA`/`CMFB` are set on match and only the guest clears them. The

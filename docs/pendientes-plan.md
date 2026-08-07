@@ -2094,10 +2094,32 @@ describir y caros o inocuos de arreglar, en ese orden.
 autores originales y el resumen del manual lista SGR solo para `STC`. Es una consulta al
 manual y, si no existen, dos filas menos y un `NOIMP` más. Lo más barato de toda la lista.
 
-### D.3 — Errores de dirección por acceso desalineado
+### D.3 — Errores de dirección por acceso desalineado — **resuelto el 2026-08-06**
 
-No se levantan. dcemu tampoco los levantaba antes, así que nada depende de ello, pero es un
-fallo que un juego real sí produce y que hoy pasa inadvertido.
+Se levantan: palabra fuera de 2n, longword fuera de 4n, quadword fuera de 8n, con la
+semántica de la sección 5 del manual — TEA con la dirección, PTEH.VPN con su página, 0x0E0
+lectura / 0x100 escritura, por VBR+0x100. La comprobación vive en la cabeza de
+`memread`/`memwrite` **antes de traducir** (el orden del chip) y con el tamaño literal se
+pliega en compilación: nada para byte, un AND contra constante para el resto; los tamaños
+arbitrarios de los hooks (`memwrite_paginado`) están exentos porque la regla no les aplica.
+
+Dos decisiones que había que tomar y quedaron anotadas en `excepcion_direccion()`:
+
+- **Con la instantánea armada** (`excepcion_vigilar`: la MMU o la FPU — DCDoom), el aborto es
+  el de siempre y la reejecución queda limpia.
+- **En el camino rápido no hay instantánea**, y la entrada se hace con el estado que haya:
+  los registros que el manejador ya mutó quedan así, y SPC apunta a la instrucción. Es la
+  aproximación documentada — el software real termina en un panic que vuelca registros, no en
+  un RTE que reintenta — y compra no pagar la instantánea por instrucción en todo guest sano.
+- **Fuera de `main_loop()` la comprobación es inerte** (`excepcion_salto_valido`): el material
+  aleatorio de SingleStepTests está lleno de accesos desalineados que Reicast, de donde salen
+  sus resultados esperados, no hace fallar. Hay un caso que fija la válvula.
+
+Verificado: tres casos en la suite `mmu` (inercia, aborto vigilado con TEA/EXPEVT/SPC y
+destino intacto, entrada sin instantánea), `ctest` 23/23 con los 113 191 de SingleStepTests
+intactos, y **DCDoom byte-idéntico a su referencia** (`198B396F…`, 35 s con `--sin-vmu`) — el
+guest con MMU ni nota la comprobación. El A/B de tiempo sobre el banco de Crazy Taxi está en
+esta misma fecha, más abajo.
 
 ### D.4 — MMU, fases 6 y 7
 
@@ -2109,13 +2131,20 @@ fallo que un juego real sí produce y que hoy pasa inadvertido.
 - `MMUCR.URC` no se incrementa, así que no hay reemplazo por LRU.
 - La traducción recorre las 64 entradas desempaquetando al vuelo. Está bien por ahora.
 
-### D.5 — Reloj
+### D.5 — Reloj — **el entrelazado resuelto el 2026-08-06; el resto queda como aproximación anotada**
 
-- El entrelazado (`SPG_CTRL_INTERLACE`) se ignora: se cuenta por campo. Un programa que
-  distinga campo par de impar no lo vería.
-- `TPSC` 110 y 111 caen al valor por omisión con aviso. La Dreamcast no los cablea.
-- El límite duerme por cuadro, con granularidad de ~16 ms.
-- Los ciclos por instrucción son aproximados y las pruebas no los verifican.
+- ~~El entrelazado se ignora~~ — **el número de campo existe**: con `SPG_CONTROL` bit 4
+  puesto, `pvr_campo` alterna en cada vuelta del contador de líneas y sale por el bit 10 de
+  `SPG_STATUS`; en progresivo queda en 0, que es lo que siempre contestó. Sin cliente
+  conocido — el banco corre por VGA, que no entrelaza — así que la baranda es que nada del
+  parque se mueva.
+- `TPSC` 110 y 111 caen al valor por omisión con aviso. La Dreamcast no los cablea. **Queda
+  así**: es una respuesta documentada, no un hueco.
+- El límite duerme por cuadro, con granularidad de ~16 ms. **Queda así**: medido a 0,99× con
+  0,1 s de audio perdido en 30 — el costo de afinarlo no compra nada audible.
+- Los ciclos por instrucción son aproximados y las pruebas no los verifican. **Queda así, a
+  sabiendas**: un modelo de ciclos exacto del SH-4 es un proyecto en sí y ninguna espera del
+  parque depende de él; el día que un guest cuente ciclos de verdad, este es el renglón.
 
 ---
 

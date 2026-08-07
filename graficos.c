@@ -137,6 +137,13 @@ int screenheight = 480;
 int screenformat = FRAMEBUFFER_RGB565;
 int framebuffer_size = 640*480*2;
 int pvr_scanline = 0;
+
+/* El campo en curso con el entrelazado puesto (SPG_CONTROL bit 4): alterna en
+   cada vuelta del contador de lineas y sale por el bit 10 de SPG_STATUS. En
+   progresivo queda en 0, que es lo que siempre contesto. D.5 de
+   pendientes-plan. */
+int pvr_campo = 0;
+
 int pvr_3dscene = 0;
 DWORD pvr_registered = 0;
 DWORD pvr_lists[] = {

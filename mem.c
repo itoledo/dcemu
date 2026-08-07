@@ -1061,8 +1061,10 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 
 				El vsync dura SPG_WIDTH.vswidth lineas al principio del cuadro,
 				y el blanking va de SPG_VBLANK.vbstart hasta vbend, que envuelve
-				por el final. hsync y el numero de campo quedan en cero: dcemu
-				no lleva posicion horizontal ni entrelazado.
+				por el final. El numero de campo alterna por vuelta del contador
+				cuando SPG_CONTROL pide entrelazado (main_loop lo lleva en
+				pvr_campo); hsync queda en cero, dcemu no lleva posicion
+				horizontal.
 			*/
 			DWORD linea   = (DWORD) pvr_scanline;
 			DWORD vswidth = (pvr_spg_width >> 8) & 0x0F;
@@ -1070,6 +1072,9 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 			DWORD vbend   = (pvr_spg_vblank >> 16) & 0x3FF;
 
 			dw = linea & 0x3FF;
+
+			if (pvr_campo)
+				dw |= 0x0400;			/* numero de campo */
 
 			/* Sin vswidth programado no habria vsync nunca, y quien lo espera
 			   se cuelga. Una linea es el minimo que tiene sentido. */

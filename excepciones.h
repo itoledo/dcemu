@@ -51,6 +51,12 @@
    KOS instala el mismo manejador para EXC_USER_BREAK_PRE y _POST. */
 #define EXC_UBC_BREAK		0x1E0
 
+/* Los errores de direccion (seccion 5 del manual, (6) y (7)): palabra fuera
+   de 2n, longword fuera de 4n, quadword fuera de 8n. La lectura comparte el
+   0x0E0 con el error de direccion de instruccion. */
+#define EXC_DIR_LECTURA		0x0E0
+#define EXC_DIR_ESCRITURA	0x100
+
 /* Todas las excepciones generales entran por el mismo vector. El fallo de TLB
    tiene el suyo, que es lo que lo hace barato en hardware real. */
 #define EXC_VEC_GENERAL		0x100
@@ -79,6 +85,32 @@ extern DWORD	excepcion_vector;
 	emulador y no por una instruccion, donde no hay nada que reejecutar.
 */
 void excepcion_abortar(DWORD codigo, DWORD vector);
+
+/*
+	El error de direccion por acceso desalineado (D.3 de pendientes-plan).
+
+	La llaman los macros del camino del guest (memread/memwrite) al detectar un
+	acceso de 2/4/8 bytes fuera de su frontera, ANTES de traducir -- el orden
+	del chip. Deja TEA y PTEH.VPN como manda el manual y desenrolla:
+
+	  - con la instantanea armada (excepcion_vigilar: la MMU o la FPU), es un
+	    aborto normal y la reejecucion queda limpia;
+	  - en el camino rapido no hay instantanea, y la entrada se hace **con el
+	    estado que haya**: los registros que el manejador ya mutó quedan asi, y
+	    SPC apunta a la instruccion porque los manejadores avanzan PC al final.
+	    Es la aproximacion documentada -- el software real termina en un panic
+	    que vuelca registros, no en un RTE que reintenta -- y lo que compra es
+	    no pagar la instantanea por instruccion en todo guest sano.
+
+	Fuera de main_loop() -- el arnes de pruebas, dcemu_sh4json, cuyo material
+	aleatorio esta lleno de direcciones desalineadas que Reicast no hace
+	fallar -- no hay salto valido y **no hace nada**: el acceso procede como
+	siempre. La valvula es excepcion_salto_valido.
+*/
+void excepcion_direccion(DWORD direccion, int escritura);
+
+extern int excepcion_salto_valido;		/* 1 solo dentro de main_loop() */
+extern int excepcion_sin_instantanea;	/* la falta entro sin estado que reponer */
 
 /*
 	1 cuando main_loop() tiene que sacar instantanea y armar el salto: o la MMU

@@ -499,11 +499,23 @@ static void falta_reponer(void)
 
 	excepcion_salto_armado = 0;
 	en_ranura_retardo = 0;
-	excepcion_instantanea_restaurar();
 
-	/* Lo poco que no se restaura: la excepcion de operacion de FPU deja Cause
-	   escrito, y Flag no. */
-	excepcion_reponer();
+	/*
+		Un error de direccion del camino rapido llega SIN instantanea: no se
+		tomo ninguna, y restaurar la ultima que hubo seria reponer el estado de
+		otra instruccion. Se entra con el estado que haya -- ver
+		excepcion_direccion() en excepciones.h.
+	*/
+	if (excepcion_sin_instantanea)
+		excepcion_sin_instantanea = 0;
+	else
+	{
+		excepcion_instantanea_restaurar();
+
+		/* Lo poco que no se restaura: la excepcion de operacion de FPU deja
+		   Cause escrito, y Flag no. */
+		excepcion_reponer();
+	}
 
 	excepcion_entrar(excepcion_codigo, excepcion_vector);
 }
@@ -676,6 +688,11 @@ void main_loop(void)
 	real_inicio = SDL_GetTicks();
 
 	timer_check(0); // arranca sin ciclos transcurridos: solo fija el TSTR previo
+
+	/* Desde aca el jmp_buf del setjmp de abajo esta (o va a estar) vigente, y
+	   un error de direccion puede desenrollar por el. Fuera de este bucle --
+	   los arneses de prueba -- la comprobacion de alineacion es inerte. */
+	excepcion_salto_valido = 1;
 
 	for (;;)
 	{
@@ -1073,6 +1090,12 @@ void main_loop(void)
 				if (pvr_scanline >= pvr_spg_load_vcount) // valor m�ximo que puede tomar
 				{
 	   				pvr_scanline = 0;
+
+					/* Con el entrelazado puesto (SPG_CONTROL bit 4) cada vuelta
+					   del contador es un campo, y el numero de campo alterna;
+					   en progresivo queda en 0. Lo consume SPG_STATUS. */
+					pvr_campo = (pvr_spg_control & 0x10) ? !pvr_campo : 0;
+
 	//	   				cnt = 0;
 					break; // salimos de este ciclo y vamos al siguiente
 				}
@@ -1102,6 +1125,7 @@ void main_loop(void)
 		{
 			fprintf(stderr, "salida automatica a los %d s de tiempo emulado.\n",
 				opciones.salir_tras);
+			excepcion_salto_valido = 0;		/* el jmp_buf deja de estar vigente */
 			return;
 		}
 
@@ -1431,6 +1455,7 @@ void main_loop(void)
 				break;
 
 				case SDL_QUIT:
+				excepcion_salto_valido = 0;	/* el jmp_buf deja de estar vigente */
 				return;
 
 /*				case SDL_USEREVENT:

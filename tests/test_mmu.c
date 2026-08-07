@@ -668,6 +668,124 @@ static void urc_avanza_con_cada_acceso_a_la_utlb(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* El error de direccion por acceso desalineado (D.3)                       */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Fuera de main_loop() no hay salto valido y la comprobacion es inerte: el
+	acceso procede como siempre. Es la valvula que deja en paz a los arneses
+	-- el material aleatorio de SingleStepTests esta lleno de accesos
+	desalineados que Reicast, de donde salen sus resultados esperados, no
+	hace fallar -- y este caso la fija: si alguien la rompe, todos los casos
+	con direcciones raras del resto de la bateria fallan detras.
+*/
+static void desalineado_es_inerte_sin_salto_valido(void)
+{
+	arnes_reset();
+
+	R(8) = PRUEBA_PC + 0x101;			/* impar */
+	escribir_b(PRUEBA_PC + 0x101, 0x12);
+	escribir_b(PRUEBA_PC + 0x102, 0x34);
+
+	ejecutar(0x6981);					/* MOV.W @R8,R9 */
+
+	ESPERAR_U32(R(9), 0x3412);			/* leyo como siempre, sin falta */
+	ESPERAR_PC_SIGUIENTE();
+}
+
+/*
+	Con el salto valido, la seccion 5 del manual: palabra fuera de 2n es
+	error de lectura (0x0E0) o de escritura (0x100), TEA lleva la direccion,
+	PTEH.VPN su pagina, SPC la instruccion, y se entra por VBR + 0x100. El
+	destino queda intacto: el ciclo vigilado repone la instantanea, que es la
+	reejecucion limpia del camino con MMU. Los registros de las aserciones
+	son R8/R9 a proposito: la entrada enciende SR.RB y los bancados cambian
+	de banco abajo de la prueba.
+*/
+static void desalineado_aborta_con_tea_y_expevt(void)
+{
+	arnes_reset();
+	excepcion_salto_valido = 1;
+
+	VBR  = 0x8C000000;
+	R(8) = PRUEBA_PC + 0x101;
+	R(9) = 0xAAAAAAAA;
+
+	ESPERAR_I32(ejecutar_vigilado(0x6981), 1);	/* MOV.W @R8,R9 */
+
+	ESPERAR_U32(*EXPEVT, 0x0E0);
+	ESPERAR_U32(*TEA, PRUEBA_PC + 0x101);
+	ESPERAR_U32(*PTEH & 0xFFFFFC00, (PRUEBA_PC + 0x101) & 0xFFFFFC00);
+	ESPERAR_U32(SPC, PRUEBA_PC);
+	ESPERAR_U32(PC, 0x8C000100);
+	ESPERAR_U32(R(9), 0xAAAAAAAA);
+
+	/* La escritura, con longword en 4n+2, es 0x100. */
+	arnes_reset();
+	VBR  = 0x8C000000;
+	R(8) = PRUEBA_PC + 0x102;
+
+	ESPERAR_I32(ejecutar_vigilado(0x2892), 1);	/* MOV.L R9,@R8 */
+
+	ESPERAR_U32(*EXPEVT, 0x100);
+	ESPERAR_U32(*TEA, PRUEBA_PC + 0x102);
+	ESPERAR_U32(PC, 0x8C000100);
+
+	/* Alineado no falla, y el byte no tiene frontera. */
+	arnes_reset();
+	R(8) = PRUEBA_PC + 0x102;
+	ESPERAR_I32(ejecutar_vigilado(0x6981), 0);	/* MOV.W alineado a 2 */
+
+	arnes_reset();
+	R(8) = PRUEBA_PC + 0x103;
+	ESPERAR_I32(ejecutar_vigilado(0x6980), 0);	/* MOV.B en impar */
+
+	excepcion_salto_valido = 0;
+}
+
+/*
+	El camino rapido de main_loop() no toma instantanea, y el error de
+	direccion entra igual: con el estado que haya y sin reponer nada -- el
+	software real termina en un panic que vuelca registros, no en un RTE que
+	reintenta. Lo que se fija aqui es el mecanismo: el desenrollo llega con
+	excepcion_sin_instantanea puesto y la entrada deja EXPEVT, TEA y el PC
+	del manejador como corresponde.
+*/
+static void desalineado_sin_instantanea_entra_igual(void)
+{
+	arnes_reset();
+	excepcion_salto_valido = 1;
+
+	VBR  = 0x8C000000;
+	R(8) = PRUEBA_PC + 0x101;
+
+	poner_instr(PC, 0x6981);					/* MOV.W @R8,R9 */
+
+	if (setjmp(excepcion_salto) == 0)
+	{
+		/* Como el camino rapido: ni instantanea ni salto armado. */
+		core.execute(*(WORD *) get_memory_pointer(PC));
+
+		ESPERAR(0);								/* no debe llegar aca */
+	}
+	else
+	{
+		ESPERAR_I32(excepcion_sin_instantanea, 1);
+
+		/* Lo que falta_reponer() hace en este caso: limpiar y entrar. */
+		excepcion_sin_instantanea = 0;
+		excepcion_entrar(excepcion_codigo, excepcion_vector);
+	}
+
+	ESPERAR_U32(*EXPEVT, 0x0E0);
+	ESPERAR_U32(*TEA, PRUEBA_PC + 0x101);
+	ESPERAR_U32(SPC, PRUEBA_PC);
+	ESPERAR_U32(PC, 0x8C000100);
+
+	excepcion_salto_valido = 0;
+}
+
+/* ------------------------------------------------------------------------ */
 
 static const dc_caso casos[] =
 {
@@ -701,6 +819,9 @@ static const dc_caso casos[] =
 	CASO(fetch_de_usuario_respeta_la_proteccion),
 	CASO(ldtlb_invalida_el_cache_del_fetch),
 	CASO(urc_avanza_con_cada_acceso_a_la_utlb),
+	CASO(desalineado_es_inerte_sin_salto_valido),
+	CASO(desalineado_aborta_con_tea_y_expevt),
+	CASO(desalineado_sin_instantanea_entra_igual),
 };
 
 const dc_suite suite_mmu = DEFINIR_SUITE("mmu", casos);

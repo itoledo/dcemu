@@ -198,11 +198,35 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 	Lectura y escritura tienen tablas separadas porque los dos watchpoints son
 	independientes: vigilar escrituras no tiene por que frenar las lecturas.
 */
+/* De excepciones.h, declarada aca para no arrastrar setjmp.h a todo el que
+   incluya mem.h. */
+void excepcion_direccion(DWORD direccion, int escritura);
+
+/*
+	El error de direccion (D.3, seccion 5 del manual): palabra fuera de 2n,
+	longword fuera de 4n, quadword fuera de 8n. Se comprueba ANTES de traducir
+	-- el orden del chip -- y solo para los tamanos de acceso del guest: los
+	hooks copian bloques por aqui con tamanos arbitrarios (memwrite_paginado)
+	y a esos la regla no les aplica. Con el tamano literal, que es el caso de
+	todos los manejadores, el compilador pliega la prueba: nada para byte, un
+	AND contra constante para el resto. excepcion_direccion() es inerte fuera
+	de main_loop(), que es lo que deja en paz al arnes de SingleStepTests --
+	su material aleatorio esta lleno de accesos desalineados que Reicast, de
+	donde salen los resultados esperados, no hace fallar.
+*/
+#define MEM_ALINEADO(dir, size, escritura) \
+	do { \
+		if (((size) == 2 || (size) == 4 || (size) == 8) \
+		 && ((dir) & ((unsigned long) (size) - 1))) \
+			excepcion_direccion((dir), (escritura)); \
+	} while (0)
+
 #define memread(direccion, target, size) \
 	do { \
 		unsigned long _ubc_d = (direccion); \
 		unsigned long _mmu_d = _ubc_d; \
 		unsigned char * _md_b; \
+		MEM_ALINEADO(_ubc_d, (size), 0); \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_LECTURA); \
 		_md_b = mem_base_lectura[_mmu_d >> 24]; \
 		if (_md_b) \
@@ -218,6 +242,7 @@ void memwrite(unsigned long direccion, void * source, size_t size);
 		unsigned long _ubc_d = (direccion); \
 		unsigned long _mmu_d = _ubc_d; \
 		unsigned char * _md_b; \
+		MEM_ALINEADO(_ubc_d, (size), 1); \
 		if (mmu_activa) _mmu_d = mmu_traducir(_mmu_d, MMU_ESCRITURA); \
 		_md_b = mem_base_escritura[_mmu_d >> 24]; \
 		if (_md_b) \

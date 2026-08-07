@@ -22,6 +22,7 @@ extern	float	screentexheight;
 extern	int		screenheight;
 extern	int		pvr_framebufferdisplay;
 extern	int 	pvr_scanline;
+extern	int 	pvr_campo;		/* con entrelazado: el campo, bit 10 de SPG_STATUS */
 extern	DWORD	pvr_fb_r_ctrl;
 extern	DWORD	pvr_fb_r_sof1;
 
