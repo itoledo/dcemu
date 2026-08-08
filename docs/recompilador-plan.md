@@ -1339,3 +1339,44 @@ recompilador, cobertura 79 %/72 %, y los cortadores restantes son `MAC.L` (que p
 resolver la falta a mitad de instrucción — una instantánea local o leer las dos posiciones
 antes de mutar), los `MOV.W`/`MOV.B` de escritura que el censo aún liste, y el despacho
 enteramente emitido como la idea grande pendiente.
+
+## El cuarto lote: MAC.L reordenado, y 1,062×
+
+**`MAC.L` entró reordenando su manejador**, que es la salida que el pendiente pedía: las
+dos lecturas van ahora antes de mutar nada (con `n == m`, la segunda dirección es la
+palabra siguiente, como si el incremento ya hubiera pasado), así que una falta en
+cualquiera deja el contexto pre-instrucción — el contrato del mundo emitido, y de paso la
+reejecución del intérprete queda exacta sin depender de la instantánea. Las direcciones y
+su orden son los de siempre: URC y los watchpoints ven lo mismo. **Verificado contra
+SingleStepTests/sh4** (500 casos aleatorios por codificación, exit 0, con las
+discrepancias documentadas de siempre contadas aparte) — y la primera pasada de la cadena
+**no corrió la suite y nadie lo dijo**: PowerShell leyó `build\Debug\dcemu_sh4json.exe`
+como sintaxis de módulo y el `$LASTEXITCODE` rancio de ctest dejó pasar el guardia. La
+forma de fallo recurrente del árbol, esta vez en la cadena de verificación; el binario
+además no vive en `build\Debug` sino en `build\tests\Debug`.
+
+Con él: `SHLD` a la lista blanca del manejador real, `OR #imm,R0` (5 ciclos — del
+manejador), `MOVA` (su resultado es constante del bloque: un `mov` inmediato), y
+`MOV.W Rm,@(R0,Rn)` — que trajo **el camino de escritura de 16 bits** entero
+(`jit_escribir16`/`_fis`, `gen_escribir` con máscara de alineación 1 y el `mov` de
+palabra indexado del emisor, prefijo 66 antes del REX, con su caso byte a byte).
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| cobertura | 79,0 → **79,9 %** | 72,1 → 72,4 % |
+| instrucciones por entrada | 15,8 → **18,2** | 9,2 |
+| entradas al despacho | 271,8 → **238,8 M** | 1747 M |
+
+DCDoom: **32 957 ms — 1,062× tiempo real**, −1,7 % más. La serie completa del
+recompilador: **de 0,646× a 1,062×**.
+
+### La falsa regresión de Crazy Taxi, y lo que la palanca demostró
+
+Entre la tanda del lote 2 y la de este lote, CT parecía +2,2 % (97 253 → 99 349, ambas
+tandas tranquilas). La bisección con `DCEMU_JIT_PLANTILLAS=66` —que reproduce el juego de
+plantillas del lote 2 **sobre este mismo binario**— dio el veredicto contrario: **el juego
+completo es 0,8 % más rápido** (99 226 contra 100 039 ms), y el recorte reprodujo las
+cuentas del lote 2 al bit, que es la palanca demostrando su exactitud. La diferencia entre
+tandas era la capa de reentrenamiento: cada tanda lleva perfil nuevo, y en CT esa capa
+vale ±1-2 % — su resolución real entre tandas, contra el 0,1-0,6 % de DCDoom (que pesa 7×
+en el perfil). **Los absolutos de CT se comparan dentro de un binario o no se comparan.**

@@ -109,10 +109,12 @@ typedef struct
 	void *					h_leer8s;
 	void *					h_leer16s;
 	void *					h_escribir8;
+	void *					h_escribir16;
 	void *					h_escribir32;
 	void *					h_leer32f;
 	void *					h_leer8sf;
 	void *					h_leer16sf;
+	void *					h_escribir16f;
 	void *					h_escribir8f;
 	void *					h_escribir32f;
 	/* PTEH y MMUCR viven adentro de regmem, que es un calloc de 16 MB: en
@@ -187,6 +189,13 @@ void jit_escribir8(DWORD dir, DWORD valor)
 	WriteMemoryB(dir, &b);
 }
 
+void jit_escribir16(DWORD dir, DWORD valor)
+{
+	WORD w = (WORD) (valor & 0xFFFF);
+
+	WriteMemoryW(dir, &w);
+}
+
 void jit_escribir32(DWORD dir, DWORD valor)
 {
 	DWORD v = valor;
@@ -242,6 +251,13 @@ void jit_escribir8_fis(DWORD fisica, DWORD valor)
 	BYTE b = (BYTE) (valor & 0xFF);
 
 	memwrite_fisico(fisica, &b, sizeof(BYTE));
+}
+
+void jit_escribir16_fis(DWORD fisica, DWORD valor)
+{
+	WORD w = (WORD) (valor & 0xFFFF);
+
+	memwrite_fisico(fisica, &w, sizeof(WORD));
 }
 
 void jit_escribir32_fis(DWORD fisica, DWORD valor)
@@ -607,6 +623,8 @@ static int D(const void * p)
 #define D_LEER8S	D(&jit_estado.h_leer8s)
 #define D_LEER16S	D(&jit_estado.h_leer16s)
 #define D_LEER16SF	D(&jit_estado.h_leer16sf)
+#define D_ESCR16	D(&jit_estado.h_escribir16)
+#define D_ESCR16F	D(&jit_estado.h_escribir16f)
 #define D_ESCR8		D(&jit_estado.h_escribir8)
 #define D_ESCR32	D(&jit_estado.h_escribir32)
 #define D_LEER32F	D(&jit_estado.h_leer32f)
@@ -1099,7 +1117,8 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 
 	if (modo != JIT_ACC_LENTO)
 	{
-		gen_rapido_inicio(g, &a, D_BASE_ESC, ancho == 4 ? 3 : 0, modo);
+		gen_rapido_inicio(g, &a, D_BASE_ESC,
+			ancho == 4 ? 3 : (ancho == 2 ? 1 : 0), modo);
 
 		/*
 			**La pagina que se escribe no puede tener codigo traducido**, o el
@@ -1123,20 +1142,24 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 
 		if (ancho == 4)
 			jit_x64_mov_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
+		else if (ancho == 2)
+			jit_x64_mov16_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
 		else
 			jit_x64_mov8_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
 
 		gen_rapido_fin(g, &a,
-			ancho == 4 ? D_ESCR32F : D_ESCR8F,
+			ancho == 4 ? D_ESCR32F : (ancho == 2 ? D_ESCR16F : D_ESCR8F),
 			ancho == 4 ? (const void *) jit_escribir32_fis
-					   : (const void *) jit_escribir8_fis,
+					   : (ancho == 2 ? (const void *) jit_escribir16_fis
+									 : (const void *) jit_escribir8_fis),
 			val, ctx);
 	}
 
 	val(g, ctx, X64_RDX);
 	gen_llamar(g, ancho == 4 ? (const void *) jit_escribir32
-							 : (const void *) jit_escribir8,
-		ancho == 4 ? D_ESCR32 : D_ESCR8);
+							 : (ancho == 2 ? (const void *) jit_escribir16
+										   : (const void *) jit_escribir8),
+		ancho == 4 ? D_ESCR32 : (ancho == 2 ? D_ESCR16 : D_ESCR8));
 
 	if (modo != JIT_ACC_LENTO)
 		gen_acceso_cerrar(g, &a);
@@ -2775,11 +2798,14 @@ static void tr_prologo(jit_gen * g, jit_traduccion * t);
 	**La lista blanca es estricta y el motivo es la falta.** Sin instantanea,
 	el contrato del mundo emitido es que una falta deje el contexto
 	pre-instruccion; un manejador que muta antes de poder fallar lo rompe.
-	Entran solo manejadores sin acceso a memoria (no pueden fallar), que no
-	toquen el PC mas alla del +2, ni SR.MD/RB (los bancos cambiarian bajo los
-	slots), ni FPSCR (repuntaria oplist a mitad de bloque). MAC.L queda afuera
-	exactamente por eso: lee @Rn+, incrementa, y recien entonces lee @Rm+ -- la
-	segunda falta dejaria R(n) avanzado.
+	Entran manejadores que no toquen el PC mas alla del +2, ni SR.MD/RB (los
+	bancos cambiarian bajo los slots), ni FPSCR (repuntaria oplist a mitad de
+	bloque), y cuyas mutaciones vayan TODAS despues de su ultima posibilidad
+	de falta. Los sin acceso a memoria lo cumplen gratis; MAC.L quedo afuera
+	hasta que su manejador se reordeno --leia @Rn+, incrementaba, y recien
+	entonces leia @Rm+: la segunda falta dejaba R(n) avanzado-- y hoy entra,
+	con las dos lecturas antes de mutar y las mismas direcciones en el mismo
+	orden.
 */
 static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
 {
@@ -2816,6 +2842,51 @@ static void pl_div0u54(jit_gen * g, jit_traduccion * t, int i)
 static void pl_shad90(jit_gen * g, jit_traduccion * t, int i)
 {
 	tr_manejador(g, t, i, (const void *) shad90);
+}
+
+static void pl_shld93(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) shld93);
+}
+
+static void pl_macl62(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) macl62);
+}
+
+static void pl_or77(jit_gen * g, jit_traduccion * t, int i)		/* OR #imm,R0 */
+{
+	int imm = (int) (t->palabra[i] & 0xFF);
+	int h0  = tr_h(t, 0);
+
+	if (h0 >= 0)
+		jit_x64_alu_ri(&g->e, X64_OR, (x64_reg) h0, imm);
+	else
+		jit_x64_alu_mi(&g->e, X64_OR, CTX, O_R(0), imm);
+}
+
+/* MOVA @(d,PC),R0: el resultado es una constante del bloque, con la formula
+   exacta del manejador (disp*4 + ((PC+4) & ~3)). */
+static void pl_mova34(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD  w   = t->palabra[i];
+	DWORD pc  = t->pc0 + (DWORD) (2 * i);
+	DWORD val = (DWORD) (w & 0xFF) * 4 + ((pc + 4) & 0xFFFFFFFCul);
+	int   h0  = tr_h(t, 0);
+
+	if (h0 >= 0)
+		jit_x64_mov_ri(&g->e, (x64_reg) h0, val);
+	else
+		jit_x64_mov_mi(&g->e, CTX, O_R(0), val);
+}
+
+static void pl_movw23(jit_gen * g, jit_traduccion * t, int i)	/* MOV.W Rm,@(R0,Rn) */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TN(w));
+	tr_escribir_de(g, t, TM(w), 2);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2912,6 +2983,13 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "SHAD Rm,Rn",         0, 1, 0, 0, pl_shad90 },
 	{ NULL, "BRAF Rn",            3, 0, 1, 1, pl_braf },
 	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109 },
+	/* El cuarto lote: MAC.L por el manejador reordenado, SHLD, y lo que el
+	   censo listo tras el tercero. El 5 de OR #imm es del manejador. */
+	{ NULL, "MAC.L @Rm+,@Rn+",    0, 1, 0, 0, pl_macl62 },
+	{ NULL, "SHLD Rm,Rn",         0, 1, 0, 0, pl_shld93 },
+	{ NULL, "OR #imm,R0",         5, 0, 0, 0, pl_or77 },
+	{ NULL, "MOVA @(d,PC),R0",    1, 0, 0, 0, pl_mova34 },
+	{ NULL, "MOV.W Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movw23 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -2930,6 +3008,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	stsl168, ldsl135, ldsl134, sts164, movt35, mull, cmppl50, rotcl88,
 	stsl167, movl18, movb16, or76, cmppz49, sub69, movw8, movw1,
 	div1s52, div0s53, div0u54, shad90, braf, bsrf109,
+	macl62, shld93, or77, mova34, movw23,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -4190,6 +4269,8 @@ void jit_iniciar(void)
 	jit_estado.h_leer8s     = (void *) jit_leer8s;
 	jit_estado.h_leer16s    = (void *) jit_leer16s;
 	jit_estado.h_leer16sf   = (void *) jit_leer16s_fis;
+	jit_estado.h_escribir16 = (void *) jit_escribir16;
+	jit_estado.h_escribir16f = (void *) jit_escribir16_fis;
 	jit_estado.h_escribir8  = (void *) jit_escribir8;
 	jit_estado.h_escribir32 = (void *) jit_escribir32;
 	jit_estado.h_leer32f    = (void *) jit_leer32_fis;

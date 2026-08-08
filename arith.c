@@ -669,12 +669,17 @@ OPCODE(macl62)	// MAC.L @Rm+, @Rn+	(0000nnnn mmmm1111)
 	unsigned long temp0,temp1,temp2,temp3;
 	long rm, rn, fnLmL;
 
-	/* El manual lee @Rn+ primero, con su incremento, y recien despues @Rm+.
-	   Con n == m eso significa leer dos posiciones consecutivas y avanzar el
-	   registro 8 bytes, no leer dos veces la misma. */
+	/* El manual lee @Rn+ primero y recien despues @Rm+; con n == m son dos
+	   posiciones consecutivas, no la misma dos veces. Las DOS lecturas van
+	   antes de mutar nada: si la segunda falta, el contexto tiene que mostrar
+	   la instruccion sin empezar -- es el contrato del mundo emitido, que
+	   llama a este manejador sin instantanea, y deja la reejecucion exacta
+	   tambien aqui. Las direcciones y su orden son los de siempre, asi que el
+	   avance de URC y los watchpoints ven lo mismo. */
 	memread(R(n), &rn, sizeof(DWORD));
+	memread((n == m) ? R(m) + 4 : R(m), &rm, sizeof(DWORD));
+
 	R(n) += 4;
-	memread(R(m), &rm, sizeof(DWORD));
 	R(m) += 4;
 
 	logmsg("macl62: rm=%x, rn=%x\n", rm, rn);
