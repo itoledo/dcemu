@@ -511,6 +511,24 @@ void jit_x64_imul_rri(x64_emisor * e, x64_reg dst, x64_reg src, int imm)
 	}
 }
 
+/* Las dos formas de dos operandos (0F AF): MUL.L las quiere para R(n)*R(m)
+   sin pasar por el inmediato. */
+void jit_x64_imul_rr(x64_emisor * e, x64_reg dst, x64_reg src)
+{
+	rex(e, 0, dst, src, 0);
+	b1(e, 0x0F);
+	b1(e, 0xAF);				/* IMUL r32, r/m32 */
+	modrm_rr(e, dst, src);
+}
+
+void jit_x64_imul_rm(x64_emisor * e, x64_reg dst, x64_reg base, int disp)
+{
+	rex(e, 0, dst, base, 0);
+	b1(e, 0x0F);
+	b1(e, 0xAF);
+	modrm_m(e, dst, base, disp);
+}
+
 void jit_x64_cmp_rm_idx(x64_emisor * e, x64_reg a, x64_reg base,
 	x64_reg indice, int escala, int disp)
 {

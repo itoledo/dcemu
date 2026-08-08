@@ -479,6 +479,18 @@ static void la_familia_alu_completa(void)
 	jit_x64_imul_rri(&e, X64_RAX, X64_RAX, 28);			/* imul eax, eax, 28 */
 	ESPERAR_EMITIDO(0x6B, 0xC0, 0x1C);
 
+	arrancar();
+	jit_x64_imul_rr(&e, X64_RAX, X64_RBX);				/* imul eax, ebx */
+	ESPERAR_EMITIDO(0x0F, 0xAF, 0xC3);
+
+	arrancar();
+	jit_x64_imul_rr(&e, X64_R10, X64_RCX);				/* imul r10d, ecx */
+	ESPERAR_EMITIDO(0x44, 0x0F, 0xAF, 0xD1);
+
+	arrancar();
+	jit_x64_imul_rm(&e, X64_RAX, X64_RBX, 0x40);		/* imul eax, [rbx+40h] */
+	ESPERAR_EMITIDO(0x0F, 0xAF, 0x43, 0x40);
+
 	arrancar();									/* add qword [rbx+1000h], 1 */
 	jit_x64_add64_mi(&e, X64_RBX, 0x1000, 1);
 	ESPERAR_EMITIDO(0x48, 0x83, 0x83, 0x00, 0x10, 0x00, 0x00, 0x01);

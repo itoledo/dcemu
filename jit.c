@@ -557,6 +557,7 @@ static const x64_reg jit_a[5] =
 #define O_PC	((int) offsetof(context_t, PC_REG))
 #define O_SR	((int) offsetof(context_t, SR_REG))
 #define O_PR	((int) offsetof(context_t, PR_REG))
+#define O_MACL	((int) offsetof(context_t, MACL_REG))
 #define O_R(n)	((int) (offsetof(context_t, registers) + 4 * (n)))
 
 static int jit_disp_ok = 1;
@@ -2204,6 +2205,143 @@ static void pl_movl12(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L Rm,@-Rn *
 	tr_alu_ri(g, t, X64_SUB, n, 4);
 }
 
+/* --- lo que el censo de Crazy Taxi pidio: el pushpop de PR y compania ---- */
+
+/*
+	STS.L PR,@-Rn (stsl168, 2 ciclos). El manejador decrementa R(n) antes de
+	escribir y la instantanea del interprete repone; aca el contrato es que el
+	contexto quede pre-instruccion ante una falta, asi que el decremento se
+	calcula en RCX y R(n) se compromete despues de que la escritura volvio,
+	como en pl_movl12. El valor sale del PR del contexto.
+*/
+static void tr_valor_pr(jit_gen * g, void * ctx, x64_reg dst)
+{
+	(void) ctx;
+	jit_x64_mov_rm(&g->e, dst, CTX, O_PR);
+}
+
+static void pl_stsl168(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+	int  n = TN(w);
+
+	tr_cargar(g, t, X64_RCX, n);
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RCX, 4);
+	gen_escribir(g, t->modo, 4, tr_valor_pr, NULL);
+	tr_alu_ri(g, t, X64_SUB, n, 4);
+}
+
+/*
+	LDS.L @Rm+,PR (ldsl135, que no suma ciclos -- no es un olvido de aca) y
+	LDS.L @Rm+,MACL (ldsl134, 3). El destino no es un registro general: la
+	lectura baja a RAX y de ahi al campo del contexto, y el incremento se
+	compromete despues de que la lectura volvio.
+*/
+static void tr_ldsl_a(jit_gen * g, jit_traduccion * t, int i, int campo)
+{
+	WORD w = t->palabra[i];
+	int  m = TN(w);		/* 0100mmmm: el registro va en los bits 8-11 */
+
+	tr_cargar(g, t, X64_RCX, m);
+	gen_leer32(g, X64_RAX, t->modo);
+	jit_x64_mov_mr(&g->e, CTX, campo, X64_RAX);
+	tr_alu_ri(g, t, X64_ADD, m, 4);
+}
+
+static void pl_ldsl135(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_ldsl_a(g, t, i, O_PR);
+}
+
+static void pl_ldsl134(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_ldsl_a(g, t, i, O_MACL);
+}
+
+static void pl_sts164(jit_gen * g, jit_traduccion * t, int i)	/* STS MACL,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_mov_rm(&g->e, (x64_reg) hn, CTX, O_MACL);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_MACL);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void pl_movt35(jit_gen * g, jit_traduccion * t, int i)	/* MOVT Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+	x64_reg dst = (hn >= 0) ? (x64_reg) hn : X64_RAX;
+
+	jit_x64_mov_rm(&g->e, dst, CTX, O_SR);
+	jit_x64_alu_ri(&g->e, X64_AND, dst, 1);
+
+	if (hn < 0)
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+}
+
+static void pl_mull(jit_gen * g, jit_traduccion * t, int i)		/* MUL.L Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  hm = tr_h(t, TM(w));
+
+	tr_cargar(g, t, X64_RAX, TN(w));
+
+	if (hm >= 0)
+		jit_x64_imul_rr(&g->e, X64_RAX, (x64_reg) hm);
+	else
+		jit_x64_imul_rm(&g->e, X64_RAX, CTX, O_R(TM(w)));
+
+	jit_x64_mov_mr(&g->e, CTX, O_MACL, X64_RAX);
+}
+
+static void pl_cmppl50(jit_gen * g, jit_traduccion * t, int i)	/* CMP/PL Rn */
+{
+	WORD w  = t->palabra[i];
+	int  hn = tr_h(t, TN(w));
+
+	if (hn >= 0)
+		jit_x64_alu_ri(&g->e, X64_CMP, (x64_reg) hn, 0);
+	else
+		jit_x64_alu_mi(&g->e, X64_CMP, CTX, O_R(TN(w)), 0);
+
+	gen_poner_t(g, X64_G);
+}
+
+/*
+	ROTCL (rotcl88, 1 ciclo): el T vigente entra por el acarreo --el bit 0 de
+	SR sale con un SHR-- y x86 RCL por 1 hace exactamente la rotacion del
+	SH-4, dejando el bit 31 viejo en CF. MOV no toca las banderas, asi que el
+	camino sin slot puede cargar y guardar alrededor del RCL.
+*/
+static void pl_rotcl88(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+
+	jit_x64_mov_rm(&g->e, X64_RDX, CTX, O_SR);
+	jit_x64_shift_ri(&g->e, X64_SHR, X64_RDX, 1);
+
+	if (hn >= 0)
+		jit_x64_shift_ri(&g->e, X64_RCL, (x64_reg) hn, 1);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_R(n));
+		jit_x64_shift_ri(&g->e, X64_RCL, X64_RAX, 1);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+
+	gen_poner_t(g, X64_B);
+}
+
 /* --- aritmetica y corrimientos que el censo pidio ------------------------ */
 
 static void pl_cmpeq43(jit_gen * g, jit_traduccion * t, int i)	/* CMP/EQ #imm,R0 */
@@ -2504,6 +2642,17 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "JMP @Rn",            3, 0, 1, 1, pl_jmp110 },
 	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111 },
 	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112 },
+	/* Lo que el censo de Crazy Taxi pidio (2026-08-08): el pushpop de PR corta
+	   todo prologo y epilogo de funcion del guest. Ciclos copiados de cada
+	   manejador; el 0 de LDS.L @Rm+,PR es del manejador, no un olvido. */
+	{ NULL, "STS.L PR,@-Rn",      2, 1, 0, 0, pl_stsl168 },
+	{ NULL, "LDS.L @Rm+,PR",      0, 1, 0, 0, pl_ldsl135 },
+	{ NULL, "LDS.L @Rm+,MACL",    3, 1, 0, 0, pl_ldsl134 },
+	{ NULL, "STS MACL,Rn",        3, 0, 0, 0, pl_sts164 },
+	{ NULL, "MOVT Rn",            1, 0, 0, 0, pl_movt35 },
+	{ NULL, "MUL.L Rm,Rn",        4, 0, 0, 0, pl_mull },
+	{ NULL, "CMP/PL Rn",          1, 0, 0, 0, pl_cmppl50 },
+	{ NULL, "ROTCL Rn",           1, 0, 0, 0, pl_rotcl88 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -2519,6 +2668,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	cmpeq43, extuw61, extsb58,
 	shll94, shlr95, shll8, shlr8, shll16,
 	bt104, bts105, bra, bsr108, jmp110, jsr111, rts112,
+	stsl168, ldsl135, ldsl134, sts164, movt35, mull, cmppl50, rotcl88,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
