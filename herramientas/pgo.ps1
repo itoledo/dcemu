@@ -19,18 +19,38 @@
 # pasar por los caminos, no repetirlos. Aun asi Crazy Taxi necesita llegar al
 # juego (los 300/1100 de DCEMU_PULSAR_START), porque en los menus el reparto es
 # otro -- 53 tiras por escena contra 1183 --.
+#
+# **-Jit entrena el binario del recompilador** (build-jit/, -DDCEMU_JIT=ON), que
+# lleva su propio .pgd porque es otro programa. Su banco es el mismo pero cada
+# guest corre DOS veces, una por forma --interprete (DCEMU_JIT=0) y traductor
+# (DCEMU_JIT=2)-- con el mismo peso: ese binario existe para el A/B entre las
+# formas, y entrenar solo una dejaria a la otra desordenada, o sea que el A/B
+# mediria la disposicion y no el recompilador -- exactamente lo que el PGO viene
+# a eliminar. Tras cada corrida del traductor se exige el resumen "jit:" en
+# stderr: si el recompilador no se engancho, el perfil describiria al interprete
+# dos veces y nadie lo notaria.
 param(
-	[string] $Exe = "build\Release\dcemu.exe",
+	[string] $Exe = "",
+	[switch] $Jit,
 	[int]    $SegundosKatana = 90,
 	[int]    $SegundosCE     = 20
 )
 
 $ErrorActionPreference = "Stop"
 
+if ($Exe -eq "") {
+	$Exe = if ($Jit) { "build-jit\Release\dcemu.exe" } else { "build\Release\dcemu.exe" }
+}
+
 if (-not (Test-Path $Exe)) { throw "falta ${Exe}: compila primero con -DDCEMU_PGO=GEN" }
 
-$pgd = "build-pgo\dcemu.pgd"
+$pgd = if ($Jit) { "build-pgo\dcemu-jit.pgd" } else { "build-pgo\dcemu.pgd" }
 if (-not (Test-Path $pgd)) { throw "falta ${pgd}: el binario no se enlazo con /GENPROFILE" }
+
+# Los .pgc heredan el nombre base del .pgd, no el del ejecutable: con
+# dcemu-jit.pgd las corridas dejan dcemu-jit!N.pgc. Filtrar por "dcemu!*" aqui
+# perdia todas las corridas del binario del JIT.
+$filtroPgc = "$([IO.Path]::GetFileNameWithoutExtension($pgd))!*.pgc"
 
 # Las herramientas de PGO son las del **toolset x64**, no las que estan en el
 # PATH: en esta maquina `link.exe` resuelve al de HostX86\x86 y su pgomgr no
@@ -65,7 +85,7 @@ if (-not (Test-Path (Join-Path $dirExe "pgort140.dll"))) {
 # existe. Se borran antes, no despues: si algo falla a mitad, lo que queda es
 # un perfil incompleto y no uno mezclado. Caen junto al EJECUTABLE, no junto
 # al .pgd.
-Get-ChildItem $dirExe -Filter "dcemu!*.pgc" -EA SilentlyContinue | Remove-Item
+Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue | Remove-Item
 
 # El peso con el que entra cada banco al perfil, y por que no es 1 para todos.
 #
@@ -85,19 +105,52 @@ $bancos = @(
 	@{ n = "dcdoom";    img = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi";                                     s = $SegundosCE;     teclas = $false; peso = 7 }
 )
 
+# Con -Jit cada banco se desdobla en sus dos formas; sin el, la unica corrida no
+# toca DCEMU_JIT (el binario del arbol ni lo compila). El centinela es "" y no
+# $null a proposito: asignar desde una expresion `if` pasa por la tuberia, que
+# desenvuelve @($null) a $null pelado -- y foreach sobre $null itera CERO veces.
+# Asi fallo la primera version de esto: cero corridas, cero fusiones, el /clear
+# de abajo borro el perfil igual y el guion salio con 0 diciendo "perfil listo".
+$formas = @("")
+if ($Jit) { $formas = @("0", "2") }
+
+$corridas = @()
+
 foreach ($b in $bancos) {
+	foreach ($f in $formas) {
+		$c = $b.Clone()
+		$c.forma = $f
+		if ($f -ne "") {
+			$c.n += if ($f -eq "2") { "-traductor" } else { "-interprete" }
+		}
+		$corridas += $c
+	}
+}
+
+# La guarda contra ese mismo modo de fallo: antes de tocar el .pgd tiene que
+# haber banco. Un guion que "termina bien" sin haber corrido nada es la forma
+# de fallo recurrente de este arbol, y aca ademas destruye el perfil anterior.
+if ($corridas.Count -eq 0) { throw "cero corridas armadas: el banco quedo vacio" }
+
+$err = Join-Path $dirExe "stderr.txt"
+
+foreach ($b in $corridas) {
 	if ($b.teclas) {
 		$env:DCEMU_PULSAR_START = "300,1100"; $env:DCEMU_PULSAR_A = "1"; $env:DCEMU_SOLO_A = "1"
 	} else {
 		Remove-Item env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA SilentlyContinue
 	}
 
+	if ($b.forma -ne "") {
+		$env:DCEMU_JIT = $b.forma; $env:DCEMU_FUSION = "0"
+	}
+
 	Write-Host "entrenando con $($b.n) ($($b.s) s emulados, peso $($b.peso))..." -NoNewline
 
-	$antes = @(Get-ChildItem $dirExe -Filter "dcemu!*.pgc" -EA SilentlyContinue |
+	$antes = @(Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue |
 				Select-Object -ExpandProperty Name)
 	& $Exe "--salir-tras=$($b.s)" $b.img | Out-Null
-	$despues = @(Get-ChildItem $dirExe -Filter "dcemu!*.pgc" -EA SilentlyContinue |
+	$despues = @(Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue |
 				Select-Object -ExpandProperty Name)
 
 	# Que la corrida haya dejado su .pgc es la unica prueba de que corrio: un
@@ -106,11 +159,19 @@ foreach ($b in $bancos) {
 	$nuevo = @($despues | Where-Object { $antes -notcontains $_ })
 	if ($nuevo.Count -eq 0) { throw "$($b.n) no dejo perfil" }
 
+	# Y que la corrida del traductor haya traducido: sin este control, un JIT que
+	# no se enganche deja un perfil que describe al interprete dos veces.
+	if ($b.forma -eq "2") {
+		if (-not (Select-String -Path $err -Pattern "^jit: \d+ instrucciones" -Quiet)) {
+			throw "$($b.n): el recompilador no dejo resumen en stderr -- no se engancho"
+		}
+	}
+
 	$b.pgc = $nuevo[0]
 	Write-Host " ok ($($b.pgc))"
 }
 
-Remove-Item env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA SilentlyContinue
+Remove-Item env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A,env:DCEMU_JIT,env:DCEMU_FUSION -EA SilentlyContinue
 
 # Cada corrida deja su propio .pgc; pgomgr los funde en el .pgd. Viene con
 # MSVC, pero solo esta en el PATH de un shell de Visual Studio: si no aparece,
@@ -135,7 +196,7 @@ if ($LASTEXITCODE -ne 0) { throw "pgomgr /clear fallo con $LASTEXITCODE" }
 
 # Uno por uno y con su peso: pgomgr /merge:N multiplica las cuentas del .pgc
 # que funde. Fundir el directorio entero de una vez los pondera a todos igual.
-foreach ($b in $bancos) {
+foreach ($b in $corridas) {
 	Write-Host "fundiendo $($b.pgc) con peso $($b.peso)..."
 
 	& $pgomgr "/merge:$($b.peso)" (Join-Path $dirExe $b.pgc) $pgd | Out-Null

@@ -147,7 +147,8 @@ endif()
 #
 #   cmake -S . -B build -DDCEMU_PGO=GEN     # binario instrumentado
 #   cmake --build build --config Release --target dcemu
-#   herramientas\pgo.ps1 -Paso entrenar     # corre el banco fijo y junta los .pgc
+#   herramientas\pgo.ps1                    # corre el banco fijo y funde los .pgc
+#                                           # (-Jit para el binario del recompilador)
 #   cmake -S . -B build -DDCEMU_PGO=USE     # binario final, con el perfil puesto
 #   cmake --build build --config Release --target dcemu
 #
@@ -363,7 +364,17 @@ if(NOT DCEMU_PGO STREQUAL "OFF")
 	# El .pgd vive fuera del directorio de build a proposito: sobrevive a un
 	# borrado de build/ y a cambiar de GEN a USE, que es todo el punto de
 	# entrenar una vez y compilar despues.
-	set(DCEMU_PGD "${CMAKE_SOURCE_DIR}/build-pgo/dcemu.pgd")
+	#
+	# El binario con el recompilador lleva **su propio** .pgd: es otro programa
+	# --los ganchos de epoca en memwrite y UpdateSR son codigo real, jit.c entero
+	# esta dentro-- y ademas su banco de entrenamiento es otro (cada guest corre
+	# dos veces, una por forma; pgo.ps1 -Jit). Fundir sus corridas sobre el .pgd
+	# del arbol degradaria el binario por omision sin que nadie lo pida.
+	if(DCEMU_JIT)
+		set(DCEMU_PGD "${CMAKE_SOURCE_DIR}/build-pgo/dcemu-jit.pgd")
+	else()
+		set(DCEMU_PGD "${CMAKE_SOURCE_DIR}/build-pgo/dcemu.pgd")
+	endif()
 	file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/build-pgo")
 
 	if(DCEMU_PGO STREQUAL "GEN")

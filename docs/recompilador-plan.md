@@ -1024,3 +1024,65 @@ DCDoom **228** contra **8,4**. Con 5014 enlaces atados sobre 9290 bloques, **la 
 salidas no tiene enlace** — y en DCDoom eso es la restricción de página, que es obligatoria
 mientras el salto no haga la búsqueda de instrucción que avanza `URC`. Emitirla en línea es
 el trabajo que sigue, y es el que devolvería las cadenas largas al guest que más las necesita.
+
+## El perfil, por fin: los números con PGO
+
+El binario del recompilador lleva ahora **su propio `.pgd`** (`build-pgo/dcemu-jit.pgd`,
+elegido por CMake cuando `DCEMU_JIT=ON`): es otro programa —los ganchos de época en
+`memwrite` y `UpdateSR` son código real, `jit.c` entero está dentro— y fundir sus corridas
+sobre el `.pgd` del árbol degradaría el binario por omisión sin que nadie lo pida.
+
+Su banco de entrenamiento también es otro (`pgo.ps1 -Jit`): **cada guest corre dos veces, una
+por forma** —intérprete y traductor, con el mismo peso—, porque ese binario existe para el
+A/B entre las formas y entrenar sólo una dejaría a la otra desordenada: el A/B mediría la
+disposición, que es exactamente lo que el PGO viene a eliminar. Tras cada corrida del
+traductor el guion exige el resumen `jit:` en stderr — un JIT que no se enganche dejaría un
+perfil que describe al intérprete dos veces, y nadie lo notaría.
+
+El guion se cobró dos bugs propios antes de entrenar nada, y los dos son la forma de fallo
+recurrente de este árbol llegando a las herramientas:
+
+- **Asignar `$formas` desde una expresión `if` pasa por la tubería de PowerShell, que
+  desenvuelve `@($null)` a `$null` pelado — y `foreach` sobre `$null` itera cero veces.** Cero
+  corridas, cero fusiones, y el `/clear` borró el perfil anterior igual, con el guion saliendo
+  con 0 y diciendo «perfil listo». Ahora el centinela es `""` y hay una guarda que aborta con
+  el banco vacío antes de tocar el `.pgd`.
+- **Los `.pgc` heredan el nombre base del `.pgd`, no el del ejecutable**: con `dcemu-jit.pgd`
+  las corridas dejan `dcemu-jit!N.pgc`, que el filtro `dcemu!*` perdía. La guarda de «la
+  corrida no dejó perfil» lo atrapó en la primera corrida.
+
+### Los números
+
+La tanda: cuatro modos rotados en cuadrado latino —el árbol (su `.pgd`, sin JIT compilado) y
+las tres formas del binario del JIT—, con calentamiento descartado por ejecutable y los dos
+binarios hasheados. Promedios; la dispersión del traductor en DCDoom es **0,33 %** entre
+rondas, así que el método volvió a tener resolución.
+
+| banco | árbol | intérprete (bin. JIT) | 2 bloques a mano | traductor |
+| --- | --- | --- | --- | --- |
+| DCDoom, 35 s | 39 783 ms | 41 227 (+3,6 %) | 40 819 | **36 213 (−12,2 % / −9,0 %)** |
+| Crazy Taxi, 180 s | 103 313 ms | 107 838 (+4,4 %) | 91 642 | **100 858 (−6,5 % / −2,4 %)** |
+
+Los dos porcentajes del traductor son contra el intérprete de su binario y contra el árbol;
+los del intérprete, contra el árbol.
+
+### Las tres lecturas
+
+**DCDoom corre a 0,966× tiempo real.** La serie entera lo tenía en 0,775×: el binario sin
+perfil escondía un 16 % del propio traductor. Este es el número que no existía.
+
+**La ganancia real contra el árbol es −9,0 % y −2,4 %**, no el −15,7 %/−9,4 % que la serie
+venía citando: aquello comparaba contra un intérprete sin perfil dentro del mismo binario.
+Parte de la diferencia es el punto siguiente.
+
+**Llevar el JIT compilado cuesta +3,6 % / +4,4 % al intérprete.** Es la paridad entre
+binarios que el método anterior no podía separar del ruido: los ganchos de época con
+`jit_vigila_codigo` en cero, la comprobación de despacho en `main_loop()`, y la disposición
+con `jit.c` adentro. Queda como número propio porque es el precio de hacer del binario del
+JIT el binario por omisión, si algún día se quiere.
+
+Las cuentas de DCDoom salen **idénticas al dígito** a las de la serie sin perfil
+(2 857 129 096 instrucciones en 339 340 638 entradas, 1 234 992 rechazos): el PGO no tocó la
+semántica, sólo dónde cayó cada función. Y de aquí en adelante cada A/B de este plan corre
+sobre binarios con perfil, reentrenando tras cada cambio de emisión — que con `pgo.ps1 -Jit`
+es un comando.
