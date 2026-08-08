@@ -804,3 +804,57 @@ entrada** contra las **6,0** del traductor, y por eso rinde 17,6 % donde el trad
 `JSR`→`RTS` del callback, que es el lazo caliente de ese juego— siguen saliendo a C. La guarda
 de destino visto para los indirectos es lo que falta, y ahora tiene toda la maquinaria puesta:
 la época ya dice cuándo un bloque vale, y el sitio del salto ya se parchea.
+
+## Los saltos indirectos, y el efecto colateral de buscar una instrucción
+
+El `JSR`→`RTS` del callback es el lazo caliente de Crazy Taxi y no tiene sucesor constante,
+así que sus enlaces necesitan una **guarda de destino visto**: el PC calculado contra un
+inmediato que el sitio aprende corriendo. El destino no se sabe al traducir; lo aprende el
+despachador la primera vez que el bloque sale por ahí —el código emitido le deja el número de
+sitio— y entonces parchea. Hasta ese momento el inmediato vale 1, que ningún PC iguala porque
+todos son pares.
+
+Tres errores, y los tres dicen algo:
+
+1. **`cmp eax, 1` se codifica con inmediato de 8 bits.** El emisor elige siempre la
+   codificación más corta, y eso es exactamente lo que un sitio parcheable no tolera: el
+   supuesto `imm32` caía en medio de la instrucción siguiente. El proceso se cayó con
+   instrucción privilegiada, que es lo que pasa cuando se escribe encima del código. Ahora hay
+   dos formas de **ancho fijo** (`cmp_ri32`, `cmp_rm32`) para los sitios que se parchean.
+2. **Los tres sitios del parche tienen que escribirse juntos.** Si el destino nuevo no se
+   podía atar y el inmediato ya se había actualizado, la guarda dejaba pasar un PC nuevo hacia
+   el bloque viejo: **815 millones de instrucciones de divergencia y una captura distinta**, la
+   primera de esta serie que se vio a simple vista.
+3. **Buscar una instrucción tiene efecto colateral: `traducir_busqueda()` avanza `URC`.** El
+   despachador, al verificar un bloque, busca su primera instrucción; el salto encadenado se
+   salta esa búsqueda. Dentro de la misma página no cambia nada —la búsqueda habría acertado
+   la página única y no habría avanzado—, pero **un `JSR` se va a otra parte**, y ahí se pierde
+   un avance de `URC`, del que depende qué entrada reemplaza el `LDTLB` del guest. Costó 7095
+   instrucciones. La regla queda: **sólo se enlaza dentro de la misma página**, medida con la
+   máscara que la búsqueda tiene resuelta — sana porque cualquier cambio de mapeo mueve la
+   época y desata todos los enlaces.
+
+### El número, y el canje
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 52 696 ms | 50 314 (−4,5 %) | **45 534 (−13,59 %)** |
+| Crazy Taxi, 180 s | 141 474 ms | 112 454 (−20,5 %) | **127 174 (−10,11 %)** |
+
+**Los absolutos de esta tanda no se comparan con los de la anterior** —el intérprete solo se
+movió un 2,7 % en DCDoom y un 5,3 % en Crazy Taxi entre binarios, que es disposición—, así que
+lo que se lee es la relación dentro de cada tanda:
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| salto directo, sin restricción de página | 0,834 | 0,932 |
+| **con indirectos y restricción de página** | **0,864** | **0,899** |
+
+Es un canje, y hay que decirlo así: **Crazy Taxi gana 3,3 puntos por los indirectos y DCDoom
+pierde 3 por la restricción de página**. La restricción no es opcional —el mecanismo del
+`URC` vale igual para los enlaces estáticos, aunque en las corridas medidas no los hiciera
+divergir—, así que la versión anterior era más rápida en DCDoom por hacer algo que no se
+puede sostener.
+
+Entradas al despacho: Crazy Taxi baja de 2464 a **1906 millones** (7,8 por entrada); DCDoom
+sube de 353,7 a 386,2, que es justo lo que la restricción quita.

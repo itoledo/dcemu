@@ -263,7 +263,18 @@ typedef struct
 {
 	unsigned char *	sitio_cmp;		/* el disp32 del cmp de la guarda */
 	unsigned char *	sitio_jmp;		/* el rel32 del salto */
-	DWORD			pc;				/* a que PC quiere saltar */
+	/*
+		Los saltos indirectos --JSR, JMP, RTS-- no tienen sucesor constante, asi
+		que su enlace lleva ademas una **guarda de destino visto**: un inmediato
+		contra el que se compara el PC calculado. El destino no se sabe al
+		traducir; lo aprende el despachador la primera vez que el bloque sale
+		por ahi, y entonces parchea los tres sitios. Si el sitio resulta
+		polimorfico, la guarda falla y se sale a C como siempre; el contador de
+		parcheos evita que dos destinos se turnen para siempre.
+	*/
+	unsigned char *	sitio_pc;		/* el imm32 del cmp del destino, o NULL */
+	int				veces;
+	DWORD			pc;				/* a que PC quiere saltar (0 si es dinamico) */
 } jit_enlace;
 
 static const unsigned jit_nunca = 0;
@@ -312,6 +323,10 @@ static int			jit_n_bloques = 0;
 
 static short				jit_hash[JIT_HASH_N];
 static unsigned long long	jit_colisiones = 0;
+
+/* El sitio de salto indirecto por el que salio el ultimo bloque, o -1. Lo pone
+   el codigo emitido y lo consume el despachador para aprender el destino. */
+static int					jit_ult_sitio = -1;
 
 /* Los bits **altos** del producto, que es donde el hash multiplicativo mezcla:
    tomar los bajos deja una permutacion de los 15 bits de abajo del PC, o sea
@@ -519,6 +534,7 @@ static int D(const void * p)
 #define D_ESCR32F	D(&jit_estado.h_escribir32f)
 #define D_PAG_CODIGO	D(&jit_pag_codigo[0])
 #define D_EPOCA		D(&jit_epoca)
+#define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
@@ -1445,6 +1461,7 @@ static void jit_desmarcar(DWORD pc);
 typedef struct jit_traduccion jit_traduccion;
 
 static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig);
+static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t);
 
 #define JIT_SLOTS		5
 
@@ -2290,11 +2307,7 @@ static void tr_salto_dinamico(jit_gen * g, jit_traduccion * t, int i,
 
 	tr_emitir_ranura(g, t, i + 1);
 
-	/* El PC ya esta puesto: solo hay que salir. */
-	if (g->n_salidas < JIT_MAX_SALIDAS)
-		g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
-	else
-		g->e.desborde = 1;
+	gen_salir_dinamico(g, t);
 }
 
 static void pl_jmp110(jit_gen * g, jit_traduccion * t, int i)
@@ -2598,7 +2611,7 @@ static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
 	   esta lejos del contexto, asi que se codifica como disp32 y son los
 	   ultimos cuatro bytes emitidos. */
 	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D_EPOCA);
-	jit_x64_alu_rm(&g->e, X64_CMP, X64_RAX, CTX, D(&jit_nunca));
+	jit_x64_cmp_rm32(&g->e, X64_RAX, CTX, D(&jit_nunca));
 
 	e = &g->enlace[g->n_enlaces++];
 	e->sitio_cmp = jit_x64_aqui(&g->e) - 4;
@@ -2626,6 +2639,82 @@ static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
 		jit_x64_fijar(&g->e, sin_enlace[i]);
 
 	/* Sin enlace: el PC ya esta puesto, solo hay que salir por el epilogo. */
+	if (g->n_salidas < JIT_MAX_SALIDAS)
+		g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
+	else
+		g->e.desborde = 1;
+}
+
+/*
+	Salida por un sucesor **dinamico**: la del JSR, el JMP y el RTS.
+
+	Igual que la enlazable, con una guarda mas adelante: el PC calculado contra
+	el destino que ese sitio vio la primera vez. El destino se aprende en
+	tiempo de ejecucion --el despachador lo parchea cuando el bloque sale por
+	aca-- y hasta entonces el inmediato vale 1, que ningun PC iguala porque
+	todos son pares.
+
+	El identificador del sitio se deja en `jit_ult_sitio` **solo por el camino
+	que no enlaza**, que es exactamente cuando hay algo que aprender.
+*/
+static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t)
+{
+	x64_parche sin_enlace[4];
+	x64_parche fin;
+	jit_enlace * e;
+	int i;
+
+	if (g->n_enlaces >= JIT_MAX_ENLACES)
+	{
+		if (g->n_salidas < JIT_MAX_SALIDAS)
+			g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
+		else
+			g->e.desborde = 1;
+
+		return;
+	}
+
+	e     = &g->enlace[g->n_enlaces];
+	e->pc = 0;
+
+	/* El destino quedo en el PC del contexto; la ranura pudo pisar EAX. */
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PC);
+	jit_x64_cmp_ri32(&g->e, X64_RAX, 1);
+	e->sitio_pc = jit_x64_aqui(&g->e) - 4;
+	sin_enlace[0] = jit_x64_jcc(&g->e, X64_NE);
+
+	jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
+	sin_enlace[1] = jit_x64_jcc(&g->e, X64_AE);
+	jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
+	sin_enlace[2] = jit_x64_jcc(&g->e, X64_NE);
+
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D_EPOCA);
+	jit_x64_cmp_rm32(&g->e, X64_RAX, CTX, D(&jit_nunca));
+	e->sitio_cmp = jit_x64_aqui(&g->e) - 4;
+	sin_enlace[3] = jit_x64_jcc(&g->e, X64_NE);
+
+	tr_volcar_regs(g, t);
+	gen_volcar_cuenta(g);
+
+	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
+
+	for (i = 7; i >= 0; i--)
+		jit_x64_pop(&g->e, jit_empujados[i]);
+
+	fin          = jit_x64_jmp(&g->e);
+	e->sitio_jmp = fin.sitio;
+	jit_x64_fijar(&g->e, fin);
+	jit_x64_ret(&g->e);
+
+	for (i = 0; i < 4; i++)
+		jit_x64_fijar(&g->e, sin_enlace[i]);
+
+	/* Que el despachador sepa que sitio tiene que aprender. */
+	jit_x64_mov_mi(&g->e, CTX, D_ULT_SITIO,
+		(unsigned) (jit_n_bloques * JIT_MAX_ENLACES + g->n_enlaces));
+
+	g->n_enlaces++;
+
 	if (g->n_salidas < JIT_MAX_SALIDAS)
 		g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
 	else
@@ -2660,6 +2749,7 @@ static unsigned long long	jit_traducidos = 0;
 static unsigned long long	jit_instr_bloque = 0;
 static unsigned long long	jit_fallidos = 0;
 static unsigned long long	jit_enlaces_atados = 0;
+static unsigned long long	jit_enlaces_dinamicos = 0;
 
 /*
 	Descubrimiento: camina las palabras desde `pc` resolviendo cada una por
@@ -2798,7 +2888,16 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 	unos diez mil por corrida --, asi que su costo vive fuera del camino
 	caliente.
 */
-static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * destino)
+/*
+	**Los tres sitios se escriben juntos o no se escribe ninguno.** El
+	inmediato del destino, el desplazamiento de la guarda de epoca y el rel32
+	del salto describen un mismo enlace: si el destino se actualiza y el salto
+	no, la guarda deja pasar un PC nuevo hacia el bloque viejo. Eso fue una
+	divergencia de 815 millones de instrucciones y una captura distinta -- la
+	primera de esta sesion que se vio a simple vista.
+*/
+static void jit_parchear_enlace(jit_enlace * e, DWORD pc_fuente,
+	const jit_bloque * destino)
 {
 	int          disp = D(&destino->epoca);
 	long long    rel  = (long long) ((const unsigned char *) destino->codigo
@@ -2806,6 +2905,45 @@ static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * destino)
 
 	if (!jit_disp_ok || rel < -2147483647LL || rel > 2147483647LL)
 		return;
+
+	/*
+		**Solo dentro de la misma pagina.**
+
+		El despachador, al verificar un bloque, hace la busqueda de su primera
+		instruccion -- y `traducir_busqueda()` **avanza URC**, igual que
+		cualquier acceso a la UTLB. El salto encadenado se saltea esa busqueda,
+		asi que si el sucesor cae en otra pagina se pierde un avance de URC, y
+		de URC depende que entrada reemplaza el LDTLB del guest.
+
+		Dentro de la misma pagina la busqueda habria acertado la pagina unica y
+		no habria avanzado nada, asi que saltearla no cambia nada. La medida es
+		la mascara de la pagina que la busqueda tiene resuelta ahora mismo -- y
+		es sana porque cualquier cambio de mapeo, incluido uno que cambie el
+		tamano de pagina, mueve la epoca y desata todos los enlaces. Sin MMU no
+		hay busqueda que avance nada y no hay restriccion.
+
+		Costo de no tenerlo: 7095 instrucciones de divergencia sobre 5433
+		millones, con la captura intacta. Los enlaces estaticos no lo mostraban
+		--su sucesor es la instruccion siguiente o una rama cercana-- y los
+		dinamicos si, porque un JSR se va a otra parte.
+	*/
+	{
+		DWORD mascara = mmu_activa ? mmu_fetch_mascara : 0xFFFFFFFFul;
+
+		if ((pc_fuente & ~mascara) != (destino->pc & ~mascara))
+			return;
+	}
+
+	/* El inmediato del destino, cuando el sitio es un salto indirecto. */
+	if (e->sitio_pc != NULL)
+	{
+		e->sitio_pc[0] = (unsigned char) (destino->pc & 0xFF);
+		e->sitio_pc[1] = (unsigned char) ((destino->pc >> 8) & 0xFF);
+		e->sitio_pc[2] = (unsigned char) ((destino->pc >> 16) & 0xFF);
+		e->sitio_pc[3] = (unsigned char) ((destino->pc >> 24) & 0xFF);
+	}
+
+	e->pc = destino->pc;
 
 	e->sitio_cmp[0] = (unsigned char) ((unsigned) disp & 0xFF);
 	e->sitio_cmp[1] = (unsigned char) (((unsigned) disp >> 8) & 0xFF);
@@ -2826,10 +2964,15 @@ static void jit_enlazar(jit_bloque * nuevo)
 
 	for (i = 0; i < nuevo->n_enlaces; i++)
 	{
-		const jit_bloque * d = jit_buscar(nuevo->enlace[i].pc);
+		const jit_bloque * d;
+
+		if (nuevo->enlace[i].sitio_pc != NULL)
+			continue;			/* dinamico: su destino se aprende corriendo */
+
+		d = jit_buscar(nuevo->enlace[i].pc);
 
 		if (d != NULL)
-			jit_parchear_enlace(&nuevo->enlace[i], d);
+			jit_parchear_enlace(&nuevo->enlace[i], nuevo->pc, d);
 	}
 
 	for (k = 0; k < jit_n_bloques; k++)
@@ -2840,9 +2983,62 @@ static void jit_enlazar(jit_bloque * nuevo)
 			continue;
 
 		for (i = 0; i < b->n_enlaces; i++)
-			if (b->enlace[i].pc == nuevo->pc)
-				jit_parchear_enlace(&b->enlace[i], nuevo);
+			if (b->enlace[i].sitio_pc == NULL
+				&& b->enlace[i].pc == nuevo->pc)
+				jit_parchear_enlace(&b->enlace[i], b->pc, nuevo);
 	}
+}
+
+/*
+	Le ensena a un sitio de salto indirecto el destino que acaba de tomar. Lo
+	llama el despachador justo despues de que el bloque salio por ahi, que es
+	el unico momento en que ese destino se conoce.
+
+	El tope de parcheos existe por los sitios polimorficos: sin el, dos
+	destinos que se alternan se turnarian para siempre reescribiendose el
+	inmediato, que es trabajo puro.
+*/
+#define JIT_MAX_REPARCHEOS	4
+
+/* DCEMU_JIT_SIN_INDIRECTOS=1: los sitios de salto indirecto no aprenden su
+   destino. Es la palanca que separa "la guarda esta mal emitida" de "el
+   parcheo esta mal hecho". */
+static int jit_sin_indirectos = 0;
+
+static void jit_aprender_destino(int sitio, DWORD destino)
+{
+	int bi = sitio / JIT_MAX_ENLACES;
+	int k  = sitio % JIT_MAX_ENLACES;
+	jit_bloque * b;
+	jit_enlace * e;
+	const jit_bloque * d;
+
+	if (bi < 0 || bi >= jit_n_bloques || k < 0 || k >= JIT_MAX_ENLACES)
+		return;
+
+	b = &jit_bloques[bi];
+	e = &b->enlace[k];
+
+	if (jit_sin_indirectos == 1 || e->sitio_pc == NULL
+		|| e->veces >= JIT_MAX_REPARCHEOS)
+		return;
+
+	d = jit_buscar(destino);
+
+	if (d == NULL || d->pc != destino)
+		return;
+
+	/* Lo mismo que el despachador exige antes de correr un bloque, y que el
+	   salto encadenado no comprueba: el modo con el que se emitio. */
+	if (d->mmu >= 0 && d->mmu != (mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO))
+		return;
+
+	e->veces++;
+
+	if (jit_sin_indirectos != 2)
+		jit_parchear_enlace(e, b->pc, d);
+
+	jit_enlaces_dinamicos++;
 }
 
 /*
@@ -3208,8 +3404,19 @@ int jit_despachar(DWORD pc)
 
 		jit_entradas++;
 		b->veces++;
+		jit_ult_sitio = -1;
 		b->codigo();
 		corridos = 1;
+
+		/* Si salio por un salto indirecto, este es el unico momento en que se
+		   sabe adonde fue: se le ensena al sitio. */
+		if (jit_ult_sitio >= 0)
+		{
+			int sitio = jit_ult_sitio;
+
+			jit_ult_sitio = -1;
+			jit_aprender_destino(sitio, PC);
+		}
 
 		/*
 			La salida es una frontera de bloque de verdad, asi que siembra la
@@ -3258,11 +3465,12 @@ static void jit_resumen(void)
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
-		" %llu enlaces atados\n",
+		" %llu enlaces atados, %llu indirectos aprendidos\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
-		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados);
+		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
+		jit_enlaces_dinamicos);
 
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que
@@ -3350,6 +3558,12 @@ void jit_iniciar(void)
 		return;
 
 	jit_traductor = (atoi(v) >= 2);
+
+	{
+		const char * si = getenv("DCEMU_JIT_SIN_INDIRECTOS");
+
+		jit_sin_indirectos = (si != NULL && atoi(si) != 0);
+	}
 
 	{
 		const char * n = getenv("DCEMU_JIT_PLANTILLAS");

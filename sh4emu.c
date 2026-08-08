@@ -1,4 +1,5 @@
 #include "sh4emu.h"
+#include "jit.h"		/* JIT_EPOCA_MAPEO(): SR.MD cambia el mapeo */
 #include <stdio.h>
 #include "options.h"
 #include "branch.h"
@@ -405,6 +406,13 @@ void UpdateSR(DWORD new)
 	// entregable lo que ya estaba pidiendo. Ver intc_sh4_reintentar en intc.h.
 	intc_sh4_reintentar = 1;
 
+	// Y puede cambiar SR.MD, que **cambia el mapeo**: la misma virtual traduce
+	// distinto en modo usuario y en privilegiado. Los bloques traducidos valen
+	// mientras la epoca no se mueva, asi que aqui tambien tiene que moverse; sin
+	// esto un bloque verificado en un modo recibia un salto encadenado en el
+	// otro y ejecutaba el codigo de otra pagina. Ver jit.h.
+	JIT_EPOCA_MAPEO();
+
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
 
@@ -423,6 +431,9 @@ void UpdateSR(DWORD new)
 void UpdateSR_ya_escrito(void)
 {
 	intc_sh4_reintentar = 1;
+
+	/* La entrada a una excepcion pone MD a mano: mismo motivo que arriba. */
+	JIT_EPOCA_MAPEO();
 
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();

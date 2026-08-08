@@ -628,6 +628,30 @@ void jit_x64_test_rr(x64_emisor * e, x64_reg a, x64_reg b)
 	modrm_rr(e, b, a);
 }
 
+/*
+	Las dos formas **de ancho fijo**, para los sitios que se parchean en tiempo
+	de ejecucion. El emisor elige normalmente la codificacion mas corta, y eso
+	es exactamente lo que un parche no puede tolerar: `cmp eax, 1` sale con
+	inmediato de 8 bits, asi que el sitio que el JIT creia el imm32 caia en
+	medio de la instruccion siguiente. Se cayo el proceso con instruccion
+	privilegiada, que es lo que pasa cuando se escribe encima del codigo.
+*/
+void jit_x64_cmp_ri32(x64_emisor * e, x64_reg a, int imm)
+{
+	rex(e, 0, 0, a, 0);
+	b1(e, 0x81);
+	modrm_rr(e, 7, a);
+	b4(e, (unsigned) imm);
+}
+
+void jit_x64_cmp_rm32(x64_emisor * e, x64_reg a, x64_reg base, int disp)
+{
+	rex(e, 0, a, base, 0);
+	b1(e, 0x3B);				/* CMP r32, r/m32 */
+	b1(e, 0x80u | (unsigned) ((a & 7) << 3) | (unsigned) (base & 7));
+	b4(e, (unsigned) disp);
+}
+
 void jit_x64_cmp_ri(x64_emisor * e, x64_reg a, int imm)
 {
 	alu_ri(e, 0, 7, a, imm);
