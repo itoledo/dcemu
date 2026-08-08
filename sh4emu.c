@@ -411,7 +411,7 @@ void UpdateSR(DWORD new)
 	// mientras la epoca no se mueva, asi que aqui tambien tiene que moverse; sin
 	// esto un bloque verificado en un modo recibia un salto encadenado en el
 	// otro y ejecutaba el codigo de otra pagina. Ver jit.h.
-	JIT_EPOCA_MAPEO();
+	JIT_EPOCA_MODO(SR_MD);
 
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
@@ -433,7 +433,7 @@ void UpdateSR_ya_escrito(void)
 	intc_sh4_reintentar = 1;
 
 	/* La entrada a una excepcion pone MD a mano: mismo motivo que arriba. */
-	JIT_EPOCA_MAPEO();
+	JIT_EPOCA_MODO(SR_MD);
 
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();

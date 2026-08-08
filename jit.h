@@ -126,6 +126,25 @@ extern unsigned char	jit_pag_codigo[0x10000];
 #define JIT_EPOCA_MAPEO()												\
 	do { if (jit_vigila_codigo) jit_epoca++; } while (0)
 
+/*
+	SR.MD tambien cambia el mapeo -- la misma virtual traduce distinto en modo
+	usuario y en privilegiado --, pero **solo cuando cambia de verdad**. Moverla
+	en cada escritura de SR desataba todos los enlaces sin motivo: en un guest
+	sin MMU esa es la unica fuente de movimiento, asi que las cadenas se rompian
+	a cada interrupcion. Se lleva el ultimo modo visto y se compara.
+*/
+extern unsigned			jit_md_visto;
+
+#define JIT_EPOCA_MODO(md)												\
+	do																	\
+	{																	\
+		if (jit_vigila_codigo && jit_md_visto != (unsigned) (md))		\
+		{																\
+			jit_md_visto = (unsigned) (md);								\
+			jit_epoca++;												\
+		}																\
+	} while (0)
+
 #else	/* sin traductor compilado no hay nada que vigilar */
 
 /*
@@ -136,6 +155,7 @@ extern unsigned char	jit_pag_codigo[0x10000];
 #define JIT_ESCRITURA(fisica)	do { } while (0)
 #define JIT_ESCRITURA_HOST(ptr)	do { } while (0)
 #define JIT_EPOCA_MAPEO()		do { } while (0)
+#define JIT_EPOCA_MODO(md)		do { } while (0)
 
 #endif /* DCEMU_JIT */
 

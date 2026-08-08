@@ -82,6 +82,7 @@ unsigned char jit_mapa[8192];
 /* La epoca del codigo traducido; ver jit.h. */
 int				jit_vigila_codigo = 0;
 unsigned		jit_epoca = 1;
+unsigned		jit_md_visto = 0;
 unsigned char	jit_pag_codigo[0x10000];
 
 /* ------------------------------------------------------------------------ */

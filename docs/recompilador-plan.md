@@ -858,3 +858,47 @@ puede sostener.
 
 Entradas al despacho: Crazy Taxi baja de 2464 a **1906 millones** (7,8 por entrada); DCDoom
 sube de 353,7 a 386,2, que es justo lo que la restricción quita.
+
+## La época se movía en cada escritura de SR
+
+`SR.MD` cambia el mapeo, así que mover la época al escribir `SR` era necesario — pero se
+movía **siempre**, no cuando `MD` cambiaba de verdad. En un guest sin MMU esa es la única
+fuente de movimiento, así que las cadenas se rompían a cada interrupción y el traductor
+volvía a entrar y salir por C. Ahora se lleva el último modo visto y se compara.
+
+Las entradas al despacho de DCDoom bajan de 386,2 a **355,7 millones** (8,0 por entrada).
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 54 302 ms | 52 332 (−3,6 %) | **46 281 (−14,77 %)** |
+| Crazy Taxi, 180 s | 135 815 ms | 111 723 (−17,7 %) | **126 123 (−7,13 %)** |
+
+**Y aquí hay que decir algo incómodo sobre el método.** Entre esta tanda y la anterior el
+**intérprete solo** se movió +3,0 % en DCDoom y −4,0 % en Crazy Taxi. Eso es disposición del
+binario, no emulación. Con las dos puntas moviéndose así, **ni los absolutos ni la relación
+entre tandas se pueden leer**: lo único comparable es lo que pasa dentro de una misma tanda,
+y lo único atribuible a este cambio es la cuenta de entradas, que no depende del reloj.
+
+Así que la lectura honesta es: **el cambio baja las entradas un 8 % en DCDoom, mantiene la
+ejecución idéntica al dígito en los dos guests, y la mejora de tiempo que produce queda por
+debajo del ruido de disposición entre binarios**. Para medirla habría que reentrenar el PGO
+y correr las dos versiones alternadas en una sola tanda, que es la receta que este árbol ya
+tiene escrita.
+
+## Dónde está el traductor, y qué falta
+
+Con todo lo de esta serie, y midiendo dentro de una tanda: **DCDoom −14,8 % y Crazy Taxi
+−7,1 %**, con el 52,6 % y el 67 % del volumen traducido, la ejecución idéntica al dígito y
+las capturas byte a byte.
+
+El bloque escrito a mano sigue rindiendo más en Crazy Taxi (−17,7 %) porque hace **219
+instrucciones por entrada** contra las **7,8** del traductor. La cuenta de entradas es la que
+manda, y lo que la limita ahora ya no son los enlaces —estáticos e indirectos están— sino:
+
+- **`JIT_MAX_ENLACES` = 12 por bloque**, que con bloques de 7,8 instrucciones y una salida
+  por rama se agota;
+- **la restricción de página** para los indirectos con MMU;
+- y sobre todo **el costo por entrada que queda**: la llamada indirecta al bloque con su
+  `ret`, los ocho empujes y sacadas, y el lee-modifica-escribe del contador. Eso solo lo quita
+  un trampolín — entrar al mundo emitido una vez y que el despacho viva ahí adentro —, que es
+  un cambio de forma y no una mejora incremental.
