@@ -2884,10 +2884,18 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 static int jit_verificar(const jit_bloque * b)
 {
 	const WORD * codigo = (const WORD *) MMU_FETCH_PUNTERO(b->pc);
+	int n = b->n_palabras;
 	int i;
 
-	if (memcmp(codigo, b->palabras, (size_t) b->n_palabras * sizeof(WORD)) != 0)
-		return 0;
+	/*
+		A mano y no con memcmp: esto corre **una vez por entrada al bloque** --
+		434 millones de veces en el banco de DCDoom y 3393 en el de Crazy Taxi --
+		y son 16 bytes de media. La llamada al memcmp de la biblioteca, con su
+		despacho por tamano, cuesta mas que la comparacion.
+	*/
+	for (i = 0; i < n; i++)
+		if (codigo[i] != b->palabras[i])
+			return 0;
 
 	for (i = 0; i < b->n_extra; i++)
 		if (*(const WORD *) MMU_FETCH_PUNTERO(b->extra_dir[i])
@@ -2974,11 +2982,21 @@ int jit_despachar(DWORD pc)
 		b->codigo();
 		corridos = 1;
 
-		/* La salida es una frontera de bloque de verdad, asi que siembra la
-		   siguiente -- pero por el contador de calor y no derecho: sembrar cada
-		   salida gasta un bloque por PC visto una sola vez, y los bloques son
-		   un recurso finito. */
-		jit_muestrear(PC);
+		/*
+			La salida es una frontera de bloque de verdad, asi que siembra la
+			siguiente -- pero por el contador de calor y no derecho: sembrar
+			cada salida gasta un bloque por PC visto una sola vez, y los bloques
+			son un recurso finito.
+
+			Y solo si el PC no esta ya marcado. El contador de calor es una
+			tabla de 64 KB y se toca por entrada al bloque; el mapa de bits son
+			8 KB y ya se consulto. Un PC marcado no tiene nada que ganar
+			muestreandose: su contador ya llego al tope. Lo unico que se pierde
+			es una siembra cuando el bit lo puso otro PC que aliasa, y eso solo
+			retrasa un descubrimiento.
+		*/
+		if (!JIT_MARCADO(PC))
+			jit_muestrear(PC);
 
 		if (core.context.cycles >= RELOJ_GRANO || intc_sh4_reintentar)
 			break;

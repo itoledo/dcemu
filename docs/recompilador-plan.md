@@ -682,3 +682,49 @@ contador y la verificación como lo único por entrada.
 Es un cambio de forma —los bloques dejan de ser funciones de C— y por eso no entró acá. Pero
 la medición ya no deja dudas de que es el próximo paso, y de que sin él el traductor se queda
 donde está: **gana donde el intérprete es caro (la MMU) y pierde donde es barato**.
+
+## Dos costos por entrada que sí se podían quitar
+
+El encadenamiento de verdad —`jmp rel32` directo de bloque a bloque— tiene un problema de
+diseño que no se resuelve escribiéndolo: **saltar directo se salta la verificación de
+palabras del sucesor**, y en DCDoom la verificación falla **1 234 992 veces por corrida**
+(reuso de direcciones virtuales entre procesos de Windows CE). Un enlace que no revalida
+ejecutaría código viejo. Enlazar necesita antes una política de invalidación —una generación
+de código, o un gancho de escritura que el plan rechaza con razón— y esa decisión merece su
+propia medida.
+
+Mientras tanto, dos cosas del camino de entrada que son costo puro y se quitan sin tocar la
+semántica:
+
+1. **La verificación se hacía con `memcmp`.** Corre una vez por entrada —434 millones de
+   veces en DCDoom, 3393 en Crazy Taxi— sobre 16 bytes de media. La llamada a la de la
+   biblioteca, con su despacho por tamaño, cuesta más que comparar a mano.
+2. **El muestreo tocaba su tabla de 64 KB en cada salida de bloque.** El mapa de bits son
+   8 KB y ya se consultó; un PC ya marcado no tiene nada que ganar muestreándose. Lo único
+   que se pierde es una siembra cuando el bit lo puso otro PC que aliasa, y eso sólo retrasa
+   un descubrimiento.
+
+Mismo binario, órdenes rotados, cuatro rondas en DCDoom y dos en Crazy Taxi:
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 53 751 ms | 52 098 (−3,1 %) | **45 568 (−15,22 %)** |
+| Crazy Taxi, 180 s | 132 631 ms | 110 740 (−16,5 %) | **133 531 (+0,68 %)** |
+
+La serie de las tres tandas, que es lo que se lee:
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| traductor, primera medida | −13,78 % | +3,94 % |
+| con el encadenado del despachador | −14,15 % | +2,20 % |
+| **con estos dos** | **−15,22 %** | **+0,68 %** |
+
+En Katana el traductor quedó **en el ruido del intérprete** —una de las dos rondas dio −0,05 %
+y la otra +1,4 %— desde el +3,9 % del principio. Y DCDoom pasa de 0,651× a **0,768×** en este
+binario sin perfil: 1,18× del intérprete, todo con la ejecución idéntica al dígito y las
+capturas byte a byte.
+
+Lo que queda es lo mismo de antes y ahora con más margen encima: **la llamada indirecta al
+bloque con su `ret`**, que sigue siendo la pieza grande del costo por entrada y que sólo el
+encadenamiento de verdad quita. Con 4,3 instrucciones por entrada en Crazy Taxi contra las
+219 del bloque escrito a mano, ahí está la diferencia entre empatar y el −16,5 %.
