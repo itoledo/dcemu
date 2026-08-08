@@ -6,6 +6,7 @@
 #include "perf.h"			/* PERF_CONTAR, que MMU_TRADUCIR_EN_SITIO usa */
 
 #include "traza.h"			/* watchpoint_escritura(), watchpoint_dir */
+#include "jit.h"			/* JIT_ESCRITURA(): la epoca del codigo traducido */
 
 #define VIDEO_SIZE		(8 * 1024 * 1024)
 #define MEM_SIZE		(16 * 1024 * 1024)

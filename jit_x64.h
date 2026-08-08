@@ -136,6 +136,15 @@ typedef enum
 } x64_shift;
 
 void jit_x64_shift_ri(x64_emisor * e, x64_shift op, x64_reg dst, int cuenta);
+
+/* De 64 bits, y la comparacion de un byte con indice: es lo que el camino
+   rapido de escritura emitido necesita para mirar el mapa de paginas con
+   codigo traducido -- la direccion del anfitrion es de 64 bits. */
+void jit_x64_shift64_ri (x64_emisor * e, x64_shift op, x64_reg dst, int cuenta);
+void jit_x64_lea64_idx  (x64_emisor * e, x64_reg dst, x64_reg base,
+                         x64_reg indice, int escala, int disp);
+void jit_x64_cmp8_mi_idx(x64_emisor * e, x64_reg base, x64_reg indice,
+                         int escala, int disp, int imm8);
 void jit_x64_neg_r   (x64_emisor * e, x64_reg dst);
 void jit_x64_movsx_b (x64_emisor * e, x64_reg dst, x64_reg src);
 void jit_x64_movzx_w (x64_emisor * e, x64_reg dst, x64_reg src);

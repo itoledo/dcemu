@@ -624,6 +624,8 @@ void mmu_tlb_invalidar(void)
 {
 	PERF_CONTAR(perf_mmu_vaciados);
 
+	JIT_EPOCA_MAPEO();
+
 	memset(mmu_cache, 0, sizeof(mmu_cache));
 	memset(mmu_datos, 0, sizeof(mmu_datos));
 	memset(mmu_fetch_cache, 0, sizeof(mmu_fetch_cache));
@@ -987,6 +989,10 @@ unsigned char * mmu_fetch_base    = NULL;
 
 void mmu_fetch_invalidar(void)
 {
+	/* Un bloque traducido vale mientras su pagina siga mapeada donde estaba, y
+	   esto es justo el sitio por el que pasa cualquier cambio de eso. */
+	JIT_EPOCA_MAPEO();
+
 	/* vpn imposible: ningun PC es 0xFFFFFFFF (seria impar). */
 	mmu_fetch_vpn     = 0xFFFFFFFFul;
 	mmu_fetch_mascara = 0;

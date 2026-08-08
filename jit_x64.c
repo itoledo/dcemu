@@ -242,6 +242,31 @@ void jit_x64_mov_mr_idx(x64_emisor * e, x64_reg base, x64_reg indice,
 	modrm_m_idx(e, src, base, indice, escala, disp);
 }
 
+void jit_x64_lea64_idx(x64_emisor * e, x64_reg dst, x64_reg base,
+	x64_reg indice, int escala, int disp)
+{
+	rex_x(e, 1, dst, indice, base, 0);
+	b1(e, 0x8D);				/* LEA r64, m */
+	modrm_m_idx(e, dst, base, indice, escala, disp);
+}
+
+void jit_x64_shift64_ri(x64_emisor * e, x64_shift op, x64_reg dst, int cuenta)
+{
+	rex(e, 1, 0, dst, 0);
+	b1(e, 0xC1);
+	modrm_rr(e, (int) op, dst);
+	b1(e, (unsigned) cuenta);
+}
+
+void jit_x64_cmp8_mi_idx(x64_emisor * e, x64_reg base, x64_reg indice,
+	int escala, int disp, int imm8)
+{
+	rex_x(e, 0, 0, indice, base, 0);
+	b1(e, 0x80);				/* CMP r/m8, imm8 */
+	modrm_m_idx(e, 7, base, indice, escala, disp);
+	b1(e, (unsigned) imm8);
+}
+
 void jit_x64_mov8_mr_idx(x64_emisor * e, x64_reg base, x64_reg indice,
 	int escala, int disp, x64_reg src)
 {

@@ -79,6 +79,11 @@ typedef char jit_assert_ul[(sizeof(unsigned long) == 4) ? 1 : -1];
 int jit_activo = 0;
 unsigned char jit_mapa[8192];
 
+/* La epoca del codigo traducido; ver jit.h. */
+int				jit_vigila_codigo = 0;
+unsigned		jit_epoca = 1;
+unsigned char	jit_pag_codigo[0x10000];
+
 /* ------------------------------------------------------------------------ */
 /* El estado que el codigo emitido toca                                     */
 /* ------------------------------------------------------------------------ */
@@ -248,6 +253,10 @@ typedef struct
 	int				mmu;
 	WORD			copia[JIT_MAX_INSTR];	/* solo los traducidos */
 	unsigned long long veces;
+	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
+	   sus palabras son las mismas y su pagina sigue donde estaba. */
+	unsigned		epoca;
+	const WORD *	ptr;		/* lo que devolvio la busqueda al verificarlo */
 } jit_bloque;
 
 static jit_bloque	jit_bloques[JIT_MAX_BLOQUES];
@@ -475,6 +484,7 @@ static int D(const void * p)
 #define D_LEER8SF	D(&jit_estado.h_leer8sf)
 #define D_ESCR8F	D(&jit_estado.h_escribir8f)
 #define D_ESCR32F	D(&jit_estado.h_escribir32f)
+#define D_PAG_CODIGO	D(&jit_pag_codigo[0])
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
@@ -945,6 +955,25 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 	if (modo != JIT_ACC_LENTO)
 	{
 		gen_rapido_inicio(g, &a, D_BASE_ESC, ancho == 4 ? 3 : 0, modo);
+
+		/*
+			**La pagina que se escribe no puede tener codigo traducido**, o el
+			camino rapido emitido escribiria sin mover la epoca -- y la epoca es
+			lo que le dice al despacho que un bloque sigue valiendo. Si la tiene,
+			el acceso baja al ayudante, que escribe por memwrite() y mueve la
+			epoca como corresponde. Cuatro instrucciones por escritura emitida;
+			el agujero costaba 61 568 instrucciones de divergencia.
+		*/
+		jit_x64_lea64_idx(&g->e, X64_R9, X64_RAX, X64_R8, 1, 0);
+		jit_x64_shift64_ri(&g->e, X64_SHR, X64_R9, 12);
+		jit_x64_alu_ri(&g->e, X64_AND, X64_R9, 0xFFFF);
+		jit_x64_cmp8_mi_idx(&g->e, CTX, X64_R9, 1, D_PAG_CODIGO, 0);
+
+		if (a.n_lento_fis)
+			a.lento_fis[a.n_lento_fis++] = gen_guarda(g, &a, X64_NE);
+		else
+			a.lento[a.n_lento++] = gen_guarda(g, &a, X64_NE);
+
 		val(g, ctx, X64_RDX);
 
 		if (ancho == 4)
@@ -2745,6 +2774,13 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 	jit_codigo_us += jit_x64_largo(&g.e);
 
+	/* La pagina del anfitrion donde vive este bloque queda vigilada: una
+	   escritura ahi mueve la epoca y obliga a verificarlo entero otra vez. */
+	jit_pag_codigo[JIT_PAG_BIT(MMU_FETCH_PUNTERO(b->pc))] = 1;
+
+	b->epoca = 0;			/* todavia sin verificar */
+	b->ptr   = NULL;
+
 	jit_marcar(b->pc);
 
 	jit_insertar(jit_n_bloques - 1);
@@ -2881,11 +2917,30 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
    puntero de pagina que la busqueda de main_loop() ya resolvio. Codigo
    automodificado, otro proceso en la misma VA, otra imagen: la comparacion
    falla, el bloque no corre y el guest sigue interpretado. */
-static int jit_verificar(const jit_bloque * b)
+static int jit_verificar(jit_bloque * b)
 {
-	const WORD * codigo = (const WORD *) MMU_FETCH_PUNTERO(b->pc);
+	const WORD * codigo;
 	int n = b->n_palabras;
 	int i;
+
+	codigo = (const WORD *) MMU_FETCH_PUNTERO(b->pc);
+
+	/*
+		El camino normal: **dos comparaciones**.
+
+		La primera es el puntero que devuelve la busqueda, que es lo que
+		identifica el mapeo entero -- pagina, ASID y modo, porque MMU_FETCH_PUNTERO
+		mira los tres --. Comparar solo la epoca no alcanzaba: un bloque
+		traducido en modo privilegiado y reencontrado en modo usuario mapea a
+		otro lado y la epoca no se entera. Costo 61 568 instrucciones de
+		divergencia, con la captura y los cuadros intactos.
+
+		La segunda es la epoca, que se mueve cuando alguien escribe sobre una
+		pagina con codigo traducido (ver jit.h). Entre las dos: mismas palabras,
+		mismo sitio.
+	*/
+	if (codigo == b->ptr && b->epoca == jit_epoca)
+		return 1;
 
 	/*
 		A mano y no con memcmp: esto corre **una vez por entrada al bloque** --
@@ -2901,6 +2956,9 @@ static int jit_verificar(const jit_bloque * b)
 		if (*(const WORD *) MMU_FETCH_PUNTERO(b->extra_dir[i])
 			!= b->extra_palabra[i])
 			return 0;
+
+	b->epoca = jit_epoca;
+	b->ptr   = codigo;
 
 	return 1;
 }
@@ -3222,7 +3280,8 @@ void jit_iniciar(void)
 		return;
 	}
 
-	jit_activo = 1;
+	jit_activo        = 1;
+	jit_vigila_codigo = jit_traductor;
 
 	if (jit_traductor)
 		fprintf(stderr, "jit: traductor automatico, %d plantillas"

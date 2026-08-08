@@ -59,6 +59,71 @@ extern unsigned char jit_mapa[8192];
 #define JIT_MARCADO(pc)													\
 	(jit_mapa[(((pc) >> 1) & 0xFFFFu) >> 3] & (1u << ((((pc) >> 1)) & 7u)))
 
+/* ------------------------------------------------------------------------ */
+/* La epoca del codigo traducido                                            */
+/* ------------------------------------------------------------------------ */
+
+/*
+	**Lo que hace seguro saltar de un bloque a otro sin volver a C.**
+
+	Un bloque traducido vale mientras su codigo sea el mismo y su pagina siga
+	mapeada donde estaba. Verificarlo palabra por palabra en cada entrada es lo
+	que hacia el traductor, y es lo que un salto directo se saltearia. En vez de
+	eso hay una **epoca global**: se mueve cuando cambia el mapeo --las dos
+	invalidaciones de la MMU-- y cuando alguien escribe sobre una pagina que
+	tiene codigo traducido. Un bloque que guarda la epoca con la que se verifico
+	entero sigue siendo valido mientras la epoca no se mueva, y eso es **una
+	comparacion**.
+
+	El interruptor `jit_vigila_codigo` esta en cero salvo con el traductor
+	encendido, asi que en el binario del arbol el gancho de escritura es una
+	comparacion contra cero sobre una global caliente. Con el traductor puesto,
+	la prueba adicional es un bit de un mapa de 8 KB indexado por la pagina
+	**del anfitrion**: asi sirve igual para las escrituras del guest y para las
+	internas (DMA del GD-ROM cargando un overlay), que llegan con la direccion
+	fisica y no con la virtual.
+
+	Los alias del mapa --dos paginas distintas que caen en el mismo bit-- solo
+	provocan un movimiento de epoca de mas, o sea una verificacion completa de
+	mas. Nunca lo contrario.
+*/
+extern int				jit_vigila_codigo;
+extern unsigned			jit_epoca;
+extern unsigned char	jit_pag_codigo[0x10000];
+
+#define JIT_PAG_BIT(ptr)												\
+	((unsigned) (((size_t) (ptr)) >> 12) & 0xFFFFu)
+
+/* Un byte por pagina y no un bit: el codigo emitido tiene que mirarlo en una
+   comparacion sola, porque su camino rapido de escritura no pasa por
+   memwrite() y si no lo mirara escribiria sin mover la epoca. */
+#define JIT_ESCRITURA_HOST(ptr)											\
+	do																	\
+	{																	\
+		if (jit_pag_codigo[JIT_PAG_BIT(ptr)])							\
+			jit_epoca++;												\
+	} while (0)
+
+/* Desde memwrite()/memwrite_fisico(), con la direccion **fisica**: la pagina
+   del anfitrion sale de la base de zona, que es la misma que usa la escritura.
+   Sin traductor no se toca nada. */
+#define JIT_ESCRITURA(fisica)											\
+	do																	\
+	{																	\
+		if (jit_vigila_codigo)											\
+		{																\
+			unsigned char * _jb = mem_base_escritura[(fisica) >> 24];	\
+																		\
+			if (_jb)													\
+				JIT_ESCRITURA_HOST(_jb + ((fisica) & 0xFFFFFF));			\
+		}																\
+	} while (0)
+
+/* Un cambio de mapeo invalida todo: lo llaman las dos invalidaciones de la
+   MMU. Los bloques no dejan de valer, pero hay que volver a comprobarlos. */
+#define JIT_EPOCA_MAPEO()												\
+	do { if (jit_vigila_codigo) jit_epoca++; } while (0)
+
 void jit_iniciar(void);
 
 /*
