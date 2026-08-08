@@ -78,11 +78,12 @@ void traza_cp_periodico(void)
 			return;
 		}
 
-		fprintf(stderr, "cpf %llu pc=%08lx"
+		fprintf(stderr, "cpf %llu mmucr=%08lx pc=%08lx"
 			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
 			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
 			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx\n",
-			(unsigned long long) reloj_total, (unsigned long) PC,
+			(unsigned long long) reloj_total, (unsigned long) *MMUCR,
+			(unsigned long) PC,
 			(unsigned long) R(0), (unsigned long) R(1),
 			(unsigned long) R(2), (unsigned long) R(3),
 			(unsigned long) R(4), (unsigned long) R(5),
@@ -95,12 +96,13 @@ void traza_cp_periodico(void)
 
 	if (ms >= proximo)
 	{
-		fprintf(stderr, "cp %llu ms ciclos=%llu pc=%08lx"
+		fprintf(stderr, "cp %llu ms ciclos=%llu mmucr=%08lx pc=%08lx"
 			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
 			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
 			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx"
 			" fr0=%08lx fr1=%08lx\n",
-			ms, (unsigned long long) reloj_total, (unsigned long) PC,
+			ms, (unsigned long long) reloj_total, (unsigned long) *MMUCR,
+			(unsigned long) PC,
 			(unsigned long) R(0), (unsigned long) R(1),
 			(unsigned long) R(2), (unsigned long) R(3),
 			(unsigned long) R(4), (unsigned long) R(5),

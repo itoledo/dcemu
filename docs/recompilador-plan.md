@@ -1465,14 +1465,25 @@ evalúa en cada frontera). La sonda —corte tras **toda** instrucción— se co
 desfase del ms 15 023 persiste idéntico**. El conductor queda descartado, y la regla del
 corte por ciclos queda de paso validada como inocente.
 
-**El siguiente paso queda definido por la refutación**: un desfase de +1 ciclo con estado
-arquitectónico idéntico también puede ser **un desfase de `MMUCR.URC`** — otro orden de
-reemplazo de TLB → una falta de TLB de más o de menos en la tormenta → ±ciclos de entrada
-de excepción con los registros intactos. Se separa en una corrida agregando `urc=` (los
-bits URC de MMUCR) a la línea de `DCEMU_CP_MS`: si el URC ya difiere cuando los ciclos
-difieren, la caza es de avances de URC (y el sospechoso pasa a ser dónde la traducción o
-la verificación de bloques toca la búsqueda de instrucción con el conjunto de bloques
-cambiado); si no difiere, es cobro de ciclos puro y la lupa vuelve a las filas.
+**El siguiente paso quedó definido por la refutación, se corrió, y contestó**: con
+`mmucr=` en las dos líneas de `DCEMU_CP_MS`, el primer tick divergente muestra
+**`00008401` contra `00008801` — URC 33 contra 34, un avance de más en el lado del
+traductor**, junto con los +3 ciclos, con el tick anterior idéntico (URC 21 ambos). Al
+grano de milisegundo el MMUCR reconverge (idéntico en el punto del desfase de ciclos), o
+sea que el avance extra tuerce **cuál** entrada reemplaza un `LDTLB` cercano, eso cambia
+una falta de TLB en la tormenta (±ciclos de entrada de excepción con los registros
+intactos), y quince segundos después el blit de DOOM arranca con otros parámetros.
+
+**La divergencia entera queda así caracterizada**: un único avance extra de `URC` en una
+ventana de ~40 instrucciones conocidas (`0002d782` → entrada de excepción usuario→kernel,
+`reloj_total` ≈ 2 997 077 878-917), que sólo ocurre cuando el conjunto de bloques incluye
+los de `fmovs173`. Los caminos auditados sin encontrarlo: la búsqueda de la registración
+(siempre acierta la página recién despachada), la de `jit_verificar` (espeja la del
+intérprete y compensa en los rechazos), el talón del puente (exacto por construcción) y
+los dobles avances del camino rápido de datos (el desvío `_fis` existe justamente para
+eso, y el esqueleto de 16 bits es copia del de 8 probado). La caza que sigue pide
+instrumentar los avances de URC del lado del traductor en la ventana —un contador por
+sitio de avance, volcado en el `cpf`— y es trabajo de una sesión fresca con este mapa.
 
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
