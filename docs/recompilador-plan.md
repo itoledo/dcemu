@@ -1301,3 +1301,41 @@ capturas byte a byte, y 23/23 en la suite del emisor.
 Los cortadores que quedan arriba en DCDoom son los complejos de verdad —`DIV1` (72
 sitios), `MAC.L` (48), `SHAD` (24)— y el `0x0000` de las zonas de datos (457, que corta
 bien). El siguiente lote ya no es mecánico.
+
+## El tercer lote: la división por el manejador real, y 1,044×
+
+Para las instrucciones raras y complejas, emitir la semántica a mano no paga. **La
+plantilla que llama al manejador real** sincroniza (el `accede=1` del conductor ya lo
+hace: registros volcados, PC puesto, el intento contado), pasa la palabra en `ecx`, llama
+al manejador del intérprete —que ES la semántica, igual que los ayudantes de memoria lo
+son de `mem.h`—, recarga el reloj y los slots, y emite el corte que el conductor no
+emitirá (la fila lleva ciclos 0 porque los suma el manejador). El bloque sigue de largo
+en vez de cortarse.
+
+**La lista blanca es estricta y el motivo es la falta**: sin instantánea, el contrato del
+mundo emitido es que una falta deje el contexto pre-instrucción, así que entran solo
+manejadores que no acceden a memoria (no pueden fallar), no tocan el PC más allá del +2,
+ni SR.MD/RB, ni FPSCR. Entraron `DIV1`, `DIV0S`, `DIV0U` y `SHAD`; **`MAC.L` queda afuera
+con el motivo escrito** — lee `@Rn+`, incrementa, y recién entonces lee `@Rm+`: la segunda
+falta dejaría `R(n)` avanzado. Además `BRAF`/`BSRF` como saltos dinámicos propios
+(destino `R(n) + PC + 4` capturado antes de la ranura), y el `call_r` que el emisor no
+tenía, con sus casos byte a byte.
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| cobertura | 70,8 → **79,0 %** | 71,6 → 72,1 % |
+| instrucciones por bloque | 15,6 → **16,8** | 11,9 → 12,7 |
+| entradas al despacho | 362,4 → **271,8 M (−25 %)** | 1807 → 1739 M |
+
+DCDoom: **33 517 ms (−2,1 % más), 1,044× tiempo real**, con dispersión de 0,6 % entre
+rondas. **La columna de Crazy Taxi de esta tanda no se puede leer y hay que decirlo así**:
+sus dos corridas gemelas —cuentas idénticas al bit— difieren 2,5 % en tiempo, la firma de
+actividad del anfitrión (la tanda corrió de mañana, con la máquina ya en uso; XInput se
+lee global y el resto del anfitrión compite). Su re-medición queda para una ventana
+tranquila; la exactitud está verificada y las cuentas (entradas −3,8 %) son atribuibles.
+
+Con esto la fase queda: **DCDoom de 0,646× a 1,044×** a lo largo de la serie del
+recompilador, cobertura 79 %/72 %, y los cortadores restantes son `MAC.L` (que pide
+resolver la falta a mitad de instrucción — una instantánea local o leer las dos posiciones
+antes de mutar), los `MOV.W`/`MOV.B` de escritura que el censo aún liste, y el despacho
+enteramente emitido como la idea grande pendiente.

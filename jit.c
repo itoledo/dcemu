@@ -2721,6 +2721,103 @@ static void pl_rts112(jit_gen * g, jit_traduccion * t, int i)
 	tr_salto_dinamico(g, t, i, 3, -1, 0);
 }
 
+/* BRAF/BSRF: como el salto dinamico pero el destino es R(n) + PC + 4, y se
+   captura antes de la ranura por el mismo motivo. Los ciclos y el orden --PR
+   antes de la ranura-- son los de braf/bsrf109. */
+static void tr_salto_relativo(jit_gen * g, jit_traduccion * t, int i,
+	int guardar_pr)
+{
+	DWORD pc = t->pc0 + (DWORD) (2 * i);
+
+	jit_x64_add_ri(&g->e, CYC, 3);
+	jit_x64_inc_r(&g->e, N);
+
+	tr_cargar(g, t, X64_RAX, TN(t->palabra[i]));
+	jit_x64_alu_ri(&g->e, X64_ADD, X64_RAX, (int) (pc + 4));
+
+	if (guardar_pr)
+		jit_x64_mov_mi(&g->e, CTX, O_PR, pc + 4);
+
+	jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
+
+	tr_emitir_ranura(g, t, i + 1);
+
+	gen_salir_dinamico(g, t);
+}
+
+static void pl_braf(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_salto_relativo(g, t, i, 0);
+}
+
+static void pl_bsrf109(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_salto_relativo(g, t, i, 1);
+}
+
+static void tr_prologo(jit_gen * g, jit_traduccion * t);
+
+/*
+	**La plantilla que llama al manejador real.** Para las instrucciones raras
+	y complejas --DIV1 y su pareja de inicio, SHAD-- emitir la semantica a mano
+	no paga: se sincroniza y se llama al manejador del interprete, que ES la
+	semantica, igual que los ayudantes de memoria lo son de mem.h. El bloque
+	sigue de largo en vez de cortarse, que es todo el punto.
+
+	El contrato: el conductor ya sincronizo (accede=1: registros volcados, PC
+	en la instruccion, el intento contado, ciclos en el contexto), el manejador
+	suma sus propios ciclos ahi (la fila lleva 0) y avanza el PC del contexto
+	(+2, que la proxima sincronizacion pisa). A la vuelta se recarga el reloj y
+	los slots, porque el manejador pudo escribir cualquier registro. Y el corte
+	del bloque periodico se emite aca, porque el conductor solo lo emite cuando
+	la fila declara ciclos.
+
+	**La lista blanca es estricta y el motivo es la falta.** Sin instantanea,
+	el contrato del mundo emitido es que una falta deje el contexto
+	pre-instruccion; un manejador que muta antes de poder fallar lo rompe.
+	Entran solo manejadores sin acceso a memoria (no pueden fallar), que no
+	toquen el PC mas alla del +2, ni SR.MD/RB (los bancos cambiarian bajo los
+	slots), ni FPSCR (repuntaria oplist a mitad de bloque). MAC.L queda afuera
+	exactamente por eso: lee @Rn+, incrementa, y recien entonces lee @Rm+ -- la
+	segunda falta dejaria R(n) avanzado.
+*/
+static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
+{
+	jit_x64_mov_ri(&g->e, X64_RCX, (unsigned) t->palabra[i]);
+
+	if (!jit_x64_call_directo(&g->e, f))
+	{
+		jit_x64_mov64_ri(&g->e, X64_RAX, (unsigned long long) (size_t) f);
+		jit_x64_call_r(&g->e, X64_RAX);
+	}
+
+	jit_x64_mov_rm(&g->e, CYC, CTX, O_CYC);
+	tr_prologo(g, t);
+
+	if (i + 1 < t->n)
+		gen_corte(g, t->pc0 + (DWORD) (2 * i) + 2);
+}
+
+static void pl_div1s52(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) div1s52);
+}
+
+static void pl_div0s53(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) div0s53);
+}
+
+static void pl_div0u54(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) div0u54);
+}
+
+static void pl_shad90(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) shad90);
+}
+
 /* ------------------------------------------------------------------------ */
 /* La tabla de plantillas                                                   */
 /* ------------------------------------------------------------------------ */
@@ -2806,6 +2903,15 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "SUB Rm,Rn",          1, 0, 0, 0, pl_sub69 },
 	{ NULL, "MOV.W @Rm,Rn",       2, 1, 0, 0, pl_movw8 },
 	{ NULL, "MOV.W @(d,PC),Rn",   2, 1, 0, 0, pl_movw1 },
+	/* El tercer lote: la division por el manejador real, y los saltos
+	   relativos por registro. Las filas de manejador llevan accede=1 (la
+	   sincronizacion es el contrato) y ciclos 0 (los suma el manejador). */
+	{ NULL, "DIV1 Rm,Rn",         0, 1, 0, 0, pl_div1s52 },
+	{ NULL, "DIV0S Rm,Rn",        0, 1, 0, 0, pl_div0s53 },
+	{ NULL, "DIV0U",              0, 1, 0, 0, pl_div0u54 },
+	{ NULL, "SHAD Rm,Rn",         0, 1, 0, 0, pl_shad90 },
+	{ NULL, "BRAF Rn",            3, 0, 1, 1, pl_braf },
+	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -2823,6 +2929,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	bt104, bts105, bra, bsr108, jmp110, jsr111, rts112,
 	stsl168, ldsl135, ldsl134, sts164, movt35, mull, cmppl50, rotcl88,
 	stsl167, movl18, movb16, or76, cmppz49, sub69, movw8, movw1,
+	div1s52, div0s53, div0u54, shad90, braf, bsrf109,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
