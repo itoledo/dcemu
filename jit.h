@@ -93,6 +93,26 @@ extern int				jit_vigila_codigo;
 extern unsigned			jit_epoca;
 extern unsigned char	jit_pag_codigo[0x10000];
 
+/*
+	**La clave de validez**, que es contra lo que compara el salto encadenado:
+	la epoca y el modo en una sola palabra, `(epoca << 1) | MD`.
+
+	El modo no puede mover la epoca. Se probo y se midio: Windows CE entra y
+	sale de modo privilegiado **8 197 860 veces en 35 segundos emulados**, y
+	moviendo la epoca cada vez se desataban TODOS los enlaces ocho millones de
+	veces -- una cada 43 entradas al despacho. Metiendo el modo en la clave, un
+	cambio de modo solo invalida los bloques verificados en el otro modo, que es
+	lo que corresponde: los de este siguen valiendo.
+*/
+extern unsigned			jit_validez;
+extern unsigned			jit_md_visto;
+
+/* De donde salio cada movimiento de epoca. Solo para el resumen: sin saber cual
+   de las tres fuentes manda, «la época se mueve mucho» no dice qué arreglar. */
+extern unsigned			jit_ep_escritura;
+extern unsigned			jit_ep_mapeo;
+extern unsigned			jit_ep_modo;
+
 #define JIT_PAG_BIT(ptr)												\
 	((unsigned) (((size_t) (ptr)) >> 12) & 0xFFFFu)
 
@@ -103,7 +123,11 @@ extern unsigned char	jit_pag_codigo[0x10000];
 	do																	\
 	{																	\
 		if (jit_pag_codigo[JIT_PAG_BIT(ptr)])							\
+		{																\
 			jit_epoca++;												\
+			jit_validez = (jit_epoca << 1) | jit_md_visto;				\
+			jit_ep_escritura++;											\
+		}																\
 	} while (0)
 
 /* Desde memwrite()/memwrite_fisico(), con la direccion **fisica**: la pagina
@@ -124,24 +148,30 @@ extern unsigned char	jit_pag_codigo[0x10000];
 /* Un cambio de mapeo invalida todo: lo llaman las dos invalidaciones de la
    MMU. Los bloques no dejan de valer, pero hay que volver a comprobarlos. */
 #define JIT_EPOCA_MAPEO()												\
-	do { if (jit_vigila_codigo) jit_epoca++; } while (0)
+	do																	\
+	{																	\
+		if (jit_vigila_codigo)											\
+		{																\
+			jit_epoca++;												\
+			jit_validez = (jit_epoca << 1) | jit_md_visto;				\
+			jit_ep_mapeo++;												\
+		}																\
+	} while (0)
 
 /*
 	SR.MD tambien cambia el mapeo -- la misma virtual traduce distinto en modo
-	usuario y en privilegiado --, pero **solo cuando cambia de verdad**. Moverla
-	en cada escritura de SR desataba todos los enlaces sin motivo: en un guest
-	sin MMU esa es la unica fuente de movimiento, asi que las cadenas se rompian
-	a cada interrupcion. Se lleva el ultimo modo visto y se compara.
+	usuario y en privilegiado --, pero **no mueve la epoca**: entra en la clave.
+	Asi un cambio de modo solo invalida los bloques verificados en el otro modo,
+	y los de este siguen valiendo. Ver `jit_validez` arriba.
 */
-extern unsigned			jit_md_visto;
-
 #define JIT_EPOCA_MODO(md)												\
 	do																	\
 	{																	\
 		if (jit_vigila_codigo && jit_md_visto != (unsigned) (md))		\
 		{																\
 			jit_md_visto = (unsigned) (md);								\
-			jit_epoca++;												\
+			jit_validez  = (jit_epoca << 1) | jit_md_visto;				\
+			jit_ep_modo++;												\
 		}																\
 	} while (0)
 

@@ -83,6 +83,10 @@ unsigned char jit_mapa[8192];
 int				jit_vigila_codigo = 0;
 unsigned		jit_epoca = 1;
 unsigned		jit_md_visto = 0;
+unsigned		jit_validez = 2;
+unsigned		jit_ep_escritura = 0;
+unsigned		jit_ep_mapeo = 0;
+unsigned		jit_ep_modo = 0;
 unsigned char	jit_pag_codigo[0x10000];
 
 /* ------------------------------------------------------------------------ */
@@ -299,7 +303,7 @@ typedef struct
 	unsigned long long veces;
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
-	unsigned		epoca;
+	unsigned		epoca;		/* la clave de validez con la que se verifico */
 	const WORD *	ptr;		/* lo que devolvio la busqueda al verificarlo */
 	jit_enlace		enlace[JIT_MAX_ENLACES];
 	int				n_enlaces;
@@ -530,7 +534,7 @@ static int D(const void * p)
 #define D_ESCR8F	D(&jit_estado.h_escribir8f)
 #define D_ESCR32F	D(&jit_estado.h_escribir32f)
 #define D_PAG_CODIGO	D(&jit_pag_codigo[0])
-#define D_EPOCA		D(&jit_epoca)
+#define D_EPOCA		D(&jit_validez)
 #define D_ENTRADA	D(&jit_estado.entrada)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
@@ -3321,7 +3325,7 @@ static int jit_verificar(jit_bloque * b)
 		pagina con codigo traducido (ver jit.h). Entre las dos: mismas palabras,
 		mismo sitio.
 	*/
-	if (codigo == b->ptr && b->epoca == jit_epoca)
+	if (codigo == b->ptr && b->epoca == jit_validez)
 		return 1;
 
 	/*
@@ -3339,7 +3343,7 @@ static int jit_verificar(jit_bloque * b)
 			!= b->extra_palabra[i])
 			return 0;
 
-	b->epoca = jit_epoca;
+	b->epoca = jit_validez;
 	b->ptr   = codigo;
 
 	return 1;
@@ -3481,12 +3485,14 @@ static void jit_resumen(void)
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
-		" %llu enlaces atados, %llu indirectos aprendidos\n",
+		" %llu enlaces atados, %llu indirectos aprendidos,"
+		" %u movimientos de epoca (%u escritura, %u mapeo, %u modo)\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
 		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
-		jit_enlaces_dinamicos);
+		jit_enlaces_dinamicos, jit_epoca - 1,
+		jit_ep_escritura, jit_ep_mapeo, jit_ep_modo);
 
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que

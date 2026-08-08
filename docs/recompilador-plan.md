@@ -951,3 +951,76 @@ usó: **reentrenar el PGO y alternar las dos versiones dentro de una sola tanda*
 cambio de forma como éste las dos versiones no conviven en un binario, así que habría que
 dejar las dos formas de emisión detrás de un interruptor — que es trabajo, y es el que
 corresponde antes de seguir apretando el costo por entrada.
+
+## El modo entra en la clave, y la época deja de churnear
+
+La época es un contador, así que basta reportarla para saber cuántas veces se desataron
+todos los enlaces. **DCDoom la movía 9 332 831 veces en 35 segundos emulados** — una cada 38
+entradas al despacho — y Crazy Taxi 5. Separadas por fuente:
+
+| fuente | DCDoom | qué es |
+| --- | --- | --- |
+| escritura sobre página con código | **0** | el temor del aliasing del mapa era infundado |
+| mapeo | 1 134 971 | `LDTLB` y escrituras a `PTEH`, que es la cifra documentada |
+| **modo** | **8 197 860** | Windows CE entrando y saliendo de privilegiado |
+
+O sea: el 88 % de los movimientos eran cambios de modo, y cada uno invalidaba **todos** los
+enlaces, incluidos los de bloques que el cambio no afectaba.
+
+El arreglo es que el modo **no mueva la época sino que entre en la clave**: cada bloque guarda
+`(epoca << 1) | MD` y el salto compara contra la global. Así un cambio de modo sólo invalida
+los bloques verificados en el otro modo — que es lo correcto — y los de éste siguen valiendo.
+Sigue siendo **una comparación** en el salto.
+
+Movimientos de época en DCDoom: **9 332 831 → 1 134 971**. Entradas al despacho: 355,7 →
+**339,3 millones** (8,4 por entrada).
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 51 137 ms | 49 055 (−4,1 %) | **43 097 (−15,72 %)** |
+| Crazy Taxi, 180 s | 134 648 ms | 109 037 (−19,0 %) | **122 026 (−9,37 %)** |
+
+## Y aquí el método se quedó sin resolución
+
+Es la tercera tanda seguida en que **el intérprete solo se mueve más que el cambio que se
+quiere medir**: entre ésta y la anterior se movió **−5,8 % en DCDoom** y +1,4 % en Crazy Taxi,
+sin que su código cambiara una línea. Eso es disposición del binario, y es más grande que
+todo lo que se viene midiendo.
+
+Las relaciones de las últimas cuatro tandas, para que se vea:
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| indirectos + restricción de página | 0,864 | 0,899 |
+| época sólo cuando MD cambia | 0,852 | 0,930 |
+| trampolín | 0,846 | 0,950 |
+| modo en la clave | 0,843 | 0,906 |
+
+Crazy Taxi va de 0,899 a 0,950 y vuelve a 0,906 **sin que nada de lo que se toca la afecte**
+(mueve la época 4 veces en toda la corrida). Esa columna no está midiendo el traductor: está
+midiendo dónde cayó cada función en cada enlace.
+
+**Lo que se puede afirmar de este cambio sin depender del reloj**, y es lo único que
+corresponde afirmar: la ejecución sigue idéntica al dígito en los dos guests con las capturas
+byte a byte, los movimientos de época bajan un 88 %, y las entradas al despacho un 4,6 %.
+
+## Lo que hay que hacer antes de seguir apretando
+
+**Reentrenar el PGO para el binario del JIT y dejar las dos formas que se quieran comparar
+detrás de un interruptor de tiempo de ejecución.** Es exactamente la receta que este árbol ya
+tiene escrita para el intérprete —«en este tree el layout mueve un banco tanto como una
+optimización»— y esta serie la fue estirando sin aplicarla porque cada cambio daba puntos
+enteros. Ya no los da: lo que queda es del tamaño del ruido que el método actual no separa.
+
+Y con el perfil puesto habrá además un número que hoy no existe: **cuánto va DCDoom de
+verdad**. Todas las cifras de esta serie salen de un binario sin perfil, que según el propio
+árbol corre ~10 % por debajo del normal.
+
+### El techo que queda, medido
+
+Aun así el censo dice dónde está el resto, y no es un misterio: el bloque escrito a mano de
+Crazy Taxi hace **219 instrucciones por entrada** contra las **7,8** del traductor, y el de
+DCDoom **228** contra **8,4**. Con 5014 enlaces atados sobre 9290 bloques, **la mitad de las
+salidas no tiene enlace** — y en DCDoom eso es la restricción de página, que es obligatoria
+mientras el salto no haga la búsqueda de instrucción que avanza `URC`. Emitirla en línea es
+el trabajo que sigue, y es el que devolvería las cadenas largas al guest que más las necesita.
