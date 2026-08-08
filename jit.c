@@ -107,10 +107,12 @@ typedef struct
 	unsigned long long		instr;
 	void *					h_leer32;
 	void *					h_leer8s;
+	void *					h_leer16s;
 	void *					h_escribir8;
 	void *					h_escribir32;
 	void *					h_leer32f;
 	void *					h_leer8sf;
+	void *					h_leer16sf;
 	void *					h_escribir8f;
 	void *					h_escribir32f;
 	/* PTEH y MMUCR viven adentro de regmem, que es un calloc de 16 MB: en
@@ -169,6 +171,15 @@ DWORD jit_leer8s(DWORD dir)
 	return (DWORD) SignExtend8(b);
 }
 
+DWORD jit_leer16s(DWORD dir)
+{
+	WORD w;
+
+	ReadMemoryW(dir, &w);
+
+	return (DWORD) SignExtend16(w);
+}
+
 void jit_escribir8(DWORD dir, DWORD valor)
 {
 	BYTE b = (BYTE) (valor & 0xFF);
@@ -215,6 +226,15 @@ DWORD jit_leer8s_fis(DWORD fisica)
 	memread_fisico(fisica, &b, sizeof(BYTE));
 
 	return (DWORD) SignExtend8(b);
+}
+
+DWORD jit_leer16s_fis(DWORD fisica)
+{
+	WORD w;
+
+	memread_fisico(fisica, &w, sizeof(WORD));
+
+	return (DWORD) SignExtend16(w);
 }
 
 void jit_escribir8_fis(DWORD fisica, DWORD valor)
@@ -265,7 +285,10 @@ void jit_busqueda_puente(void)
 	16 MB). El tope de bloques es el maximo que el `short` de la tabla hash
 	direcciona.
 */
-#define JIT_ARENA_TAM		(32u * 1024u * 1024u)
+/* 64 MB: la segunda tanda de plantillas dejo a DCDoom con el arena de 32 al
+   98,8 % y 1314 emisiones fallidas -- bloques de 15,6 instrucciones que ya no
+   cupieron. El arena es lo unico que hoy le pone tope a su cobertura. */
+#define JIT_ARENA_TAM		(64u * 1024u * 1024u)
 #define JIT_MAX_BLOQUES		32768
 #define JIT_MAX_INSTR		64
 
@@ -582,6 +605,8 @@ static int D(const void * p)
 #define D_PERF		D(&perf_instrucciones)
 #define D_LEER32	D(&jit_estado.h_leer32)
 #define D_LEER8S	D(&jit_estado.h_leer8s)
+#define D_LEER16S	D(&jit_estado.h_leer16s)
+#define D_LEER16SF	D(&jit_estado.h_leer16sf)
 #define D_ESCR8		D(&jit_estado.h_escribir8)
 #define D_ESCR32	D(&jit_estado.h_escribir32)
 #define D_LEER32F	D(&jit_estado.h_leer32f)
@@ -1020,6 +1045,30 @@ static void gen_leer8s(jit_gen * g, x64_reg dst, int modo)
 	}
 
 	gen_llamar(g, (const void *) jit_leer8s, D_LEER8S);
+
+	if (modo != JIT_ACC_LENTO)
+		gen_acceso_cerrar(g, &a);
+
+	if (dst != X64_RAX)
+		jit_x64_mov_rr(&g->e, dst, X64_RAX);
+}
+
+/* Como gen_leer8s() pero de 16 bits: la mascara de alineacion es 1 y el
+   camino rapido extiende signo desde una palabra. Lo pidio el censo de los
+   dos guests a la vez (MOV.W @Rm,Rn: 64 sitios en DCDoom, 66 en Crazy Taxi). */
+static void gen_leer16s(jit_gen * g, x64_reg dst, int modo)
+{
+	jit_acceso a;
+
+	if (modo != JIT_ACC_LENTO)
+	{
+		gen_rapido_inicio(g, &a, D_BASE_LEC, 1, modo);
+		jit_x64_movsx_w_rm_idx(&g->e, X64_RAX, X64_RAX, X64_R8, 1, 0);
+		gen_rapido_fin(g, &a, D_LEER16SF, (const void *) jit_leer16s_fis,
+			NULL, NULL);
+	}
+
+	gen_llamar(g, (const void *) jit_leer16s, D_LEER16S);
 
 	if (modo != JIT_ACC_LENTO)
 		gen_acceso_cerrar(g, &a);
@@ -1715,6 +1764,8 @@ static void tr_leer_a(jit_gen * g, jit_traduccion * t, int n, int ancho)
 
 	if (ancho == 4)
 		gen_leer32(g, dst, t->modo);
+	else if (ancho == 2)
+		gen_leer16s(g, dst, t->modo);
 	else
 		gen_leer8s(g, dst, t->modo);
 
@@ -2342,6 +2393,96 @@ static void pl_rotcl88(jit_gen * g, jit_traduccion * t, int i)
 	gen_poner_t(g, X64_B);
 }
 
+static void tr_valor_macl(jit_gen * g, void * ctx, x64_reg dst)
+{
+	(void) ctx;
+	jit_x64_mov_rm(&g->e, dst, CTX, O_MACL);
+}
+
+static void pl_stsl167(jit_gen * g, jit_traduccion * t, int i)	/* STS.L MACL,@-Rn */
+{
+	WORD w = t->palabra[i];
+	int  n = TN(w);
+
+	tr_cargar(g, t, X64_RCX, n);
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RCX, 4);
+	gen_escribir(g, t->modo, 4, tr_valor_macl, NULL);
+	tr_alu_ri(g, t, X64_SUB, n, 4);
+}
+
+static void pl_movl18(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L Rm,@(d,Rn) */
+{
+	WORD w = t->palabra[i];
+	int  d = (int) (w & 0x0F) * 4;
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+
+	if (d)
+		jit_x64_add_ri(&g->e, X64_RCX, d);
+
+	tr_escribir_de(g, t, TM(w), 4);
+}
+
+static void pl_movb16(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B R0,@(d,Rn) */
+{
+	WORD w = t->palabra[i];
+	int  d = (int) (w & 0x0F);
+
+	tr_cargar(g, t, X64_RCX, TM(w));	/* aqui el registro va en los bits 4-7 */
+
+	if (d)
+		jit_x64_add_ri(&g->e, X64_RCX, d);
+
+	tr_escribir_de(g, t, 0, 1);
+}
+
+static void pl_or76(jit_gen * g, jit_traduccion * t, int i)		/* OR Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_rr(g, t, X64_OR, TN(w), TM(w));
+}
+
+static void pl_cmppz49(jit_gen * g, jit_traduccion * t, int i)	/* CMP/PZ Rn */
+{
+	WORD w  = t->palabra[i];
+	int  hn = tr_h(t, TN(w));
+
+	if (hn >= 0)
+		jit_x64_alu_ri(&g->e, X64_CMP, (x64_reg) hn, 0);
+	else
+		jit_x64_alu_mi(&g->e, X64_CMP, CTX, O_R(TN(w)), 0);
+
+	gen_poner_t(g, X64_GE);
+}
+
+static void pl_sub69(jit_gen * g, jit_traduccion * t, int i)	/* SUB Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_rr(g, t, X64_SUB, TN(w), TM(w));
+}
+
+static void pl_movw8(jit_gen * g, jit_traduccion * t, int i)	/* MOV.W @Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	tr_leer_a(g, t, TN(w), 2);
+}
+
+/* MOV.W @(disp,PC),Rn -- como pl_movl2, la direccion es constante del bloque,
+   y a diferencia del literal de 32 bits el PC no se enmascara. */
+static void pl_movw1(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD  w   = t->palabra[i];
+	DWORD pc  = t->pc0 + (DWORD) (2 * i);
+	DWORD dir = (DWORD) (w & 0xFF) * 2 + pc + 4;
+
+	jit_x64_mov_ri(&g->e, X64_RCX, dir);
+	tr_leer_a(g, t, TN(w), 2);
+}
+
 /* --- aritmetica y corrimientos que el censo pidio ------------------------ */
 
 static void pl_cmpeq43(jit_gen * g, jit_traduccion * t, int i)	/* CMP/EQ #imm,R0 */
@@ -2653,6 +2794,18 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "MUL.L Rm,Rn",        4, 0, 0, 0, pl_mull },
 	{ NULL, "CMP/PL Rn",          1, 0, 0, 0, pl_cmppl50 },
 	{ NULL, "ROTCL Rn",           1, 0, 0, 0, pl_rotcl88 },
+	/* La segunda tanda del censo (2026-08-08, ya sin el pushpop de PR): la
+	   escritura con desplazamiento que le faltaba a la pareja de movl21, el
+	   SUB que nunca tuvo fila, y los MOV.W que pidieron el ayudante de 16
+	   bits. Ciclos copiados de cada manejador. */
+	{ NULL, "STS.L MACL,@-Rn",    3, 1, 0, 0, pl_stsl167 },
+	{ NULL, "MOV.L Rm,@(d,Rn)",   1, 1, 0, 0, pl_movl18 },
+	{ NULL, "MOV.B R0,@(d,Rn)",   1, 1, 0, 0, pl_movb16 },
+	{ NULL, "OR Rm,Rn",           1, 0, 0, 0, pl_or76 },
+	{ NULL, "CMP/PZ Rn",          1, 0, 0, 0, pl_cmppz49 },
+	{ NULL, "SUB Rm,Rn",          1, 0, 0, 0, pl_sub69 },
+	{ NULL, "MOV.W @Rm,Rn",       2, 1, 0, 0, pl_movw8 },
+	{ NULL, "MOV.W @(d,PC),Rn",   2, 1, 0, 0, pl_movw1 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -2669,6 +2822,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	shll94, shlr95, shll8, shlr8, shll16,
 	bt104, bts105, bra, bsr108, jmp110, jsr111, rts112,
 	stsl168, ldsl135, ldsl134, sts164, movt35, mull, cmppl50, rotcl88,
+	stsl167, movl18, movb16, or76, cmppz49, sub69, movw8, movw1,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -3927,6 +4081,8 @@ void jit_iniciar(void)
 	jit_estado.instr        = 0;
 	jit_estado.h_leer32     = (void *) jit_leer32;
 	jit_estado.h_leer8s     = (void *) jit_leer8s;
+	jit_estado.h_leer16s    = (void *) jit_leer16s;
+	jit_estado.h_leer16sf   = (void *) jit_leer16s_fis;
 	jit_estado.h_escribir8  = (void *) jit_escribir8;
 	jit_estado.h_escribir32 = (void *) jit_escribir32;
 	jit_estado.h_leer32f    = (void *) jit_leer32_fis;

@@ -1263,3 +1263,41 @@ Lo que el cierre deja señalado, por orden de palanca: **cobertura con cadenas**
 plantillas nuevas tienen que venir con bloques que encadenen, no sueltas), el despacho
 enteramente emitido, y los registros persistentes a través del enlace (el mapa de slots
 igual entre bloques enlazados ahorraría el volcado y la recarga por cruce).
+
+## El segundo lote del censo, y DCDoom cruza el tiempo real
+
+El censo de DCDoom —que nunca se había mirado; cada tanda lo pisaba con el de CT— dijo
+tres cosas: **`SUB Rm,Rn` no tenía fila** (47 sitios de un ALU trivial), **`MOV.W` corta en
+los dos guests** (64+66 sitios la forma `@Rm,Rn` más la literal por PC — un motor de 16
+bits como Doom la pide a gritos), y la familia `MOV.L Rm,@(d,Rn)` que el censo de CT ya
+había pedido. Ocho plantillas más (58 en total): las cinco de la segunda lista de CT
+(`STS.L MACL,@-Rn`, `MOV.L Rm,@(d,Rn)`, `MOV.B R0,@(d,Rn)`, `OR`, `CMP/PZ`), el `SUB`, y
+los dos `MOV.W` — que trajeron **el camino de lectura de 16 bits entero**: ayudantes
+`jit_leer16s`/`_fis`, `gen_leer16s` como espejo de `gen_leer8s` con máscara de alineación 1,
+y el `movsx` de palabra indexado que el emisor no tenía (0F BF, con su caso byte a byte).
+
+Y de paso el arena a 64 MB: los bloques largos comen más, DCDoom dejó el de 32 al 98,8 %
+con **1314 emisiones fallidas** — bloques ya traducidos que no cupieron. Con aire: 168.
+
+**Este es el perfil que la lección del lote 1 pedía** — cobertura que alarga en vez de
+fragmentar:
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| cobertura | 58,0 → **70,8 %** | 69,9 → **71,6 %** |
+| instrucciones por bloque | 9,3 → **15,6** | 8,2 → **11,9** |
+| entradas al despacho | 375,8 → **362,4 M** | 1944 → **1807 M** |
+
+| banco | intérprete | traductor | tanda anterior |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 41 184 ms | **34 225 (−16,9 %)** | 36 000 |
+| Crazy Taxi, 180 s | 109 632 ms | **97 253 (−11,3 %)** | 98 810 |
+
+**DCDoom queda a 1,023× tiempo real** — 35 segundos emulados en 34,2 reales, con la MMU
+encendida y la ejecución idéntica al dígito. La serie del recompilador lo tomó en 0,646×.
+Contra el árbol: **−14,0 %**; Crazy Taxi **−5,9 %**. Exactitud verificada en ambos con las
+capturas byte a byte, y 23/23 en la suite del emisor.
+
+Los cortadores que quedan arriba en DCDoom son los complejos de verdad —`DIV1` (72
+sitios), `MAC.L` (48), `SHAD` (24)— y el `0x0000` de las zonas de datos (457, que corta
+bien). El siguiente lote ya no es mecánico.

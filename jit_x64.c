@@ -284,6 +284,15 @@ void jit_x64_movsx_b_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,
 	modrm_m_idx(e, dst, base, indice, escala, disp);
 }
 
+void jit_x64_movsx_w_rm_idx(x64_emisor * e, x64_reg dst, x64_reg base,
+	x64_reg indice, int escala, int disp)
+{
+	rex_x(e, 0, dst, indice, base, 0);
+	b1(e, 0x0F);
+	b1(e, 0xBF);				/* MOVSX r32, r/m16 */
+	modrm_m_idx(e, dst, base, indice, escala, disp);
+}
+
 void jit_x64_movsx_w(x64_emisor * e, x64_reg dst, x64_reg src)
 {
 	rex(e, 0, dst, src, 0);
