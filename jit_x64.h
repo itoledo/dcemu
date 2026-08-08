@@ -224,6 +224,7 @@ void jit_x64_jmp_a(x64_emisor * e, const unsigned char * destino);
    quede a menos de 2 GB del codigo del emulador. */
 int  jit_x64_call_directo(x64_emisor * e, const void * destino);
 void jit_x64_call_m(x64_emisor * e, x64_reg base, int disp);
+void jit_x64_jmp_r (x64_emisor * e, x64_reg r);
 
 void jit_x64_push (x64_emisor * e, x64_reg r);
 void jit_x64_pop  (x64_emisor * e, x64_reg r);

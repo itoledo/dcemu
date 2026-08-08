@@ -902,3 +902,52 @@ manda, y lo que la limita ahora ya no son los enlaces —estáticos e indirectos
   `ret`, los ocho empujes y sacadas, y el lee-modifica-escribe del contador. Eso solo lo quita
   un trampolín — entrar al mundo emitido una vez y que el despacho viva ahí adentro —, que es
   un cambio de forma y no una mejora incremental.
+
+## El trampolín: los bloques dejan de ser funciones de C
+
+Cada bloque empujaba ocho registros, armaba su marco, cargaba el contexto y al salir lo
+deshacía todo — y **un salto encadenado pagaba las ocho sacadas del que salía y los ocho
+empujes del que entraba**, más el `mov rbx, imm64` y el volcado del contador. Con 1900
+millones de entradas eso era el costo por entrada que la medición venía señalando.
+
+Ahora hay un trampolín: se entra al mundo emitido **una vez**, se arma el marco una vez, y
+los bloques son tramos de código que se saltan entre sí. Lo que un bloque hace al entrar es
+cargar los registros del guest que mapea; lo que hace al salir es volcarlos. El contexto
+(`rbx`), los ciclos (`rbp`) y el contador (`rsi`) viven en registros durante toda la cadena, y
+el contador se vuelca en la salida común — y en cada sincronización previa a un acceso, que
+es donde hace falta para el `longjmp`.
+
+**La información de desenrollado pasa a ser una sola**, la del trampolín, cubriendo todo el
+arena: los bloques no tocan `rsp`, así que para el desenrollador cualquier PC de ahí adentro
+está «después del prólogo» del trampolín y el marco que hay que deshacer es el suyo. Eso es lo
+que mantiene sano el `longjmp` de una falta — 850 557 por corrida en DCDoom, y sigue exacto.
+
+El código emitido bajó de 16,15 a **15,08 MB** en DCDoom y de 8,62 a **7,42 MB** en Crazy
+Taxi: eso es el prólogo y el epílogo que se fueron.
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 54 309 ms | 52 377 (−3,6 %) | **45 950 (−15,39 %)** |
+| Crazy Taxi, 180 s | 132 814 ms | 110 346 (−16,9 %) | **126 142 (−5,02 %)** |
+
+### Y otra vez el mismo problema de método
+
+Entre esta tanda y la anterior el **intérprete solo** se movió −0,0 % en DCDoom y **−2,2 % en
+Crazy Taxi**. Con la punta de referencia moviéndose así, la relación entre tandas no se puede
+leer: DCDoom marca 0,846 contra 0,852 y Crazy Taxi 0,950 contra 0,930, y esas diferencias son
+del mismo tamaño que el ruido de disposición.
+
+Lo que sí se puede afirmar del trampolín, sin depender del reloj:
+
+- **la ejecución sigue idéntica al dígito** en los dos guests, capturas incluidas, con una
+  sola entrada de desenrollado y el camino de falta intacto;
+- **el código emitido bajó un 7 % y un 14 %**, que es exactamente el prólogo y el epílogo por
+  bloque;
+- y **un salto encadenado dejó de costar dieciséis operaciones de pila y un lee-modifica-
+  escribe**.
+
+Para medir su efecto en tiempo hace falta lo que este árbol ya tiene escrito y esta serie no
+usó: **reentrenar el PGO y alternar las dos versiones dentro de una sola tanda**. Con un
+cambio de forma como éste las dos versiones no conviven en un binario, así que habría que
+dejar las dos formas de emisión detrás de un interruptor — que es trabajo, y es el que
+corresponde antes de seguir apretando el costo por entrada.

@@ -118,6 +118,7 @@ typedef struct
 	   bloque, que es exactamente para lo que existe esa comprobacion. */
 	void *					p_pteh;
 	void *					p_mmucr;
+	void *					entrada;		/* el cuerpo del bloque a entrar */
 } jit_estado_t;
 
 static jit_estado_t jit_estado;
@@ -464,21 +465,16 @@ static void jit_insertar(int idx)
 	los bloques nacen a lo largo de la corrida y no todos al arrancar. Con
 	cientos de bloques lo que corresponde es RtlInstallFunctionTableCallback.
 */
+/*
+	La informacion de desenrollado es **una sola**: la del trampolin, cubriendo
+	todo el arena. Los bloques no tocan rsp, asi que para el desenrollador
+	cualquier PC de ahi adentro esta despues del prologo del trampolin y el
+	marco que hay que deshacer es el suyo. Antes habia una por bloque, porque
+	cada bloque tenia su propio marco.
+*/
 static void jit_registrar_marco(const jit_bloque * b, unsigned largo)
 {
-#ifdef _WIN32
-	int i = (int) (b - jit_bloques);
-	RUNTIME_FUNCTION * rf = &jit_tabla_rt[i];
-
-	rf->BeginAddress      = (DWORD) ((unsigned char *) b->codigo - jit_arena);
-	rf->EndAddress        = rf->BeginAddress + largo;
-	rf->UnwindInfoAddress = (DWORD) (jit_unwind - jit_arena);
-
-	if (jit_unwind_puesto)
-		RtlAddFunctionTable(rf, 1, (DWORD64) (size_t) jit_arena);
-#else
 	(void) b; (void) largo;
-#endif
 }
 
 /* El prologo es byte a byte el mismo en todos los bloques, porque comparten la
@@ -535,6 +531,7 @@ static int D(const void * p)
 #define D_ESCR32F	D(&jit_estado.h_escribir32f)
 #define D_PAG_CODIGO	D(&jit_pag_codigo[0])
 #define D_EPOCA		D(&jit_epoca)
+#define D_ENTRADA	D(&jit_estado.entrada)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
@@ -584,24 +581,11 @@ static const x64_reg jit_empujados[8] =
 */
 #define JIT_MARCO_RSP		40
 
+/* El marco lo arma el trampolin: un bloque solo carga los registros del guest
+   que mapea. El contexto, los ciclos y el contador ya vienen en registros. */
 static void gen_prologo(jit_gen * g)
 {
 	int i;
-
-	for (i = 0; i < 8; i++)
-	{
-		jit_x64_push(&g->e, jit_empujados[i]);
-		g->marco.tras_push[i] = (unsigned char) jit_x64_largo(&g->e);
-	}
-
-	jit_x64_sub64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
-	g->marco.tras_sub = (unsigned char) jit_x64_largo(&g->e);
-	g->marco.tam      = g->marco.tras_sub;
-
-	/* Fuera del prologo que describe el desenrollado: no toca la pila. */
-	jit_x64_mov64_ri(&g->e, CTX, (unsigned long long) (size_t) &core.context);
-	jit_x64_mov_rm(&g->e, CYC, CTX, O_CYC);
-	jit_x64_xor_rr(&g->e, N, N);
 
 	for (i = 0; i < 5; i++)
 		jit_x64_mov_rm(&g->e, A(i), CTX, O_R(i));
@@ -1056,6 +1040,86 @@ static void gen_escribir8_reg(jit_gen * g, x64_reg valor, int modo)
 	gen_escribir(g, modo, 1, jit_valor_reg, &v);
 }
 
+/* ------------------------------------------------------------------------ */
+/* El trampolin                                                             */
+/* ------------------------------------------------------------------------ */
+
+/*
+	**Los bloques dejan de ser funciones de C.**
+
+	Antes cada bloque empujaba ocho registros, armaba su marco, cargaba el
+	contexto y al salir lo deshacia todo -- y un salto encadenado pagaba las
+	ocho sacadas del que salia y los ocho empujes del que entraba. Con 1900
+	millones de entradas eso es el costo por entrada, que es lo que la medicion
+	viene senalando desde que el traductor empezo a andar.
+
+	Ahora hay un trampolin: se entra al mundo emitido **una vez**, se arma el
+	marco una vez, y los bloques son tramos de codigo que se saltan entre si.
+	Lo que un bloque hace al entrar es cargar los registros del guest que
+	mapeo; lo que hace al salir es volcarlos. El contexto (rbx), los ciclos
+	(rbp) y el contador (rsi) viven en registros durante toda la cadena.
+
+	La informacion de desenrollado pasa a ser **una sola**, la del trampolin,
+	cubriendo todo el arena: los bloques no tocan rsp, asi que para el
+	desenrollador cualquier PC de ahi adentro esta "despues del prologo" del
+	trampolin y el marco que hay que deshacer es el suyo. Eso es lo que
+	mantiene sano el longjmp de una falta.
+*/
+static unsigned char *	jit_tramp       = NULL;
+static unsigned char *	jit_tramp_salir = NULL;
+
+static int jit_emitir_trampolin(void)
+{
+	jit_gen	g;
+	int		i;
+
+	memset(&g, 0, sizeof(g));
+	jit_x64_iniciar(&g.e, jit_codigo + jit_codigo_us,
+		jit_codigo_tam - jit_codigo_us);
+
+	jit_tramp = jit_x64_aqui(&g.e);
+
+	for (i = 0; i < 8; i++)
+	{
+		jit_x64_push(&g.e, jit_empujados[i]);
+		g.marco.tras_push[i] = (unsigned char) jit_x64_largo(&g.e);
+	}
+
+	jit_x64_sub64_ri(&g.e, X64_RSP, JIT_MARCO_RSP);
+	g.marco.tras_sub = (unsigned char) jit_x64_largo(&g.e);
+	g.marco.tam      = g.marco.tras_sub;
+
+	jit_x64_mov64_ri(&g.e, CTX, (unsigned long long) (size_t) &core.context);
+	jit_x64_mov_rm(&g.e, CYC, CTX, O_CYC);
+	jit_x64_xor_rr(&g.e, N, N);
+
+	/* Al bloque que el despachador dejo anotado. */
+	jit_x64_mov64_rm(&g.e, X64_RAX, CTX, D_ENTRADA);
+	jit_x64_jmp_r(&g.e, X64_RAX);
+
+	/* La salida comun: aqui saltan todos los bloques cuando hay que volver. */
+	jit_tramp_salir = jit_x64_aqui(&g.e);
+
+	jit_x64_mov_mr(&g.e, CTX, O_CYC, CYC);
+	gen_volcar_cuenta(&g);
+	jit_x64_add64_ri(&g.e, X64_RSP, JIT_MARCO_RSP);
+
+	for (i = 7; i >= 0; i--)
+		jit_x64_pop(&g.e, jit_empujados[i]);
+
+	jit_x64_ret(&g.e);
+
+	if (g.e.desborde || !jit_disp_ok)
+		return 0;
+
+	jit_marco_comun = g.marco;
+	jit_marco_visto = 1;
+	jit_codigo_us  += jit_x64_largo(&g.e);
+	jit_codigo_us   = (jit_codigo_us + 15u) & ~15u;
+
+	return 1;
+}
+
 static void gen_salir_en(jit_gen * g, DWORD pc_sig)
 {
 	jit_x64_mov_mi(&g->e, CTX, O_PC, pc_sig);
@@ -1130,14 +1194,7 @@ static void gen_epilogo(jit_gen * g)
 		jit_x64_fijar(&g->e, g->salidas[i]);
 
 	gen_volcar_regs(g);
-	gen_volcar_cuenta(g);
-
-	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
-
-	for (i = 7; i >= 0; i--)
-		jit_x64_pop(&g->e, jit_empujados[i]);
-
-	jit_x64_ret(&g->e);
+	jit_x64_jmp_a(&g->e, jit_tramp_salir);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2532,23 +2589,11 @@ static void tr_asignar_registros(jit_traduccion * t)
 /* Prologo, sincronizacion y epilogo del traductor                          */
 /* ------------------------------------------------------------------------ */
 
+/* Como gen_prologo(): el marco es del trampolin, aqui solo se cargan los
+   registros que este bloque mapea. Es tambien la entrada de un enlace. */
 static void tr_prologo(jit_gen * g, jit_traduccion * t)
 {
 	int i;
-
-	for (i = 0; i < 8; i++)
-	{
-		jit_x64_push(&g->e, jit_empujados[i]);
-		g->marco.tras_push[i] = (unsigned char) jit_x64_largo(&g->e);
-	}
-
-	jit_x64_sub64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
-	g->marco.tras_sub = (unsigned char) jit_x64_largo(&g->e);
-	g->marco.tam      = g->marco.tras_sub;
-
-	jit_x64_mov64_ri(&g->e, CTX, (unsigned long long) (size_t) &core.context);
-	jit_x64_mov_rm(&g->e, CYC, CTX, O_CYC);
-	jit_x64_xor_rr(&g->e, N, N);
 
 	for (i = 0; i < 16; i++)
 		if (t->slot[i] >= 0)
@@ -2621,20 +2666,13 @@ static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
 	sin_enlace[2] = jit_x64_jcc(&g->e, X64_NE);
 
 	tr_volcar_regs(g, t);
-	gen_volcar_cuenta(g);
-
-	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
-
-	for (i = 7; i >= 0; i--)
-		jit_x64_pop(&g->e, jit_empujados[i]);
 
 	fin          = jit_x64_jmp(&g->e);
 	e->sitio_jmp = fin.sitio;
 
-	/* Sin parchear cae en el `ret` de aqui abajo, que es lo unico sano tras
-	   sacar los registros de la pila. */
+	/* Sin parchear cae en la salida comun del trampolin. */
 	jit_x64_fijar(&g->e, fin);
-	jit_x64_ret(&g->e);
+	jit_x64_jmp_a(&g->e, jit_tramp_salir);
 
 	for (i = 0; i < 3; i++)
 		jit_x64_fijar(&g->e, sin_enlace[i]);
@@ -2695,17 +2733,11 @@ static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t)
 	sin_enlace[3] = jit_x64_jcc(&g->e, X64_NE);
 
 	tr_volcar_regs(g, t);
-	gen_volcar_cuenta(g);
-
-	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
-
-	for (i = 7; i >= 0; i--)
-		jit_x64_pop(&g->e, jit_empujados[i]);
 
 	fin          = jit_x64_jmp(&g->e);
 	e->sitio_jmp = fin.sitio;
 	jit_x64_fijar(&g->e, fin);
-	jit_x64_ret(&g->e);
+	jit_x64_jmp_a(&g->e, jit_tramp_salir);
 
 	for (i = 0; i < 4; i++)
 		jit_x64_fijar(&g->e, sin_enlace[i]);
@@ -2730,14 +2762,7 @@ static void tr_epilogo(jit_gen * g, jit_traduccion * t)
 		jit_x64_fijar(&g->e, g->salidas[i]);
 
 	tr_volcar_regs(g, t);
-	gen_volcar_cuenta(g);
-
-	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
-
-	for (i = 7; i >= 0; i--)
-		jit_x64_pop(&g->e, jit_empujados[i]);
-
-	jit_x64_ret(&g->e);
+	jit_x64_jmp_a(&g->e, jit_tramp_salir);
 }
 
 
@@ -3115,8 +3140,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 	tr_emitir_cuerpo(&g, &t);
 
-	if (g.e.desborde || !jit_disp_ok
-		|| memcmp(&jit_marco_comun, &g.marco, sizeof(jit_marco)) != 0)
+	if (g.e.desborde || !jit_disp_ok)
 	{
 		jit_fallidos++;
 		return NULL;
@@ -3248,16 +3272,6 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 			jit_x64_largo(&g.e), disponible);
 		return 0;
 	}
-
-	/* Los dos bloques tienen que compartir el prologo, porque comparten la
-	   informacion de desenrollado. */
-	if (!jit_marco_visto)
-	{
-		jit_marco_comun = g.marco;
-		jit_marco_visto = 1;
-	}
-	else if (memcmp(&jit_marco_comun, &g.marco, sizeof(jit_marco)) != 0)
-		return 0;
 
 	b = &jit_bloques[jit_n_bloques++];
 
@@ -3406,7 +3420,8 @@ int jit_despachar(DWORD pc)
 		jit_entradas++;
 		b->veces++;
 		jit_ult_sitio = -1;
-		b->codigo();
+		jit_estado.entrada = (void *) b->codigo;
+		((void (*)(void)) jit_tramp)();
 		corridos = 1;
 
 		/* Si salio por un salto indirecto, este es el unico momento en que se
@@ -3624,34 +3639,29 @@ void jit_iniciar(void)
 	for (i = 0; i < JIT_N_PLANTILLAS; i++)
 		jit_plantillas[i].f = jit_manejadores[i];
 
-	/*
-		El marco tiene que conocerse antes de registrar el primer bloque,
-		porque el UNWIND_INFO lo describe -- y con el traductor los bloques
-		nacen a lo largo de la corrida. Se emite un prologo de mentira sobre un
-		buffer aparte para medirlo.
-	*/
+
+	if (!jit_emitir_trampolin())
 	{
-		unsigned char	molde[64];
-		jit_gen			g;
-		jit_traduccion	vacio;
-
-		memset(&g, 0, sizeof(g));
-		memset(&vacio, 0, sizeof(vacio));
-
-		for (i = 0; i < 16; i++)
-			vacio.slot[i] = -1;
-
-		jit_x64_iniciar(&g.e, molde, sizeof(molde));
-		tr_prologo(&g, &vacio);
-
-		jit_marco_comun = g.marco;
-		jit_marco_visto = 1;
+		fprintf(stderr, "jit: no se pudo emitir el trampolin; sigue el"
+			" interprete\n");
+		return;
 	}
 
 #ifdef _WIN32
 	jit_unwind_armar(jit_unwind, &jit_marco_comun, jit_empujados, 8,
 		JIT_MARCO_RSP);
 	jit_unwind_puesto = 1;
+
+	jit_tabla_rt[0].BeginAddress      = (DWORD) (jit_tramp - jit_arena);
+	jit_tabla_rt[0].EndAddress        = (DWORD) JIT_ARENA_TAM;
+	jit_tabla_rt[0].UnwindInfoAddress = (DWORD) (jit_unwind - jit_arena);
+
+	if (!RtlAddFunctionTable(jit_tabla_rt, 1, (DWORD64) (size_t) jit_arena))
+	{
+		fprintf(stderr, "jit: RtlAddFunctionTable fallo; sigue el"
+			" interprete\n");
+		return;
+	}
 #endif
 
 	if (!jit_traductor

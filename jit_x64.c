@@ -818,6 +818,13 @@ int jit_x64_call_directo(x64_emisor * e, const void * destino)
 	return 1;
 }
 
+void jit_x64_jmp_r(x64_emisor * e, x64_reg r)
+{
+	rex(e, 0, 0, r, 0);
+	b1(e, 0xFF);				/* JMP r/m64 */
+	modrm_rr(e, 4, r);
+}
+
 void jit_x64_call_m(x64_emisor * e, x64_reg base, int disp)
 {
 	rex(e, 0, 0, base, 0);
