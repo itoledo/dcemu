@@ -113,6 +113,34 @@ extern unsigned			jit_ep_escritura;
 extern unsigned			jit_ep_mapeo;
 extern unsigned			jit_ep_modo;
 
+/*
+	La sonda de la frontera FPU: cuantas veces por corrida cambian PR, SZ o
+	«algun Enable» de FPSCR. Es lo que decide si esos bits pueden entrar a la
+	clave de validez como entro SR.MD --barato si cambian poco, churn de
+	enlaces si cambian a ritmo de matrices-- y hay que medirlo antes de
+	disenarlo: la leccion del modo costo 8,2 millones de movimientos.
+	El bit FR no se cuenta: el acceso emitido ira por el puntero de banco
+	vivo del contexto, asi que conmutarlo no invalida nada.
+*/
+extern unsigned			jit_fpu_visto;
+extern unsigned			jit_ep_fpu;
+
+#define JIT_FPSCR_SONDA(fpscr)											\
+	do																	\
+	{																	\
+		if (jit_vigila_codigo)											\
+		{																\
+			unsigned _jf = ((((fpscr) >> 19) & 3u) << 1)				\
+						 | ((((fpscr) & 0x00000F80u) != 0) ? 1u : 0u);	\
+																		\
+			if (_jf != jit_fpu_visto)									\
+			{															\
+				jit_fpu_visto = _jf;									\
+				jit_ep_fpu++;											\
+			}															\
+		}																\
+	} while (0)
+
 #define JIT_PAG_BIT(ptr)												\
 	((unsigned) (((size_t) (ptr)) >> 12) & 0xFFFFu)
 
@@ -186,6 +214,7 @@ extern unsigned			jit_ep_modo;
 #define JIT_ESCRITURA_HOST(ptr)	do { } while (0)
 #define JIT_EPOCA_MAPEO()		do { } while (0)
 #define JIT_EPOCA_MODO(md)		do { } while (0)
+#define JIT_FPSCR_SONDA(fpscr)	do { } while (0)
 
 #endif /* DCEMU_JIT */
 

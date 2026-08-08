@@ -286,6 +286,8 @@ void UpdateFPSCR(DWORD newFPSCR)
 	f = FPSCR_FR;
 	FPSCR = newFPSCR;
 
+	JIT_FPSCR_SONDA(newFPSCR);
+
 	fpu_aplicar_redondeo();
 
 	if(FPSCR_PR_BIT)

@@ -87,6 +87,8 @@ unsigned		jit_validez = 2;
 unsigned		jit_ep_escritura = 0;
 unsigned		jit_ep_mapeo = 0;
 unsigned		jit_ep_modo = 0;
+unsigned		jit_fpu_visto = 0;
+unsigned		jit_ep_fpu = 0;
 unsigned char	jit_pag_codigo[0x10000];
 
 /* ------------------------------------------------------------------------ */
@@ -4121,13 +4123,15 @@ static void jit_resumen(void)
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
 		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
 		" %llu salidas con los enlaces agotados,"
-		" %u movimientos de epoca (%u escritura, %u mapeo, %u modo)\n",
+		" %u movimientos de epoca (%u escritura, %u mapeo, %u modo),"
+		" %u transiciones de PR/SZ/Enable\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
 		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
 		jit_puentes_atados, jit_enlaces_dinamicos, jit_enlaces_agotados,
-		jit_epoca - 1, jit_ep_escritura, jit_ep_mapeo, jit_ep_modo);
+		jit_epoca - 1, jit_ep_escritura, jit_ep_mapeo, jit_ep_modo,
+		jit_ep_fpu);
 
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que

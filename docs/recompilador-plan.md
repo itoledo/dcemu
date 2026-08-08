@@ -1370,6 +1370,39 @@ palabra indexado del emisor, prefijo 66 antes del REX, con su caso byte a byte).
 DCDoom: **32 957 ms — 1,062× tiempo real**, −1,7 % más. La serie completa del
 recompilador: **de 0,646× a 1,062×**.
 
+## La frontera FPU: la sonda que decidió el diseño antes de escribirlo
+
+El censo ya muestra FPU (`FSUB` en DCDoom), y la pregunta de diseño era si `FPSCR.PR/SZ`
+podían entrar a la clave de validez como entró `SR.MD`. La sonda de transiciones
+(`JIT_FPSCR_SONDA`, en `UpdateFPSCR()`, que es el único punto por donde pasa toda
+escritura de FPSCR) contestó antes de escribir una plantilla:
+
+- **DCDoom: 0 transiciones.** WinCE no toca PR/SZ/Enable jamás.
+- **Crazy Taxi: 13 220 236 en 60 segundos emulados** — 220 mil por segundo. Katana
+  conmuta SZ alrededor de cada carga de matriz (los `fmov` apareados).
+
+O sea: **PR/SZ no pueden entrar a la clave** — churnearían los enlaces peor que el
+`SR.MD` de la primera noche (13,2 M contra 8,2 M), y a diferencia del modo, aquí el
+*código* traducido depende del bit (las cuatro `oplist` reparten manejadores distintos
+por la misma palabra). El diseño que los números permiten:
+
+1. **Modo por bloque** (`b->fpu` = PR/SZ/«algún Enable» al traducir, −1 si el bloque no
+   tiene filas FPU), chequeado por el despachador como `b->mmu`.
+2. **Sin enlaces hacia bloques FPU**: entran siempre por el despachador, que chequea. Lo
+   que lo hace viable es que **cada sitio `fmov` corre siempre bajo el mismo modo** — el
+   flip encierra la secuencia (`SZ=1; fmovs; SZ=0`) — y las escrituras de FPSCR no tienen
+   plantilla, así que ningún bloque cruza un cambio de modo y un bloque por PC alcanza.
+3. **El bit FR sale gratis**: `FR(x)` va por el puntero `FR_BANK` del contexto, así que el
+   acceso emitido por el puntero vivo sobrevive al intercambio de bancos sin guarda.
+4. Los `FMOV` son movimientos enteros (sin SSE): primero los sencillos de `sz0`, después
+   los pares de `sz1` que son los que Crazy Taxi martilla. La aritmética
+   (`FADD`/`FSUB`/…) puede ir por el manejador real con Enables=0 garantizado por
+   `b->fpu` — con algún Enable puesto el manejador puede entrar a la excepción de FPU a
+   mitad de bloque, y eso no es una falta sino una redirección, así que esos bloques no
+   corren traducidos.
+
+Queda como el trabajo siguiente, con la sonda ya comiteada y contando en el resumen.
+
 ### La falsa regresión de Crazy Taxi, y lo que la palanca demostró
 
 Entre la tanda del lote 2 y la de este lote, CT parecía +2,2 % (97 253 → 99 349, ambas
