@@ -123,6 +123,7 @@ typedef struct
 	void *					p_pteh;
 	void *					p_mmucr;
 	void *					entrada;		/* el cuerpo del bloque a entrar */
+	void *					h_busqueda;		/* jit_busqueda_puente() */
 } jit_estado_t;
 
 static jit_estado_t jit_estado;
@@ -230,6 +231,28 @@ void jit_escribir32_fis(DWORD fisica, DWORD valor)
 	memwrite_fisico(fisica, &v, sizeof(DWORD));
 }
 
+/*
+	La busqueda de instruccion que un puente entre paginas reproduce.
+
+	El despachador, antes de correr un bloque, busca su primera instruccion; esa
+	busqueda avanza URC cuando falla la pagina vigente, repuebla la cache de
+	busqueda y puede no volver (falta de TLB del lado de instrucciones). El salto
+	encadenado se la saltea, y por eso el enlace directo quedo restringido a la
+	pagina vigente. El talon del puente la hace de verdad: se llama con el
+	contexto ya sincronizado --PC en el destino, registros y ciclos volcados, el
+	contador recien volcado--, que es exactamente el estado con el que el
+	interprete llega a la cabecera de su bucle, asi que una falta aqui sale por
+	el longjmp con el mismo estado que alli.
+
+	No hay nada que comprobar a la vuelta: la guarda de la clave ya paso --el
+	mapeo del sucesor no cambio desde que se verifico--, asi que el puntero que
+	esta busqueda resuelve es el mismo contra el que el sucesor se verifico.
+*/
+void jit_busqueda_puente(void)
+{
+	(void) MMU_FETCH_PUNTERO(PC);
+}
+
 /* ------------------------------------------------------------------------ */
 /* El arena                                                                 */
 /* ------------------------------------------------------------------------ */
@@ -279,6 +302,21 @@ typedef struct
 		parcheos evita que dos destinos se turnen para siempre.
 	*/
 	unsigned char *	sitio_pc;		/* el imm32 del cmp del destino, o NULL */
+	/*
+		**El puente entre paginas.** Un salto encadenado se saltea la busqueda de
+		instruccion del despachador, y `traducir_busqueda()` avanza URC: por eso
+		el enlace directo solo vale cuando saltearla no habria hecho nada, o sea
+		cuando la busqueda habria acertado la pagina vigente. Para todo lo demas
+		cada salida con MMU lleva un **talon**: volcar el contador, llamar a la
+		busqueda real --con su avance de URC, su repoblado de la cache y su
+		falta de TLB-- y recien entonces saltar al sucesor. Es exacto por
+		construccion porque es la misma funcion que corre el despachador.
+
+		El talon es NULL en los bloques sin MMU: alli no hay busqueda que
+		reproducir y el salto directo siempre vale.
+	*/
+	unsigned char *	talon;			/* el comienzo del talon, o NULL */
+	unsigned char *	talon_jmp;		/* el rel32 del salto final del talon */
 	int				veces;
 	DWORD			pc;				/* a que PC quiere saltar (0 si es dinamico) */
 } jit_enlace;
@@ -536,6 +574,7 @@ static int D(const void * p)
 #define D_PAG_CODIGO	D(&jit_pag_codigo[0])
 #define D_EPOCA		D(&jit_validez)
 #define D_ENTRADA	D(&jit_estado.entrada)
+#define D_BUSQUEDA	D(&jit_estado.h_busqueda)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
@@ -2624,6 +2663,41 @@ static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k)
 }
 
 /*
+	El talon del puente entre paginas, uno por salida enlazable de un bloque con
+	MMU. Solo se llega aqui cuando el parche apunto sitio_jmp al talon en vez de
+	al sucesor: la guarda de la clave ya paso y los registros ya estan volcados
+	--el PC del contexto ya es el destino--, asi que falta volcar el contador,
+	hacer la busqueda de verdad (jit_busqueda_puente, que puede no volver) y
+	saltar al cuerpo del sucesor.
+
+	Sin MMU no se emite: no hay busqueda que reproducir y el salto directo
+	siempre vale. Sin parchear, su salto final cae en la salida comun -- aunque
+	nadie deberia llegar sin parchear, porque sitio_jmp solo apunta aqui cuando
+	el parche escribio los dos sitios juntos.
+*/
+static void gen_talon_puente(jit_gen * g, jit_traduccion * t, jit_enlace * e)
+{
+	x64_parche fin;
+
+	e->talon     = NULL;
+	e->talon_jmp = NULL;
+
+	if (t->modo != JIT_ACC_MMU)
+		return;
+
+	e->talon = jit_x64_aqui(&g->e);
+
+	gen_volcar_cuenta(g);
+	gen_llamar(g, (const void *) jit_busqueda_puente, D_BUSQUEDA);
+
+	fin          = jit_x64_jmp(&g->e);
+	e->talon_jmp = fin.sitio;
+
+	jit_x64_fijar(&g->e, fin);
+	jit_x64_jmp_a(&g->e, jit_tramp_salir);
+}
+
+/*
 	Salida por un sucesor **constante**: la que puede encadenarse.
 
 	El orden importa. El corte del bloque periodico va primero, porque si
@@ -2677,6 +2751,8 @@ static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
 	/* Sin parchear cae en la salida comun del trampolin. */
 	jit_x64_fijar(&g->e, fin);
 	jit_x64_jmp_a(&g->e, jit_tramp_salir);
+
+	gen_talon_puente(g, t, e);
 
 	for (i = 0; i < 3; i++)
 		jit_x64_fijar(&g->e, sin_enlace[i]);
@@ -2742,6 +2818,8 @@ static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t)
 	e->sitio_jmp = fin.sitio;
 	jit_x64_fijar(&g->e, fin);
 	jit_x64_jmp_a(&g->e, jit_tramp_salir);
+
+	gen_talon_puente(g, t, e);
 
 	for (i = 0; i < 4; i++)
 		jit_x64_fijar(&g->e, sin_enlace[i]);
@@ -2918,49 +2996,77 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 	unos diez mil por corrida --, asi que su costo vive fuera del camino
 	caliente.
 */
+/* DCEMU_JIT_SIN_PUENTES=1: los enlaces entre paginas no se atan y el criterio
+   vuelve a ser el de antes. Es la palanca de aislamiento del puente. */
+static int jit_sin_puentes = 0;
+
+static unsigned long long jit_puentes_atados = 0;
+
 /*
-	**Los tres sitios se escriben juntos o no se escribe ninguno.** El
-	inmediato del destino, el desplazamiento de la guarda de epoca y el rel32
-	del salto describen un mismo enlace: si el destino se actualiza y el salto
-	no, la guarda deja pasar un PC nuevo hacia el bloque viejo. Eso fue una
-	divergencia de 815 millones de instrucciones y una captura distinta -- la
-	primera de esta sesion que se vio a simple vista.
+	**Todos los sitios se escriben juntos o no se escribe ninguno.** El
+	inmediato del destino, el desplazamiento de la guarda de epoca, el rel32
+	del salto y el del talon describen un mismo enlace: si el destino se
+	actualiza y el salto no, la guarda deja pasar un PC nuevo hacia el bloque
+	viejo. Eso fue una divergencia de 815 millones de instrucciones y una
+	captura distinta -- la primera de esta serie que se vio a simple vista.
 */
 static void jit_parchear_enlace(jit_enlace * e, DWORD pc_fuente,
 	const jit_bloque * destino)
 {
 	int          disp = D(&destino->epoca);
-	long long    rel  = (long long) ((const unsigned char *) destino->codigo
-									 - (e->sitio_jmp + 4));
+	unsigned char * salto;
+	long long    rel, rel_talon = 0;
+	int          puente;
+
+	/*
+		**Directo solo dentro de la misma ventana de 1 KB; el resto, por el
+		talon.**
+
+		El salto directo se saltea la busqueda de instruccion del despachador,
+		que avanza URC cuando falla la pagina vigente. Saltearla solo es exacto
+		cuando la busqueda habria acertado seguro -- y la unica medida de eso
+		que no depende del mapeo vigente es la ventana de `JIT_LIMITE_PAG`
+		(1 KB): la pagina mas chica del SH-4. Dos PC en la misma ventana estan
+		en la misma pagina bajo **cualquier** tamano, para siempre.
+
+		La version anterior media con `mmu_fetch_mascara`, la mascara de la
+		pagina cacheada **en el momento de parchear**, con dos agujeros: en la
+		direccion "los enlaces ajenos hacia el bloque nuevo" esa mascara es la
+		del bloque nuevo y no la del que salta, y un parche hecho bajo un mapeo
+		revive tras el cambio de epoca sin re-evaluarse -- la guarda del salto
+		compara la clave, no el criterio con el que se parcheo. Con la ventana
+		fija ninguna de las dos cosas puede pasar. WinCE mapea todo en paginas
+		de 4 KB, asi que ninguno de los dos agujeros llego a morder; los cierra
+		esta regla, no una correccion aparte.
+
+		Todo lo que no cae en la ventana va por el talon, que hace la busqueda
+		de verdad: exacto por construccion, URC y falta incluidos. Costo de no
+		tener nada de esto: 7095 instrucciones de divergencia sobre 5433
+		millones -- y la mitad de las salidas de DCDoom sin enlace.
+
+		Sin MMU no hay busqueda que reproducir: directo siempre.
+	*/
+	{
+		DWORD ventana = mmu_activa ? (JIT_LIMITE_PAG - 1u) : 0xFFFFFFFFul;
+
+		puente = ((pc_fuente & ~ventana) != (destino->pc & ~ventana));
+	}
+
+	if (puente && (e->talon == NULL || jit_sin_puentes))
+		return;
+
+	salto = puente ? e->talon : (unsigned char *) (size_t) destino->codigo;
+	rel   = (long long) (salto - (e->sitio_jmp + 4));
 
 	if (!jit_disp_ok || rel < -2147483647LL || rel > 2147483647LL)
 		return;
 
-	/*
-		**Solo dentro de la misma pagina.**
-
-		El despachador, al verificar un bloque, hace la busqueda de su primera
-		instruccion -- y `traducir_busqueda()` **avanza URC**, igual que
-		cualquier acceso a la UTLB. El salto encadenado se saltea esa busqueda,
-		asi que si el sucesor cae en otra pagina se pierde un avance de URC, y
-		de URC depende que entrada reemplaza el LDTLB del guest.
-
-		Dentro de la misma pagina la busqueda habria acertado la pagina unica y
-		no habria avanzado nada, asi que saltearla no cambia nada. La medida es
-		la mascara de la pagina que la busqueda tiene resuelta ahora mismo -- y
-		es sana porque cualquier cambio de mapeo, incluido uno que cambie el
-		tamano de pagina, mueve la epoca y desata todos los enlaces. Sin MMU no
-		hay busqueda que avance nada y no hay restriccion.
-
-		Costo de no tenerlo: 7095 instrucciones de divergencia sobre 5433
-		millones, con la captura intacta. Los enlaces estaticos no lo mostraban
-		--su sucesor es la instruccion siguiente o una rama cercana-- y los
-		dinamicos si, porque un JSR se va a otra parte.
-	*/
+	if (e->talon != NULL)
 	{
-		DWORD mascara = mmu_activa ? mmu_fetch_mascara : 0xFFFFFFFFul;
+		rel_talon = (long long) ((const unsigned char *) destino->codigo
+								 - (e->talon_jmp + 4));
 
-		if ((pc_fuente & ~mascara) != (destino->pc & ~mascara))
+		if (rel_talon < -2147483647LL || rel_talon > 2147483647LL)
 			return;
 	}
 
@@ -2985,7 +3091,21 @@ static void jit_parchear_enlace(jit_enlace * e, DWORD pc_fuente,
 	e->sitio_jmp[2] = (unsigned char) (((unsigned long long) rel >> 16) & 0xFF);
 	e->sitio_jmp[3] = (unsigned char) (((unsigned long long) rel >> 24) & 0xFF);
 
+	/* El talon siempre apunta al cuerpo del sucesor vigente, aunque este
+	   parche haya salido directo: sitio_jmp decide si se pasa por el, y un
+	   reparcheo posterior puede cambiar de opinion sin dejar un talon rancio. */
+	if (e->talon != NULL)
+	{
+		e->talon_jmp[0] = (unsigned char) ((unsigned long long) rel_talon & 0xFF);
+		e->talon_jmp[1] = (unsigned char) (((unsigned long long) rel_talon >> 8) & 0xFF);
+		e->talon_jmp[2] = (unsigned char) (((unsigned long long) rel_talon >> 16) & 0xFF);
+		e->talon_jmp[3] = (unsigned char) (((unsigned long long) rel_talon >> 24) & 0xFF);
+	}
+
 	jit_enlaces_atados++;
+
+	if (puente)
+		jit_puentes_atados++;
 }
 
 static void jit_enlazar(jit_bloque * nuevo)
@@ -3485,13 +3605,13 @@ static void jit_resumen(void)
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
-		" %llu enlaces atados, %llu indirectos aprendidos,"
+		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
 		" %u movimientos de epoca (%u escritura, %u mapeo, %u modo)\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
 		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
-		jit_enlaces_dinamicos, jit_epoca - 1,
+		jit_puentes_atados, jit_enlaces_dinamicos, jit_epoca - 1,
 		jit_ep_escritura, jit_ep_mapeo, jit_ep_modo);
 
 	/*
@@ -3588,6 +3708,12 @@ void jit_iniciar(void)
 	}
 
 	{
+		const char * sp = getenv("DCEMU_JIT_SIN_PUENTES");
+
+		jit_sin_puentes = (sp != NULL && atoi(sp) != 0);
+	}
+
+	{
 		const char * n = getenv("DCEMU_JIT_PLANTILLAS");
 
 		if (n != NULL && atoi(n) > 0 && atoi(n) < JIT_N_PLANTILLAS)
@@ -3634,6 +3760,7 @@ void jit_iniciar(void)
 	jit_estado.h_escribir32f = (void *) jit_escribir32_fis;
 	jit_estado.p_pteh       = (void *) PTEH;
 	jit_estado.p_mmucr      = (void *) MMUCR;
+	jit_estado.h_busqueda   = (void *) jit_busqueda_puente;
 
 	for (i = 0; i < JIT_HASH_N; i++)
 		jit_hash[i] = -1;

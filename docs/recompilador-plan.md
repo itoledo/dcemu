@@ -1086,3 +1086,61 @@ Las cuentas de DCDoom salen **idénticas al dígito** a las de la serie sin perf
 semántica, sólo dónde cayó cada función. Y de aquí en adelante cada A/B de este plan corre
 sobre binarios con perfil, reentrenando tras cada cambio de emisión — que con `pgo.ps1 -Jit`
 es un comando.
+
+## El puente entre páginas
+
+La restricción de página existía porque el salto encadenado se saltea la búsqueda de
+instrucción del despachador, y `traducir_busqueda()` avanza `URC`. La respuesta ya no es
+restringir sino **reproducir la búsqueda**: cada salida enlazable de un bloque con MMU lleva
+un **talón** — volcar el contador, llamar a `jit_busqueda_puente()` y saltar al cuerpo del
+sucesor. El ayudante es una línea: `MMU_FETCH_PUNTERO(PC)`, **la misma búsqueda que hace el
+despachador**, con su avance de `URC`, su repoblado de la caché y su falta de TLB. Se llama
+con el contexto ya sincronizado —el PC del contexto ya es el destino en toda salida
+enlazable, los registros y los ciclos los volcó la salida, el contador lo vuelca el talón—,
+que es exactamente el estado con el que el intérprete llega a la cabecera de su bucle: una
+falta aquí sale por el `longjmp` con el mismo estado que allí. Exacto por construcción, no
+por argumento: en la corrida de verificación **hasta el conteo de fallos de búsqueda salió
+byte-idéntico** (94 191 286 en ambos modos).
+
+El enlace **directo** —sin talón— queda para la única medida que no depende del mapeo
+vigente: **la misma ventana de 1 KB** (`JIT_LIMITE_PAG`, la página más chica del SH-4). Dos
+PC en la misma ventana están en la misma página bajo cualquier tamaño, para siempre. Eso
+cierra de paso dos agujeros latentes del criterio anterior, que medía con
+`mmu_fetch_mascara` en el momento de parchear: en la dirección «los enlaces ajenos hacia el
+bloque nuevo» esa máscara era la del bloque nuevo y no la del que salta, y un parche hecho
+bajo un mapeo **revivía tras el cambio de época sin re-evaluarse** — la guarda del salto
+compara la clave, no el criterio con el que se parcheó. WinCE mapea todo en 4 KB, así que
+ninguno llegó a morder; los cierra la regla nueva, no una corrección aparte. Sin MMU no hay
+búsqueda que reproducir: directo siempre, cero talones, y Crazy Taxi sale con las cuentas
+**idénticas al bit** — el control limpio.
+
+Todos los sitios de un enlace se escriben juntos, el talón incluido — que apunta siempre al
+cuerpo del sucesor vigente aunque el parche haya salido directo, para que un reparcheo no
+deje un talón rancio. `DCEMU_JIT_SIN_PUENTES=1` es la palanca de aislamiento.
+
+### El número, y la lectura honesta
+
+Enlaces en DCDoom: 5014 → **8049, 4136 por puente**. Entradas al despacho: 339,3 → **311,2
+millones** (−8,3 %), 9,2 instrucciones por entrada. Ejecución idéntica al dígito en los dos
+guests, capturas incluidas (`198B396F…`, la línea base documentada).
+
+| banco | intérprete | traductor | tanda anterior |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 40 815 ms | **35 965 (−11,9 %)** | 36 213 |
+| Crazy Taxi, 180 s | 109 627 ms | 101 355 (−7,5 %) | 100 858 |
+
+El tiempo que devuelve es chico — **~0,7 % en DCDoom**, al borde de la resolución; Crazy
+Taxi se mueve dentro del ruido de reentrenamiento en las dos puntas. La aritmética cierra:
+28 millones de cruces ahorran el despacho pero pagan el talón, y la diferencia son décimas.
+El puente vale por lo otro: **elimina la restricción de página como techo estructural**,
+cierra los dos agujeros, y deja las cadenas libres para lo que sí es grande — que ahora es
+cobertura.
+
+### Lo que la verificación encontró de paso: los topes
+
+La corrida de exactitud dejó a la vista dónde está el resto. **Crazy Taxi satura la tabla
+de bloques**: 16 384 traducidos (el tope justo), **5269 candidatos calientes sin lugar**, o
+sea cobertura esperando capacidad — y su 33 % no traducido son 7,4 mil millones de
+instrucciones interpretadas. DCDoom tiene el arena al 98 % (15,68 de 16 MB, 23 emisiones
+fallidas). Con el 47,4 % de DCDoom y el 33 % de Crazy Taxi todavía interpretados, Amdahl
+dice que la palanca es esa, no el costo por entrada.
