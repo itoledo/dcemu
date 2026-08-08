@@ -38,6 +38,14 @@ int traza_activa = 0;
 */
 long traza_cp_tope = -2;
 
+/* DCEMU_CP_MS=N:1 -- el modo fino: en la ventana [N-1, N+1] emite un punto por
+   CADA pasada del bloque periodico (cada RELOJ_GRANO ciclos, ~130
+   instrucciones), con reloj_total para ordenar. Es la segunda vuelta de la
+   misma herramienta: el punto por ms acota la bifurcacion a un milisegundo, y
+   el fino la acota a una pasada -- con el PC del lado del traductor nombrando
+   al bloque. */
+static int traza_cp_fino = 0;
+
 void traza_cp_periodico(void)
 {
 	static unsigned long long	proximo = 1;
@@ -49,20 +57,50 @@ void traza_cp_periodico(void)
 
 		traza_cp_tope = (e != NULL) ? atol(e) : -1;
 
+		if (e != NULL)
+		{
+			const char * dosp = strchr(e, ':');
+
+			traza_cp_fino = (dosp != NULL && atol(dosp + 1) != 0);
+		}
+
 		if (traza_cp_tope == -1)
 			return;
 	}
 
 	ms = reloj_ms();
 
+	if (traza_cp_fino && ms + 1 >= (unsigned long long) traza_cp_tope)
+	{
+		if (ms > (unsigned long long) traza_cp_tope + 1)
+		{
+			traza_cp_tope = -1;
+			return;
+		}
+
+		fprintf(stderr, "cpf %llu pc=%08lx"
+			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
+			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
+			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx\n",
+			(unsigned long long) reloj_total, (unsigned long) PC,
+			(unsigned long) R(0), (unsigned long) R(1),
+			(unsigned long) R(2), (unsigned long) R(3),
+			(unsigned long) R(4), (unsigned long) R(5),
+			(unsigned long) R(6), (unsigned long) R(7),
+			(unsigned long) R(15), (unsigned long) PR,
+			(unsigned long) SR, (unsigned long) MACL);
+
+		return;
+	}
+
 	if (ms >= proximo)
 	{
-		fprintf(stderr, "cp %llu ms pc=%08lx"
+		fprintf(stderr, "cp %llu ms ciclos=%llu pc=%08lx"
 			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
 			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
 			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx"
 			" fr0=%08lx fr1=%08lx\n",
-			ms, (unsigned long) PC,
+			ms, (unsigned long long) reloj_total, (unsigned long) PC,
 			(unsigned long) R(0), (unsigned long) R(1),
 			(unsigned long) R(2), (unsigned long) R(3),
 			(unsigned long) R(4), (unsigned long) R(5),

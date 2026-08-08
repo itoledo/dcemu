@@ -1443,9 +1443,36 @@ que **la divergencia viene de los parámetros calculados antes del lazo**. Y la 
 dinámica: a los 16 s la misma dirección contiene datos que decodifican como basura con
 `FADD`/`FMOV.S` adentro — con la fila de `fmovs173` esa basura se vuelve *traducible*
 donde antes cortaba, que es la pista de por qué la mera existencia de la fila cambia algo.
-La reanudación: instrumentar la traducción de `0002EF3E` en N=78 y N=79 —cuándo se
-traduce, con qué palabras, qué emite— y comparar. El lote quedó como diff en el
-scratchpad de la sesión (`fpu-v1.diff`) y el árbol revertido y exacto.
+La segunda vuelta de la herramienta (`DCEMU_CP_MS=N:1`, el **modo fino**: un punto por
+pasada del bloque periódico en la ventana [N−1, N+1], con `reloj_total` en cada línea)
+cerró el cerco en tres iteraciones:
+
+1. El primer punto fino distinto difiere **sólo en `reloj_total`: un ciclo**, con PC y
+   todos los registros idénticos. La divergencia es de **contabilidad de ciclos**, latente
+   durante segundos hasta que una frontera del bloque periódico cae distinto cerca de una
+   entrega de interrupción.
+2. Con `ciclos=` agregado al punto por milisegundo: el desfase nace **dentro del ms
+   15 023**, no antes — todo idéntico hasta ahí, ciclos incluidos.
+3. El modo fino sobre ese milisegundo: el desfase (+3 ciclos) nace **cruzando una entrada
+   de excepción usuario→kernel** (SR `00008001` → `70008001`), en plena tormenta de
+   reintentos (pasadas del periódico cada 40-60 ciclos), con la ventana acotada a ~40
+   instrucciones de código entero puro (`0002d77x`).
+
+**La hipótesis que queda, concreta y comprobable en una corrida**: el conductor no emite
+el corte del bloque periódico tras instrucciones de 0 ciclos —«sin ciclos nuevos la
+condición del corte no pudo volverse cierta»— y esa regla es verdadera para
+`CYC ≥ RELOJ_GRANO` pero **falsa para `intc_sh4_reintentar`**: el intérprete evalúa la
+condición completa en cada frontera de instrucción, y el traductor se saltea la
+evaluación exactamente ahí, así que una entrega puede caer una instrucción más tarde y
+correr `reloj_total` en los ciclos de esa instrucción. `fmovs173` no sería el culpable
+sino el revelador: extiende bloques hasta que una instrucción de 0 ciclos queda en la
+posición crítica donde antes había un fin de bloque (que sí evalúa). La comprobación:
+emitir el corte también tras las filas de 0 ciclos (o al menos evaluar `reintentar`) y
+ver si el desfase del ms 15 023 muere; si muere, el arreglo de fondo es del conductor y
+es anterior a la FPU — catorce tandas exactas simplemente nunca armaron la configuración.
+
+El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
+revertido y exacto.
 
 ### La falsa regresión de Crazy Taxi, y lo que la palanca demostró
 
