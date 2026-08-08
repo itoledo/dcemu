@@ -1144,3 +1144,40 @@ sea cobertura esperando capacidad — y su 33 % no traducido son 7,4 mil millone
 instrucciones interpretadas. DCDoom tiene el arena al 98 % (15,68 de 16 MB, 23 emisiones
 fallidas). Con el 47,4 % de DCDoom y el 33 % de Crazy Taxi todavía interpretados, Amdahl
 dice que la palanca es esa, no el costo por entrada.
+
+## La capacidad, y lo que la saturación escondía
+
+Bloques al doble (32 768, el máximo que el `short` de la tabla direcciona), arena a 32 MB, y
+la tabla hash a **131 072 ranuras** — no al doble sino al cuádruple, porque los 5269 «sin
+lugar» ocurrieron a carga del 50 % y duplicar ambos habría mantenido la misma carga y la
+misma cola del sondeo lineal. El corrimiento del hash pasa a derivarse de `JIT_HASH_BITS`:
+estaba escrito `32 - 15` como literal, y con la tabla más grande media tabla habría quedado
+inalcanzable sin que nada lo reporte.
+
+**Lo que la saturación escondía era peor que falta de espacio: retraducción compulsiva.** Un
+bloque que el hash no podía indexar tampoco aparecía en el control de duplicados —es la
+misma búsqueda—, así que se retraducía en cada muestreo. Con la tabla holgada, Crazy Taxi
+pasa de 16 384 bloques (el tope, con duplicados) a **11 379 reales con 0 sin lugar** y su
+arena baja de 12,2 a **8,0 MB**; DCDoom de 9290 a 9200. Los topes ahora tienen aire real:
+nada volvió a acercarse.
+
+De paso, el contador nuevo de salidas con los enlaces agotados dice que `JIT_MAX_ENLACES`
+= 12 **casi no muerde** (60 sitios en DCDoom, 266 en CT): medido y descartado como palanca.
+
+| banco | intérprete | traductor | tanda anterior |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 40 889 ms | **36 008 (−11,9 %)** | 35 965 |
+| Crazy Taxi, 180 s | 109 052 ms | **99 863 (−8,4 %)** | 101 355 |
+
+DCDoom no se mueve (sus duplicados eran 91); **Crazy Taxi gana ~1,5 % y baja por primera
+vez de 100 segundos**, que es la retraducción que ya no paga más el tercio de arena que ya
+no toca. Ejecución idéntica al dígito en los dos guests, capturas incluidas.
+
+### La cuenta que reordena lo que sigue
+
+Bloques ejecutados sobre entradas al despacho: **1,16 en DCDoom y 1,07 en Crazy Taxi**. Las
+cadenas casi no encadenan — toda la maquinaria de época, enlaces y puentes carga hoy con el
+~14 % de las transiciones. El sitio que rompe la cadena es el salto indirecto polimórfico
+—el `RTS` que vuelve a muchos llamadores, cuya guarda de destino aprendido falla y sale a C
+en cada vuelta—, así que la palanca del costo por entrada no es abaratar el cruce enlazado:
+es **despachar el indirecto sin salir del mundo emitido**.

@@ -257,8 +257,16 @@ void jit_busqueda_puente(void)
 /* El arena                                                                 */
 /* ------------------------------------------------------------------------ */
 
-#define JIT_ARENA_TAM		(16u * 1024u * 1024u)
-#define JIT_MAX_BLOQUES		16384
+/*
+	Los topes vienen de la corrida de verificacion del puente, no de una
+	corazonada: Crazy Taxi saturo los 16 384 bloques con 5269 candidatos
+	calientes sin lugar --un tercio de su volumen sigue interpretado por falta
+	de capacidad, no de plantillas-- y DCDoom dejo el arena al 98 % (15,68 de
+	16 MB). El tope de bloques es el maximo que el `short` de la tabla hash
+	direcciona.
+*/
+#define JIT_ARENA_TAM		(32u * 1024u * 1024u)
+#define JIT_MAX_BLOQUES		32768
 #define JIT_MAX_INSTR		64
 
 static unsigned char *	jit_arena     = NULL;
@@ -361,8 +369,14 @@ static int			jit_n_bloques = 0;
 
 	Direccionamiento abierto con sondeo lineal corto: si en ocho sitios no
 	entra, ese bloque no se indexa y su PC sigue interpretado.
+
+	El tamano viene de una medida: con 16 384 bloques sobre 32 768 ranuras
+	--carga del 50 %-- Crazy Taxi dejaba 5269 inserciones sin lugar en ocho
+	sondeos, o sea bloques ya emitidos que nadie podia encontrar. A carga del
+	25 % la cola del sondeo lineal se corta; la tabla son shorts, 256 KB.
 */
-#define JIT_HASH_N		32768
+#define JIT_HASH_BITS	17
+#define JIT_HASH_N		(1u << JIT_HASH_BITS)
 #define JIT_HASH_SONDEO	8
 
 static short				jit_hash[JIT_HASH_N];
@@ -373,14 +387,16 @@ static unsigned long long	jit_colisiones = 0;
 static int					jit_ult_sitio = -1;
 
 /* Los bits **altos** del producto, que es donde el hash multiplicativo mezcla:
-   tomar los bajos deja una permutacion de los 15 bits de abajo del PC, o sea
+   tomar los bajos deja una permutacion de los bits de abajo del PC, o sea
    exactamente el recorte que este cambio venia a sacar. Costo 16 123 de 16 384
-   bloques sin lugar en la tabla, con la cobertura clavada. */
+   bloques sin lugar en la tabla, con la cobertura clavada. El corrimiento se
+   deriva de JIT_HASH_BITS: un literal desincronizado dejaria media tabla
+   inalcanzable sin que nada lo reporte. */
 static unsigned jit_hash_de(DWORD pc)
 {
 	unsigned h = (unsigned) ((pc >> 1) * 2654435761u);
 
-	return (h >> (32 - 15)) & (JIT_HASH_N - 1);
+	return (h >> (32 - JIT_HASH_BITS)) & (JIT_HASH_N - 1);
 }
 
 static void * jit_arena_reservar(unsigned tam)
@@ -2675,6 +2691,11 @@ static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k)
 	nadie deberia llegar sin parchear, porque sitio_jmp solo apunta aqui cuando
 	el parche escribio los dos sitios juntos.
 */
+/* Cuantas salidas quisieron un sitio de enlace y JIT_MAX_ENLACES ya no daba.
+   Cuenta sitios al emitir, no cruces: es el diagnostico de si el tope de 12
+   esta dejando cadenas sin atar, que hasta ahora nadie podia ver. */
+static unsigned long long jit_enlaces_agotados = 0;
+
 static void gen_talon_puente(jit_gen * g, jit_traduccion * t, jit_enlace * e)
 {
 	x64_parche fin;
@@ -2720,6 +2741,7 @@ static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
 
 	if (g->n_enlaces >= JIT_MAX_ENLACES)
 	{
+		jit_enlaces_agotados++;
 		gen_salir_en(g, pc_sig);
 		return;
 	}
@@ -2785,6 +2807,8 @@ static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t)
 
 	if (g->n_enlaces >= JIT_MAX_ENLACES)
 	{
+		jit_enlaces_agotados++;
+
 		if (g->n_salidas < JIT_MAX_SALIDAS)
 			g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
 		else
@@ -3606,13 +3630,14 @@ static void jit_resumen(void)
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
 		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
+		" %llu salidas con los enlaces agotados,"
 		" %u movimientos de epoca (%u escritura, %u mapeo, %u modo)\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
 		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
-		jit_puentes_atados, jit_enlaces_dinamicos, jit_epoca - 1,
-		jit_ep_escritura, jit_ep_mapeo, jit_ep_modo);
+		jit_puentes_atados, jit_enlaces_dinamicos, jit_enlaces_agotados,
+		jit_epoca - 1, jit_ep_escritura, jit_ep_mapeo, jit_ep_modo);
 
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que
