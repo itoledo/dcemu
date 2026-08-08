@@ -1403,6 +1403,36 @@ por la misma palabra). El diseño que los números permiten:
 
 Queda como el trabajo siguiente, con la sonda ya comiteada y contando en el resumen.
 
+### El primer intento (v1), revertido con su diagnóstico
+
+El lote v1 se implementó entero —los siete `FMOV` de `sz0` emitidos por el puntero de
+banco, la aritmética por el manejador real, `b->fpu` con su compuerta en el despachador y
+el rechazo de enlaces— y **divergió** (DCDoom: 4854 M de instrucciones contra 5433 M, con
+la captura distinta). La bisección con `DCEMU_JIT_PLANTILLAS` encontró **dos** cosas:
+
+1. **Una trampa del extractor de ciclos, cazada y corregida**: `fmov172` no suma ciclos
+   (clase `mov3`), pero un extractor que busca `cycles +=` por cercanía al `OPCODE(...)`
+   le robó el `+= 2` del manejador siguiente. Con la fila en 0, N=78 quedó exacto. La
+   regla que deja: **los ciclos se copian leyendo el cuerpo entero del manejador, nunca
+   por búsqueda de cercanía** — un cuerpo corto sin línea de ciclos roba la del vecino.
+2. **Una divergencia estructural que sobrevivió a seis hipótesis inspeccionadas**:
+   `fmovs173` solo (N=79) desvía 633 M de instrucciones, con el total erróneo estable
+   (4 800 100 807) — y **emitirlo por el manejador real diverge idéntico**, así que la
+   emisión en línea nunca fue el bug: la mera existencia de la fila cambia la ejecución.
+   Descartados por inspección: el offset del banco (la estructura lo confirma en 0), el
+   contrato de `gen_leer32` (entrega en RAX), la ranura (la regla del corte cubre toda
+   fila `accede`), el orden filas↔manejadores, los ciclos de ambas variantes, y la
+   compuerta `b->fpu` (0==0 pasa siempre en DCDoom). Los contadores del guest divergente
+   (mapeos 189 mil contra 1,13 M; modos 2,9 M contra 8,2 M) dicen que corre un camino
+   genuinamente distinto y más ocioso.
+
+**La herramienta que faltó es la primera tarea de la reanudación**: los puntos de control
+por milisegundo (`DCEMU_TRAZA_EN_MS`) viven bajo la traza, **y la traza apaga el JIT**,
+así que no pueden ver una divergencia del traductor. Hace falta la variante que emita los
+checkpoints desde el bloque periódico sin apagar nada; con ella, el primer punto distinto
+señala el bloque culpable en una corrida. El lote entero quedó como diff en el scratchpad
+de la sesión (`fpu-v1.diff`, 12 KB) y el árbol quedó revertido y exacto.
+
 ### La falsa regresión de Crazy Taxi, y lo que la palanca demostró
 
 Entre la tanda del lote 2 y la de este lote, CT parecía +2,2 % (97 253 → 99 349, ambas
