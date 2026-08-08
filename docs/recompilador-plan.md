@@ -1458,18 +1458,21 @@ cerró el cerco en tres iteraciones:
    reintentos (pasadas del periódico cada 40-60 ciclos), con la ventana acotada a ~40
    instrucciones de código entero puro (`0002d77x`).
 
-**La hipótesis que queda, concreta y comprobable en una corrida**: el conductor no emite
-el corte del bloque periódico tras instrucciones de 0 ciclos —«sin ciclos nuevos la
-condición del corte no pudo volverse cierta»— y esa regla es verdadera para
-`CYC ≥ RELOJ_GRANO` pero **falsa para `intc_sh4_reintentar`**: el intérprete evalúa la
-condición completa en cada frontera de instrucción, y el traductor se saltea la
-evaluación exactamente ahí, así que una entrega puede caer una instrucción más tarde y
-correr `reloj_total` en los ciclos de esa instrucción. `fmovs173` no sería el culpable
-sino el revelador: extiende bloques hasta que una instrucción de 0 ciclos queda en la
-posición crítica donde antes había un fin de bloque (que sí evalúa). La comprobación:
-emitir el corte también tras las filas de 0 ciclos (o al menos evaluar `reintentar`) y
-ver si el desfase del ms 15 023 muere; si muere, el arreglo de fondo es del conductor y
-es anterior a la FPU — catorce tandas exactas simplemente nunca armaron la configuración.
+**Una hipótesis fuerte, probada y refutada**: que el conductor no emitiera el corte tras
+instrucciones de 0 ciclos («sin ciclos nuevos la condición no pudo volverse cierta» — regla
+verdadera para `CYC ≥ RELOJ_GRANO` pero falsa para `intc_sh4_reintentar`, que el intérprete
+evalúa en cada frontera). La sonda —corte tras **toda** instrucción— se corrió: **el
+desfase del ms 15 023 persiste idéntico**. El conductor queda descartado, y la regla del
+corte por ciclos queda de paso validada como inocente.
+
+**El siguiente paso queda definido por la refutación**: un desfase de +1 ciclo con estado
+arquitectónico idéntico también puede ser **un desfase de `MMUCR.URC`** — otro orden de
+reemplazo de TLB → una falta de TLB de más o de menos en la tormenta → ±ciclos de entrada
+de excepción con los registros intactos. Se separa en una corrida agregando `urc=` (los
+bits URC de MMUCR) a la línea de `DCEMU_CP_MS`: si el URC ya difiere cuando los ciclos
+difieren, la caza es de avances de URC (y el sospechoso pasa a ser dónde la traducción o
+la verificación de bloques toca la búsqueda de instrucción con el conjunto de bloques
+cambiado); si no difiere, es cobro de ciclos puro y la lupa vuelve a las filas.
 
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
