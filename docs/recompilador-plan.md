@@ -728,3 +728,79 @@ Lo que queda es lo mismo de antes y ahora con más margen encima: **la llamada i
 bloque con su `ret`**, que sigue siendo la pieza grande del costo por entrada y que sólo el
 encadenamiento de verdad quita. Con 4,3 instrucciones por entrada en Crazy Taxi contra las
 219 del bloque escrito a mano, ahí está la diferencia entre empatar y el −16,5 %.
+
+## El encadenamiento de verdad
+
+Lo que faltaba, y lo que hacía falta antes: **una forma sana de saber que un bloque sigue
+valiendo sin comparar sus palabras**. Sin eso, un salto directo ejecuta código viejo, y en
+DCDoom la verificación falla 1 234 992 veces por corrida.
+
+### La época
+
+Una época global que se mueve con las dos únicas cosas que pueden invalidar un bloque:
+**un cambio de mapeo** —las dos invalidaciones de la MMU, que es por donde pasan `LDTLB`, las
+escrituras a `PTEH`, a `MMUCR` y a los arreglos por P4— y **una escritura sobre una página que
+tiene código traducido**. Un bloque guarda la época con la que se verificó entero; mientras
+la global no se mueva, sus palabras son las mismas y su página sigue donde estaba.
+
+El interruptor `jit_vigila_codigo` está en cero salvo con el traductor encendido, así que en
+el binario del árbol el gancho de escritura desaparece entero.
+
+Dos agujeros, los dos encontrados por la cuenta y ninguno visible en la captura:
+
+1. **El camino rápido de escritura emitido no pasa por `memwrite()`**, así que escribía sin
+   mover la época. Ahora mira el mapa de páginas con código traducido —un byte por página del
+   anfitrión, para que sea una comparación— y baja al ayudante si la tiene.
+2. **La época no cubre el cambio de mapeo por modo**: un bloque traducido en modo privilegiado
+   y reencontrado en modo usuario mapea a otro lado. Costó **61 568 instrucciones de
+   divergencia**. La comparación es contra el puntero que devuelve `MMU_FETCH_PUNTERO`, que es
+   lo que identifica el mapeo entero —página, ASID y modo—, y la época cubre las escrituras.
+
+Con eso la verificación por entrada pasó del bucle de palabras a **dos comparaciones**.
+
+### El salto
+
+En cada salida con sucesor constante se emite: el corte del bloque periódico primero —si
+corresponde cortar hay que salir pase lo que pase—, después la guarda de la época, y recién
+entonces el volcado, las sacadas de la pila y un `jmp rel32`.
+
+**Es un tail jump**: en ese punto `rsp` está exactamente como al entrar al bloque, que es lo
+que el prólogo del sucesor espera, y el epílogo del sucesor hará el `ret` que le corresponde a
+quien llamó. La pila queda balanceada y la información de desenrollado de cada bloque sigue
+describiendo su propio marco — no hubo que tocar nada de eso.
+
+Se parchean dos sitios cuando el sucesor existe: el desplazamiento del `cmp`, que pasa a
+apuntar al campo `epoca` del sucesor, y el `rel32`. Sin parchear, el `cmp` mira una constante
+que vale cero y nunca iguala a la época, así que la guarda falla y el bloque sale como salía.
+
+### El número
+
+| banco | intérprete | 2 bloques a mano | traductor |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 54 160 ms | 51 991 (−4,0 %) | **45 184 (−16,57 %)** |
+| Crazy Taxi, 180 s | 134 335 ms | 110 695 (−17,6 %) | **125 172 (−6,82 %)** |
+
+Las entradas al despacho bajaron de 434,8 a **353,7 millones** en DCDoom y de 3392 a **2464**
+en Crazy Taxi, con 4499 y 6217 enlaces atados.
+
+La serie completa de las cuatro tandas:
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| traductor, primera medida | −13,78 % | +3,94 % |
+| encadenado del despachador | −14,15 % | +2,20 % |
+| verificación sin `memcmp`, muestreo por el mapa | −15,22 % | +0,68 % |
+| **época y salto directo** | **−16,57 %** | **−6,82 %** |
+
+**Crazy Taxi por fin va más rápido que el intérprete**, de +3,9 % a −6,8 %. Y DCDoom pasa de
+0,646× a **0,775×** en este binario sin perfil: 1,20× del intérprete, con la ejecución
+idéntica al dígito y las capturas byte a byte en los dos guests.
+
+### Lo que queda
+
+Sigue faltando la mitad: el bloque escrito a mano de Crazy Taxi hace **219 instrucciones por
+entrada** contra las **6,0** del traductor, y por eso rinde 17,6 % donde el traductor rinde
+6,8 %. Los enlaces sólo cubren los sucesores **constantes**; los saltos indirectos —el
+`JSR`→`RTS` del callback, que es el lazo caliente de ese juego— siguen saliendo a C. La guarda
+de destino visto para los indirectos es lo que falta, y ahora tiene toda la maquinaria puesta:
+la época ya dice cuándo un bloque vale, y el sitio del salto ya se parchea.

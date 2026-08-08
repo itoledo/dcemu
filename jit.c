@@ -237,6 +237,37 @@ static unsigned char *	jit_codigo    = NULL;	/* donde empieza el codigo */
 static unsigned			jit_codigo_us = 0;		/* cuanto se lleva emitido */
 static unsigned			jit_codigo_tam = 0;
 
+#define JIT_MAX_ENLACES		12
+
+/*
+	Un enlace: el salto directo de un bloque al siguiente, sin volver a C.
+
+	**Lo que lo hace seguro es la epoca** (ver jit.h). El bloque sucesor guarda
+	la epoca con la que se verifico entero; si la global no se movio desde
+	entonces, sus palabras son las mismas y su pagina sigue mapeada donde
+	estaba, porque la epoca se mueve con cualquiera de las dos cosas. Asi que la
+	guarda del salto es **una comparacion** de la epoca global contra el campo
+	del sucesor: ni busqueda en la tabla, ni comparacion de palabras, ni llamada
+	indirecta.
+
+	Un cambio de modo (SR.MD) tambien cambia el mapeo y no mueve la epoca --
+	pero escribir SR no tiene plantilla y una excepcion sale por longjmp: las dos
+	terminan la cadena, asi que dentro de una cadena el modo no cambia.
+
+	Se parchean dos sitios: el desplazamiento del `cmp`, que pasa a apuntar al
+	campo `epoca` del sucesor, y el rel32 del `jmp`. Sin parchear, el `cmp` mira
+	`jit_nunca`, que vale cero y nunca iguala a la epoca --que arranca en 1 y
+	solo sube--, asi que la guarda falla y el bloque sale como salia.
+*/
+typedef struct
+{
+	unsigned char *	sitio_cmp;		/* el disp32 del cmp de la guarda */
+	unsigned char *	sitio_jmp;		/* el rel32 del salto */
+	DWORD			pc;				/* a que PC quiere saltar */
+} jit_enlace;
+
+static const unsigned jit_nunca = 0;
+
 typedef struct
 {
 	DWORD			pc;					/* la entrada, en el espacio del guest */
@@ -257,6 +288,8 @@ typedef struct
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
 	unsigned		epoca;
 	const WORD *	ptr;		/* lo que devolvio la busqueda al verificarlo */
+	jit_enlace		enlace[JIT_MAX_ENLACES];
+	int				n_enlaces;
 } jit_bloque;
 
 static jit_bloque	jit_bloques[JIT_MAX_BLOQUES];
@@ -485,6 +518,7 @@ static int D(const void * p)
 #define D_ESCR8F	D(&jit_estado.h_escribir8f)
 #define D_ESCR32F	D(&jit_estado.h_escribir32f)
 #define D_PAG_CODIGO	D(&jit_pag_codigo[0])
+#define D_EPOCA		D(&jit_epoca)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
@@ -509,12 +543,13 @@ static int D(const void * p)
 /* ------------------------------------------------------------------------ */
 
 #define JIT_MAX_SALIDAS		64
-
 typedef struct
 {
 	x64_emisor	e;
 	x64_parche	salidas[JIT_MAX_SALIDAS];
 	int			n_salidas;
+	jit_enlace	enlace[JIT_MAX_ENLACES];
+	int			n_enlaces;
 	jit_marco	marco;
 } jit_gen;
 
@@ -1407,6 +1442,10 @@ static void gen_bloque_ce(jit_gen * g)
 static void jit_marcar(DWORD pc);
 static void jit_desmarcar(DWORD pc);
 
+typedef struct jit_traduccion jit_traduccion;
+
+static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig);
+
 #define JIT_SLOTS		5
 
 /* El bloque no cruza una frontera de 1 KB, que es la pagina mas chica del
@@ -1415,7 +1454,6 @@ static void jit_desmarcar(DWORD pc);
    tamano con el que el guest la haya mapeado. */
 #define JIT_LIMITE_PAG	0x400u
 
-typedef struct jit_traduccion jit_traduccion;
 typedef struct jit_plantilla jit_plantilla;
 
 struct jit_traduccion
@@ -1899,7 +1937,7 @@ static void tr_seguir_en(jit_gen * g, jit_traduccion * t, DWORD dest)
 		return;
 	}
 
-	gen_salir_en(g, dest);
+	gen_salir_enlazable(g, t, dest);
 }
 
 static DWORD tr_destino8(const jit_traduccion * t, int i)
@@ -2522,6 +2560,78 @@ static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k)
 	gen_volcar_cuenta(g);
 }
 
+/*
+	Salida por un sucesor **constante**: la que puede encadenarse.
+
+	El orden importa. El corte del bloque periodico va primero, porque si
+	corresponde cortar hay que salir a main_loop pase lo que pase; despues la
+	guarda de la epoca; y recien entonces el volcado, las sacadas de la pila y
+	el salto.
+
+	El salto es un **tail jump**: en ese punto rsp esta exactamente como al
+	entrar al bloque, que es lo que el prologo del sucesor espera, y el epilogo
+	del sucesor hara el `ret` que le corresponde a quien llamo. La pila queda
+	balanceada y la informacion de desenrollado de cada bloque sigue
+	describiendo su propio marco, sin cambiar nada de eso.
+*/
+static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
+{
+	x64_parche sin_enlace[3];
+	x64_parche fin;
+	jit_enlace * e;
+	int i;
+
+	if (g->n_enlaces >= JIT_MAX_ENLACES)
+	{
+		gen_salir_en(g, pc_sig);
+		return;
+	}
+
+	jit_x64_mov_mi(&g->e, CTX, O_PC, pc_sig);
+
+	jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
+	sin_enlace[0] = jit_x64_jcc(&g->e, X64_AE);
+	jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
+	sin_enlace[1] = jit_x64_jcc(&g->e, X64_NE);
+
+	/* La guarda. El desplazamiento del cmp es lo que se parchea; `jit_nunca`
+	   esta lejos del contexto, asi que se codifica como disp32 y son los
+	   ultimos cuatro bytes emitidos. */
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D_EPOCA);
+	jit_x64_alu_rm(&g->e, X64_CMP, X64_RAX, CTX, D(&jit_nunca));
+
+	e = &g->enlace[g->n_enlaces++];
+	e->sitio_cmp = jit_x64_aqui(&g->e) - 4;
+	e->pc        = pc_sig;
+
+	sin_enlace[2] = jit_x64_jcc(&g->e, X64_NE);
+
+	tr_volcar_regs(g, t);
+	gen_volcar_cuenta(g);
+
+	jit_x64_add64_ri(&g->e, X64_RSP, JIT_MARCO_RSP);
+
+	for (i = 7; i >= 0; i--)
+		jit_x64_pop(&g->e, jit_empujados[i]);
+
+	fin          = jit_x64_jmp(&g->e);
+	e->sitio_jmp = fin.sitio;
+
+	/* Sin parchear cae en el `ret` de aqui abajo, que es lo unico sano tras
+	   sacar los registros de la pila. */
+	jit_x64_fijar(&g->e, fin);
+	jit_x64_ret(&g->e);
+
+	for (i = 0; i < 3; i++)
+		jit_x64_fijar(&g->e, sin_enlace[i]);
+
+	/* Sin enlace: el PC ya esta puesto, solo hay que salir por el epilogo. */
+	if (g->n_salidas < JIT_MAX_SALIDAS)
+		g->salidas[g->n_salidas++] = jit_x64_jmp(&g->e);
+	else
+		g->e.desborde = 1;
+}
+
 static void tr_epilogo(jit_gen * g, jit_traduccion * t)
 {
 	int i;
@@ -2549,6 +2659,7 @@ static int					jit_traductor = 0;	/* DCEMU_JIT=2 */
 static unsigned long long	jit_traducidos = 0;
 static unsigned long long	jit_instr_bloque = 0;
 static unsigned long long	jit_fallidos = 0;
+static unsigned long long	jit_enlaces_atados = 0;
 
 /*
 	Descubrimiento: camina las palabras desde `pc` resolviendo cada una por
@@ -2675,8 +2786,63 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		(void) fin;
 	}
 
-	gen_salir_en(g, t->pc0 + (DWORD) (2 * t->n));
+	gen_salir_enlazable(g, t, t->pc0 + (DWORD) (2 * t->n));
 	tr_epilogo(g, t);
+}
+
+/*
+	Ata los enlaces del bloque nuevo con los que ya estaban: los suyos que
+	apunten a un bloque existente, y los de cualquier otro que apuntaran a este.
+
+	El recorrido es sobre todos los bloques y solo ocurre al **crear** uno --
+	unos diez mil por corrida --, asi que su costo vive fuera del camino
+	caliente.
+*/
+static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * destino)
+{
+	int          disp = D(&destino->epoca);
+	long long    rel  = (long long) ((const unsigned char *) destino->codigo
+									 - (e->sitio_jmp + 4));
+
+	if (!jit_disp_ok || rel < -2147483647LL || rel > 2147483647LL)
+		return;
+
+	e->sitio_cmp[0] = (unsigned char) ((unsigned) disp & 0xFF);
+	e->sitio_cmp[1] = (unsigned char) (((unsigned) disp >> 8) & 0xFF);
+	e->sitio_cmp[2] = (unsigned char) (((unsigned) disp >> 16) & 0xFF);
+	e->sitio_cmp[3] = (unsigned char) (((unsigned) disp >> 24) & 0xFF);
+
+	e->sitio_jmp[0] = (unsigned char) ((unsigned long long) rel & 0xFF);
+	e->sitio_jmp[1] = (unsigned char) (((unsigned long long) rel >> 8) & 0xFF);
+	e->sitio_jmp[2] = (unsigned char) (((unsigned long long) rel >> 16) & 0xFF);
+	e->sitio_jmp[3] = (unsigned char) (((unsigned long long) rel >> 24) & 0xFF);
+
+	jit_enlaces_atados++;
+}
+
+static void jit_enlazar(jit_bloque * nuevo)
+{
+	int i, k;
+
+	for (i = 0; i < nuevo->n_enlaces; i++)
+	{
+		const jit_bloque * d = jit_buscar(nuevo->enlace[i].pc);
+
+		if (d != NULL)
+			jit_parchear_enlace(&nuevo->enlace[i], d);
+	}
+
+	for (k = 0; k < jit_n_bloques; k++)
+	{
+		jit_bloque * b = &jit_bloques[k];
+
+		if (b == nuevo)
+			continue;
+
+		for (i = 0; i < b->n_enlaces; i++)
+			if (b->enlace[i].pc == nuevo->pc)
+				jit_parchear_enlace(&b->enlace[i], nuevo);
+	}
 }
 
 /*
@@ -2770,6 +2936,9 @@ static jit_bloque * tr_traducir(DWORD pc)
 	memcpy(b->copia, t.palabra, (size_t) t.n * sizeof(WORD));
 	b->palabras = b->copia;
 
+	memcpy(b->enlace, g.enlace, sizeof(b->enlace));
+	b->n_enlaces = g.n_enlaces;
+
 	jit_registrar_marco(b, jit_x64_largo(&g.e));
 
 	jit_codigo_us += jit_x64_largo(&g.e);
@@ -2787,6 +2956,8 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 	jit_traducidos++;
 	jit_instr_bloque += (unsigned long long) t.n;
+
+	jit_enlazar(b);
 
 	return b;
 }
@@ -3086,11 +3257,12 @@ static void jit_resumen(void)
 		return;
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
-		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla\n",
+		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
+		" %llu enlaces atados\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
-		jit_codigo_us, jit_fallidos, jit_colisiones);
+		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados);
 
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que
