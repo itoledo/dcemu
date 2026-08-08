@@ -1481,9 +1481,23 @@ los de `fmovs173`. Los caminos auditados sin encontrarlo: la búsqueda de la reg
 (siempre acierta la página recién despachada), la de `jit_verificar` (espeja la del
 intérprete y compensa en los rechazos), el talón del puente (exacto por construcción) y
 los dobles avances del camino rápido de datos (el desvío `_fis` existe justamente para
-eso, y el esqueleto de 16 bits es copia del de 8 probado). La caza que sigue pide
-instrumentar los avances de URC del lado del traductor en la ventana —un contador por
-sitio de avance, volcado en el `cpf`— y es trabajo de una sesión fresca con este mapa.
+eso, y el esqueleto de 16 bits es copia del de 8 probado).
+
+**Y la sonda de sitios acotó la fuente a dos candidatos.** Con contadores en los dos
+sitios C de avance —`uA` en `urc_avanzar()` (recorrido y cachés) y `uB` en el macro
+rápido de datos— volcados en el `cpf`: en la ventana, **`ΔuA = +1 idéntico en las dos
+corridas** (la búsqueda de la entrada de excepción), así que el lado C queda exonerado
+con dato duro. El avance extra vive en el **camro rápido de datos: el macro (`uB`) o el
+emitido en línea** — que sirven las mismas ~40 instrucciones con reparto distinto, así
+que sus totales no se comparan sueltos. La corrida que cierra: un contador junto al
+avance **emitido** (`jit.c`, el `MMU_URC_AVANZAR` en línea de `gen_traducir_mmu`) y la
+conservación decide — `uB_int` debe igualar `uB_79 + uE_79`; el lado que se pase de uno
+es el sitio, y con la ventana de 40 instrucciones el desensamblado del bloque lo remata.
+Ojo al comitear: el incremento de `uB` vive en el camino más caliente del árbol y es
+material de sonda, no de binario normal.
+
+La sonda `uA`/`uB` quedó aplicada y revertida dentro de la sesión (el `cpf` con `mmucr=`
+sí está comiteado); reponerla son las tres ediciones que este párrafo describe.
 
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
