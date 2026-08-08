@@ -1180,4 +1180,86 @@ cadenas casi no encadenan — toda la maquinaria de época, enlaces y puentes ca
 ~14 % de las transiciones. El sitio que rompe la cadena es el salto indirecto polimórfico
 —el `RTS` que vuelve a muchos llamadores, cuya guarda de destino aprendido falla y sale a C
 en cada vuelta—, así que la palanca del costo por entrada no es abaratar el cruce enlazado:
-es **despachar el indirecto sin salir del mundo emitido**.
+es **despachar el indirecto sin salir del mundo emitido**. (Se probó esa misma noche; el
+resultado, dos secciones más abajo, no es el esperado y vale más que un éxito.)
+
+## Las plantillas que pidió el censo: el push/pop de PR deja de cortar
+
+El censo de cortes de Crazy Taxi encabezaba con `STS.L PR,@-R15` y `LDS.L @R15+,PR`
+(1487 + 932 + 166 sitios): **el prólogo y el epílogo de toda función SH-4 cortaban el
+bloque**, y por eso los bloques promediaban 7,3 instrucciones. Ocho plantillas nuevas, al
+final de la tabla para que la bisección por prefijo de `DCEMU_JIT_PLANTILLAS` siga
+valiendo: las dos de PR, `LDS.L @Rm+,MACL`, `STS MACL`, `MOVT`, `MUL.L`, `CMP/PL` y
+`ROTCL`. Tres detalles con historia:
+
+- **Los ciclos, copiados de cada manejador** — y `ldsl135` (`LDS.L @Rm+,PR`) no suma
+  ninguno. No es un olvido de la plantilla: es la rareza del manejador, protegida por la
+  cuenta exacta.
+- **El orden de compromiso ante una falta es el de `pl_movl12`**, no el del manejador:
+  `stsl168` decrementa `R(n)` antes de escribir y la instantánea del intérprete repone; la
+  plantilla calcula en RCX y compromete después de que el acceso volvió, que es el contrato
+  del mundo emitido.
+- `MUL.L` pidió el `imul` de dos operandos (0F AF) que el emisor no tenía; entró con sus
+  casos byte a byte en la suite. `ROTCL` mete el T al acarreo con un `SHR` y deja que `RCL`
+  haga la rotación exacta del chip.
+
+Cobertura: DCDoom 2,86 → **3,15 mil millones** (58,0 %) con bloques de 7,9 → **9,3**
+instrucciones y los rechazos por verificación de 1,23 M → **414 mil**; Crazy Taxi
+14,89 → **15,57 mil millones** (69,9 %), bloques de 7,3 → 8,2. Exactitud al dígito en los
+dos guests, capturas incluidas.
+
+| banco | intérprete | traductor | tanda anterior |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 41 049 ms | **36 000 (−12,3 %)** | 36 008 |
+| Crazy Taxi, 180 s | 108 384 ms | **98 810 (−8,8 %)** | 99 863 |
+
+DCDoom queda igual — sus entradas subieron un 21 % (la cobertura nueva es fragmentada,
+bloques chicos donde el costo de entrada come el ahorro) y el neto es cero —; **Crazy Taxi
+gana otro 1,1 %** y queda en 98,8 s. La lección de la neutralidad de DCDoom queda dicha:
+**cobertura sin cadenas es margen cero cuando los bloques son chicos**.
+
+## El redespacho en el arena: probado, medido dos veces, y revertido
+
+La cuenta de 1,07 bloques por entrada pedía despachar el indirecto sin salir a C. Se probó
+en sus dos formas, con la exactitud al dígito verificada en ambas — y **las dos pierden**:
+
+1. **La forma general**: el epílogo común llama a un ayudante C que replica el corazón de
+   `jit_despachar()` —corte de grano primero, filtro, tabla, verificación con su búsqueda
+   de instrucción— y salta al bloque si existe. **+2,2 % DCDoom, +4,6 % Crazy Taxi.** El
+   ayudante acertaba 77 millones de veces… y fallaba **1870 millones**: la mayoría de las
+   salidas frías van a un PC sin bloque (la cobertura es 58-70 %), y la llamada fallida en
+   cada una costó más que lo que las exitosas ahorraban.
+2. **La forma quirúrgica**: la llamada sólo en el camino sin enlace del salto indirecto,
+   donde viven prácticamente todos los aciertos (76,86 de los 76,9 millones — el
+   diagnóstico era correcto). **+0,5 % y +0,6 %.** Aun sin las llamadas fallidas, cada
+   acierto paga volcado, llamada C y un salto indirecto compartido, y eso no bate al viaje
+   a C que reemplaza — que tras todo lo de esta serie ya es demasiado barato.
+
+El código queda revertido y la lección escrita: **el viaje al despachador no es hoy el
+costo dominante; un redespacho sólo puede pagar si es enteramente emitido** — el hash y la
+verificación en línea, sin llamada — y eso es otra clase de trabajo, con la guarda de
+época como prerequisito ya puesto. Los parches quedan en la bitácora de la sesión por si
+ese trabajo se hace.
+
+## Dónde queda el traductor al cierre de esta fase
+
+| | DCDoom, 35 s | Crazy Taxi, 180 s |
+| --- | --- | --- |
+| el árbol (intérprete, su PGO) | 39 783 ms | 103 313 ms |
+| traductor (binario del JIT, su PGO) | **36 000 ms** | **98 810 ms** |
+| contra el árbol | **−9,5 %** | **−4,4 %** |
+| contra el intérprete de su binario | −12,3 % | −8,8 % |
+| tiempo real | **0,972×** | 0,631× |
+
+**DCDoom corre a 0,972× tiempo real** — arrancó la serie en 0,646× sin perfil. La serie de
+la noche sobre el traductor con perfil: 36 213 → 35 965 (puente) → 36 008 (capacidad) →
+**36 000** (plantillas); Crazy Taxi 100 858 → 101 355 → 99 863 → **98 810**. Y el método
+quedó de pie: dispersiones de 0,14-0,42 % entre rondas, la exactitud al dígito en cada
+paso, y el ciclo entero —`pgo.ps1 -Jit`, `ciclo-jit.ps1`, la tanda— es un comando por
+etapa.
+
+Lo que el cierre deja señalado, por orden de palanca: **cobertura con cadenas** (el 42 % y
+30 % interpretado sigue siendo Amdahl, pero la neutralidad de DCDoom dice que las
+plantillas nuevas tienen que venir con bloques que encadenen, no sueltas), el despacho
+enteramente emitido, y los registros persistentes a través del enlace (el mapa de slots
+igual entre bloques enlazados ahorraría el volcado y la recarga por cruce).
