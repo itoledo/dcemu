@@ -1499,6 +1499,32 @@ material de sonda, no de binario normal.
 La sonda `uA`/`uB` quedó aplicada y revertida dentro de la sesión (el `cpf` con `mmucr=`
 sí está comiteado); reponerla son las tres ediciones que este párrafo describe.
 
+**La corrida de conservación se hizo y habló con números limpios.** Con el tercer contador
+(`uE`, un `add64_mi` emitido junto al avance en línea de `gen_traducir_mmu`, mismo
+mecanismo que los contadores de `--perf`): en la ventana, **int = 11 `uB` + 1 `uA` = 12
+avances; N=79 = 11 `uB` + 1 `uE` + 1 `uA` = 13**. No hay doble avance (los `uB` son
+idénticos): el traductor ejecutó **un acceso-con-avance de más**, servido por el camino
+emitido. Y la traza del intérprete en la ventana (`DCEMU_TRAZA_EN_MS=15023:140`) mostró
+el escenario: es el **manejador de recarga de TLB de WinCE** (`8c0124f0`: camina tablas,
+`LDTLB`, `RTE`) en ping-pong con código usuario, con `MOV.W @R9,R4` —la plantilla nueva—
+como instrucción que falta y se reejecuta.
+
+**El mecanismo candidato que queda, con toda la evidencia a favor**: una asimetría de
+*orden* entre búsqueda y datos alrededor de la falta. El intérprete busca **cada**
+instrucción — puede faltar la búsqueda *antes* de ejecutar el acceso de datos. El bloque
+traducido ya verificó sus palabras de una vez (la búsqueda fue una, al entrar) y ejecuta
+el acceso de datos aunque la búsqueda de la instrucción *siguiente* vaya a faltar — el
+avance del acceso (`uE`) queda registrado en un orden distinto respecto del avance de la
+falta (`uA`), los registros convergen tras el refill (por eso los checkpoints daban
+idénticos), pero URC queda corrido en uno. Si esto es lo que pasa, no es un bug de una
+fila: es una propiedad del contrato bloque-contra-instrucción frente a faltas de
+*búsqueda* en mitad del tramo, y la pregunta de diseño es si el bloque debe cortarse
+donde el fetch del intérprete faltaría — que sólo puede saberse en tiempo de ejecución.
+Lo que falta para confirmarlo: desensamblar el bloque N=79 que cubre `0002d7xx`/`00027870`
+y contrastarlo instrucción por instrucción con el stream del intérprete alrededor de la
+falta. Con la ventana, los contadores y la traza del manejador ya en mano, es una sesión
+corta.
+
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
 
