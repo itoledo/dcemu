@@ -232,7 +232,8 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_TRAZA_EXC=1\|2\|3` | histograma de excepciones / censo de sitios de syscall / flujo completo |
 | `DCEMU_TRAZA_SYSCALL=dest[:pr[:N[:K]]]` | traza de instrucciones en la K-ésima aparición de ese syscall (hex:hex:dec:dec) |
 | `DCEMU_TRAZA_DEPURACION=1` | imprime lo que el guest manda a su salida de depuración (CE) |
-| `DCEMU_TRAZA_EN_MS=N[:M]` | puntos de control por milisegundo de PC y registros |
+| `DCEMU_TRAZA_EN_MS=N[:M]` | puntos de control por milisegundo de PC y registros. **Enciende la traza, que apaga el JIT**: para una divergencia del traductor usa `DCEMU_CP_MS` |
+| `DCEMU_CP_MS=N` | un punto de control por ms emulado (PC, registros, MACL, FR0/FR1) desde el bloque periódico, **sin apagar el JIT**: dos corridas exactas dan puntos idénticos y el primero distinto acota una bifurcación intérprete/traductor a un milisegundo. Costo cero apagada |
 | `DCEMU_TRAZA_ESCENA=N[:M]` / `=+K[:M]` | vuelca una escena entera tira por tira, por número o por peso |
 | `DCEMU_TRAZA_ATA=cmd:N` | traza lo que hace el driver con lo que la lectora contestó |
 | `DCEMU_TRAZA_TLB=D` | informa (hex, como `DCEMU_TRAZA_SYSCALL`) a qué física traduce cada `LDTLB` la dirección virtual `D`. **Los watchpoints comparan direcciones físicas**: vigilar la virtual tal cual ya produjo una conclusión falsa |
