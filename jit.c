@@ -69,6 +69,7 @@
 #include "logic.h"
 #include "shift.h"
 #include "branch.h"
+#include "floatsimple.h"
 #include "syscontrol.h"
 
 /* El emisor produce x86-64 y el contexto se direcciona por desplazamiento, asi
@@ -137,6 +138,7 @@ static jit_estado_t jit_estado;
 /* Solo desde C: el despachador las lleva, el codigo emitido no las toca. */
 static unsigned long long jit_entradas  = 0;
 static unsigned long long jit_rechazos  = 0;
+
 
 /* ------------------------------------------------------------------------ */
 /* Los ayudantes de memoria                                                 */
@@ -386,6 +388,12 @@ typedef struct
 	   traduccion en linea o la forma plana, asi que si cambia el bloque no
 	   corre. En los escritos a mano es -1, "no importa". */
 	int				mmu;
+	/* Con que modo FPU se emitio ((PR<<2)|(SZ<<1)|algun-Enable), o -1 si no
+	   tiene filas FPU. Lo chequea el despachador; los bloques con esto >= 0
+	   no reciben enlaces, asi que el chequeo los cubre en toda entrada. La
+	   sonda midio por que no puede ir en la clave: Crazy Taxi conmuta SZ
+	   13,2 millones de veces por minuto alrededor de sus matrices. */
+	int				fpu;
 	WORD			copia[JIT_MAX_INSTR];	/* solo los traducidos */
 	unsigned long long veces;
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
@@ -599,6 +607,12 @@ static const x64_reg jit_a[5] =
 #define O_SR	((int) offsetof(context_t, SR_REG))
 #define O_PR	((int) offsetof(context_t, PR_REG))
 #define O_MACL	((int) offsetof(context_t, MACL_REG))
+
+/* El banco FR es un PUNTERO en el contexto y los intercambios del bit FR lo
+   permutan: el acceso emitido carga el puntero vivo y por eso sobrevive al
+   intercambio sin guarda alguna. */
+#define O_FRB		((int) offsetof(context_t, FR_BANK))
+#define FR_DESP(x)	((int) offsetof(FPR_BANK, FP.XMTRX.m) + 4 * (x))
 #define O_R(n)	((int) (offsetof(context_t, registers) + 4 * (n)))
 
 static int jit_disp_ok = 1;
@@ -1672,6 +1686,7 @@ struct jit_traduccion
 	const jit_plantilla *	pl[JIT_MAX_INSTR];
 	int						n;
 	int						modo;			/* JIT_ACC_PLANO o JIT_ACC_MMU */
+	int						fpu;			/* modo FPU al traducir, o -1 */
 
 	signed char				slot[16];		/* indice en jit_a[], o -1 */
 
@@ -1692,6 +1707,10 @@ struct jit_plantilla
 	unsigned char	rama;		/* decide el flujo por su cuenta */
 	unsigned char	ranura;		/* lleva ranura de retardo */
 	jit_emitir_f	emitir;
+	/* La fila depende del modo FPU (PR/SZ/Enables): el bloque que la use
+	   queda atado al modo vigente al traducir (t->fpu) y no recibe enlaces.
+	   Va al final para que las filas viejas la inicialicen a 0 solas. */
+	unsigned char	fpu;
 };
 
 #define TN(w)	(((w) >> 8) & 0x0F)
@@ -2508,6 +2527,114 @@ static void pl_movw1(jit_gen * g, jit_traduccion * t, int i)
 	tr_leer_a(g, t, TN(w), 2);
 }
 
+/* --- la frontera FPU (sz0): los FMOV por el puntero de banco vivo -------- */
+
+static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f);
+
+/* [banco + 4x] <- EAX, con RCX de por medio. Va despues de la lectura, asi
+   que RCX (la direccion) ya se consumio. */
+static void tr_fr_a(jit_gen * g, int x)
+{
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov_mr(&g->e, X64_RCX, FR_DESP(x), X64_RAX);
+}
+
+/* El valor de una escritura cuando sale de FR(x): puntero vivo y carga, sobre
+   el mismo registro destino. */
+static void tr_valor_fr(jit_gen * g, void * ctx, x64_reg dst)
+{
+	int x = (int) (size_t) ctx;
+
+	jit_x64_mov64_rm(&g->e, dst, CTX, O_FRB);
+	jit_x64_mov_rm(&g->e, dst, dst, FR_DESP(x));
+}
+
+static void pl_fmov172(jit_gen * g, jit_traduccion * t, int i)	/* FMOV FRm,FRn */
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov_rm(&g->e, X64_RAX, X64_RCX, FR_DESP(TM(w)));
+	jit_x64_mov_mr(&g->e, X64_RCX, FR_DESP(TN(w)), X64_RAX);
+}
+
+static void pl_fmovs173(jit_gen * g, jit_traduccion * t, int i)	/* FMOV.S @Rm,FRn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	gen_leer32(g, X64_RAX, t->modo);
+	tr_fr_a(g, TN(w));
+}
+
+static void pl_fmovs174(jit_gen * g, jit_traduccion * t, int i)	/* @(R0,Rm),FRn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TM(w));
+	gen_leer32(g, X64_RAX, t->modo);
+	tr_fr_a(g, TN(w));
+}
+
+/* @Rm+ : el incremento se compromete despues de que la lectura volvio. */
+static void pl_fmovs175(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	gen_leer32(g, X64_RAX, t->modo);
+	tr_fr_a(g, TN(w));
+	tr_alu_ri(g, t, X64_ADD, TM(w), 4);
+}
+
+static void pl_fmovs176(jit_gen * g, jit_traduccion * t, int i)	/* FRm,@Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	gen_escribir(g, t->modo, 4, tr_valor_fr, (void *) (size_t) TM(w));
+}
+
+/* @-Rn : R(n) se compromete despues de que la escritura volvio. */
+static void pl_fmovs177(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RCX, 4);
+	gen_escribir(g, t->modo, 4, tr_valor_fr, (void *) (size_t) TM(w));
+	tr_alu_ri(g, t, X64_SUB, TN(w), 4);
+}
+
+static void pl_fmovs178(jit_gen * g, jit_traduccion * t, int i)	/* FRm,@(R0,Rn) */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TN(w));
+	gen_escribir(g, t->modo, 4, tr_valor_fr, (void *) (size_t) TM(w));
+}
+
+/* La aritmetica de sz0/pr0 va por el manejador real: pura sobre FR/FPUL/T,
+   sin memoria, y con Enables=0 garantizado por b->fpu no puede levantar la
+   excepcion de FPU a mitad de bloque. */
+static void pl_fadd189(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fadd189); }
+static void pl_fsub198(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fsub198); }
+static void pl_fmul195(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fmul195); }
+static void pl_fdiv192(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fdiv192); }
+static void pl_fcmpeq190(jit_gen * g, jit_traduccion * t, int i){ tr_manejador(g, t, i, (const void *) fcmpeq190); }
+static void pl_fcmpgt191(jit_gen * g, jit_traduccion * t, int i){ tr_manejador(g, t, i, (const void *) fcmpgt191); }
+static void pl_float193(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) float193); }
+static void pl_ftrc199(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) ftrc199); }
+static void pl_fneg196(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fneg196); }
+static void pl_fabs188(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fabs188); }
+static void pl_fsqrt197(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fsqrt197); }
+static void pl_flds186(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) flds186); }
+static void pl_fsts187(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fsts187); }
+static void pl_fldi0170(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fldi0170); }
+static void pl_fldi1171(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fldi1171); }
+
 /* --- aritmetica y corrimientos que el censo pidio ------------------------ */
 
 static void pl_cmpeq43(jit_gen * g, jit_traduccion * t, int i)	/* CMP/EQ #imm,R0 */
@@ -2992,6 +3119,35 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "OR #imm,R0",         5, 0, 0, 0, pl_or77 },
 	{ NULL, "MOVA @(d,PC),R0",    1, 0, 0, 0, pl_mova34 },
 	{ NULL, "MOV.W Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movw23 },
+	/* La frontera FPU (sz0): la ultima columna ata el bloque al modo FPU
+	   vigente al traducir (b->fpu) y le quita los enlaces. Ciclos de los
+	   FMOV copiados de cada manejador LEYENDO EL CUERPO ENTERO
+	   (0,2,1,2,1,1,1): fmov172 no suma ninguno, clase mov3 -- y un extractor
+	   que busca "cycles +=" por cercania le robo el 2 del manejador
+	   siguiente, que costo 633 millones de instrucciones de divergencia. La
+	   aritmetica va por el manejador real y lleva 0 aqui. */
+	{ NULL, "FMOV FRm,FRn",        0, 0, 0, 0, pl_fmov172,  1 },
+	{ NULL, "FMOV.S @Rm,FRn",      2, 1, 0, 0, pl_fmovs173, 1 },
+	{ NULL, "FMOV.S @(R0,Rm),FRn", 1, 1, 0, 0, pl_fmovs174, 1 },
+	{ NULL, "FMOV.S @Rm+,FRn",     2, 1, 0, 0, pl_fmovs175, 1 },
+	{ NULL, "FMOV.S FRm,@Rn",      1, 1, 0, 0, pl_fmovs176, 1 },
+	{ NULL, "FMOV.S FRm,@-Rn",     1, 1, 0, 0, pl_fmovs177, 1 },
+	{ NULL, "FMOV.S FRm,@(R0,Rn)", 1, 1, 0, 0, pl_fmovs178, 1 },
+	{ NULL, "FADD FRm,FRn",        0, 1, 0, 0, pl_fadd189,  1 },
+	{ NULL, "FSUB FRm,FRn",        0, 1, 0, 0, pl_fsub198,  1 },
+	{ NULL, "FMUL FRm,FRn",        0, 1, 0, 0, pl_fmul195,  1 },
+	{ NULL, "FDIV FRm,FRn",        0, 1, 0, 0, pl_fdiv192,  1 },
+	{ NULL, "FCMP/EQ FRm,FRn",     0, 1, 0, 0, pl_fcmpeq190, 1 },
+	{ NULL, "FCMP/GT FRm,FRn",     0, 1, 0, 0, pl_fcmpgt191, 1 },
+	{ NULL, "FLOAT FPUL,FRn",      0, 1, 0, 0, pl_float193, 1 },
+	{ NULL, "FTRC FRm,FPUL",       0, 1, 0, 0, pl_ftrc199,  1 },
+	{ NULL, "FNEG FRn",            0, 1, 0, 0, pl_fneg196,  1 },
+	{ NULL, "FABS FRn",            0, 1, 0, 0, pl_fabs188,  1 },
+	{ NULL, "FSQRT FRn",           0, 1, 0, 0, pl_fsqrt197, 1 },
+	{ NULL, "FLDS FRm,FPUL",       0, 1, 0, 0, pl_flds186,  1 },
+	{ NULL, "FSTS FPUL,FRn",       0, 1, 0, 0, pl_fsts187,  1 },
+	{ NULL, "FLDI0 FRn",           0, 1, 0, 0, pl_fldi0170, 1 },
+	{ NULL, "FLDI1 FRn",           0, 1, 0, 0, pl_fldi1171, 1 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3011,6 +3167,9 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	stsl167, movl18, movb16, or76, cmppz49, sub69, movw8, movw1,
 	div1s52, div0s53, div0u54, shad90, braf, bsrf109,
 	macl62, shld93, or77, mova34, movw23,
+	fmov172, fmovs173, fmovs174, fmovs175, fmovs176, fmovs177, fmovs178,
+	fadd189, fsub198, fmul195, fdiv192, fcmpeq190, fcmpgt191, float193,
+	ftrc199, fneg196, fabs188, fsqrt197, flds186, fsts187, fldi0170, fldi1171,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -3391,6 +3550,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	t->n          = 0;
 	t->n_adelante = 0;
 	t->modo       = mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO;
+	t->fpu        = -1;
 
 	for (i = 0; i < max; i++)
 	{
@@ -3402,6 +3562,31 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		{
 			jit_censar(instr);
 			break;
+		}
+
+		/* Una fila FPU ata el bloque al modo vigente. El manejador ya salio
+		   de la oplist de ese modo, asi que la palabra y la semantica son
+		   coherentes por construccion; jit_fpu_visto es la clave viva.
+
+		   **Bajo la MMU las filas FPU no se traducen** (el bloque corta aqui).
+		   No es cautela vaga: la caza de la sesion 2026-08-08 encontro que en
+		   los thunks dinamicos de WinCE --dos excepciones encadenadas, refill
+		   de ITLB y address error reparado por el kernel-- el orden de los
+		   avances de URC entre busqueda y datos difiere legitimamente entre
+		   ejecutar por instruccion y por bloque, y URC decide el reemplazo de
+		   la TLB, o sea el camino del guest. Un avance corrido costo 633
+		   millones de instrucciones de divergencia quince segundos despues.
+		   El expediente entero esta en el plan; levantar esto pide resolver
+		   esa restriccion, no borrar este if. */
+		if (p->fpu)
+		{
+			if (t->modo == JIT_ACC_MMU)
+			{
+				jit_censar(instr);
+				break;
+			}
+
+			t->fpu = (int) jit_fpu_visto;
 		}
 
 		t->palabra[i] = instr;
@@ -3533,6 +3718,13 @@ static void jit_parchear_enlace(jit_enlace * e, DWORD pc_fuente,
 	unsigned char * salto;
 	long long    rel, rel_talon = 0;
 	int          puente;
+
+	/* Los bloques FPU no reciben enlaces: su validez depende de PR/SZ/Enables
+	   y eso solo lo chequea el despachador. La sonda midio el porque: Crazy
+	   Taxi conmuta SZ 13,2 millones de veces por minuto, asi que ni la clave
+	   ni una guarda por sitio lo aguantan; entrar por el despachador si. */
+	if (destino->fpu >= 0)
+		return;
 
 	/*
 		**Directo solo dentro de la misma ventana de 1 KB; el resto, por el
@@ -3793,6 +3985,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 	b->codigo     = (void (*)(void)) (jit_codigo + jit_codigo_us);
 	b->n_palabras = t.n;
 	b->mmu        = t.modo;
+	b->fpu        = t.fpu;
 
 	memcpy(b->copia, t.palabra, (size_t) t.n * sizeof(WORD));
 	b->palabras = b->copia;
@@ -3923,6 +4116,7 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 	b->extra_palabra = extra_palabra;
 	b->n_extra       = n_extra;
 	b->mmu           = -1;
+	b->fpu           = -1;
 	b->veces         = 0;
 
 	jit_registrar_marco(b, jit_x64_largo(&g.e));
@@ -4046,6 +4240,16 @@ int jit_despachar(DWORD pc)
 		   encendida los accesos llevan la traduccion adentro. */
 		if (b->mmu >= 0
 			&& b->mmu != (mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO))
+		{
+			jit_rechazos++;
+			break;
+		}
+
+		/* Y el modo FPU (PR/SZ/algun-Enable) de la traduccion. Los bloques
+		   FPU no reciben enlaces, asi que este chequeo los cubre en toda
+		   entrada; cada sitio fmov corre siempre bajo el mismo modo --el
+		   flip encierra la secuencia-- asi que en regimen siempre pasa. */
+		if (b->fpu >= 0 && (unsigned) b->fpu != jit_fpu_visto)
 		{
 			jit_rechazos++;
 			break;

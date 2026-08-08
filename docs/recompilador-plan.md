@@ -1509,21 +1509,52 @@ el escenario: es el **manejador de recarga de TLB de WinCE** (`8c0124f0`: camina
 `LDTLB`, `RTE`) en ping-pong con código usuario, con `MOV.W @R9,R4` —la plantilla nueva—
 como instrucción que falta y se reejecuta.
 
-**El mecanismo candidato que queda, con toda la evidencia a favor**: una asimetría de
-*orden* entre búsqueda y datos alrededor de la falta. El intérprete busca **cada**
-instrucción — puede faltar la búsqueda *antes* de ejecutar el acceso de datos. El bloque
-traducido ya verificó sus palabras de una vez (la búsqueda fue una, al entrar) y ejecuta
-el acceso de datos aunque la búsqueda de la instrucción *siguiente* vaya a faltar — el
-avance del acceso (`uE`) queda registrado en un orden distinto respecto del avance de la
-falta (`uA`), los registros convergen tras el refill (por eso los checkpoints daban
-idénticos), pero URC queda corrido en uno. Si esto es lo que pasa, no es un bug de una
-fila: es una propiedad del contrato bloque-contra-instrucción frente a faltas de
-*búsqueda* en mitad del tramo, y la pregunta de diseño es si el bloque debe cortarse
-donde el fetch del intérprete faltaría — que sólo puede saberse en tiempo de ejecución.
-Lo que falta para confirmarlo: desensamblar el bloque N=79 que cubre `0002d7xx`/`00027870`
-y contrastarlo instrucción por instrucción con el stream del intérprete alrededor de la
-falta. Con la ventana, los contadores y la traza del manejador ya en mano, es una sesión
-corta.
+**El mecanismo, confirmado por el stream**: la sonda de dirección (`uV`, la virtual del
+último avance emitido) dio `0x00119728`, y la traza larga del intérprete
+(`DCEMU_TRAZA_EN_MS=15023:300000`) mostró el escenario completo: WinCE ejecuta un **thunk
+dinámico** (`MOV.W @(disp,PC),R0; JMP @R0` en `01E6890C`) a través de **dos excepciones
+encadenadas** — el refill de ITLB carga la página del thunk, el literal de 16 bits
+sign-extendido (`FFFFFDE7`) hace que el `JMP` dispare un address error `0xE0`, y el kernel
+lo repara emulando la instrucción (su manejador es quien toca `0x0011972x`). En ese
+intercalado, el orden de los avances de URC entre búsqueda y datos difiere legítimamente
+entre ejecutar por instrucción (que puede faltar la búsqueda antes del dato) y por bloque
+(que ya verificó sus palabras y ejecuta el dato antes de que la búsqueda siguiente falte).
+Los registros convergen tras la reparación; URC queda corrido en uno; quince segundos
+después el blit arranca con otros parámetros. **No es el bug de una fila: es una
+restricción del contrato bloque-contra-instrucción frente a excepciones encadenadas en
+código dinámico.**
+
+### El cierre del módulo: la FPU aterrizada sin MMU, y la restricción con expediente
+
+La ingeniería que la evidencia permite hoy: **bajo la MMU las filas FPU no se traducen**
+(dos líneas en el descubrimiento, con el expediente citado en el comentario). El reparto
+queda exactamente donde el valor está:
+
+- **Crazy Taxi gana el lote entero** — su 28 % sin cubrir *era* la FPU: cobertura
+  72,4 → **84,9 %** (+2,77 mil millones de instrucciones FPU), bloques de 18,7, los
+  `FMOV.S` de `sz0` emitidos por el puntero de banco vivo y la aritmética por el
+  manejador real con Enables=0 garantizado por `b->fpu`. Exactitud al dígito con las
+  capturas byte a byte.
+- **DCDoom queda intacto por diseño** — cero filas FPU bajo MMU: su resumen es idéntico
+  al del cuarto lote (mismas 238,8 M de entradas, mismos bytes), y su exactitud es
+  trivial además de verificada.
+
+| banco | intérprete | traductor | estado anterior |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 41 577 ms | **32 796 (dispersión 0,11 %) — 1,067×** | 32 957 |
+| Crazy Taxi, 180 s | 110 115 ms | **98 374 (−10,7 %)** | ~99 300 |
+
+El tiempo de CT se movió poco para tanta cobertura, y el porqué es de libro: la
+aritmética por manejador es ≈ neto cero por construcción (el mismo manejador, menos el
+despacho, más la sincronización). **El pago de esos 12 puntos de cobertura llega cuando
+la aritmética se emita** — `addss`/`subss`/`mulss` en el emisor, con el redondeo del
+anfitrión que ya coincide por ser el mismo C — y esa puerta quedó abierta con la
+infraestructura de esta fase: los bancos por puntero, `b->fpu`, y la lista blanca.
+
+Levantar la compuerta MMU+FPU pide resolver la restricción de orden — la pregunta de
+diseño es si un bloque debe cortar donde el fetch del intérprete faltaría, que sólo se
+sabe corriendo — y todo el instrumental para retomarla está comiteado: `DCEMU_CP_MS` con
+sus dos granos, la sonda de conservación descrita en tres ediciones, y este expediente.
 
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
