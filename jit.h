@@ -87,6 +87,8 @@ extern unsigned char jit_mapa[8192];
 	provocan un movimiento de epoca de mas, o sea una verificacion completa de
 	mas. Nunca lo contrario.
 */
+#ifdef DCEMU_JIT
+
 extern int				jit_vigila_codigo;
 extern unsigned			jit_epoca;
 extern unsigned char	jit_pag_codigo[0x10000];
@@ -123,6 +125,19 @@ extern unsigned char	jit_pag_codigo[0x10000];
    MMU. Los bloques no dejan de valer, pero hay que volver a comprobarlos. */
 #define JIT_EPOCA_MAPEO()												\
 	do { if (jit_vigila_codigo) jit_epoca++; } while (0)
+
+#else	/* sin traductor compilado no hay nada que vigilar */
+
+/*
+	El arbol se compila sin -DDCEMU_JIT, y entonces esto tiene que desaparecer
+	entero: mem.h y mmu.c llaman a los ganchos en sus caminos mas calientes.
+*/
+#define jit_vigila_codigo		0
+#define JIT_ESCRITURA(fisica)	do { } while (0)
+#define JIT_ESCRITURA_HOST(ptr)	do { } while (0)
+#define JIT_EPOCA_MAPEO()		do { } while (0)
+
+#endif /* DCEMU_JIT */
 
 void jit_iniciar(void);
 
