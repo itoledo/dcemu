@@ -33,6 +33,12 @@
 
 extern int traza_activa;
 
+/* DCEMU_CP_MS: puntos de control por ms desde el bloque periodico, sin
+   encender la traza (y por lo tanto sin apagar el JIT). -1 = apagado, y el
+   llamador se salta la llamada entera. Ver traza.c. */
+extern long traza_cp_tope;
+void traza_cp_periodico(void);
+
 /* EXPERIMENTO: ver traza.c. */
 extern long traza_disparo;
 

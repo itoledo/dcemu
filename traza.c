@@ -24,6 +24,61 @@
 
 int traza_activa = 0;
 
+/*
+	DCEMU_CP_MS=N: un punto de control por milisegundo emulado --PC, registros,
+	MACL y FR0/FR1-- durante los primeros N ms, emitido **desde el bloque
+	periodico y sin encender la traza**. Existe porque DCEMU_TRAZA_EN_MS vive
+	bajo la traza y la traza apaga el JIT: una divergencia del traductor era
+	invisible para la unica herramienta hecha para verla. Dos corridas exactas
+	dan puntos identicos --el bloque periodico corre en las mismas fronteras de
+	ciclo emulado en los dos modos, con el contexto ya volcado--, y el primer
+	punto distinto acota la bifurcacion a un milisegundo.
+
+	-2 = sin leer todavia; -1 = apagado (y el llamador ni siquiera llama).
+*/
+long traza_cp_tope = -2;
+
+void traza_cp_periodico(void)
+{
+	static unsigned long long	proximo = 1;
+	unsigned long long			ms;
+
+	if (traza_cp_tope == -2)
+	{
+		const char * e = getenv("DCEMU_CP_MS");
+
+		traza_cp_tope = (e != NULL) ? atol(e) : -1;
+
+		if (traza_cp_tope == -1)
+			return;
+	}
+
+	ms = reloj_ms();
+
+	if (ms >= proximo)
+	{
+		fprintf(stderr, "cp %llu ms pc=%08lx"
+			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
+			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
+			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx"
+			" fr0=%08lx fr1=%08lx\n",
+			ms, (unsigned long) PC,
+			(unsigned long) R(0), (unsigned long) R(1),
+			(unsigned long) R(2), (unsigned long) R(3),
+			(unsigned long) R(4), (unsigned long) R(5),
+			(unsigned long) R(6), (unsigned long) R(7),
+			(unsigned long) R(15), (unsigned long) PR,
+			(unsigned long) SR, (unsigned long) MACL,
+			(unsigned long) *(DWORD *) &FR(0),
+			(unsigned long) *(DWORD *) &FR(1));
+
+		proximo = ms + 1;
+
+		if (ms >= (unsigned long long) traza_cp_tope)
+			traza_cp_tope = -1;		/* listo: el llamador deja de llamar */
+	}
+}
+
 /* EXPERIMENTO: cuando es >0 se decrementa por instruccion y al llegar a cero
    vuelca el anillo. Sirve para mirar que hace el guest N instrucciones despues
    de algo -- por ejemplo despues de que la lectora le entregue un archivo. */

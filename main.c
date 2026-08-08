@@ -1072,6 +1072,13 @@ void main_loop(void)
 				jit_muestrear(PC);
 #endif
 
+				/* El punto de control por ms que NO apaga el JIT (DCEMU_CP_MS).
+				   Arranca en -2 ("sin leer"), asi que la primera pasada entra,
+				   lee el entorno y lo deja en -1 si esta apagado: costo cero
+				   en regimen. */
+				if (traza_cp_tope != -1)
+					traza_cp_periodico();
+
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan
 				// su propio resto, cada uno con su divisor. Ninguno entrega su
 				// interrupcion: solo dejan su bandera puesta.

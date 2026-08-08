@@ -1426,12 +1426,26 @@ la captura distinta). La bisección con `DCEMU_JIT_PLANTILLAS` encontró **dos**
    (mapeos 189 mil contra 1,13 M; modos 2,9 M contra 8,2 M) dicen que corre un camino
    genuinamente distinto y más ocioso.
 
-**La herramienta que faltó es la primera tarea de la reanudación**: los puntos de control
-por milisegundo (`DCEMU_TRAZA_EN_MS`) viven bajo la traza, **y la traza apaga el JIT**,
-así que no pueden ver una divergencia del traductor. Hace falta la variante que emita los
-checkpoints desde el bloque periódico sin apagar nada; con ella, el primer punto distinto
-señala el bloque culpable en una corrida. El lote entero quedó como diff en el scratchpad
-de la sesión (`fpu-v1.diff`, 12 KB) y el árbol quedó revertido y exacto.
+**La herramienta que faltó se construyó y funcionó a la primera**: `DCEMU_CP_MS=N` emite
+un punto de control por milisegundo emulado —PC, registros, MACL, FR0/FR1— **desde el
+bloque periódico y sin encender la traza** (que apaga el JIT; por eso `DCEMU_TRAZA_EN_MS`
+no podía ver esto). El bloque periódico corre en las mismas fronteras de ciclo en los dos
+modos y con el contexto volcado, así que dos corridas exactas dan puntos idénticos y el
+primero distinto acota la bifurcación a un milisegundo. Costo cero en régimen: el
+llamador ni siquiera llama cuando está apagado.
+
+**Lo que la herramienta ya dijo** (35 000 puntos por corrida): la bifurcación de N=79 está
+en el **milisegundo 15 024**, dentro del lazo del blit de columnas de DOOM (`0002EF3E`,
+el mismo de la fase 0) — que en ese instante es **puro entero** (la traza con
+`DCEMU_TRAZA_EN_MS=15023:300` lo lista completo: ni un FPU). Los contadores del lazo
+difieren desde la entrada (r5/r6: 3/4 contra 2f/30; r7 la coordenada de textura), o sea
+que **la divergencia viene de los parámetros calculados antes del lazo**. Y la página es
+dinámica: a los 16 s la misma dirección contiene datos que decodifican como basura con
+`FADD`/`FMOV.S` adentro — con la fila de `fmovs173` esa basura se vuelve *traducible*
+donde antes cortaba, que es la pista de por qué la mera existencia de la fila cambia algo.
+La reanudación: instrumentar la traducción de `0002EF3E` en N=78 y N=79 —cuándo se
+traduce, con qué palabras, qué emite— y comparar. El lote quedó como diff en el
+scratchpad de la sesión (`fpu-v1.diff`) y el árbol revertido y exacto.
 
 ### La falsa regresión de Crazy Taxi, y lo que la palanca demostró
 
