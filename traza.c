@@ -81,7 +81,8 @@ void traza_cp_periodico(void)
 		fprintf(stderr, "cpf %llu mmucr=%08lx pc=%08lx"
 			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
 			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
-			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx\n",
+			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx"
+			" uc=%llu ue=%llu uv=%08lx\n",
 			(unsigned long long) reloj_total, (unsigned long) *MMUCR,
 			(unsigned long) PC,
 			(unsigned long) R(0), (unsigned long) R(1),
@@ -89,7 +90,8 @@ void traza_cp_periodico(void)
 			(unsigned long) R(4), (unsigned long) R(5),
 			(unsigned long) R(6), (unsigned long) R(7),
 			(unsigned long) R(15), (unsigned long) PR,
-			(unsigned long) SR, (unsigned long) MACL);
+			(unsigned long) SR, (unsigned long) MACL,
+			mmu_sonda_uc, mmu_sonda_ue, (unsigned long) mmu_sonda_uv);
 
 		return;
 	}
@@ -100,7 +102,7 @@ void traza_cp_periodico(void)
 			" r0=%08lx r1=%08lx r2=%08lx r3=%08lx"
 			" r4=%08lx r5=%08lx r6=%08lx r7=%08lx"
 			" r15=%08lx pr=%08lx sr=%08lx macl=%08lx"
-			" fr0=%08lx fr1=%08lx\n",
+			" fr0=%08lx fr1=%08lx uc=%llu ue=%llu uv=%08lx\n",
 			ms, (unsigned long long) reloj_total, (unsigned long) *MMUCR,
 			(unsigned long) PC,
 			(unsigned long) R(0), (unsigned long) R(1),
@@ -110,7 +112,8 @@ void traza_cp_periodico(void)
 			(unsigned long) R(15), (unsigned long) PR,
 			(unsigned long) SR, (unsigned long) MACL,
 			(unsigned long) *(DWORD *) &FR(0),
-			(unsigned long) *(DWORD *) &FR(1));
+			(unsigned long) *(DWORD *) &FR(1),
+			mmu_sonda_uc, mmu_sonda_ue, (unsigned long) mmu_sonda_uv);
 
 		proximo = ms + 1;
 

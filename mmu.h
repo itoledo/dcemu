@@ -270,6 +270,24 @@ extern DWORD		mmu_utlb_gen[MMU_UTLB_ENTRADAS];
 
 /* Un acceso a la UTLB avanza URC -- acierto de cache incluido. Un solo cuerpo
    para el macro y para mmu.c (urc_avanzar). */
+/*
+	La sonda de conservacion de avances (DCEMU_SONDA_URC, el expediente de la
+	compuerta): uc cuenta TODO avance del lado C -- este macro es el unico
+	cuerpo --, ue el avance emitido en linea del traductor, uv la virtual del
+	ultimo emitido. Los tres se definen siempre en mmu.c (traza.c los imprime
+	sin condicionales); solo el conteo se compila bajo la opcion, porque este
+	macro es el camino mas caliente del arbol.
+*/
+extern unsigned long long	mmu_sonda_uc;
+extern unsigned long long	mmu_sonda_ue;
+extern DWORD				mmu_sonda_uv;
+
+#ifdef DCEMU_SONDA_URC
+#define MMU_SONDA_UC()	do { mmu_sonda_uc++; } while (0)
+#else
+#define MMU_SONDA_UC()	do { } while (0)
+#endif
+
 #define MMU_URC_AVANZAR()												\
 	do																	\
 	{																	\
@@ -279,6 +297,7 @@ extern DWORD		mmu_utlb_gen[MMU_UTLB_ENTRADAS];
 			_urc = 0;													\
 																		\
 		*MMUCR = (*MMUCR & ~0x0000FC00ul) | (_urc << 10);				\
+		MMU_SONDA_UC();													\
 	} while (0)
 
 /* De perf.h, que los llamadores ya incluyen via mem.h. */

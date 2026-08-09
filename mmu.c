@@ -982,6 +982,13 @@ DWORD mmu_traducir_mirar(DWORD direccion)
 /* Busqueda de instrucciones (fase 7)                                       */
 /* ------------------------------------------------------------------------ */
 
+/* La sonda de conservacion de avances (ver mmu.h): definidas siempre para
+   que traza.c las imprima y el traductor las alcance con D(); solo el conteo
+   depende de DCEMU_SONDA_URC. */
+unsigned long long	mmu_sonda_uc = 0;
+unsigned long long	mmu_sonda_ue = 0;
+DWORD				mmu_sonda_uv = 0;
+
 DWORD           mmu_fetch_vpn     = 0xFFFFFFFFul;
 DWORD           mmu_fetch_mascara = 0;
 DWORD           mmu_fetch_md      = 0xFFFFFFFFul;

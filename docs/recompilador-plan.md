@@ -1725,6 +1725,25 @@ al morir, no evidencia de infidelidad: la exactitud de SR2 queda pendiente del a
 y es el primer guest que puede ejercitar el agujero de la compuerta en filas enteras
 (conmutaciones de contexto de WinCE escribiendo PTEH a mitad de bloque).
 
+**Con el arreglo, Sega Rally 2 es el tercer guest exacto del traductor**: total al
+dígito (8 607 000 273) y captura **byte-idéntica** a la canónica (`1B28D0D9…`) en las
+dos formas, con la compuerta cerrada. Los números de su línea base, con captura en las
+dos corridas (los tiempos son indicativos):
+
+- **cobertura 78,3 % sin FPU** (6 735 M de 8 607 M), 19 863 bloques, **83,3 MB de
+  arena** — el desborde de los 64 era demanda real, no un accidente —, 534 emisiones
+  fallidas.
+- **12,2 instrucciones por entrada** (548,6 M de entradas): los cortes de FPU fragmentan
+  los bloques — la compuerta no solo suma cobertura, cose bloques.
+- WinCE a pleno: 5,37 M de movimientos de época (mapeo) y 12,3 M de modo — 4,7× y 1,5×
+  los de DCDoom —, 19 230 enlaces por puente, 5,05 M de transiciones PR/SZ.
+- int 117 294 ms / trad 112 309 (−4,3 % con captura): el techo sin FPU es bajo, como
+  se esperaba.
+- El censo de cortes pide dos cosas además de la FPU: **`CLRT` (358 cortes, sin
+  plantilla — el mini-lote 7 junto a `SETT` cuando toque)** y las filas `LDC ...,SR`
+  (LDC.L @Rn+ incluidas), que escriben SR y quedan fuera con razón. `TRAPA` (82) queda
+  fuera por diseño.
+
 ## La compuerta MMU+FPU: el mecanismo, por fin con nombre y apellido
 
 La relectura completa de los tres caminos de URC (los avances de `mmu.c`, el emitido de
@@ -1776,3 +1795,90 @@ corrida con palabras viejas.
    juez de las filas FPU bajo MMU no cambia (son las mismas plantillas), y la ganancia se
    mide donde vive: el banco de SR2 (`8 607 000 273` instrucciones, `1B28D0D9…`) y el de
    DCDoom, con ciclo PGO y tanda.
+
+### Lo que el protocolo encontró: el 0x800 del cambio perezoso de contexto FPU
+
+El paso 1 reprodujo al dígito de la primera (DCDoom −639,1 M contra los ~633 M del
+expediente; SR2 diverge también, +293 k). El paso 2 **falló** — el corte de época
+dispara (la cobertura baja 16 % y los rechazos por verificación caen de 409 k a 16 k:
+las escrituras invalidantes a mitad de bloque son reales y frecuentes en WinCE) pero la
+divergencia queda **bit a bit idéntica** con y sin él: el agujero de la escritura existe
+y no era éste. El paso 3, con la sonda nueva (`-DDCEMU_SONDA_URC`: `uc` en el único
+cuerpo C del avance, `ue` emitido, `uv` la virtual del último emitido, los tres en el
+punto de control), lo entregó en tres corridas:
+
+- **La caza gruesa** (un `cp` por ms, normalizando `u = uc + ue`): primer ms distinto,
+  el 8423 — con TODO el estado idéntico, la conservación de URC **cumplida**
+  (u = 31 929 045 en ambos)… y el reloj corrido **+3 ciclos**. No era URC: URC era el
+  síntoma. Es contabilidad de ejecución.
+- **La caza fina** (`DCEMU_CP_MS=8423:1`, un `cpf` por grano de 400 ciclos): el
+  nacimiento acotado a un grano — el traductor cruza **la misma excepción** gastando
+  +12 ciclos y +1 acceso-con-avance; las diferencias de registros entre ticks son la
+  foto a distinta profundidad del mismo manejador, y a dos granos todo reconverge salvo
+  el corrimiento permanente.
+- **La disección** (`--traza-desde` en la primera llegada al sitio): no es un thunk —
+  es un **prólogo de función** (`MOV.L R8,@-R15; …; FMOV.S FR12,@-R15`) con `SR.FD=1`:
+  la excepción **0x800 de FPU deshabilitada**, el cambio perezoso de contexto FPU de
+  Windows CE (su manejador normaliza 800→820 con un `OR #20,R0` en la ranura y lleva la
+  cuenta en `8c111884`; el `uv` del expediente original — `0x0011972x`, «lo toca su
+  manejador» — es el área donde ese manejador guarda el banco del dueño anterior).
+
+**El mecanismo, con nombre**: `run()` alza el 0x800 **en el despacho, antes de tocar
+nada**. Una fila FPU emitida no pasa por ahí: traduce la dirección de su almacenamiento
+(el avance de URC de más), escribe **el banco del dueño anterior** en la pila nueva, y
+el guest pierde su conmutación perezosa — +12 ciclos y +1 avance por conmutación, y de
+ahí el LDTLB corrido y el fork 600 M de instrucciones después. La clave de modo
+(`jit_fpu_visto`) registraba PR/SZ/Enables **pero no FD**, que es un bit de SR.
+
+**El arreglo**: FD entra a la clave (bit 3, recalculado donde `fpu_deshabilitada` se
+deriva — `excepcion_actualizar_vigilancia`), y el descubrimiento corta filas FPU con FD
+puesto. Un bloque con FPU traducido con FD=0 y entrado con FD=1 se **rechaza** y el
+intérprete alza el 0x800 al dígito, como siempre; cuando el manejador limpia FD, la
+clave vuelve y los bloques reviven sin retraducción.
+
+### El protocolo 2: seis de seis canónicos, y la compuerta se levanta
+
+Con FD en la clave, **las seis configuraciones salen canónicas al dígito con captura**
+— incluidas las dos de reproducción (compuerta levantada, corte de época apagado), que
+eran las divergentes: el arreglo de FD **solo** resuelve el expediente entero. Los
+números del premio, comparando dentro del protocolo (misma máquina, mismo binario):
+
+| | cerrada (con corte) | levantada sin corte | levantada con corte |
+| --- | --- | --- | --- |
+| DCDoom cobertura | 75,4 % | **82,4 %** | 75,6 % |
+| SR2 cobertura | 73,6 % | **86,7 %** (15,4/entrada) | 81,1 % |
+
+- **SR2 es la clientela, como el plan proyectó**: 78,3 → 86,7 % de cobertura y bloques
+  de 12,2 → 15,4 — la FPU ya no fragmenta. Los rechazos suben a 11,7 M (la clave con FD
+  rechaza las entradas de bloques FPU durante los períodos FD=1 del lazy switching) —
+  el costo de la exactitud del 0x800, y una veta futura si alguna vez pesa.
+- **El corte de época queda conmutable y apagado** (`DCEMU_JIT_CORTE_EPOCA=1`): no lo
+  necesita ninguna exactitud — los seis escenarios son exactos sin él — y cuesta 6-8 %
+  de cobertura. La razón empírica de que el agujero teórico no se observe: el guest no
+  ejecuta accesos con avance entre la escritura invalidante y el fin del bloque (los
+  5,4 M de movimientos de mapeo de SR2 no producen ni una divergencia). El diseño y el
+  bit `escribe` quedan en el árbol con este análisis, por si un guest futuro lo
+  desmiente.
+- **La compuerta pasa a levantada por omisión**; `DCEMU_JIT_SIN_FPU_MMU=1` es el
+  interruptor de aislamiento y la línea base anterior.
+- La sonda que cerró la caza queda como opción de compilación (`-DDCEMU_SONDA_URC`,
+  `build-sonda`): `uc`/`ue`/`uv` en los puntos de control. Tres corridas de sonda
+  bastaron donde seis hipótesis habían fallado — el instrumento correcto era un
+  contador de conservación con dirección, no más hipótesis.
+
+La cadena de aterrizaje sobre el binario real (ctest 23/23, exactitud canónica con
+captura en los tres guests, ciclo PGO con hash verificado):
+
+| banco | intérprete | traductor | cociente |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 41 739 ms | **32 950 ms** | **−21,1 %, 1,062×** |
+| Crazy Taxi, 180 s | 110 771 ms | 93 951 ms | −15,2 % |
+| Sega Rally 2, 60 s | 71 291 ms (0,84×) | **65 530 ms** | **−8,1 %, 0,92×** |
+
+SR2 con el perfil PGO sube a 87,4 % de cobertura y 16,4 por entrada. El −8,1 % es
+modesto para tanta cobertura y la razón es conocida (la lección de la fase FPU de CT):
+la aritmética va por el manejador real, los bloques siguen cortos, y **los 12,7 M de
+rechazos por la clave FD** — cada uno una vuelta entera por el despachador C — pesan.
+Las dos vetas que esto señala son exactamente las siguientes fases: el despacho emitido
+(las 458 M de entradas de SR2 pagan hoy el viaje C completo) y, si alguna vez pesa por
+sí sola, una clave FD por bloque en vez de global.

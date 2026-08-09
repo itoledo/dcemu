@@ -748,6 +748,14 @@ void jit_x64_setcc(x64_emisor * e, x64_cond cc, x64_reg dst)
 /* Flujo                                                                    */
 /* ------------------------------------------------------------------------ */
 
+/*
+	Los tres devuelven el sitio del desplazamiento para que jit_x64_fijar() lo
+	complete. **Si el buffer desbordo, el sitio sale NULL** -- que ya es la
+	convencion de "sin parche" de fijar --: con desborde, e->p queda clavado en
+	e->fin, asi que el sitio apuntaria uno-mas-alla del buffer (fijar escribiria
+	fuera del mapa: asi se cayo Sega Rally 2 al llenar el arena) o, si el
+	desborde venia de antes, sobre los bytes de una instruccion ya emitida.
+*/
 x64_parche jit_x64_jcc(x64_emisor * e, x64_cond cc)
 {
 	x64_parche p;
@@ -757,6 +765,9 @@ x64_parche jit_x64_jcc(x64_emisor * e, x64_cond cc)
 	p.sitio = e->p;
 	p.ancho = 4;
 	b4(e, 0);
+
+	if (e->desborde)
+		p.sitio = 0;
 
 	return p;
 }
@@ -770,6 +781,9 @@ x64_parche jit_x64_jcc_corto(x64_emisor * e, x64_cond cc)
 	p.ancho = 1;
 	b1(e, 0);
 
+	if (e->desborde)
+		p.sitio = 0;
+
 	return p;
 }
 
@@ -781,6 +795,9 @@ x64_parche jit_x64_jmp(x64_emisor * e)
 	p.sitio = e->p;
 	p.ancho = 4;
 	b4(e, 0);
+
+	if (e->desborde)
+		p.sitio = 0;
 
 	return p;
 }

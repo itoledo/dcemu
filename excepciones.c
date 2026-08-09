@@ -22,6 +22,7 @@
 #include "mmu.h"
 #include "perf.h"		/* los contadores de la instantanea */
 #include "sh4emu.h"
+#include "jit.h"		/* JIT_FPSCR_SONDA: SR.FD es el bit 3 de la clave */
 #include "tmu.h"		/* reloj_ms(): el histograma DCEMU_TRAZA_EXC */
 #include "traza.h"
 
@@ -477,6 +478,12 @@ void excepcion_actualizar_vigilancia(void)
 	   SR.FD para que el despacho no extraiga un campo de bits por instruccion,
 	   y si se pudiera escribir por separado las dos se irian de sincronia. */
 	fpu_deshabilitada = SR_FD;
+
+	/* FD es el bit 3 de la clave FPU del traductor (ver jit.h): un bloque
+	   con filas FPU traducido con FD=0 tiene que rechazarse al entrar con
+	   FD=1, para que el 0x800 del cambio perezoso de WinCE lo alce el
+	   interprete en el despacho, como siempre. */
+	JIT_FPSCR_SONDA(FPSCR);
 
 	excepcion_vigilar = mmu_activa
 					 || fpu_deshabilitada

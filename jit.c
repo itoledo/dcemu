@@ -329,7 +329,10 @@ void jit_escribir_par(DWORD dir, DWORD desp)
 /* 64 MB: la segunda tanda de plantillas dejo a DCDoom con el arena de 32 al
    98,8 % y 1314 emisiones fallidas -- bloques de 15,6 instrucciones que ya no
    cupieron. El arena es lo unico que hoy le pone tope a su cobertura. */
-#define JIT_ARENA_TAM		(64u * 1024u * 1024u)
+/* 128 MB: Sega Rally 2 lleno los 64 (DCDoom ya usaba 48,5 -- la traduccion
+   MMU en linea pesa ~4 KB por bloque) y el desborde en el borde destapo el
+   parche fuera del mapa que fijar() ahora anula. */
+#define JIT_ARENA_TAM		(128u * 1024u * 1024u)
 #define JIT_MAX_BLOQUES		32768
 #define JIT_MAX_INSTR		64
 
@@ -427,6 +430,24 @@ typedef struct
 
 static jit_bloque	jit_bloques[JIT_MAX_BLOQUES];
 static int			jit_n_bloques = 0;
+
+/* Los dos interruptores de la compuerta MMU+FPU (ver el plan). Se leen una
+   vez al arrancar; deciden EMISION, asi que cuestan cero en caliente.
+
+   La compuerta viene LEVANTADA: su motivo era el 0x800 del cambio perezoso
+   de contexto FPU de WinCE, resuelto con FD en la clave (bit 3, jit.h) y el
+   corte del descubrimiento con FD puesto -- el protocolo salio canonico en
+   los seis escenarios. DCEMU_JIT_SIN_FPU_MMU=1 la cierra: es el interruptor
+   de aislamiento y el que reproduce la linea base anterior.
+
+   El corte de epoca tras escrituras (gen_corte_epoca) viene APAGADO: el
+   agujero del orden de busqueda que motiva su diseno no se observa en
+   ningun banco (los seis escenarios son exactos sin el; la razon empirica
+   es que el guest no ejecuta accesos con avance entre la escritura
+   invalidante y el fin del bloque), y cuesta 6-8 % de cobertura.
+   DCEMU_JIT_CORTE_EPOCA=1 lo enciende si un guest futuro lo desmiente. */
+static int			jit_fpu_mmu = 1;
+static int			jit_corte_epoca = 0;
 
 /*
 	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
@@ -945,6 +966,13 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_add_rr(&g->e, X64_RAX, X64_RDX);
 	jit_x64_mov_mr(&g->e, X64_R8, 0, X64_RAX);
 
+#ifdef DCEMU_SONDA_URC
+	/* La sonda de conservacion: el avance emitido se cuenta y deja su
+	   virtual, para que el punto de control acote el sitio (ver mmu.h). */
+	jit_x64_add64_mi(&g->e, CTX, D(&mmu_sonda_ue), 1);
+	jit_x64_mov_mr(&g->e, CTX, D(&mmu_sonda_uv), X64_RCX);
+#endif
+
 	if (perf_activa)
 	{
 		jit_x64_add64_mi(&g->e, CTX, D_PERF_TRADUCE, 1);
@@ -1316,6 +1344,36 @@ static void gen_corte(jit_gen * g, DWORD pc_sig)
 	jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
 	sigue = jit_x64_jcc_corto(&g->e, X64_E);
 	jit_x64_fijar(&g->e, a_cortar);
+	gen_salir_en(g, pc_sig);
+	jit_x64_fijar(&g->e, sigue);
+}
+
+/*
+	El corte de epoca, tras una escritura en un bloque con MMU.
+
+	Una escritura del guest a PTEH/MMUCR o los arreglos por P4 -- la
+	conmutacion de contexto de WinCE -- o sobre una pagina con codigo
+	traducido, invalida la pagina vigente de busqueda y mueve la validez
+	global. El interprete, en la instruccion siguiente, hace el recorrido de
+	busqueda con su avance de URC; un bloque que siga de largo se lo saltea y
+	URC queda corrido en uno -- el "acceso-con-avance de mas" que midio la
+	conservacion del expediente. Salir aqui, en la frontera de la instruccion,
+	pone al despachador a reponer exactamente esa busqueda.
+
+	La comparacion es la de la guarda de cadena: la validez global contra el
+	campo del bloque corriente, que toda entrada -- directa o encadenada --
+	acaba de igualar. El bloque corriente es jit_bloques[jit_n_bloques]: se
+	asigna despues de emitir, pero el indice no se mueve durante la emision (y
+	si la emision falla, el codigo se descarta entero).
+*/
+static void gen_corte_epoca(jit_gen * g, DWORD pc_sig)
+{
+	x64_parche sigue;
+
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D_EPOCA);
+	jit_x64_alu_rm(&g->e, X64_CMP, X64_RAX, CTX,
+		D(&jit_bloques[jit_n_bloques].epoca));
+	sigue = jit_x64_jcc_corto(&g->e, X64_E);
 	gen_salir_en(g, pc_sig);
 	jit_x64_fijar(&g->e, sigue);
 }
@@ -1742,6 +1800,13 @@ struct jit_plantilla
 	   millones en el banco de CT, con la ejecucion intacta (captura y audio
 	   identicos): el contador mentia, no el guest. */
 	unsigned char	propia;
+	/* La fila escribe memoria. En un bloque con MMU, tras cada una va el
+	   corte de epoca (gen_corte_epoca): una escritura del guest a PTEH/MMUCR
+	   -- o sobre una pagina con codigo traducido -- invalida la pagina de
+	   busqueda, y el interprete haria el recorrido con su avance de URC en la
+	   busqueda de la instruccion siguiente. Un bloque que siga de largo corre
+	   URC en uno: la divergencia de 633 M del expediente de la compuerta. */
+	unsigned char	escribe;
 };
 
 #define TN(w)	(((w) >> 8) & 0x0F)
@@ -3333,10 +3398,10 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "MOV Rm,Rn",          0, 0, 0, 0, pl_mov3 },
 	{ NULL, "MOV.L @(d,PC),Rn",   2, 1, 0, 0, pl_movl2 },
 	{ NULL, "MOV.L @Rm,Rn",       2, 1, 0, 0, pl_movl9 },
-	{ NULL, "MOV.L Rm,@Rn",       2, 1, 0, 0, pl_movl6 },
+	{ NULL, "MOV.L Rm,@Rn",       2, 1, 0, 0, pl_movl6, 0, 0, 1 },
 	{ NULL, "MOV.L @(d,Rm),Rn",   1, 1, 0, 0, pl_movl21 },
 	{ NULL, "MOV.B @Rm,Rn",       2, 1, 0, 0, pl_movb7 },
-	{ NULL, "MOV.B Rm,@Rn",       2, 1, 0, 0, pl_movb4 },
+	{ NULL, "MOV.B Rm,@Rn",       2, 1, 0, 0, pl_movb4, 0, 0, 1 },
 	{ NULL, "MOV.B @(R0,Rm),Rn",  2, 1, 0, 0, pl_movb25 },
 	{ NULL, "ADD Rm,Rn",          1, 0, 0, 0, pl_add39 },
 	{ NULL, "ADD #imm,Rn",        1, 0, 0, 0, pl_add40 },
@@ -3358,11 +3423,11 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "BF",                 2, 0, 1, 0, pl_bf },
 	{ NULL, "BF/S",               2, 0, 1, 1, pl_bfs },
 	{ NULL, "MOV.L @(R0,Rm),Rn",  2, 1, 0, 0, pl_movl27 },
-	{ NULL, "MOV.L Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movl24 },
-	{ NULL, "MOV.B Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movb22 },
+	{ NULL, "MOV.L Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movl24, 0, 0, 1 },
+	{ NULL, "MOV.B Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movb22, 0, 0, 1 },
 	{ NULL, "MOV.B @Rm+,Rn",      1, 1, 0, 0, pl_movb13 },
 	{ NULL, "MOV.L @Rm+,Rn",      1, 1, 0, 0, pl_movl15 },
-	{ NULL, "MOV.L Rm,@-Rn",      1, 1, 0, 0, pl_movl12 },
+	{ NULL, "MOV.L Rm,@-Rn",      1, 1, 0, 0, pl_movl12, 0, 0, 1 },
 	{ NULL, "CMP/EQ #imm,R0",     1, 0, 0, 0, pl_cmpeq43 },
 	{ NULL, "EXTU.W Rm,Rn",       1, 0, 0, 0, pl_extuw61 },
 	{ NULL, "EXTS.B Rm,Rn",       1, 0, 0, 0, pl_extsb58 },
@@ -3381,7 +3446,7 @@ static jit_plantilla jit_plantillas[] =
 	/* Lo que el censo de Crazy Taxi pidio (2026-08-08): el pushpop de PR corta
 	   todo prologo y epilogo de funcion del guest. Ciclos copiados de cada
 	   manejador; el 0 de LDS.L @Rm+,PR es del manejador, no un olvido. */
-	{ NULL, "STS.L PR,@-Rn",      2, 1, 0, 0, pl_stsl168 },
+	{ NULL, "STS.L PR,@-Rn",      2, 1, 0, 0, pl_stsl168, 0, 0, 1 },
 	{ NULL, "LDS.L @Rm+,PR",      0, 1, 0, 0, pl_ldsl135 },
 	{ NULL, "LDS.L @Rm+,MACL",    3, 1, 0, 0, pl_ldsl134 },
 	{ NULL, "STS MACL,Rn",        3, 0, 0, 0, pl_sts164 },
@@ -3393,9 +3458,9 @@ static jit_plantilla jit_plantillas[] =
 	   escritura con desplazamiento que le faltaba a la pareja de movl21, el
 	   SUB que nunca tuvo fila, y los MOV.W que pidieron el ayudante de 16
 	   bits. Ciclos copiados de cada manejador. */
-	{ NULL, "STS.L MACL,@-Rn",    3, 1, 0, 0, pl_stsl167 },
-	{ NULL, "MOV.L Rm,@(d,Rn)",   1, 1, 0, 0, pl_movl18 },
-	{ NULL, "MOV.B R0,@(d,Rn)",   1, 1, 0, 0, pl_movb16 },
+	{ NULL, "STS.L MACL,@-Rn",    3, 1, 0, 0, pl_stsl167, 0, 0, 1 },
+	{ NULL, "MOV.L Rm,@(d,Rn)",   1, 1, 0, 0, pl_movl18, 0, 0, 1 },
+	{ NULL, "MOV.B R0,@(d,Rn)",   1, 1, 0, 0, pl_movb16, 0, 0, 1 },
 	{ NULL, "OR Rm,Rn",           1, 0, 0, 0, pl_or76 },
 	{ NULL, "CMP/PZ Rn",          1, 0, 0, 0, pl_cmppz49 },
 	{ NULL, "SUB Rm,Rn",          1, 0, 0, 0, pl_sub69 },
@@ -3416,7 +3481,7 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "SHLD Rm,Rn",         0, 1, 0, 0, pl_shld93 },
 	{ NULL, "OR #imm,R0",         5, 0, 0, 0, pl_or77 },
 	{ NULL, "MOVA @(d,PC),R0",    1, 0, 0, 0, pl_mova34 },
-	{ NULL, "MOV.W Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movw23 },
+	{ NULL, "MOV.W Rm,@(R0,Rn)",  2, 1, 0, 0, pl_movw23, 0, 0, 1 },
 	/* La frontera FPU (sz0): la ultima columna ata el bloque al modo FPU
 	   vigente al traducir (b->fpu) y le quita los enlaces. Ciclos de los
 	   FMOV copiados de cada manejador LEYENDO EL CUERPO ENTERO
@@ -3428,9 +3493,9 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "FMOV.S @Rm,FRn",      2, 1, 0, 0, pl_fmovs173, 1 },
 	{ NULL, "FMOV.S @(R0,Rm),FRn", 1, 1, 0, 0, pl_fmovs174, 1 },
 	{ NULL, "FMOV.S @Rm+,FRn",     2, 1, 0, 0, pl_fmovs175, 1 },
-	{ NULL, "FMOV.S FRm,@Rn",      1, 1, 0, 0, pl_fmovs176, 1 },
-	{ NULL, "FMOV.S FRm,@-Rn",     1, 1, 0, 0, pl_fmovs177, 1 },
-	{ NULL, "FMOV.S FRm,@(R0,Rn)", 1, 1, 0, 0, pl_fmovs178, 1 },
+	{ NULL, "FMOV.S FRm,@Rn",      1, 1, 0, 0, pl_fmovs176, 1, 0, 1 },
+	{ NULL, "FMOV.S FRm,@-Rn",     1, 1, 0, 0, pl_fmovs177, 1, 0, 1 },
+	{ NULL, "FMOV.S FRm,@(R0,Rn)", 1, 1, 0, 0, pl_fmovs178, 1, 0, 1 },
 	{ NULL, "FADD FRm,FRn",        0, 0, 0, 0, pl_fadd189,  1, 1 },
 	{ NULL, "FSUB FRm,FRn",        0, 0, 0, 0, pl_fsub198,  1, 1 },
 	{ NULL, "FMUL FRm,FRn",        0, 0, 0, 0, pl_fmul195,  1, 1 },
@@ -3452,11 +3517,11 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "FMOV @Rm,DRn",        2, 1, 0, 0, pl_fmov180,  1 },
 	{ NULL, "FMOV @(R0,Rm),DRn",   2, 1, 0, 0, pl_fmov181,  1 },
 	{ NULL, "FMOV @Rm+,DRn",       2, 1, 0, 0, pl_fmov182,  1 },
-	{ NULL, "FMOV DRm,@Rn",        1, 1, 0, 0, pl_fmov183,  1 },
-	{ NULL, "FMOV DRm,@-Rn",       1, 1, 0, 0, pl_fmov184,  1 },
-	{ NULL, "FMOV DRm,@(R0,Rn)",   2, 1, 0, 0, pl_fmov185,  1 },
+	{ NULL, "FMOV DRm,@Rn",        1, 1, 0, 0, pl_fmov183,  1, 0, 1 },
+	{ NULL, "FMOV DRm,@-Rn",       1, 1, 0, 0, pl_fmov184,  1, 0, 1 },
+	{ NULL, "FMOV DRm,@(R0,Rn)",   2, 1, 0, 0, pl_fmov185,  1, 0, 1 },
 	/* El lote del censo tras los pares. */
-	{ NULL, "MOV.W Rm,@Rn",        2, 1, 0, 0, pl_movw5 },
+	{ NULL, "MOV.W Rm,@Rn",        2, 1, 0, 0, pl_movw5, 0, 0, 1 },
 	{ NULL, "MOV.B @(d,Rm),R0",    1, 1, 0, 0, pl_movb19 },
 	{ NULL, "NEG Rm,Rn",           1, 0, 0, 0, pl_neg67 },
 	{ NULL, "XOR Rm,Rn",           1, 0, 0, 0, pl_xor83 },
@@ -3901,7 +3966,25 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		   esa restriccion, no borrar este if. */
 		if (p->fpu)
 		{
-			if (t->modo == JIT_ACC_MMU)
+			/* Con SR.FD puesto, la instruccion alza 0x800 en el despacho,
+			   ANTES de tocar nada (run()); un bloque la ejecutaria directo
+			   -- traduce la direccion (avance de URC de mas) y escribe el
+			   banco viejo --, que es exactamente la divergencia que la caza
+			   de la compuerta encontro: el cambio perezoso de contexto FPU
+			   de WinCE. FD tambien vive en la clave (bit 3, ver jit.h), asi
+			   que el bloque traducido con FD=0 se rechaza al entrar con
+			   FD=1; este corte cubre la traduccion misma. */
+			if (fpu_deshabilitada)
+			{
+				jit_censar(instr);
+				break;
+			}
+
+			/* La compuerta MMU+FPU, levantada por omision desde que el
+			   protocolo salio canonico en los seis escenarios (su motivo
+			   era el 0x800 de arriba). DCEMU_JIT_SIN_FPU_MMU=1 la cierra:
+			   aislamiento, y la linea base anterior byte a byte. */
+			if (t->modo == JIT_ACC_MMU && !jit_fpu_mmu)
 			{
 				jit_censar(instr);
 				break;
@@ -3979,6 +4062,12 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		   Y tras la ultima instruccion no hace falta: el bloque termina. */
 		if (p->ciclos && i + 1 < t->n)
 			gen_corte(g, pc_sig);
+
+		/* Tras la ultima tampoco hace falta este: toda salida del bloque --
+		   despachador, cadena o talon -- compara la validez antes de seguir. */
+		if (p->escribe && t->modo == JIT_ACC_MMU && i + 1 < t->n
+			&& jit_corte_epoca)
+			gen_corte_epoca(g, pc_sig);
 	}
 
 	/* Los saltos internos hacia adelante, ahora que estan todas las etiquetas. */
@@ -4766,6 +4855,16 @@ void jit_iniciar(void)
 
 		if (n != NULL && atoi(n) > 0 && atoi(n) < JIT_N_PLANTILLAS)
 			jit_n_activas = atoi(n);
+	}
+
+	{
+		const char * sf = getenv("DCEMU_JIT_SIN_FPU_MMU");
+		const char * ce = getenv("DCEMU_JIT_CORTE_EPOCA");
+
+		if (sf != NULL && atoi(sf) != 0)
+			jit_fpu_mmu = 0;
+
+		jit_corte_epoca = (ce != NULL && atoi(ce) != 0);
 	}
 
 	jit_arena = (unsigned char *) jit_arena_reservar(JIT_ARENA_TAM);

@@ -87,6 +87,16 @@ option(DCEMU_FUSION "Compilar el prototipo de bloques fusionados (sonda)" OFF)
 # comparacion de tres --interprete, C fusionado, JIT-- en un solo binario.
 option(DCEMU_JIT "Compilar el recompilador dinamico (fase 0)" OFF)
 
+# La sonda de conservacion de avances de URC (el expediente de la compuerta
+# MMU+FPU): un contador en el unico cuerpo C del avance, otro emitido junto al
+# avance en linea del traductor, y la virtual del ultimo avance emitido. Los
+# imprime el punto de control (DCEMU_CP_MS). Detras de una opcion de
+# compilacion como DCEMU_FORMA y por lo mismo: el contador C vive en el macro
+# mas caliente del arbol, y lo que la sonda compara son CONTEOS, que salen
+# identicos en cualquier compilacion -- la disposicion contamina al tiempo,
+# no a la cuenta.
+option(DCEMU_SONDA_URC "Compilar la sonda de conservacion de avances de URC" OFF)
+
 # Optimizacion de todo el programa (/GL al compilar, /LTCG al enlazar). Es la
 # fase 1.2 de docs/rendimiento-plan.md y aqui importa mas de lo normal: este
 # arbol tiene los bucles calientes en una unidad de traduccion y las funciones
@@ -336,6 +346,10 @@ endif()
 if(DCEMU_JIT)
 	target_compile_definitions(dcemu PRIVATE DCEMU_JIT)
 	target_sources(dcemu PRIVATE jit.c jit_x64.c)
+endif()
+
+if(DCEMU_SONDA_URC)
+	target_compile_definitions(dcemu PRIVATE DCEMU_SONDA_URC)
 endif()
 
 # Release con simbolos. Los flags por omision de CMake para Release son

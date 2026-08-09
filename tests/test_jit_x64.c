@@ -430,6 +430,37 @@ static void el_desborde_se_reporta(void)
 }
 
 /*
+	La forma en que se cayo Sega Rally 2 al llenar el arena: el buffer se
+	llena a mitad de un salto, el productor devolvia el sitio uno-mas-alla del
+	buffer, y fijar escribia el rel32 fuera del mapa. El parche de un desborde
+	tiene que salir con sitio NULL -- la convencion de "sin parche" que fijar
+	ya respeta -- y no tocar ni un byte.
+*/
+static void el_desborde_anula_el_parche(void)
+{
+	unsigned char chico[8];
+	x64_parche p;
+
+	/* Espacio para el E9 pero no para su rel32. */
+	memset(chico, 0xAA, sizeof(chico));
+	jit_x64_iniciar(&e, chico, 2);
+
+	jit_x64_ret(&e);
+	p = jit_x64_jmp(&e);
+
+	ESPERAR_U32((unsigned) e.desborde, 1);
+	ESPERAR_U32(p.sitio == NULL, 1);
+
+	jit_x64_fijar(&e, p);
+	ESPERAR_U32((unsigned) chico[2], 0xAAu);	/* nada escrito tras el fin */
+
+	/* Y con el desborde ya puesto de antes, el sitio tampoco puede apuntar a
+	   bytes ya emitidos. */
+	p = jit_x64_jcc_corto(&e, X64_E);
+	ESPERAR_U32(p.sitio == NULL, 1);
+}
+
+/*
 	La familia ALU completa, que es sobre lo que el traductor automatico monta
 	sus plantillas: una sola tabla da las cinco formas de las ocho operaciones,
 	y el opcode base de cada una es su numero de extension por ocho. Si esa
@@ -582,6 +613,7 @@ static const dc_caso casos[] =
 	CASO(el_prologo_de_los_bloques_mide_dieciseis_bytes),
 	CASO(saltos_hacia_adelante_y_hacia_atras),
 	CASO(el_desborde_se_reporta),
+	CASO(el_desborde_anula_el_parche),
 };
 
 const dc_suite suite_jit_x64 = DEFINIR_SUITE("jit_x64", casos);

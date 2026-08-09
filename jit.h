@@ -121,7 +121,17 @@ extern unsigned			jit_ep_modo;
 	disenarlo: la leccion del modo costo 8,2 millones de movimientos.
 	El bit FR no se cuenta: el acceso emitido ira por el puntero de banco
 	vivo del contexto, asi que conmutarlo no invalida nada.
+
+	**SR.FD es el bit 3 de la clave**, y es la leccion de la compuerta: con
+	FD puesto, run() alza 0x800 en el despacho, ANTES de tocar nada -- el
+	cambio perezoso de contexto FPU de Windows CE --, y un bloque con filas
+	FPU traducido con FD=0 y entrado con FD=1 las ejecutaria directo:
+	traduce la direccion del almacenamiento (avance de URC de mas), escribe
+	el banco viejo, y el guest pierde su conmutacion. Con FD en la clave la
+	entrada se rechaza y el interprete alza el 0x800 al digito. Se recalcula
+	donde fpu_deshabilitada se deriva (excepcion_actualizar_vigilancia).
 */
+extern int				fpu_deshabilitada;		/* de sh4emu.h, para la clave */
 extern unsigned			jit_fpu_visto;
 extern unsigned			jit_ep_fpu;
 
@@ -131,7 +141,8 @@ extern unsigned			jit_ep_fpu;
 		if (jit_vigila_codigo)											\
 		{																\
 			unsigned _jf = ((((fpscr) >> 19) & 3u) << 1)				\
-						 | ((((fpscr) & 0x00000F80u) != 0) ? 1u : 0u);	\
+						 | ((((fpscr) & 0x00000F80u) != 0) ? 1u : 0u)	\
+						 | (fpu_deshabilitada ? 8u : 0u);				\
 																		\
 			if (_jf != jit_fpu_visto)									\
 			{															\
