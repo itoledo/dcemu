@@ -1882,3 +1882,85 @@ rechazos por la clave FD** — cada uno una vuelta entera por el despachador C �
 Las dos vetas que esto señala son exactamente las siguientes fases: el despacho emitido
 (las 458 M de entradas de SR2 pagan hoy el viaje C completo) y, si alguna vez pesa por
 sí sola, una clave FD por bloque en vez de global.
+
+## El buscador: el despacho emitido dentro del arena
+
+El redespacho por ayudante C perdió dos veces porque pagaba **una llamada por
+intento**; la memoria del árbol dejó escrito que «solo pagaría un despacho enteramente
+emitido». Este es ese: un talón único emitido tras `tramp_salir`, al que el epílogo de
+todo bloque salta en vez de salir — y si el próximo bloque existe y sigue válido, se
+entra **sin salir del marco**: sin las ocho sacadas, el `ret`, la vuelta del lazo C y
+las ocho empujadas de la reentrada (los ~46 ciclos que el encadenamiento ya había
+quitado para los destinos constantes, ahora también para el resto).
+
+Reproduce exactamente las condiciones de `jit_despachar` entre bloques, en este orden:
+el corte del bloque periódico (la condición de `main_loop`), el enseñado pendiente de
+un indirecto (cae a C, que es quien enseña), la sonda 0 del hash (colisiones a C), y la
+validación entera — pc, validez, modo MMU (`mmu_activa + 1`), clave FPU, y el puntero
+de búsqueda. Tres decisiones de diseño:
+
+- **El puntero de búsqueda solo se compara, nunca se resuelve**: el caso plano emite
+  `mem_zone[pc>>24] + (pc & 0xFFFFFF)` (sin efectos); el caso MMU cae a C en la v1,
+  donde `MMU_FETCH_PUNTERO` hace su resolución **con** efectos (avance de URC) una sola
+  vez, como hoy. Fallar hacia C es siempre correcto: C re-sondea y re-valida todo.
+- **El muestreo de calor no se pierde**: solo muestrea PCs sin marcar, y un PC con
+  bloque ya está marcado — los únicos PCs que necesitan muestreo fallan la sonda y caen
+  a C, donde se muestrean.
+- **Los contadores del control de trabajo se mantienen** (`jit_entradas`, `b->veces`
+  emitidos): la línea `jit:` sigue significando lo mismo, y la exactitud de CT salió
+  canónica con el conteo de entradas idéntico al bit.
+
+La tanda y el A/B decidieron, y el veredicto es un **negativo valioso**:
+
+- La cadena completa con el buscador (exactitud canónica en los tres guests, entradas
+  idénticas al bit): tanda a la par de la anterior — DCDoom −21,5 % contra −21,1 %, CT
+  y SR2 iguales. La primera versión se retiraba ante el enseñado pendiente de un
+  indirecto (`jit_ult_sitio`), que es **la salida dominante** — el RTS con varios
+  llamadores —, así que se refinó: tragar la anotación y despachar igual (la enseñanza
+  solo se pospone; el ~2 % de transiciones que cae a C por el corte la hace a las
+  pocas vueltas — y las entradas finales salieron idénticas al bit, la convergencia
+  comprobada).
+- **El A/B sobre un solo binario, aun sirviendo la salida dominante: neutro.** CT
+  93 655 ms con buscador contra 93 522 sin, dispersiones solapadas por completo.
+
+**El viaje al despachador C ya no es el costo dominante — medido por tercera vez y de
+la forma definitiva** (enteramente emitido, cero llamadas): el redespacho por ayudante
+lo dijo dos veces pagando llamadas, y el buscador lo confirma sin pagarlas. El costo
+fijo por frontera que queda es el prólogo y el volcado de ranuras — exactamente el
+objetivo de la fase de registros persistentes. El buscador queda **apagado por
+omisión** y conservado tras `DCEMU_JIT_BUSCADOR=1`, como `DCEMU_BLOQUES`: para rehacer
+el A/B sin rehacer la idea si las formas de bloque cambian.
+
+## Registros persistentes a través del enlace: el diseño, con su cuenta
+
+Lo que hay hoy: el asignador (`tr_asignar_registros`) es codicioso por conteo de uso,
+**por bloque**, sobre `JIT_SLOTS` registros no volátiles; el prólogo carga las ranuras
+del contexto y «es también la entrada de un enlace», así que **cada costura paga el
+volcado del predecesor (k stores + CYC) más la recarga del sucesor (k loads)** —
+del orden de 10-14 operaciones por frontera, encadenada o no. Los volcados de
+sincronización (`tr_sync`, uno por instrucción de acceso) son aparte y **no se pueden
+elidir**: son el contrato de la falta.
+
+El diseño en dos piezas, cada una medible por separado:
+
+1. **Hogares canónicos**: el asignador deja de elegir ranura por bloque y asigna a
+   cada registro del guest cacheado un hogar fijo (`canónico[n]`), para el subconjunto
+   caliente universal del ABI de SH-4 — `R0`-`R4` y `R15` cubren la mayoría del uso;
+   los bloques que usan otros registros los toman de las ranuras restantes o van al
+   contexto, como hoy. Costo posible: peor asignación en bloques atípicos — se mide en
+   la tanda, y es la condición de entrada de la pieza 2.
+2. **Costuras por arista**: con hogares canónicos, en el momento de parchear un enlace
+   A→B se sabe qué cachea cada uno, y la costura óptima es un talón por arista (la
+   infraestructura del puente, otra vez): volcar solo `A − B` (lo que B también cachea
+   lo volcarán las salidas de B — toda salida vuelca, así que el contexto nunca queda
+   viejo ante quien lo lea), cargar solo `B − A` (la intersección ya está en los
+   hogares). En el código caliente — cadenas dentro de una misma función, mismos
+   registros — la costura tiende a **cero operaciones**.
+
+La cuenta que decide si la fase paga, ANTES de implementarla: un contador de sonda de
+cruces de enlace dinámicos (hoy no existe — `enlaces atados` cuenta sitios, no cruces)
+por guest, multiplicado por las operaciones de costura elididas. Con las entradas al
+despacho ya en 11,9-16,4 instrucciones y el buscador quitando el viaje C, la frontera
+por bloque es el costo fijo que queda; si los cruces dinámicos resultan ser la mayoría
+de las fronteras, la fase paga. Ese contador es el primer paso de la implementación, y
+es una tarde de trabajo aparte de esta noche.

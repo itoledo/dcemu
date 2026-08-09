@@ -449,6 +449,15 @@ static int			jit_n_bloques = 0;
 static int			jit_fpu_mmu = 1;
 static int			jit_corte_epoca = 0;
 
+/* El buscador emitido (el despacho dentro del arena). Viene APAGADO: el A/B
+   sobre un binario dio neutro en CT (93 655 contra 93 522 ms, dispersiones
+   solapadas) aun sirviendo la salida dominante -- el viaje al despachador C
+   ya no es el costo, medido asi por tercera vez --. DCEMU_JIT_BUSCADOR=1 lo
+   enciende para rehacer el A/B sin rehacer la idea, como DCEMU_BLOQUES.
+   NULL = apagado, y el epilogo salta a tramp_salir como siempre. */
+static unsigned char *	jit_buscador = NULL;
+static int				jit_buscador_activo = 0;
+
 /*
 	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
 	dice que -- y **tiene que estar indexada por el PC entero**, no por
@@ -1309,6 +1318,112 @@ static int jit_emitir_trampolin(void)
 
 	jit_x64_ret(&g.e);
 
+	/*
+		El buscador: el despacho emitido. El epilogo de los bloques salta aqui
+		en vez de a tramp_salir, y si el proximo bloque ya existe y sigue
+		valido, se entra **sin salir del marco** -- sin las ocho sacadas, el
+		ret, la vuelta de C y las ocho empujadas. Lo que el redespacho por
+		ayudante C no podia dar (pagaba una llamada por intento), esto lo da
+		en ~10 comparaciones en linea; cualquier cosa rara cae a tramp_salir
+		y el despachador C hace lo de siempre, incluida la re-sonda.
+
+		Reproduce EXACTAMENTE las condiciones de jit_despachar entre bloques:
+		el corte del bloque periodico primero (la condicion de main_loop), el
+		enseñado pendiente de un indirecto (va por C), la sonda 0 del hash
+		(colisiones a C), y la validacion entera -- pc, validez, modo MMU,
+		clave FPU y el puntero de busqueda. El puntero solo se COMPARA: el
+		caso con MMU cae a C, donde MMU_FETCH_PUNTERO hace su resolucion con
+		efectos (avance de URC) una sola vez, como hoy. El muestreo de calor
+		no se pierde: solo muestrea PCs sin marcar, y un PC con bloque ya
+		esta marcado.
+	*/
+	if (jit_buscador_activo)
+	{
+		x64_parche salir[12];
+		x64_parche fpu_ok;
+		int        ns = 0;
+
+		jit_buscador = jit_x64_aqui(&g.e);
+
+		jit_x64_cmp_ri(&g.e, CYC, RELOJ_GRANO);
+		salir[ns++] = jit_x64_jcc(&g.e, X64_AE);
+		jit_x64_cmp_mi(&g.e, CTX, D_REINTENTO, 0);
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+
+		/* Un indirecto fallado deja su sitio anotado para que C lo enseñe.
+		   Tragarlo y despachar igual solo POSPONE la enseñanza -- el ~2 % de
+		   transiciones que cae a C por el corte la hace a las pocas vueltas
+		   -- y deja al buscador sirviendo la salida mas comun del parque: el
+		   RTS con varios llamadores, que falla su guarda aprendida. Retirarse
+		   aqui era regalar justo la clientela (medido: tanda neutra). */
+		jit_x64_mov_mi(&g.e, CTX, D(&jit_ult_sitio), (unsigned) -1);
+
+		/* pc -> sonda 0 del hash -> b */
+		jit_x64_mov_rm(&g.e, X64_RCX, CTX, O_PC);
+		jit_x64_mov_rr(&g.e, X64_RAX, X64_RCX);
+		jit_x64_shr_ri(&g.e, X64_RAX, 1);
+		jit_x64_imul_rri(&g.e, X64_RAX, X64_RAX, (int) 2654435761u);
+		jit_x64_shr_ri(&g.e, X64_RAX, 32 - JIT_HASH_BITS);
+		jit_x64_movsx_w_rm_idx(&g.e, X64_RAX, CTX, X64_RAX, 2,
+			D(&jit_hash[0]));
+		jit_x64_test_rr(&g.e, X64_RAX, X64_RAX);
+		salir[ns++] = jit_x64_jcc(&g.e, X64_S);
+		jit_x64_imul_rri(&g.e, X64_RAX, X64_RAX, (int) sizeof(jit_bloque));
+		jit_x64_lea64_idx(&g.e, X64_R8, CTX, X64_RAX, 1, D(&jit_bloques[0]));
+
+		jit_x64_cmp_rm(&g.e, X64_RCX, X64_R8,
+			(int) offsetof(jit_bloque, pc));
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+
+		/* validez, modo MMU (mmu_activa + 1 == JIT_ACC_*), clave FPU */
+		jit_x64_mov_rm(&g.e, X64_RDX, CTX, D_EPOCA);
+		jit_x64_cmp_rm(&g.e, X64_RDX, X64_R8,
+			(int) offsetof(jit_bloque, epoca));
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+
+		jit_x64_mov_rm(&g.e, X64_RDX, CTX, D_MMU);
+		jit_x64_add_ri(&g.e, X64_RDX, 1);
+		jit_x64_cmp_rm(&g.e, X64_RDX, X64_R8,
+			(int) offsetof(jit_bloque, mmu));
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+
+		jit_x64_mov_rm(&g.e, X64_RDX, X64_R8,
+			(int) offsetof(jit_bloque, fpu));
+		jit_x64_cmp_ri(&g.e, X64_RDX, -1);
+		fpu_ok = jit_x64_jcc_corto(&g.e, X64_E);
+		jit_x64_cmp_rm(&g.e, X64_RDX, CTX, D(&jit_fpu_visto));
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+		jit_x64_fijar(&g.e, fpu_ok);
+
+		/* El puntero de busqueda, solo sin MMU (v1): mem_zone[pc>>24] mas el
+		   desplazamiento. Con MMU se cae a C, que resuelve con efectos. */
+		jit_x64_cmp_mi(&g.e, CTX, D_MMU, 0);
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+		jit_x64_mov_rr(&g.e, X64_RAX, X64_RCX);
+		jit_x64_shr_ri(&g.e, X64_RAX, 24);
+		jit_x64_mov64_rm_idx(&g.e, X64_RAX, CTX, X64_RAX, 8,
+			D(&mem_zone[0]));
+		jit_x64_mov_rr(&g.e, X64_RDX, X64_RCX);
+		jit_x64_and_ri(&g.e, X64_RDX, 0x00FFFFFF);
+		jit_x64_lea64_idx(&g.e, X64_RAX, X64_RAX, X64_RDX, 1, 0);
+		jit_x64_cmp64_rm(&g.e, X64_RAX, X64_R8,
+			(int) offsetof(jit_bloque, ptr));
+		salir[ns++] = jit_x64_jcc(&g.e, X64_NE);
+
+		/* Los contadores del control de trabajo, como en el despachador. */
+		jit_x64_add64_mi(&g.e, CTX, D(&jit_entradas), 1);
+		jit_x64_add64_mi(&g.e, X64_R8, (int) offsetof(jit_bloque, veces), 1);
+
+		jit_x64_mov64_rm(&g.e, X64_RAX, X64_R8,
+			(int) offsetof(jit_bloque, codigo));
+		jit_x64_jmp_r(&g.e, X64_RAX);
+
+		for (i = 0; i < ns; i++)
+			jit_x64_fijar(&g.e, salir[i]);
+
+		jit_x64_jmp_a(&g.e, jit_tramp_salir);
+	}
+
 	if (g.e.desborde || !jit_disp_ok)
 		return 0;
 
@@ -1424,7 +1539,12 @@ static void gen_epilogo(jit_gen * g)
 		jit_x64_fijar(&g->e, g->salidas[i]);
 
 	gen_volcar_regs(g);
-	jit_x64_jmp_a(&g->e, jit_tramp_salir);
+
+	/* Con el buscador emitido, la salida del bloque intenta despachar el
+	   siguiente sin salir del marco; sin el (o si fallo su emision), a
+	   tramp_salir como siempre. */
+	jit_x64_jmp_a(&g->e,
+		jit_buscador != NULL ? jit_buscador : jit_tramp_salir);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -4860,11 +4980,13 @@ void jit_iniciar(void)
 	{
 		const char * sf = getenv("DCEMU_JIT_SIN_FPU_MMU");
 		const char * ce = getenv("DCEMU_JIT_CORTE_EPOCA");
+		const char * ba = getenv("DCEMU_JIT_BUSCADOR");
 
 		if (sf != NULL && atoi(sf) != 0)
 			jit_fpu_mmu = 0;
 
-		jit_corte_epoca = (ce != NULL && atoi(ce) != 0);
+		jit_corte_epoca     = (ce != NULL && atoi(ce) != 0);
+		jit_buscador_activo = (ba != NULL && atoi(ba) != 0);
 	}
 
 	jit_arena = (unsigned char *) jit_arena_reservar(JIT_ARENA_TAM);

@@ -238,6 +238,10 @@ static void comparaciones(void)
 	ESPERAR_EMITIDO(0x45, 0x39, 0xEE);
 
 	arrancar();
+	jit_x64_cmp64_rm(&e, X64_RAX, X64_RCX, 8);		/* cmp rax, [rcx+8] */
+	ESPERAR_EMITIDO(0x48, 0x3B, 0x41, 0x08);
+
+	arrancar();
 	jit_x64_cmp_ri(&e, X64_RBP, 400);				/* cmp ebp, 190h */
 	ESPERAR_EMITIDO(0x81, 0xFD, 0x90, 0x01, 0x00, 0x00);
 

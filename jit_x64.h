@@ -202,6 +202,7 @@ void jit_x64_or_mr8  (x64_emisor * e, x64_reg base, int disp, x64_reg src);
 void jit_x64_cmp_rr  (x64_emisor * e, x64_reg a, x64_reg b);
 void jit_x64_cmp_ri  (x64_emisor * e, x64_reg a, int imm);
 void jit_x64_cmp_rm  (x64_emisor * e, x64_reg a, x64_reg base, int disp);
+void jit_x64_cmp64_rm(x64_emisor * e, x64_reg a, x64_reg base, int disp);
 
 /* De ancho fijo: para los sitios que se parchean corriendo, donde elegir la
    codificacion mas corta mueve el inmediato de lugar. */
