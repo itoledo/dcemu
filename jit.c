@@ -4649,6 +4649,23 @@ static void jit_aprender_destino(int sitio, DWORD destino)
 }
 
 /*
+	La pagina del anfitrion donde viven las palabras de un bloque queda
+	vigilada: una escritura ahi mueve la epoca y obliga a verificarlo entero
+	otra vez. **Cabeza Y cola**: desde que la ventana de 1 KB es solo bajo MMU
+	(superbloques, paso 1), un bloque plano de hasta 128 bytes puede cruzar el
+	limite de 4 KB del host, y marcar solo la cabeza dejaba la cola sin
+	vigilar -- una escritura del guest ahi no movia la epoca y el codigo viejo
+	seguia corriendo, en silencio. Ningun banco lo observa (las tandas salen
+	exactas), pero es la clase de agujero del corte de epoca: se cierra por
+	construccion, no por suerte.
+*/
+static void jit_vigilar_tramo(const void * ptr, unsigned bytes)
+{
+	jit_pag_codigo[JIT_PAG_BIT(ptr)] = 1;
+	jit_pag_codigo[JIT_PAG_BIT((const unsigned char *) ptr + bytes - 1)] = 1;
+}
+
+/*
 	Traduce el bloque que empieza en `pc` y lo registra. Devuelve el bloque o
 	NULL; en cualquier caso el guest sigue corriendo, interpretado si no hubo
 	traduccion, que es la degradacion que el plan promete.
@@ -4774,9 +4791,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 	jit_codigo_us += jit_x64_largo(&g.e);
 
-	/* La pagina del anfitrion donde vive este bloque queda vigilada: una
-	   escritura ahi mueve la epoca y obliga a verificarlo entero otra vez. */
-	jit_pag_codigo[JIT_PAG_BIT(MMU_FETCH_PUNTERO(b->pc))] = 1;
+	jit_vigilar_tramo(MMU_FETCH_PUNTERO(b->pc), (unsigned) (2 * t.n));
 
 	b->epoca = 0;			/* todavia sin verificar */
 	b->ptr   = NULL;
@@ -4895,6 +4910,17 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 	b->mmu           = -1;
 	b->fpu           = -1;
 	b->veces         = 0;
+
+	/* Los bloques a mano tampoco vigilaban sus paginas -- ni las de sus
+	   palabras sueltas, que viven en otra parte. El mismo agujero, mas viejo. */
+	jit_vigilar_tramo(MMU_FETCH_PUNTERO(pc), (unsigned) (2 * n_palabras));
+
+	{
+		int i;
+
+		for (i = 0; i < n_extra; i++)
+			jit_pag_codigo[JIT_PAG_BIT(MMU_FETCH_PUNTERO(extra_dir[i]))] = 1;
+	}
 
 	jit_registrar_marco(b, jit_x64_largo(&g.e));
 
