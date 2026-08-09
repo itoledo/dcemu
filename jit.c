@@ -2817,6 +2817,45 @@ static void pl_clrs114(jit_gen * g, jit_traduccion * t, int i)	/* CLRS */
 	jit_x64_alu_mi(&g->e, X64_AND, CTX, O_SR, (int) 0xFFFFFFFDul);
 }
 
+/* --- el lote que cierra el censo (2026-08-09) ---------------------------- */
+
+static void pl_dt(jit_gen * g, jit_traduccion * t, int i)	/* DT Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_ri(g, t, X64_SUB, TN(w), 1);
+	gen_poner_t(g, X64_E);
+}
+
+static void pl_movw14(jit_gen * g, jit_traduccion * t, int i)	/* MOV.W @Rm+,Rn */
+{
+	tr_leer_mas(g, t, i, 2);
+}
+
+/* CMP/STR: T = 1 si algun byte de Rn^Rm es cero. El truco clasico
+   (v - 0x01010101) & ~v & 0x80808080 != 0 <=> v tiene un byte cero; es
+   exacto en 32 bits, sin falsos positivos. */
+static void pl_cmpstr51(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w), m = TM(w);
+	int  hm = tr_h(t, m);
+
+	tr_cargar(g, t, X64_RAX, n);
+
+	if (hm >= 0)
+		jit_x64_alu_rr(&g->e, X64_XOR, X64_RAX, (x64_reg) hm);
+	else
+		jit_x64_alu_rm(&g->e, X64_XOR, X64_RAX, CTX, O_R(m));
+
+	jit_x64_mov_rr(&g->e, X64_RDX, X64_RAX);
+	jit_x64_alu_ri(&g->e, X64_XOR, X64_RDX, -1);
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RAX, 0x01010101);
+	jit_x64_alu_rr(&g->e, X64_AND, X64_RAX, X64_RDX);
+	jit_x64_alu_ri(&g->e, X64_AND, X64_RAX, (int) 0x80808080ul);
+	gen_poner_t(g, X64_NE);
+}
+
 /* --- los pares de sz1: el FMOV de 64 bits ------------------------------- */
 
 #define DR_DESP(x)	((int) offsetof(FPR_BANK, FP.dreg) + 8 * (x))
@@ -3423,6 +3462,10 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "XOR Rm,Rn",           1, 0, 0, 0, pl_xor83 },
 	{ NULL, "SHAR Rn",             1, 0, 0, 0, pl_shar92 },
 	{ NULL, "CLRS",                1, 0, 0, 0, pl_clrs114 },
+	/* El lote que cierra el censo. */
+	{ NULL, "DT Rn",               1, 0, 0, 0, pl_dt },
+	{ NULL, "MOV.W @Rm+,Rn",       1, 1, 0, 0, pl_movw14 },
+	{ NULL, "CMP/STR Rm,Rn",       1, 0, 0, 0, pl_cmpstr51 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3447,6 +3490,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	ftrc199, fneg196, fabs188, fsqrt197, flds186, fsts187, fldi0170, fldi1171,
 	fmov179, fmov180, fmov181, fmov182, fmov183, fmov184, fmov185,
 	movw5, movb19, neg67, xor83, shar92, clrs114,
+	dt, movw14, cmpstr51,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta

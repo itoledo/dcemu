@@ -1686,3 +1686,93 @@ instrucción — solo palabras de datos incrustadas en páginas de código (que 
 y dos filas `STC` con 80 cortes en 60 segundos, margen cero —; en DCDoom quedan tres
 filas mecánicas (`DT` 114 cortes, `MOV.W @Rm+,Rn` 44, `CMP/STR` 34), que son el lote
 siguiente y el último. Después de ese, la frontera ya no es de plantillas.
+
+## El lote que cierra el censo: DT, MOV.W @Rm+,Rn y CMP/STR
+
+Las tres filas que quedaban cortando en DCDoom (114/44/34 cortes). `MOV.W @Rm+,Rn` es
+una línea — `tr_leer_mas` con ancho 2, la regla de n==m y el compromiso tardío ya
+estaban —; `DT` es el `sub` de a 1 con `poner_t(E)`; `CMP/STR` emite el truco clásico de
+byte-cero (`(v−0x01010101) & ~v & 0x80808080`), exacto en 32 bits. Ciclos 1/1/1, leídos
+de los tres cuerpos enteros.
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| cobertura | 81,8 → **82,2 %** (4 467 M) | 87,8 → **88,3 %** (19 665 M) |
+| bloques traducidos | 19,6 → **19,8** instr | 18,9 → 19,0 instr |
+| entradas al despacho | 245,6 → **235,4 M** (19,0/entrada) | 1687 → **1645 M** (11,9/entrada) |
+
+Exactitud canónica en los dos guests con capturas — y la corrida del intérprete de CT
+volvió a la referencia al dígito, confirmando que las 51 instrucciones de la cadena
+anterior eran el XInput global y no una fila. La tanda: DCDoom **32 892 ms (dispersión
+0,15 %) — −21,6 %, 1,064× tiempo real**, el mejor cociente de la serie; CT 94 245 ms
+(−14,7 %). **Con esto la frontera de plantillas queda cerrada en los dos guests del
+banco**: lo que corta son palabras de datos, que deben cortar.
+
+## Sega Rally 2 entra al banco: el intérprete perfecto, el traductor se cae
+
+La línea base de la fase 2, por fin corrida (60 s, sin teclas, la receta de
+`rendimiento-plan-2.md`): el intérprete reproduce el banco canónico **al dígito**
+(8 607 000 273 instrucciones, captura `1B28D0D9…`, 3,5 % de fallos de búsqueda — el
+doble que DCDoom, WinCE haciendo de las suyas). El traductor **muere a mitad de
+corrida** (55 s de reloj contra 117, sin resumen de salida): `traza_caida` lo atrapó
+entero — `jit_x64_fijar` escribiendo un parche **más allá del final del arena**, desde
+`gen_escribir`/`gen_rapido_fin` durante una traducción. SR2 llena los 64 MB (DCDoom ya
+usa 48,5 con la traducción MMU en línea, ~4 KB por bloque) y el emisor, al desbordar
+justo en el borde, registra parches con sitio fuera del mapa que `fijar` escribe igual.
+Dos arreglos: `fijar` inerte ante un parche de desborde (con su caso byte a byte en la
+suite del emisor) y arena de 128 MB. La captura divergente de esa corrida es el cuadro
+al morir, no evidencia de infidelidad: la exactitud de SR2 queda pendiente del arreglo —
+y es el primer guest que puede ejercitar el agujero de la compuerta en filas enteras
+(conmutaciones de contexto de WinCE escribiendo PTEH a mitad de bloque).
+
+## La compuerta MMU+FPU: el mecanismo, por fin con nombre y apellido
+
+La relectura completa de los tres caminos de URC (los avances de `mmu.c`, el emitido de
+`gen_traducir_mmu`, y la búsqueda de `mmu_fetch_resolver`) reduce la «restricción de
+orden» del expediente a un agujero concreto y reparable. Las piezas:
+
+- El acierto de la **página vigente** del fetch no avanza URC (es la ITLB); el acierto
+  del **segundo nivel** de 64 tampoco — solo el recorrido completo (`traducir_busqueda`)
+  avanza. El intérprete, por tanto, inserta un avance de búsqueda **en la instrucción
+  siguiente** a cualquier invalidación de la página vigente cuyo segundo nivel también
+  falle (cambio de ASID en PTEH, `mmu_tlb_invalidar` por MMUCR, la generación movida por
+  `LDTLB` sobre esa entrada).
+- `mmu_fetch_invalidar()` mueve la época (`JIT_EPOCA_MAPEO`), así que toda **entrada** de
+  bloque posterior — por despachador o por cadena, cuya guarda compara la validez global —
+  ya revalida y repone el avance igual que el intérprete. El agujero no está en las
+  entradas: está en el **bloque que ya corre**.
+- Una escritura del guest a PTEH/MMUCR (conmutación de contexto de WinCE) — o sobre una
+  página con código traducido (SMC) — ejecutada **a mitad de bloque** va siempre por el
+  ayudante (la zona FF no tiene base directa; la página con código, tampoco por el camino
+  rápido). El ayudante invalida y mueve la época… y **vuelve**, y el bloque sigue hasta su
+  fin sin el avance de búsqueda que el intérprete haría en la instrucción siguiente. Todo
+  acceso con avance que el bloque ejecute después queda corrido en uno — exactamente el
+  «acceso-con-avance de más, servido por el camino emitido» que midió la conservación, y
+  el corrimiento de URC que quince segundos después eligió otra entrada para el LDTLB.
+
+**El arreglo**: un bit `escribe` en las filas de plantilla (las ~17 de almacenamiento), y
+tras cada instrucción de escritura en bloques de modo MMU, el mismo par de comparaciones
+de la guarda de cadena — la validez global (`CTX+D_EPOCA`) contra `b->epoca` del bloque
+corriente, cuya dirección es constante de emisión — con `jne` a `gen_salir_en(pc_sig)`:
+salida limpia en frontera de instrucción, y el despachador repone el avance de búsqueda
+en el mismo punto del flujo en que el intérprete lo haría. Toda entrada garantiza
+`b->epoca == validez` (la guarda de cadena y la validación de entrada comparan eso
+mismo), así que «la validez se movió» equivale a «se movió desde la entrada». Costo: dos
+cargas y un salto no tomado por instrucción de escritura, **solo** en bloques MMU — cero
+en lecturas, cero en las escrituras del camino rápido de guests sin MMU. De paso cierra
+el segundo agujero latente: el bloque que se escribe a sí mismo (SMC) hoy termina su
+corrida con palabras viejas.
+
+**El protocolo para aterrizarlo**, en orden y con cada paso comprobable:
+
+1. Levantar la compuerta en modo sonda (`DCEMU_JIT_FPU_MMU=1`, emisión-condicional) y
+   **reproducir** la divergencia de DCDoom del expediente — si no reproduce, el
+   instrumental de conservación (uA/uB/uE, tres ediciones descritas arriba) vuelve antes
+   de seguir.
+2. Aplicar el chequeo de escritura y verificar **exactitud canónica al dígito** en DCDoom
+   (35 s, total y captura) con la compuerta levantada.
+3. Si 2 falla, la conservación otra vez: el mecanismo sería otro (o uno más).
+4. Con la exactitud en verde: la compuerta se levanta de verdad, `dcemu_sh4json` como
+   juez de las filas FPU bajo MMU no cambia (son las mismas plantillas), y la ganancia se
+   mide donde vive: el banco de SR2 (`8 607 000 273` instrucciones, `1B28D0D9…`) y el de
+   DCDoom, con ciclo PGO y tanda.
