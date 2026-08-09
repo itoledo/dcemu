@@ -439,6 +439,11 @@ typedef struct
 	   13,2 millones de veces por minuto alrededor de sus matrices. */
 	int				fpu;
 	WORD			copia[JIT_MAX_INSTR];	/* solo los traducidos */
+	/* El PC de cada palabra de la traza. Solo se llena cuando la traza no es
+	   contigua (flujo seguido): extra_dir apunta adentro y jit_verificar
+	   compara lo no contiguo palabra a palabra, con el mecanismo que ya
+	   tenian los bloques a mano. */
+	DWORD			pcs[JIT_MAX_INSTR];
 	unsigned long long veces;
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
@@ -508,6 +513,20 @@ static unsigned long long	jit_costuras_vacias = 0;	/* saltos directos al cuerpo 
    cruces = corridos - entradas. Cero costo apagada (decision de emision). */
 static unsigned long long	jit_bloques_corridos = 0;
 static int					jit_sonda_cruces = 0;
+
+/* El superbloque por flujo: seguir la caminata a traves del BRA constante,
+   del BSR (llamada en linea, con rastreo de PR) y del RTS con punto de
+   retorno conocido. **Apagado por omision**: la tanda 2026-08-09 salio
+   neutra a levemente negativa (DCDoom -21,2 % contra -21,7, CT -15,2 contra
+   -14,8, SR2 -7,0 contra -8,3) -- las entradas al despachador bajaron 1-4 %
+   y el tiempo no las siguio, la leccion de siempre: el viaje al despachador
+   no es el costo. DCEMU_JIT_FLUJO=1 lo revive para rehacer el A/B; la
+   exactitud esta probada al digito con capturas canonicas en los tres
+   guests. Los seguidos se cuentan al traducir (frio). */
+static int					jit_flujo = 0;
+static unsigned long long	jit_flujo_seguidos = 0;	/* BRA */
+static unsigned long long	jit_flujo_bsr = 0;
+static unsigned long long	jit_flujo_rts = 0;
 
 /*
 	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
@@ -1953,6 +1972,12 @@ struct jit_traduccion
 	signed char				slot[16];		/* indice en jit_a[], o -1 */
 	unsigned				desp_cuerpo;	/* el largo del prologo emitido */
 
+	/* Para un RTS seguido: el punto de retorno en que la traza continua, o 0.
+	   La emision lo convierte en una guarda (PR contra la constante) con
+	   salto interno; la salida dinamica de siempre queda para el camino que
+	   no coincide. Se limpia por fila al anexar. */
+	DWORD					sigue_en[JIT_MAX_INSTR];
+
 	unsigned char *			etiqueta[JIT_MAX_INSTR];
 	x64_parche				adelante[JIT_MAX_INSTR];
 	int						adelante_i[JIT_MAX_INSTR];
@@ -1988,6 +2013,21 @@ struct jit_plantilla
 	   busqueda de la instruccion siguiente. Un bloque que siga de largo corre
 	   URC en uno: la divergencia de 633 M del expediente de la compuerta. */
 	unsigned char	escribe;
+	/* El superbloque por flujo: 1 = BRA (destino constante), 2 = BSR (ademas
+	   arma el rastreo del punto de retorno), 3 = RTS (continua en el punto de
+	   retorno SI el rastreo esta armado; la emision lo verifica con una
+	   guarda en caliente, asi que el rastreo puede equivocarse sin romper). */
+	unsigned char	sigue;
+	/* La fila escribe PR: invalida el rastreo del punto de retorno. 1 = JSR
+	   y BSRF, que lo pisan con el suyo (BSR tambien, pero su seguimiento
+	   re-arma); 2 = LDS.L @Rm+,PR, el pop del prologo estandar, que REPONE
+	   lo apilado si la propia traza lo apilo (el emparejamiento de un nivel;
+	   si la pila no era la que parece, la guarda en caliente lo atrapa).
+	   LDS Rm,PR no tiene plantilla y corta el bloque: invalida gratis. */
+	unsigned char	escribe_pr;
+	/* La fila apila PR (STS.L PR,@-Rn): el rastreo recuerda que lo apilado
+	   es el punto de retorno vigente, para que el pop lo reponga. */
+	unsigned char	apila_pr;
 };
 
 #define TN(w)	(((w) >> 8) & 0x0F)
@@ -3438,6 +3478,39 @@ static void pl_jsr111(jit_gen * g, jit_traduccion * t, int i)
 
 static void pl_rts112(jit_gen * g, jit_traduccion * t, int i)
 {
+	/*
+		El RTS seguido: la traza continua en el punto de retorno que el BSR de
+		esta misma traza dejo en PR. La semantica no se asume: el PC del
+		contexto recibe el PR REAL (antes de la ranura, como todo salto
+		dinamico), y una guarda lo compara contra la constante rastreada -- un
+		camino interno que se haya salteado la llamada cae en la salida
+		dinamica de siempre. El rastreo puede equivocarse; la guarda no.
+	*/
+	if (t->sigue_en[i] != 0)
+	{
+		DWORD		ret = t->sigue_en[i];
+		x64_parche	fuera;
+
+		jit_x64_add_ri(&g->e, CYC, 3);
+		jit_x64_inc_r(&g->e, N);
+
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PR);
+		jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
+
+		tr_emitir_ranura(g, t, i + 1);
+
+		/* La ranura pudo pisar EAX; el PC del contexto es el lugar seguro. */
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PC);
+		jit_x64_cmp_ri32(&g->e, X64_RAX, (int) ret);
+		fuera = jit_x64_jcc(&g->e, X64_NE);
+
+		tr_seguir_en(g, t, ret);
+
+		jit_x64_fijar(&g->e, fuera);
+		gen_salir_dinamico(g, t);
+		return;
+	}
+
 	tr_salto_dinamico(g, t, i, 3, -1, 0);
 }
 
@@ -3643,16 +3716,16 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "SHLL16 Rn",          1, 0, 0, 0, pl_shll16 },
 	{ NULL, "BT",                 2, 0, 1, 0, pl_bt104 },
 	{ NULL, "BT/S",               2, 0, 1, 1, pl_bts105 },
-	{ NULL, "BRA",                2, 0, 1, 1, pl_bra },
-	{ NULL, "BSR",                2, 0, 1, 1, pl_bsr108 },
+	{ NULL, "BRA",                2, 0, 1, 1, pl_bra, 0, 0, 0, 1 },
+	{ NULL, "BSR",                2, 0, 1, 1, pl_bsr108, 0, 0, 0, 2 },
 	{ NULL, "JMP @Rn",            3, 0, 1, 1, pl_jmp110 },
-	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111 },
-	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112 },
+	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111, 0, 0, 0, 0, 1 },
+	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112, 0, 0, 0, 3 },
 	/* Lo que el censo de Crazy Taxi pidio (2026-08-08): el pushpop de PR corta
 	   todo prologo y epilogo de funcion del guest. Ciclos copiados de cada
 	   manejador; el 0 de LDS.L @Rm+,PR es del manejador, no un olvido. */
-	{ NULL, "STS.L PR,@-Rn",      2, 1, 0, 0, pl_stsl168, 0, 0, 1 },
-	{ NULL, "LDS.L @Rm+,PR",      0, 1, 0, 0, pl_ldsl135 },
+	{ NULL, "STS.L PR,@-Rn",      2, 1, 0, 0, pl_stsl168, 0, 0, 1, 0, 0, 1 },
+	{ NULL, "LDS.L @Rm+,PR",      0, 1, 0, 0, pl_ldsl135, 0, 0, 0, 0, 2 },
 	{ NULL, "LDS.L @Rm+,MACL",    3, 1, 0, 0, pl_ldsl134 },
 	{ NULL, "STS MACL,Rn",        3, 0, 0, 0, pl_sts164 },
 	{ NULL, "MOVT Rn",            1, 0, 0, 0, pl_movt35 },
@@ -3679,7 +3752,7 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "DIV0U",              0, 1, 0, 0, pl_div0u54 },
 	{ NULL, "SHAD Rm,Rn",         0, 1, 0, 0, pl_shad90 },
 	{ NULL, "BRAF Rn",            3, 0, 1, 1, pl_braf },
-	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109 },
+	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109, 0, 0, 0, 0, 1 },
 	/* El cuarto lote: MAC.L por el manejador reordenado, SHLD, y lo que el
 	   censo listo tras el tercero. El 5 de OR #imm es del manejador. */
 	{ NULL, "MAC.L @Rm+,@Rn+",    0, 1, 0, 0, pl_macl62 },
@@ -4182,11 +4255,17 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	/* La ventana de 1 KB es el contrato de la busqueda BAJO MMU (misma
 	   pagina con cualquier tamano); sin MMU no hay busqueda que reproducir
 	   -- el mismo criterio que ya usan los enlaces -- y cortar ahi era un
-	   limite artificial de largo: primer paso de superbloques. */
-	unsigned		cabe   = mmu_activa
-		? (JIT_LIMITE_PAG - (pc & (JIT_LIMITE_PAG - 1))) / 2
-		: JIT_MAX_INSTR;
-	int				max    = (int) (cabe < JIT_MAX_INSTR ? cabe : JIT_MAX_INSTR);
+	   limite artificial de largo: primer paso de superbloques. La traza
+	   ENTERA vive en la ventana de la entrada, tambien lo seguido por flujo. */
+	DWORD			ventana = pc & ~(DWORD) (JIT_LIMITE_PAG - 1);
+	int				seguido = 0;
+	/* El rastreo del punto de retorno: lo arma un BSR seguido, lo invalida
+	   cualquier escritor de PR, y lo consume el RTS que continua. Puede
+	   equivocarse sin romper nada -- la emision verifica PR en caliente. */
+	DWORD			pr_conocido = 0;
+	int				pr_valido   = 0;
+	DWORD			pr_apilado  = 0;
+	int				pr_apilado_valido = 0;
 	int				i;
 
 	t->pc0        = pc;
@@ -4195,11 +4274,36 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	t->modo       = mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO;
 	t->fpu        = -1;
 
-	for (i = 0; i < max; i++)
+	while (t->n < JIT_MAX_INSTR)
 	{
-		WORD		instr = codigo[i];
-		opcode_f *	f     = OP_HANDLER(oplist, instr);
-		const jit_plantilla * p = jit_plantilla_de(f);
+		WORD		instr;
+		opcode_f *	f;
+		const jit_plantilla * p;
+
+		if (mmu_activa && (pc & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana)
+			break;
+
+		/* Una traza que ya siguio un flujo puede desembocar en codigo que ya
+		   tiene: ahi se corta, y el salto interno o la salida hacia la propia
+		   entrada cierran el lazo (la forma del bloque-lazo de siempre). */
+		if (seguido)
+		{
+			int ya = 0;
+
+			for (i = 0; i < t->n; i++)
+				if (t->pc[i] == pc)
+				{
+					ya = 1;
+					break;
+				}
+
+			if (ya)
+				break;
+		}
+
+		instr = *codigo;
+		f     = OP_HANDLER(oplist, instr);
+		p     = jit_plantilla_de(f);
 
 		if (p == NULL)
 		{
@@ -4250,10 +4354,144 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			t->fpu = (int) jit_fpu_visto;
 		}
 
-		t->pc[i]      = pc + (DWORD) (2 * i);
-		t->palabra[i] = instr;
-		t->pl[i]      = p;
-		t->n          = i + 1;
+		t->pc[t->n]       = pc;
+		t->palabra[t->n]  = instr;
+		t->pl[t->n]       = p;
+		t->sigue_en[t->n] = 0;
+		t->n++;
+
+		if (p->apila_pr)
+		{
+			pr_apilado        = pr_conocido;
+			pr_apilado_valido = pr_valido;
+		}
+
+		if (p->escribe_pr)
+		{
+			/* El pop repone lo que esta misma traza apilo; cualquier otro
+			   escritor invalida. Un desbalance real lo atrapa la guarda. */
+			if (p->escribe_pr == 2 && pr_apilado_valido)
+			{
+				pr_conocido       = pr_apilado;
+				pr_valido         = 1;
+				pr_apilado_valido = 0;
+			}
+			else
+				pr_valido = 0;
+		}
+
+		/*
+			El superbloque por flujo: BRA, BSR y el RTS con punto de retorno
+			conocido no cortan la traza -- la caminata puede SEGUIR. La ranura
+			viaja con la rama, o el bloque termina antes de ella (la regla del
+			recorte, decidida aqui en linea porque la continuacion depende).
+		*/
+		if (jit_flujo && p->sigue && (p->sigue != 3 || pr_valido))
+		{
+			const jit_plantilla *	rp;
+			WORD					rinstr;
+			DWORD					dest;
+			int						en_traza;
+
+			/* La ranura tiene que caber (tope y ventana) y ser admisible:
+			   sin acceso a memoria, sin rama, sin FPU -- las reglas de las
+			   616 instrucciones y del PC += 2. Si no, antes de la rama. */
+			if (t->n >= JIT_MAX_INSTR
+				|| (mmu_activa
+					&& ((pc + 2) & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana))
+			{
+				t->n--;
+				break;
+			}
+
+			rinstr = codigo[1];
+			rp     = jit_plantilla_de(OP_HANDLER(oplist, rinstr));
+
+			if (rp == NULL || rp->accede || rp->rama || rp->fpu)
+			{
+				t->n--;
+				break;
+			}
+
+			t->pc[t->n]       = pc + 2;
+			t->palabra[t->n]  = rinstr;
+			t->pl[t->n]       = rp;
+			t->sigue_en[t->n] = 0;
+			t->n++;
+
+			dest = (p->sigue == 3) ? pr_conocido
+								   : tr_destino12(t, t->n - 2);
+
+			en_traza = 0;
+			for (i = 0; i < t->n; i++)
+				if (t->pc[i] == dest)
+				{
+					en_traza = 1;
+					break;
+				}
+
+			/* Destino ya en la traza: el lazo se cierra por salto interno --
+			   y el RTS igual continua, con su guarda, hacia atras. */
+			if (en_traza)
+			{
+				if (p->sigue == 3)
+				{
+					t->sigue_en[t->n - 2] = dest;
+					pr_valido = 0;
+					jit_flujo_rts++;
+				}
+
+				break;
+			}
+
+			/* Un BRA con destino alcanzable por la caminata contigua no se
+			   sigue: la forma if/else se captura entera asi, y seguir
+			   perderia el else que el condicional de arriba necesita. Para
+			   BSR no aplica -- su fall-through es el punto de retorno, que
+			   la continuacion del RTS repone. */
+			if (p->sigue == 1
+				&& dest > pc + 2
+				&& (dest - (pc + 4)) / 2 < (DWORD) (JIT_MAX_INSTR - t->n))
+			{
+				pc     += 4;
+				codigo += 2;
+				continue;
+			}
+
+			/* Bajo MMU, fuera de la ventana no se sigue: el salto queda y
+			   sale como siempre (enlace, o la salida dinamica del RTS). */
+			if (mmu_activa
+				&& (dest & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana)
+				break;
+
+			/* Seguir el flujo. El puntero del destino no tiene efectos: bajo
+			   MMU es la misma pagina vigente (la guarda de arriba), y sin
+			   MMU no hay busqueda. */
+			if (p->sigue == 1)
+				jit_flujo_seguidos++;
+			else if (p->sigue == 2)
+			{
+				/* La llamada entra en linea: el punto de retorno queda
+				   rastreado para el RTS de la propia traza. */
+				pr_conocido = t->pc[t->n - 2] + 4;
+				pr_valido   = 1;
+				jit_flujo_bsr++;
+			}
+			else
+			{
+				t->sigue_en[t->n - 2] = dest;
+				pr_valido = 0;
+				jit_flujo_rts++;
+			}
+
+			seguido = 1;
+			pc      = dest;
+			codigo  = (const WORD *) MMU_FETCH_PUNTERO(dest);
+			continue;
+		}
+
+		pc     += 2;
+		codigo += 1;
 	}
 
 	/*
@@ -4323,8 +4561,16 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 
 		/* Sin ciclos nuevos la condicion del corte no pudo volverse cierta.
 		   Y tras la ultima instruccion no hace falta: el bloque termina. */
-		if (p->ciclos && i + 1 < t->n)
+		if (p->ciclos && i + 1 < t->n && t->pc[i + 1] == pc_sig)
 			gen_corte(g, pc_sig);
+
+		/* La traza siguio un flujo: la fila siguiente no es pc_i + 2. Este
+		   fall-through -- alcanzable solo si un salto interno entra a la
+		   ranura como instruccion comun -- sale del bloque por su PC real en
+		   vez de caer en el destino seguido. En el camino real es codigo
+		   muerto: el BRA ya salto por su arista. */
+		if (i + 1 < t->n && t->pc[i + 1] != pc_sig)
+			gen_salir_enlazable(g, t, pc_sig);
 
 		/* Tras la ultima tampoco hace falta este: toda salida del bloque --
 		   despachador, cadena o talon -- compara la validez antes de seguir. */
@@ -4772,9 +5018,29 @@ static jit_bloque * tr_traducir(DWORD pc)
 	b->codigo     = (void (*)(void)) (jit_codigo + jit_codigo_us);
 	b->cuerpo     = (void (*)(void)) (jit_codigo + jit_codigo_us
 									  + t.desp_cuerpo);
-	b->n_palabras = t.n;
 	b->mmu        = t.modo;
 	b->fpu        = t.fpu;
+
+	/* El prefijo contiguo lo verifica el puntero de busqueda, como siempre;
+	   lo seguido por flujo va como palabras sueltas, que jit_verificar ya
+	   compara una a una (el mecanismo de los bloques a mano). */
+	{
+		int k;
+
+		for (k = 1; k < t.n; k++)
+			if (t.pc[k] != t.pc[k - 1] + 2)
+				break;
+
+		b->n_palabras = k;
+
+		if (k < t.n)
+		{
+			memcpy(b->pcs, t.pc, (size_t) t.n * sizeof(DWORD));
+			b->extra_dir     = &b->pcs[k];
+			b->extra_palabra = &b->copia[k];
+			b->n_extra       = t.n - k;
+		}
+	}
 
 	{
 		int r;
@@ -4806,7 +5072,21 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 	jit_codigo_us += jit_x64_largo(&g.e);
 
-	jit_vigilar_tramo(MMU_FETCH_PUNTERO(b->pc), (unsigned) (2 * t.n));
+	/* La vigilancia, tramo por tramo: cada segmento contiguo de la traza
+	   marca sus paginas. El puntero por segmento no tiene efectos (misma
+	   pagina vigente bajo MMU; sin MMU no hay busqueda). */
+	{
+		int seg = 0;
+		int k;
+
+		for (k = 1; k <= t.n; k++)
+			if (k == t.n || t.pc[k] != t.pc[k - 1] + 2)
+			{
+				jit_vigilar_tramo(MMU_FETCH_PUNTERO(t.pc[seg]),
+					(unsigned) (2 * (k - seg)));
+				seg = k;
+			}
+	}
 
 	b->epoca = 0;			/* todavia sin verificar */
 	b->ptr   = NULL;
@@ -5181,6 +5461,21 @@ static void jit_resumen(void)
 	fprintf(stderr, "jit: %llu costuras (%llu vacias: salto directo al"
 		" cuerpo)\n", jit_costuras + jit_costuras_vacias, jit_costuras_vacias);
 
+	if (jit_flujo_seguidos + jit_flujo_bsr + jit_flujo_rts != 0)
+	{
+		int con_flujo = 0;
+		int j;
+
+		for (j = 0; j < jit_n_bloques; j++)
+			if (jit_bloques[j].mmu != -1 && jit_bloques[j].n_extra != 0)
+				con_flujo++;
+
+		fprintf(stderr, "jit: %llu aristas seguidas al traducir"
+			" (%llu BRA, %llu BSR, %llu RTS), %d trazas con flujo\n",
+			jit_flujo_seguidos + jit_flujo_bsr + jit_flujo_rts,
+			jit_flujo_seguidos, jit_flujo_bsr, jit_flujo_rts, con_flujo);
+	}
+
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
 		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
@@ -5316,6 +5611,7 @@ void jit_iniciar(void)
 			const char * sc = getenv("DCEMU_JIT_SONDA_CRUCES");
 			const char * sh = getenv("DCEMU_JIT_SIN_HOGARES");
 			const char * co = getenv("DCEMU_JIT_COSTURAS");
+			const char * fl = getenv("DCEMU_JIT_FLUJO");
 
 			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
 
@@ -5323,6 +5619,9 @@ void jit_iniciar(void)
 				jit_hogares = 0;
 
 			jit_costuras_talones = (co != NULL && atoi(co) >= 2);
+
+			if (fl != NULL && atoi(fl) != 0)
+				jit_flujo = 1;
 		}
 	}
 
