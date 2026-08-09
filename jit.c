@@ -613,6 +613,7 @@ static const x64_reg jit_a[5] =
    intercambio sin guarda alguna. */
 #define O_FRB		((int) offsetof(context_t, FR_BANK))
 #define FR_DESP(x)	((int) offsetof(FPR_BANK, FP.XMTRX.m) + 4 * (x))
+#define O_FPUL		((int) offsetof(context_t, FPUL_REG))
 #define O_R(n)	((int) (offsetof(context_t, registers) + 4 * (n)))
 
 static int jit_disp_ok = 1;
@@ -1711,6 +1712,13 @@ struct jit_plantilla
 	   queda atado al modo vigente al traducir (t->fpu) y no recibe enlaces.
 	   Va al final para que las filas viejas la inicialicen a 0 solas. */
 	unsigned char	fpu;
+	/* La emision cuenta el intento por su cuenta (inc N adentro, ANTES de su
+	   corte): el conductor no debe volver a contarlo. Nacio de un bug de
+	   contador: el corte interno del envoltorio ligero salia antes del inc N
+	   del conductor y perf_instrucciones perdia uno por corte -- 7,18
+	   millones en el banco de CT, con la ejecucion intacta (captura y audio
+	   identicos): el contador mentia, no el guest. */
+	unsigned char	propia;
 };
 
 #define TN(w)	(((w) >> 8) & 0x0F)
@@ -2616,24 +2624,104 @@ static void pl_fmovs178(jit_gen * g, jit_traduccion * t, int i)	/* FRm,@(R0,Rn) 
 	gen_escribir(g, t->modo, 4, tr_valor_fr, (void *) (size_t) TM(w));
 }
 
-/* La aritmetica de sz0/pr0 va por el manejador real: pura sobre FR/FPUL/T,
-   sin memoria, y con Enables=0 garantizado por b->fpu no puede levantar la
-   excepcion de FPU a mitad de bloque. */
-static void pl_fadd189(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fadd189); }
-static void pl_fsub198(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fsub198); }
-static void pl_fmul195(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fmul195); }
-static void pl_fdiv192(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fdiv192); }
-static void pl_fcmpeq190(jit_gen * g, jit_traduccion * t, int i){ tr_manejador(g, t, i, (const void *) fcmpeq190); }
-static void pl_fcmpgt191(jit_gen * g, jit_traduccion * t, int i){ tr_manejador(g, t, i, (const void *) fcmpgt191); }
-static void pl_float193(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) float193); }
-static void pl_ftrc199(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) ftrc199); }
-static void pl_fneg196(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fneg196); }
-static void pl_fabs188(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fabs188); }
-static void pl_fsqrt197(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fsqrt197); }
-static void pl_flds186(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) flds186); }
-static void pl_fsts187(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) fsts187); }
-static void pl_fldi0170(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fldi0170); }
-static void pl_fldi1171(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fldi1171); }
+/*
+	La aritmetica de sz0/pr0 va por el manejador real -- escribe Cause/Flag y
+	aplica el aplanado DN por operacion, y emitir eso seria una segunda copia
+	de las reglas de la FPU --, pero con el **envoltorio ligero**: el manejador
+	es puro sobre FR/FPUL/T (sin memoria, sin falta posible con Enables=0
+	garantizado por b->fpu) y no toca ningun registro entero, asi que el sync
+	completo del conductor sobra. Solo el reloj viaja: se guarda, el manejador
+	suma ahi, se recarga. El PC+=2 que el manejador hace sobre el contexto es
+	sobre un valor rancio y toda salida lo pisa; en las ranuras seria veneno
+	--pisaria el destino capturado de un salto--, y por eso NINGUNA fila FPU
+	entra en ranura (el corte del descubrimiento lo garantiza).
+*/
+static void tr_manejador_fpu(jit_gen * g, jit_traduccion * t, int i,
+	const void * f)
+{
+	/* El intento se cuenta ANTES, como run(): el corte de aqui abajo puede
+	   salir del bloque, y una instruccion ejecutada sin contar deja el
+	   contador mintiendo. La fila lleva `propia` para que el conductor no
+	   vuelva a contar. */
+	jit_x64_inc_r(&g->e, N);
+
+	jit_x64_mov_mr(&g->e, CTX, O_CYC, CYC);
+	jit_x64_mov_ri(&g->e, X64_RCX, (unsigned) t->palabra[i]);
+
+	if (!jit_x64_call_directo(&g->e, f))
+	{
+		jit_x64_mov64_ri(&g->e, X64_RAX, (unsigned long long) (size_t) f);
+		jit_x64_call_r(&g->e, X64_RAX);
+	}
+
+	jit_x64_mov_rm(&g->e, CYC, CTX, O_CYC);
+
+	if (i + 1 < t->n)
+		gen_corte(g, t->pc0 + (DWORD) (2 * i) + 2);
+}
+
+static void pl_fadd189(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador_fpu(g, t, i, (const void *) fadd189); }
+static void pl_fsub198(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador_fpu(g, t, i, (const void *) fsub198); }
+static void pl_fmul195(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador_fpu(g, t, i, (const void *) fmul195); }
+static void pl_fdiv192(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador_fpu(g, t, i, (const void *) fdiv192); }
+static void pl_fcmpeq190(jit_gen * g, jit_traduccion * t, int i){ tr_manejador_fpu(g, t, i, (const void *) fcmpeq190); }
+static void pl_fcmpgt191(jit_gen * g, jit_traduccion * t, int i){ tr_manejador_fpu(g, t, i, (const void *) fcmpgt191); }
+static void pl_float193(jit_gen * g, jit_traduccion * t, int i) { tr_manejador_fpu(g, t, i, (const void *) float193); }
+static void pl_ftrc199(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador_fpu(g, t, i, (const void *) ftrc199); }
+static void pl_fsqrt197(jit_gen * g, jit_traduccion * t, int i) { tr_manejador_fpu(g, t, i, (const void *) fsqrt197); }
+
+/* Las seis sin FPSCR se emiten enteras: FNEG y FABS son el bit de signo
+   (el manual las define asi, no como aritmetica), y las otras cuatro son
+   movimientos. Ninguna suma ciclos: asi vienen sus manejadores. */
+static void pl_fneg196(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_alu_mi(&g->e, X64_XOR, X64_RCX, FR_DESP(TN(w)), (int) 0x80000000ul);
+}
+
+static void pl_fabs188(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_alu_mi(&g->e, X64_AND, X64_RCX, FR_DESP(TN(w)), 0x7FFFFFFF);
+}
+
+static void pl_flds186(jit_gen * g, jit_traduccion * t, int i)	/* FLDS FRm,FPUL */
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov_rm(&g->e, X64_RAX, X64_RCX, FR_DESP(TN(w)));
+	jit_x64_mov_mr(&g->e, CTX, O_FPUL, X64_RAX);
+}
+
+static void pl_fsts187(jit_gen * g, jit_traduccion * t, int i)	/* FSTS FPUL,FRn */
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_FPUL);
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov_mr(&g->e, X64_RCX, FR_DESP(TN(w)), X64_RAX);
+}
+
+static void pl_fldi0170(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov_mi(&g->e, X64_RCX, FR_DESP(TN(w)), 0);
+}
+
+static void pl_fldi1171(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov_mi(&g->e, X64_RCX, FR_DESP(TN(w)), 0x3F800000);
+}
 
 /* --- aritmetica y corrimientos que el censo pidio ------------------------ */
 
@@ -3133,21 +3221,21 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "FMOV.S FRm,@Rn",      1, 1, 0, 0, pl_fmovs176, 1 },
 	{ NULL, "FMOV.S FRm,@-Rn",     1, 1, 0, 0, pl_fmovs177, 1 },
 	{ NULL, "FMOV.S FRm,@(R0,Rn)", 1, 1, 0, 0, pl_fmovs178, 1 },
-	{ NULL, "FADD FRm,FRn",        0, 1, 0, 0, pl_fadd189,  1 },
-	{ NULL, "FSUB FRm,FRn",        0, 1, 0, 0, pl_fsub198,  1 },
-	{ NULL, "FMUL FRm,FRn",        0, 1, 0, 0, pl_fmul195,  1 },
-	{ NULL, "FDIV FRm,FRn",        0, 1, 0, 0, pl_fdiv192,  1 },
-	{ NULL, "FCMP/EQ FRm,FRn",     0, 1, 0, 0, pl_fcmpeq190, 1 },
-	{ NULL, "FCMP/GT FRm,FRn",     0, 1, 0, 0, pl_fcmpgt191, 1 },
-	{ NULL, "FLOAT FPUL,FRn",      0, 1, 0, 0, pl_float193, 1 },
-	{ NULL, "FTRC FRm,FPUL",       0, 1, 0, 0, pl_ftrc199,  1 },
-	{ NULL, "FNEG FRn",            0, 1, 0, 0, pl_fneg196,  1 },
-	{ NULL, "FABS FRn",            0, 1, 0, 0, pl_fabs188,  1 },
-	{ NULL, "FSQRT FRn",           0, 1, 0, 0, pl_fsqrt197, 1 },
-	{ NULL, "FLDS FRm,FPUL",       0, 1, 0, 0, pl_flds186,  1 },
-	{ NULL, "FSTS FPUL,FRn",       0, 1, 0, 0, pl_fsts187,  1 },
-	{ NULL, "FLDI0 FRn",           0, 1, 0, 0, pl_fldi0170, 1 },
-	{ NULL, "FLDI1 FRn",           0, 1, 0, 0, pl_fldi1171, 1 },
+	{ NULL, "FADD FRm,FRn",        0, 0, 0, 0, pl_fadd189,  1, 1 },
+	{ NULL, "FSUB FRm,FRn",        0, 0, 0, 0, pl_fsub198,  1, 1 },
+	{ NULL, "FMUL FRm,FRn",        0, 0, 0, 0, pl_fmul195,  1, 1 },
+	{ NULL, "FDIV FRm,FRn",        0, 0, 0, 0, pl_fdiv192,  1, 1 },
+	{ NULL, "FCMP/EQ FRm,FRn",     0, 0, 0, 0, pl_fcmpeq190, 1, 1 },
+	{ NULL, "FCMP/GT FRm,FRn",     0, 0, 0, 0, pl_fcmpgt191, 1, 1 },
+	{ NULL, "FLOAT FPUL,FRn",      0, 0, 0, 0, pl_float193, 1, 1 },
+	{ NULL, "FTRC FRm,FPUL",       0, 0, 0, 0, pl_ftrc199,  1, 1 },
+	{ NULL, "FNEG FRn",            0, 0, 0, 0, pl_fneg196,  1 },
+	{ NULL, "FABS FRn",            0, 0, 0, 0, pl_fabs188,  1 },
+	{ NULL, "FSQRT FRn",           0, 0, 0, 0, pl_fsqrt197, 1, 1 },
+	{ NULL, "FLDS FRm,FPUL",       0, 0, 0, 0, pl_flds186,  1 },
+	{ NULL, "FSTS FPUL,FRn",       0, 0, 0, 0, pl_fsts187,  1 },
+	{ NULL, "FLDI0 FRn",           0, 0, 0, 0, pl_fldi0170, 1 },
+	{ NULL, "FLDI1 FRn",           0, 0, 0, 0, pl_fldi1171, 1 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3603,9 +3691,13 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		Asi que un BF/S cuya ranura acceda a memoria --o sea otra rama, o no
 		exista-- termina el bloque antes de el.
 	*/
+	/* Las filas FPU tampoco entran en ranura, aunque no accedan a memoria:
+	   sus manejadores hacen PC += 2 sobre el contexto, y en una ranura eso
+	   pisaria el destino que el salto capturo en O_PC. */
 	for (i = 0; i < t->n; i++)
 		if (t->pl[i]->ranura
-			&& (i + 1 >= t->n || t->pl[i + 1]->accede || t->pl[i + 1]->rama))
+			&& (i + 1 >= t->n || t->pl[i + 1]->accede || t->pl[i + 1]->rama
+				|| t->pl[i + 1]->fpu))
 		{
 			t->n = i;
 			break;
@@ -3647,7 +3739,7 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		if (p->ciclos)
 			jit_x64_add_ri(&g->e, CYC, p->ciclos);
 
-		if (!p->accede)
+		if (!p->accede && !p->propia)
 			jit_x64_inc_r(&g->e, N);
 
 		/* Sin ciclos nuevos la condicion del corte no pudo volverse cierta.

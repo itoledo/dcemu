@@ -1556,6 +1556,48 @@ diseño es si un bloque debe cortar donde el fetch del intérprete faltaría, qu
 sabe corriendo — y todo el instrumental para retomarla está comiteado: `DCEMU_CP_MS` con
 sus dos granos, la sonda de conservación descrita en tres ediciones, y este expediente.
 
+## La ronda de rendimiento FPU: el envoltorio ligero, y el contador que mintió
+
+La aritmética **no se emite y no es una limitación sino la regla del árbol**: los
+manejadores escriben Cause/Flag y aplican el aplanado DN por operación
+(`fpu_dn_s` + `fpu_causa(fpu_causas(...))`), y emitir eso sería una segunda copia de las
+reglas de la FPU. Lo que sí había era grasa alrededor de la llamada:
+
+- **El envoltorio ligero** (`tr_manejador_fpu`): el manejador FPU es puro sobre
+  FR/FPUL/T — sin memoria, sin falta posible con Enables=0 garantizado por `b->fpu`, sin
+  tocar registros enteros — así que el sync completo del conductor sobra. Viaja solo el
+  reloj: contar el intento, guardar `CYC`, llamar, recargar, corte. **~6 operaciones
+  donde había ~20**, unas dos mil millones de veces en el banco de CT.
+- **Las seis sin FPSCR se emiten enteras**: `FNEG`/`FABS` son el bit de signo (así las
+  define el manual, y así las implementan los manejadores), y
+  `FLDS`/`FSTS`/`FLDI0`/`FLDI1` son movimientos — dos o tres instrucciones emitidas cada
+  una, cero ciclos (así vienen sus manejadores, verificado leyendo los cuerpos enteros).
+- **Ninguna fila FPU entra en ranura** (una condición en el corte del descubrimiento):
+  los manejadores hacen `PC += 2` sobre el contexto, inofensivo en el cuerpo — toda
+  salida lo pisa — y veneno en una ranura, donde pisaría el destino que el salto capturó.
+
+**Y el bug propio de la ronda, cazado por inspección y digno de la colección**: el
+envoltorio emitía su corte *antes* del `inc N` del conductor, así que un corte que salía
+dejaba la instrucción ejecutada sin contar — `perf_instrucciones` perdió 7,18 millones en
+el banco de CT **con la ejecución intacta** (captura y descartes de audio idénticos: el
+contador mentía, no el guest). El arreglo restituye la regla de `run()` — «el intento se
+cuenta antes» — con la bandera `propia` de fila para que el conductor no cuente doble. La
+primera versión del arreglo dejó cinco filas sin la bandera y el contador pasó a
+**sobre**-contar 636 millones: las dos caras del mismo bug, y las dos visibles solo en la
+verificación de exactitud.
+
+| banco | intérprete | traductor | estado anterior |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 41 329 ms | 32 469 — **1,078×** (cuentas idénticas) | 32 796 |
+| Crazy Taxi, 180 s | 108 323 ms | **94 431 (−12,8 %)** | 98 374 |
+
+**Crazy Taxi −4,0 % en la ronda y el mejor estado de toda la serie**: 94,4 segundos para
+el banco de 180, con el 84,9 % del volumen traducido y la exactitud canónica
+(22 279 918 865 al dígito, capturas byte a byte). Lo que queda en la frontera FPU, por
+orden: los pares de `sz1` (los `FMOV` de 64 bits que el flip de SZ encierra — misma
+maquinaria, filas nuevas), y levantar la compuerta MMU+FPU resolviendo la restricción de
+orden documentada arriba.
+
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
 
