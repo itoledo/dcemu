@@ -1639,3 +1639,50 @@ cuentas del lote 2 al bit, que es la palanca demostrando su exactitud. La difere
 tandas era la capa de reentrenamiento: cada tanda lleva perfil nuevo, y en CT esa capa
 vale ±1-2 % — su resolución real entre tandas, contra el 0,1-0,6 % de DCDoom (que pesa 7×
 en el perfil). **Los absolutos de CT se comparan dentro de un binario o no se comparan.**
+
+## El quinto lote del censo: los seis enteros, y la noche de las dos cadenas
+
+Los censos frescos de los dos guests pidieron seis filas de enteros: `MOV.W Rm,@Rn` (51
+sitios en DCDoom), `CLRS` (44) y `SHAR` (39) del lado de DOOM; `XOR Rm,Rn` (69),
+`MOV.B @(d,Rm),R0` (57) y `NEG Rm,Rn` (57) del lado de Crazy Taxi. Nada nuevo de
+maquinaria: cargas y ALU sobre las ranuras, `SHAR` con su `sar` y el acarreo a T como
+ROTCL, `CLRS` un `and` sobre SR en el contexto.
+
+**El accidente que casi entierra el lote, digno de la colección de medición**: la primera
+cadena de verificación de la noche quedó viva sin terminar y su relanzamiento corrió **en
+paralelo** con ella — dos cadenas compitiendo por `build-jit`, por el `stderr.txt` (que
+dos instancias se truncan mutuamente) y por el entrenamiento PGO. La tanda que salió de
+ahí reportaba los números de la ronda anterior **bit a bit** — mismas 238,8 M de entradas
+en DCDoom, mismo 92 283 ms en CT —, imposible con seis filas nuevas disparando, y esa
+imposibilidad fue la señal que la delató. La regla nueva para el cuaderno: **una cadena
+por máquina; antes de creerle a una tanda, verificar que no quedó otra corriendo** (el
+`Get-Process dcemu` de la disciplina ya lo cubría; lo que faltaba era aplicárselo a las
+cadenas mismas). Procesos muertos, reconstrucción, prueba de fuego (las seis
+instrucciones desaparecieron del censo) y cadena limpia entera.
+
+Con la cadena limpia, todo canónico: ctest 23/23, DCDoom al dígito con captura
+(`5 433 038 875` / `198B396F…`), CT con el traductor **exacto contra la referencia
+histórica** (`22 279 918 865` / `40E688EC…`); la corrida del intérprete de CT salió 51
+instrucciones corrida — la firma del XInput global (el traductor reproduciendo la
+referencia al dígito es lo que la absuelve), y la cadena siguiente la vio volver a la
+referencia.
+
+| | DCDoom | Crazy Taxi |
+| --- | --- | --- |
+| cobertura | 79,9 → **81,8 %** (4 445 M) | 87,1 → **87,8 %** (19 558 M) |
+| bloques traducidos | 17,9 → **19,6** instr | 18,2 → 18,9 instr |
+| entradas al despacho | 238,8 → 245,6 M (18,1/entrada) | 1796 → **1687 M** (11,5/entrada) |
+
+La tanda (la máquina esta noche corre ~2,5 % más lenta en las dos formas — el propio
+intérprete lo delata, 41,3 → 42,4 s — así que los cocientes son la lectura):
+
+| banco | intérprete | traductor | cociente |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 42 412 ms | **33 527 ms** | **−20,9 %, 1,044× tiempo real** |
+| Crazy Taxi, 180 s | 110 240 ms | **95 385 ms** | **−13,5 %** (dispersión 1,1 % esta noche; la capa de reentrenamiento de CT vale ±1-2 %, ver arriba) |
+
+**Y el censo posterior dice dónde termina esta veta**: en Crazy Taxi ya no corta ninguna
+instrucción — solo palabras de datos incrustadas en páginas de código (que deben cortar)
+y dos filas `STC` con 80 cortes en 60 segundos, margen cero —; en DCDoom quedan tres
+filas mecánicas (`DT` 114 cortes, `MOV.W @Rm+,Rn` 44, `CMP/STR` 34), que son el lote
+siguiente y el último. Después de ese, la frontera ya no es de plantillas.

@@ -2746,6 +2746,77 @@ static void pl_fldi1171(jit_gen * g, jit_traduccion * t, int i)
 	jit_x64_mov_mi(&g->e, X64_RCX, FR_DESP(TN(w)), 0x3F800000);
 }
 
+/* --- el lote del censo tras los pares (2026-08-08) ----------------------- */
+
+static void pl_movw5(jit_gen * g, jit_traduccion * t, int i)	/* MOV.W Rm,@Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	tr_escribir_de(g, t, TM(w), 2);
+}
+
+static void pl_movb19(jit_gen * g, jit_traduccion * t, int i)	/* MOV.B @(d,Rm),R0 */
+{
+	WORD w = t->palabra[i];
+	int  d = (int) (w & 0x0F);
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+
+	if (d)
+		jit_x64_add_ri(&g->e, X64_RCX, d);
+
+	tr_leer_a(g, t, 0, 1);
+}
+
+static void pl_neg67(jit_gen * g, jit_traduccion * t, int i)	/* NEG Rm,Rn */
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+
+	tr_cargar(g, t, X64_RAX, TM(w));
+	jit_x64_neg_r(&g->e, X64_RAX);
+
+	if (hn >= 0)
+		jit_x64_mov_rr(&g->e, (x64_reg) hn, X64_RAX);
+	else
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+}
+
+static void pl_xor83(jit_gen * g, jit_traduccion * t, int i)	/* XOR Rm,Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_alu_rr(g, t, X64_XOR, TN(w), TM(w));
+}
+
+/* SHAR: como ROTCL, el bit que sale queda en el acarreo y de ahi va a T; el
+   sar de x86 preserva el signo igual que el chip. */
+static void pl_shar92(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w  = t->palabra[i];
+	int  n  = TN(w);
+	int  hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_shift_ri(&g->e, X64_SAR, (x64_reg) hn, 1);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_R(n));
+		jit_x64_shift_ri(&g->e, X64_SAR, X64_RAX, 1);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+
+	gen_poner_t(g, X64_B);
+}
+
+static void pl_clrs114(jit_gen * g, jit_traduccion * t, int i)	/* CLRS */
+{
+	(void) t; (void) i;
+	jit_x64_alu_mi(&g->e, X64_AND, CTX, O_SR, (int) 0xFFFFFFFDul);
+}
+
 /* --- los pares de sz1: el FMOV de 64 bits ------------------------------- */
 
 #define DR_DESP(x)	((int) offsetof(FPR_BANK, FP.dreg) + 8 * (x))
@@ -3345,6 +3416,13 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "FMOV DRm,@Rn",        1, 1, 0, 0, pl_fmov183,  1 },
 	{ NULL, "FMOV DRm,@-Rn",       1, 1, 0, 0, pl_fmov184,  1 },
 	{ NULL, "FMOV DRm,@(R0,Rn)",   2, 1, 0, 0, pl_fmov185,  1 },
+	/* El lote del censo tras los pares. */
+	{ NULL, "MOV.W Rm,@Rn",        2, 1, 0, 0, pl_movw5 },
+	{ NULL, "MOV.B @(d,Rm),R0",    1, 1, 0, 0, pl_movb19 },
+	{ NULL, "NEG Rm,Rn",           1, 0, 0, 0, pl_neg67 },
+	{ NULL, "XOR Rm,Rn",           1, 0, 0, 0, pl_xor83 },
+	{ NULL, "SHAR Rn",             1, 0, 0, 0, pl_shar92 },
+	{ NULL, "CLRS",                1, 0, 0, 0, pl_clrs114 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3368,6 +3446,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	fadd189, fsub198, fmul195, fdiv192, fcmpeq190, fcmpgt191, float193,
 	ftrc199, fneg196, fabs188, fsqrt197, flds186, fsts187, fldi0170, fldi1171,
 	fmov179, fmov180, fmov181, fmov182, fmov183, fmov184, fmov185,
+	movw5, movb19, neg67, xor83, shar92, clrs114,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
