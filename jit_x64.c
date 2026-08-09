@@ -671,6 +671,14 @@ void jit_x64_cmp64_rm(x64_emisor * e, x64_reg a, x64_reg base, int disp)
 	modrm_m(e, a, base, disp);
 }
 
+void jit_x64_or_mi8(x64_emisor * e, x64_reg base, int disp, int imm8)
+{
+	rex(e, 0, 0, base, 0);
+	b1(e, 0x80);				/* OR r/m8, imm8 es /1 */
+	modrm_m(e, 1, base, disp);
+	b1(e, (unsigned) imm8);
+}
+
 void jit_x64_test_rr(x64_emisor * e, x64_reg a, x64_reg b)
 {
 	rex(e, 0, b, a, 0);

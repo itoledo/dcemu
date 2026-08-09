@@ -3025,6 +3025,20 @@ static void pl_movw14(jit_gen * g, jit_traduccion * t, int i)	/* MOV.W @Rm+,Rn *
 	tr_leer_mas(g, t, i, 2);
 }
 
+/* El mini-lote del censo de SR2 (358 cortes de CLRT; SETT es su espejo). */
+
+static void pl_clrt115(jit_gen * g, jit_traduccion * t, int i)	/* CLRT */
+{
+	(void) t; (void) i;
+	jit_x64_and_mi8(&g->e, CTX, O_SR, 0xFE);
+}
+
+static void pl_sett145(jit_gen * g, jit_traduccion * t, int i)	/* SETT */
+{
+	(void) t; (void) i;
+	jit_x64_or_mi8(&g->e, CTX, O_SR, 0x01);
+}
+
 /* CMP/STR: T = 1 si algun byte de Rn^Rm es cero. El truco clasico
    (v - 0x01010101) & ~v & 0x80808080 != 0 <=> v tiene un byte cero; es
    exacto en 32 bits, sin falsos positivos. */
@@ -3659,6 +3673,9 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "DT Rn",               1, 0, 0, 0, pl_dt },
 	{ NULL, "MOV.W @Rm+,Rn",       1, 1, 0, 0, pl_movw14 },
 	{ NULL, "CMP/STR Rm,Rn",       1, 0, 0, 0, pl_cmpstr51 },
+	/* El mini-lote del censo de SR2. */
+	{ NULL, "CLRT",                1, 0, 0, 0, pl_clrt115 },
+	{ NULL, "SETT",                1, 0, 0, 0, pl_sett145 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3684,6 +3701,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	fmov179, fmov180, fmov181, fmov182, fmov183, fmov184, fmov185,
 	movw5, movb19, neg67, xor83, shar92, clrs114,
 	dt, movw14, cmpstr51,
+	clrt115, sett145,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta

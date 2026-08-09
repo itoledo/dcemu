@@ -1965,6 +1965,21 @@ por bloque es el costo fijo que queda; si los cruces dinámicos resultan ser la 
 de las fronteras, la fase paga. Ese contador es el primer paso de la implementación, y
 es una tarde de trabajo aparte de esta noche.
 
+### El mini-lote del censo de SR2: CLRT y SETT, las dos últimas del parque
+
+El censo del tercer guest pidió `CLRT` (358 cortes — la única instrucción que quedaba
+cortando en el parque con plantilla posible) y va con su espejo `SETT`, como
+fldi0/fldi1: un `and` y un `or` de byte sobre T en el contexto (`or_mi8` nuevo en el
+emisor con su caso), un ciclo cada una, cuerpos leídos enteros. **117 plantillas**, y
+«todas las que valen la pena» queda literal: lo que corta en los tres guests son
+palabras de datos (que deben cortar), los escritores de SR (fuera con razón), `TRAPA`,
+y la FPU que la clave FD gobierna. Cadena completa verde — exactitud canónica en los
+tres guests (la corrida de ct-trad salió 50 corrida por el XInput ambiental, capturas
+intactas, y la recorrida tranquila reprodujo el canónico al dígito — el espejo exacto
+del episodio del quinto lote); SR2 gana 179 k instrucciones de cobertura por los cortes
+cosidos. Tanda: DCDoom −21,4 % (1,055×), CT −14,2 %, SR2 −6,6 % — todo dentro de la
+resolución entre tandas de cada banco.
+
 **El contador está hecho y censado** (`DCEMU_JIT_SONDA_CRUCES=1`: una suma emitida en
 la cabeza de cada bloque, cero costo apagada; cruces = corridos − entradas):
 

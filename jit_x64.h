@@ -195,6 +195,7 @@ void jit_x64_sub64_ri(x64_emisor * e, x64_reg dst, int imm);
 /* Sobre bytes: SR.T vive en el bit 0 de un campo de bits, asi que se toca
    leyendo y escribiendo el byte, no el registro entero. */
 void jit_x64_and_mi8 (x64_emisor * e, x64_reg base, int disp, int imm8);
+void jit_x64_or_mi8  (x64_emisor * e, x64_reg base, int disp, int imm8);
 void jit_x64_or_mr8  (x64_emisor * e, x64_reg base, int disp, x64_reg src);
 
 /* --- comparaciones ----------------------------------------------------- */

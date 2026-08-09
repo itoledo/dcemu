@@ -218,6 +218,10 @@ static void el_bit_t_se_toca_por_bytes(void)
 	ESPERAR_EMITIDO(0x80, 0x63, 0x08, 0xFE);
 
 	arrancar();
+	jit_x64_or_mi8(&e, X64_RCX, 4, 1);				/* or byte [rcx+4], 1 */
+	ESPERAR_EMITIDO(0x80, 0x49, 0x04, 0x01);
+
+	arrancar();
 	jit_x64_or_mr8(&e, X64_RBX, 8, X64_RAX);		/* or byte [rbx+8], al */
 	ESPERAR_EMITIDO(0x08, 0x43, 0x08);
 
