@@ -37,7 +37,7 @@ decide el orden:
 | # | qué | dónde vive el detalle | estado |
 | --- | --- | --- | --- |
 | 1 | SR2 al banco de PGO del JIT | `recompilador-plan.md`, «Cómo se mide» | **hecha** (2026-08-09): iguala su mejor marca con la capa pineada; DCDoom/CT intactos |
-| 2 | **Superbloque por flujo** | `recompilador-plan.md`, pendiente 1 | siguiente |
+| 2 | **Superbloque por flujo** | `recompilador-plan.md`, tabla de veredictos | **hecha** (2026-08-09): el flujo salió neutro (apagado, `DCEMU_JIT_FLUJO=1`); su residuo ganador es **el par de retorno** (`rts`+ranura con memoria emitidos, encendido): cobertura 86,9/89,7/90,4 %, entradas −9,6/−12,7 % en los guests compilados, tiempo mixto-marginal a favor |
 | 3 | Elisión de recargas en reentradas + rehacer los A/B de costuras y buscador | `recompilador-plan.md`, pendiente 2 | — |
 | 4 | **El ARM7**: caché de predecodificación primero (hoy decodifica en cada paso), traductor ARM7→x64 sobre `jit_x64.c` si el escalón no alcanza; emisión por identidad de manejador del intérprete de `arm7.c`, que queda libre de SDL y enlazable por `tests/` | `notas-aica.md` / `arm7-plan.md` | — |
 | 5 | **El reloj por eventos**: próximo vencimiento (TMU×3, WDT, muestra de AICA, línea, DMA auto, retardos de `intc_add`) en vez del sondeo cada 400 ciclos; las cadenas del JIT corren hasta el vencimiento. `intc_sh4_reintentar` ya es la mitad event-driven y se conserva | `clock-plan.md` al implementarla | — |

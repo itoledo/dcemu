@@ -13,12 +13,16 @@ traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
 - **117 plantillas**, seleccionadas por censo de qué corta bloques (no por completar
   `opcodes[]`). La frontera está cerrada: lo que corta en los tres guests verificados
   son palabras de datos (deben cortar), los escritores de SR, `TRAPA`, y lo que la
-  clave FPU gobierna.
-- **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, 84,4 % de
-  cobertura, cero emisiones fallidas), Crazy Taxi (89,4 %) y Sega Rally 2 (MMU+FPU,
-  87,6 %). Mejores marcas: DCDoom **1,06-1,08× tiempo real** (−21/−22 % contra su
-  intérprete según el estado de la máquina); CT **92,3 s** su mejor absoluto y
-  **−16,3 %** su mejor cociente; SR2 **0,92×** en su mejor tanda.
+  clave FPU gobierna. **El par de retorno** (`rts` + ranura con memoria — el epílogo
+  estándar de Katana) ya no corta: se emite con la sincronización en el PC de la rama
+  y el destino por lugar seguro, y el par TERMINA la traza (lo que sigue a un RTS es
+  otra función). `DCEMU_JIT_SIN_PAR_RTS=1` lo apaga.
+- **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **86,9 %**
+  de cobertura con el par, 23,0 por entrada, cero emisiones fallidas), Crazy Taxi
+  (**89,7 %**, 12,2) y Sega Rally 2 (MMU+FPU, **90,4 %**, 18,3). Mejores marcas:
+  DCDoom **1,06-1,08× tiempo real** y **−21,9 %** su mejor cociente; CT **92,3 s** su
+  mejor absoluto y **−16,3 %** su mejor cociente; SR2 **0,92×** en su mejor tanda
+  (−8,3 % su mejor cociente).
 - El traductor emite **por identidad de manejador** (`OP_HANDLER` de la `oplist` real):
   no existe un segundo decodificador que pueda divergir del primero. Los ciclos de cada
   plantilla se copian leyendo el cuerpo ENTERO del manejador — nunca por cercanía: un
@@ -98,6 +102,9 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 
 | experimento | veredicto | el porqué, en una línea |
 | --- | --- | --- |
+| El superbloque por flujo (seguir BRA/BSR/RTS) | **neutro** — apagado, `DCEMU_JIT_FLUJO=1` lo revive | entradas −1/−4 % y el tiempo no las siguió: el viaje al despachador no es el costo (otra vez) |
+| El par de retorno con la cola dentro | **perdió** (SR2 −6,3 % contra −8,3) | la caminata seguía de largo tras el RTS y anexaba la función siguiente: +27 % de arena, el código frío dispersa lo caliente (la lección del tope de 96) |
+| El par de retorno terminando la traza | **mixto-marginal, queda encendido** | DOOM −21,9 y CT −15,6/−16,7 (mejor), SR2 −7,5 (−0,8 pt, dentro de su dispersión); cobertura +2,5/+2,8 pt y entradas −9,6/−12,7 % |
 | Llamar al ayudante en cada acceso | **perdió** — el camino rápido se emite en línea | 2,2 ns (~9 ciclos) por acceso, la mitad de la ganancia del bloque |
 | Redespacho en el arena por ayudante C | **perdió dos veces** (+2,2/+4,6 % y +0,5/+0,6 %) | las llamadas fallidas superan a los aciertos |
 | El buscador (despacho enteramente emitido) | **neutro** aun sirviendo la salida dominante — `DCEMU_JIT_BUSCADOR=1` lo revive | el viaje al despachador C no es el costo; tres mediciones |
@@ -139,26 +146,25 @@ mezclador del AICA ya pesa 2,9-7,4 %.
 
 ## Lo pendiente, en orden
 
-1. **El superbloque por flujo** — la pieza grande de la fase 4, con su vara escrita:
-   el largo solo paga donde sigue al flujo caliente (a través del BRA constante, del
-   punto de retorno), no estirando el tramo estático. Piezas: descubrimiento no
-   contiguo, `pc[]` por instrucción en vez de `pc0 + 2i`, las palabras extra al
-   verificador (los campos `extra_*` ya existen y `jit_verificar` ya los compara).
-   La cuenta que lo motiva, remedida en la fase 0: 36-42 % de las fronteras son
-   cruces de enlace, el bloque corrido mide 7,8-11,7 instrucciones (un tercio a la
-   mitad del traducido), y el costo de frontera ronda el 15-25 % del trabajo emitido
-   de CT. **Primer commit: cerrar el agujero de la página del anfitrión** — el
-   registro vigila solo la página de 4 KB de la cabeza (`jit.c`, `jit_pag_codigo`) y
-   desde el paso 1 un bloque sin MMU puede cruzar el límite: una escritura sobre la
-   cola no mueve la época. Ningún banco lo observa; es la clase de agujero del corte
-   de época y se cierra marcando cabeza y cola (y con trazas, cada segmento).
-2. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
+(El superbloque por flujo se hizo entero — 2026-08-09, con el agujero de la página
+del anfitrión cerrado de paso —; sus dos veredictos están en la tabla de arriba y el
+residuo útil que dejó encendido es el par de retorno.)
+
+1. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
    el viaje C; falta la marca de «contexto ensuciado» para cuando el intérprete corrió
    en el medio. Con hogares canónicos ya colocados, es la mitad que las costuras no
    alcanzan.
-3. **La clave FD por bloque** (en vez de global) si los ~11 M de rechazos por FD de
-   SR2 pesan alguna vez por sí solos: cada uno es una vuelta entera por el despachador
-   (la fase 0 los reconfirmó: 11 119 520 en su banco de 60 s).
+2. **Extender el par a las demás ramas** (`jsr`/`jmp`/`bsr`/`bra` con ranura de
+   memoria): el mismo esquema — sync con el PC de la rama, destino por lugar seguro,
+   intento de la ranura contado antes —, generalizando `tr_salto_dinamico`. La
+   expectativa honesta, tras el veredicto del RTS: cobertura sube, tiempo
+   neutro-positivo; hacerlo de paso, no como fase.
+3. **La época por página** (en vez de global): los rechazos de DCDoom subieron de
+   545 k a 8,2 M con el par — cada movimiento de mapeo de WinCE (1,13 M) invalida
+   TODOS los bloques y la revalidación por palabras falla 4 % de las entradas. Una
+   generación por página de guest dejaría en pie lo que no se movió. Emparentada con
+   la clave FD por bloque (los ~11 M de rechazos de SR2 bajaron a 1,7 M con el par,
+   así que aquella pendiente perdió urgencia).
 4. **La fase 3 original: el parque entero** — el barrido de 135 demos y los 14 juegos
    con `DCEMU_JIT=2` contra su corrida de control, que es lo que decide la adopción
    por omisión (hoy el JIT es build aparte a propósito: el A/B corre sobre una sola

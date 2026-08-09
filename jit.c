@@ -133,6 +133,11 @@ typedef struct
 	void *					h_busqueda;		/* jit_busqueda_puente() */
 	void *					h_leer_par;		/* jit_leer_par() */
 	void *					h_escribir_par;	/* jit_escribir_par() */
+	/* El destino de un salto dinamico cuya ranura accede a memoria. El PC del
+	   contexto no sirve de lugar seguro ahi: tiene que quedar en el PC de la
+	   RAMA hasta despues de la ranura, para que una falta reejecute desde la
+	   rama (la semantica de la ranura de retardo). */
+	DWORD					destino;
 } jit_estado_t;
 
 static jit_estado_t jit_estado;
@@ -527,6 +532,16 @@ static int					jit_flujo = 0;
 static unsigned long long	jit_flujo_seguidos = 0;	/* BRA */
 static unsigned long long	jit_flujo_bsr = 0;
 static unsigned long long	jit_flujo_rts = 0;
+
+/* El par de retorno: un RTS cuya ranura accede a memoria ya no corta el
+   bloque. Es el epilogo estandar de Katana (rts; lds.l @r15+,pr), asi que
+   sin esto CADA retorno de llamada paga salida + despacho + dos
+   instrucciones interpretadas. La emision sincroniza con el PC de la RAMA
+   antes de tocar nada -- una falta en la ranura reejecuta desde el RTS,
+   como el interprete -- que es exactamente lo que faltaba en el expediente
+   de las 616. DCEMU_JIT_SIN_PAR_RTS=1 lo apaga para el A/B. */
+static int					jit_par_rts = 1;
+static unsigned long long	jit_pares_rts = 0;
 
 /*
 	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
@@ -1945,6 +1960,7 @@ typedef struct jit_traduccion jit_traduccion;
 
 static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig);
 static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t);
+static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k);
 
 #define JIT_SLOTS		5
 
@@ -3511,6 +3527,45 @@ static void pl_rts112(jit_gen * g, jit_traduccion * t, int i)
 		return;
 	}
 
+	/*
+		El par de retorno: la ranura accede a memoria (rts; lds.l @r15+,pr,
+		el epilogo estandar). La sincronizacion va ANTES de todo y con el PC
+		del RTS: si la ranura falta, el longjmp deja el contexto en la rama y
+		la reejecucion entra por el RTS -- la semantica de la instantanea del
+		interprete, que restaura el estado pre-RTS. Por lo mismo el destino
+		NO puede viajar en el PC del contexto (tiene que seguir siendo el del
+		RTS hasta despues de la ranura): va por el lugar seguro del estado.
+
+		El intento de la ranura se cuenta ANTES de su memoria (la regla de
+		run(): el nested execute cuenta antes de despachar, y una falta
+		cuenta), asi que aqui no sirve tr_emitir_ranura, que cuenta despues.
+	*/
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		const jit_plantilla * r = t->pl[i + 1];
+
+		tr_sync(g, t, t->pc[i]);
+		jit_x64_add_ri(&g->e, CYC, 3);
+
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PR);
+		jit_x64_mov_mr(&g->e, CTX, D(&jit_estado.destino), X64_RAX);
+
+		jit_x64_inc_r(&g->e, N);
+		gen_volcar_cuenta(g);
+
+		r->emitir(g, t, i + 1);
+
+		if (r->ciclos)
+			jit_x64_add_ri(&g->e, CYC, r->ciclos);
+
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, D(&jit_estado.destino));
+		jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
+
+		jit_pares_rts++;
+		gen_salir_dinamico(g, t);
+		return;
+	}
+
 	tr_salto_dinamico(g, t, i, 3, -1, 0);
 }
 
@@ -4381,6 +4436,36 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		}
 
 		/*
+			El par de retorno TERMINA la traza: lo que sigue a un RTS es otra
+			funcion. La primera version dejaba a la caminata seguir de largo y
+			anexaba esa cola muerta a cada bloque -- SR2 +27 % de arena y dos
+			puntos de tanda perdidos, la leccion del tope de 96 otra vez: el
+			codigo frio dispersa lo caliente. (El RTS seguido por flujo, que
+			exige ranura sin memoria, pasa por su propio camino mas abajo.)
+		*/
+		if (p->sigue == 3 && jit_par_rts
+			&& !(jit_flujo && pr_valido)
+			&& t->n < JIT_MAX_INSTR
+			&& !(mmu_activa
+				&& ((pc + 2) & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana))
+		{
+			WORD					rinstr = codigo[1];
+			const jit_plantilla *	rp     =
+				jit_plantilla_de(OP_HANDLER(oplist, rinstr));
+
+			if (rp != NULL && rp->accede && !rp->rama && !rp->fpu
+				&& !rp->propia)
+			{
+				t->pc[t->n]       = pc + 2;
+				t->palabra[t->n]  = rinstr;
+				t->pl[t->n]       = rp;
+				t->sigue_en[t->n] = 0;
+				t->n++;
+				break;
+			}
+		}
+
+		/*
 			El superbloque por flujo: BRA, BSR y el RTS con punto de retorno
 			conocido no cortan la traza -- la caminata puede SEGUIR. La ranura
 			viaja con la rama, o el bloque termina antes de ella (la regla del
@@ -4409,6 +4494,20 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 
 			if (rp == NULL || rp->accede || rp->rama || rp->fpu)
 			{
+				/* El par de retorno sobrevive al flujo: un RTS con ranura de
+				   memoria no se sigue, pero tampoco se corta -- el par se
+				   anexa y la traza termina ahi, como en el camino sin flujo. */
+				if (p->sigue == 3 && jit_par_rts && rp != NULL
+					&& rp->accede && !rp->rama && !rp->fpu && !rp->propia)
+				{
+					t->pc[t->n]       = pc + 2;
+					t->palabra[t->n]  = rinstr;
+					t->pl[t->n]       = rp;
+					t->sigue_en[t->n] = 0;
+					t->n++;
+					break;
+				}
+
 				t->n--;
 				break;
 			}
@@ -4506,14 +4605,26 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	/* Las filas FPU tampoco entran en ranura, aunque no accedan a memoria:
 	   sus manejadores hacen PC += 2 sobre el contexto, y en una ranura eso
 	   pisaria el destino que el salto capturo en O_PC. */
+	/* La excepcion del par de retorno: la ranura con memoria de un RTS no
+	   corta -- su emision sincroniza con el PC de la rama antes de tocar
+	   nada, asi que la falta reejecuta desde el RTS, como el interprete.
+	   Las filas `propia` quedan afuera: cuentan su intento por su cuenta y
+	   el par lo cuenta antes (regla de run()), o sea que contarian doble. */
 	for (i = 0; i < t->n; i++)
-		if (t->pl[i]->ranura
-			&& (i + 1 >= t->n || t->pl[i + 1]->accede || t->pl[i + 1]->rama
-				|| t->pl[i + 1]->fpu))
-		{
-			t->n = i;
-			break;
-		}
+	{
+		const jit_plantilla * r = (i + 1 < t->n) ? t->pl[i + 1] : NULL;
+
+		if (!t->pl[i]->ranura)
+			continue;
+
+		if (r != NULL && !r->rama && !r->fpu
+			&& (!r->accede
+				|| (jit_par_rts && t->pl[i]->sigue == 3 && !r->propia)))
+			continue;
+
+		t->n = i;
+		break;
+	}
 
 	return t->n;
 }
@@ -5476,6 +5587,10 @@ static void jit_resumen(void)
 			jit_flujo_seguidos, jit_flujo_bsr, jit_flujo_rts, con_flujo);
 	}
 
+	if (jit_pares_rts != 0)
+		fprintf(stderr, "jit: %llu pares de retorno emitidos (rts con ranura"
+			" de memoria)\n", jit_pares_rts);
+
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
 		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
@@ -5612,6 +5727,7 @@ void jit_iniciar(void)
 			const char * sh = getenv("DCEMU_JIT_SIN_HOGARES");
 			const char * co = getenv("DCEMU_JIT_COSTURAS");
 			const char * fl = getenv("DCEMU_JIT_FLUJO");
+			const char * pr = getenv("DCEMU_JIT_SIN_PAR_RTS");
 
 			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
 
@@ -5622,6 +5738,9 @@ void jit_iniciar(void)
 
 			if (fl != NULL && atoi(fl) != 0)
 				jit_flujo = 1;
+
+			if (pr != NULL && atoi(pr) != 0)
+				jit_par_rts = 0;
 		}
 	}
 
