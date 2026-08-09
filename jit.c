@@ -332,8 +332,18 @@ void jit_escribir_par(DWORD dir, DWORD desp)
 /* 128 MB: Sega Rally 2 lleno los 64 (DCDoom ya usaba 48,5 -- la traduccion
    MMU en linea pesa ~4 KB por bloque) y el desborde en el borde destapo el
    parche fuera del mapa que fijar() ahora anula. */
-#define JIT_ARENA_TAM		(128u * 1024u * 1024u)
+/* 192 MB: los bloques de hasta 96 instrucciones (superbloques, paso 1)
+   subieron el bloque medio de SR2 a 27,8 instrucciones y dejaron los 128 al
+   99,7 %. Es espacio de direcciones, no memoria tocada. */
+#define JIT_ARENA_TAM		(192u * 1024u * 1024u)
 #define JIT_MAX_BLOQUES		32768
+/* El tope a 96 SE MIDIO Y PERDIO (superbloques, paso 1): la longitud extra
+   se va a colas frias -- las entradas al despacho apenas bajaron 1-3 % --
+   mientras el codigo emitido crece 13-34 % y dispersa lo caliente; SR2 paso
+   a +9,4 % contra 64, mas lento que su interprete. Las fronteras calientes
+   son cortes periodicos y aristas de llamada, y el largo estatico no las
+   quita: un superbloque util tendra que seguir el flujo (BRA, retorno), no
+   estirar el tramo. El expediente en el plan. */
 #define JIT_MAX_INSTR		64
 
 static unsigned char *	jit_arena     = NULL;
@@ -770,7 +780,12 @@ static int D(const void * p)
 /* El generador                                                             */
 /* ------------------------------------------------------------------------ */
 
-#define JIT_MAX_SALIDAS		64
+/* Escala con el tope de instrucciones: un corte por instruccion con ciclos,
+   mas las salidas propias de ramas y el margen. Con 64 fijo, subir
+   JIT_MAX_INSTR a 96 hacia desbordar la emision del bloque entero -- 799 y
+   1084 emisiones fallidas contra 322 y 263 -- y el PC quedaba interpretado
+   para siempre: la cobertura CAIA al permitir bloques mas largos. */
+#define JIT_MAX_SALIDAS		(JIT_MAX_INSTR + JIT_MAX_INSTR / 2 + 16)
 typedef struct
 {
 	x64_emisor	e;
@@ -4150,7 +4165,13 @@ static unsigned long long	jit_enlaces_dinamicos = 0;
 static int tr_descubrir(jit_traduccion * t, DWORD pc)
 {
 	const WORD *	codigo = (const WORD *) MMU_FETCH_PUNTERO(pc);
-	unsigned		cabe   = (JIT_LIMITE_PAG - (pc & (JIT_LIMITE_PAG - 1))) / 2;
+	/* La ventana de 1 KB es el contrato de la busqueda BAJO MMU (misma
+	   pagina con cualquier tamano); sin MMU no hay busqueda que reproducir
+	   -- el mismo criterio que ya usan los enlaces -- y cortar ahi era un
+	   limite artificial de largo: primer paso de superbloques. */
+	unsigned		cabe   = mmu_activa
+		? (JIT_LIMITE_PAG - (pc & (JIT_LIMITE_PAG - 1))) / 2
+		: JIT_MAX_INSTR;
 	int				max    = (int) (cabe < JIT_MAX_INSTR ? cabe : JIT_MAX_INSTR);
 	int				i;
 
@@ -4664,8 +4685,14 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 			dest = tr_destino8(&t, t.n - 1);
 
+			/* El mismo criterio de la ventana que el descubrimiento: bajo
+			   MMU manda la pagina; sin MMU, que quede cerca (el tope de
+			   instrucciones acota igual). */
 			if (dest < t.pc0
-				&& (dest & ~(JIT_LIMITE_PAG - 1)) == (t.pc0 & ~(JIT_LIMITE_PAG - 1)))
+				&& (mmu_activa
+					? (dest & ~(JIT_LIMITE_PAG - 1))
+						== (t.pc0 & ~(JIT_LIMITE_PAG - 1))
+					: t.pc0 - dest <= 2u * JIT_MAX_INSTR))
 			{
 				pc = dest;
 				continue;

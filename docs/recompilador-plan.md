@@ -2060,3 +2060,55 @@ la ronda anterior, consistente con una forma de riesgo cero:
 
 (los absolutos del intérprete están inflados ~1-2 % por carga ajena de la máquina — es
 domingo por la mañana —, así que los cocientes son la lectura, como siempre).
+
+## Superbloques, paso 1: la ventana solo bajo MMU, dos fósiles, y el veredicto del tope
+
+El primer experimento de la fase 4 probó las dos palancas mecánicas de largo y dejó un
+expediente completo:
+
+- **La ventana de 1 KB del descubrimiento queda solo bajo MMU** — es el contrato de la
+  búsqueda (misma página con cualquier tamaño), y sin MMU no hay búsqueda que
+  reproducir: el criterio que `jit_parchear_enlace` ya usaba para los enlaces. El
+  crecimiento hacia atrás adopta el mismo criterio.
+- **`JIT_MAX_SALIDAS` estaba fosilizado en 64** (el viejo tope de instrucciones), y el
+  primer intento con el tope a 96 lo destapó de la forma más didáctica posible: la
+  cobertura **CAÍA** al permitir bloques más largos (DOOM 82,5 → 74,6 %, fallidas
+  322 → 799), porque un bloque con más de ~64 cortes desbordaba la emisión entera y su
+  PC quedaba interpretado para siempre — cada redescubrimiento volvía a fallar. Es un
+  bug de degradación latente independiente del tope; escalado
+  (`JIT_MAX_INSTR × 1,5 + margen`), la cobertura floreció: DOOM **84,4 % — récord —**
+  con bloques de 21,6 y cero fallidas, CT 88,8 % con 22,2, SR2 con bloques de
+  **27,8** (+42 %). El arena pasó a 192 MB (SR2 dejó los 128 al 99,7 %).
+- **Y la tanda dijo que no**: SR2 **+9,4 %** contra el tope de 64 — más lento que su
+  intérprete —, CT −0,4 puntos de cociente, y solo DCDoom mejoraba. La longitud extra
+  se va a **colas frías** — las entradas al despacho apenas bajaron 1-3 % — mientras el
+  código emitido crece 13-34 % y dispersa lo caliente por el arena.
+
+**El tope vuelve a 64 con el expediente escrito**, y la lección dirige la fase: las
+fronteras calientes son cortes periódicos (inevitables) y aristas de llamada/salto; un
+superbloque útil tendrá que **seguir el flujo** — a través del BRA constante, del punto
+de retorno — y no estirar el tramo estático. Esa forma (descubrimiento no contiguo, el
+`pc[]` por instrucción en vez de `pc0 + 2i`, las palabras extra para el verificador) es
+la próxima pieza grande de la fase, con este veredicto como su vara: el largo solo paga
+donde sigue al flujo caliente.
+
+La cadena de la forma final (ventana solo-MMU, tope 64, salidas escaladas, arena 192)
+trajo la segunda mitad del expediente del fósil: **mordía también con 64** — las 322
+fallidas de siempre eran bloques de muchos cortes, ahora **cero** en DOOM y CT, y DOOM
+repite su cobertura récord (84,4 %, 20,5 por bloque) sin el tope subido. Exactitud
+canónica con capturas en los tres; la tanda:
+
+| banco | intérprete | traductor | cociente | ronda anterior |
+| --- | --- | --- | --- | --- |
+| DCDoom, 35 s | 42 203 ms | 33 159 ms | −21,4 %, 1,056× | −21,6 % |
+| Crazy Taxi, 180 s | 112 985 ms | **94 522 ms** | **−16,3 % — el mejor de la serie** | −15,1 % |
+| Sega Rally 2, 60 s | 72 033 ms | 70 767 ms | −1,8 % | −7,3 % |
+
+CT sube 1,2 puntos con su cobertura en **89,4 %** (la ventana levantada + los bloques
+grandes que el fósil descartaba). SR2 retrocede 3,9 s con su pareja interna apretada
+(70 800/70 734) y el intérprete plano: **es su capa de reentrenamiento** — SR2 no está
+en el banco de entrenamiento de PGO, así que cada perfil nuevo le mueve el layout de
+los ayudantes C que sus 11,2 M de rechazos recorren; ya había mostrado ±1,5-2 % y un
+salvaje de 8 % esta mañana. **La mejora señalada: SR2 entra al banco de `pgo.ps1 -Jit`**
+(dos corridas más por ciclo, ~5 min) — con eso su capa queda pineada como la de los
+otros tres.
