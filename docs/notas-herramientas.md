@@ -318,3 +318,27 @@ memoria. Un gamepad también sirve.
 El título de la ventana lleva el nombre de lo que está corriendo (`titulo_poner()` en
 `graficos.c`, llamado antes de `screeninit()`), que es lo que hace legible un barrido de demos
 abiertas una tras otra.
+
+## Dos lecciones de la noche del recompilador (2026-08-09)
+
+**Una cadena de verificación por máquina.** La cadena nocturna original quedó viva sin
+terminar y su relanzamiento corrió en paralelo con ella: las dos compartieron `build-jit`
+(builds intercalados), `build-jit/Release/stderr.txt` (dos instancias se truncan
+mutuamente, regla vieja aplicada a un caso nuevo) y el entrenamiento de PGO (los `.pgc`
+se funden en el mismo `.pgd`). La tanda que salió de ahí reportaba los números de la
+ronda anterior **bit a bit** — mismas entradas, mismos bytes, mismo milisegundo de media —
+y esa imposibilidad fue la señal: seis plantillas nuevas no pueden dejar intactos todos
+los contadores. La regla operativa: `Get-Process dcemu` antes de creerle a una tanda, y
+jamás una segunda cadena mientras corre la primera. El expediente completo está en
+`docs/recompilador-plan.md`, «la noche de las dos cadenas».
+
+**El jitter del mando quieto vale hasta ±1672 instrucciones en Crazy Taxi.** La regla
+vieja decía «si alguien toca un gamepad durante una medición, esas pulsaciones entran a
+la corrida»; la noche demostró que **no hace falta tocarlo**: el ruido analógico de un
+mando conectado y en reposo (el clásico 127↔128 en un sondeo) movió corridas de CT en
+±51 y en ±1672 instrucciones con la captura byte-idéntica. Lo que lo distingue de una
+divergencia real, medido: es **bimodal** — dos totales discretos, no una dispersión —,
+el canónico reaparece en una recorrida tranquila, y los guests que no ramifican por
+valores analógicos (DCDoom, Sega Rally 2) no lo muestran jamás: ellos son los árbitros
+de exactitud inmunes al mando. Una divergencia de traducción real es determinista — el
+mismo valor equivocado en cada corrida — y eso es exactamente lo contrario.
