@@ -1,8 +1,8 @@
 # La tanda del traductor: interprete contra traductor dentro del binario del
 # JIT con su perfil (herramientas\ciclo-jit.ps1 primero). DCDoom 35 s por tres
-# rondas y Crazy Taxi 180 s por dos, alternando el orden dentro de cada ronda,
-# con una corrida de calentamiento descartada -- el primer arranque de un
-# binario recien enlazado midio 13 % de mas en este arbol.
+# rondas, Crazy Taxi 180 s por dos y Sega Rally 2 60 s por dos, alternando el
+# orden dentro de cada ronda, con una corrida de calentamiento descartada -- el
+# primer arranque de un binario recien enlazado midio 13 % de mas en este arbol.
 #
 # La linea "jit:" de stderr es el control de trabajo por corrida: si la
 # cobertura cambia entre corridas del mismo modo, la tanda no compara. Los
@@ -37,6 +37,7 @@ function Correr($modo, $img, $segundos, $teclas)
 
 $doom = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi"
 $ct   = "roms\Crazy Taxi (USA).cdi"
+$sr2  = "roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"
 
 Write-Output "=== calentamiento (descartado)"
 Correr "traductor" $doom 35 $false | Out-Null
@@ -50,6 +51,12 @@ foreach ($r in @(@("interprete","traductor"), @("traductor","interprete"), @("in
 Write-Output "=== Crazy Taxi, 180 s emulados, con teclas"
 foreach ($r in @(@("interprete","traductor"), @("traductor","interprete"))) {
 	foreach ($m in $r) { Correr $m $ct 180 $true }
+	Write-Output "---"
+}
+
+Write-Output "=== Sega Rally 2, 60 s emulados"
+foreach ($r in @(@("interprete","traductor"), @("traductor","interprete"))) {
+	foreach ($m in $r) { Correr $m $sr2 60 $false }
 	Write-Output "---"
 }
 

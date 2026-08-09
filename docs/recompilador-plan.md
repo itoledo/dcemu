@@ -72,12 +72,15 @@ Cada una cerró una divergencia real; romperlas es silencioso.
 ## Cómo se mide (las reglas de lectura)
 
 - El ciclo es `herramientas/ciclo-jit.ps1` (GEN → entrenar → USE) y la tanda
-  `herramientas/ab-jit.ps1`; **todo cambio de emisión reentrena antes de su tanda**.
-  Dispersión esperable entre rondas: 0,1-0,4 %.
+  `herramientas/ab-jit.ps1` (DCDoom 35 s ×3 rondas, CT 180 s ×2, SR2 60 s ×2);
+  **todo cambio de emisión reentrena antes de su tanda**. Dispersión esperable entre
+  rondas: 0,1-0,4 %.
 - **Los absolutos se comparan dentro de un binario o no se comparan.** La capa de
-  reentrenamiento vale ±1-2 % en CT y **±3-6 % en SR2** — la mayor del parque, porque
-  SR2 no está en el banco de entrenamiento (pendiente abajo). DCDoom pesa 7× en el
-  perfil y resuelve 0,1-0,6 %.
+  reentrenamiento vale ±1-2 % en CT; la de SR2 **era ±3-6 % — la mayor del parque —
+  hasta que entró al banco** (2026-08-09: 60 s sin teclas por sus dos formas, entrada
+  `soloJit` para no tocar el banco del binario normal). En su primera tanda entrenada
+  SR2 igualó su mejor marca histórica (65 429 ms, −8,3 %, 0,915×) sin costarle nada a
+  DCDoom (−21,7 %) ni a CT (−14,8 %). DCDoom pesa 7× en el perfil y resuelve 0,1-0,6 %.
 - **Una cadena de verificación por máquina**, y `Get-Process dcemu` antes de creerle a
   una tanda. El jitter del mando quieto vale hasta ±1 672 instrucciones en CT con la
   captura intacta (bimodal, no disperso); DCDoom y SR2 son los árbitros inmunes. Los
@@ -108,28 +111,61 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | La época global por escritura de SR | reemplazada por MD en la clave | 8,2 M de movimientos «modo» churneaban los enlaces |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
 
+## Dónde está el tiempo (fase 0 del plan del estado del arte, 2026-08-09)
+
+El reparto del binario del JIT con `DCEMU_JIT=2` (`herramientas/perfil-jit.ps1`:
+`--perf` en una corrida, la sonda de cruces en otra; los porcentajes descuentan el
+AICA, que corre anidado en el bloque periódico). Es lo que ordena las fases grandes
+de `estado-del-arte-plan.md`:
+
+| | DCDoom 35 s | CT 180 s | SR2 60 s |
+| --- | --- | --- | --- |
+| resto (emitido + despacho + intérprete + MMU) | **77,1 %** | **60,5 %** | **79,4 %** |
+| AICA — ARM7 | 10,6 % | **18,2 %** | 9,0 % |
+| AICA — mezclador | 4,0 % | 7,4 % | 2,9 % |
+| bloque periódico neto | 7,4 % | 5,0 % | 5,6 % |
+| GL entero | 0,8 % | 6,8 % | 2,1 % |
+| cruces de enlace / fronteras | 41,7 % | 36,1 % | 41,9 % |
+| instrucciones por bloque **corrido** | 11,7 | 7,8 | 9,0 |
+| instrucciones por entrada al despachador | 20,2 | 12,1 | 15,5 |
+
+Lo que dice: **el SH-4 sigue siendo el 60-79 %** (superbloque primero), **el ARM7 es
+la segunda porción y creció al achicarse el SH-4** (en CT ya es 18,2 %, con techo
+medido de 1,34× si se fuera entero — va antes que el reloj), y **el bloque periódico
+neto quedó en 5-7 %** (el grano 400 ya se llevó lo grande; el reloj por eventos vale
+eso más las cadenas más largas, no más). Dos avisos: las **salidas con enlaces
+agotados** existen (96/1171/145 — el tope de 12 va a quedar corto con trazas), y el
+mezclador del AICA ya pesa 2,9-7,4 %.
+
 ## Lo pendiente, en orden
 
-1. **SR2 al banco de entrenamiento de PGO** (`pgo.ps1 -Jit`): dos corridas más por
-   ciclo (~5 min) y su capa de reentrenamiento (±3-6 %, hoy la mayor) queda pineada
-   como la de los otros tres. Es la mejora barata señalada por dos tandas.
-2. **El superbloque por flujo** — la pieza grande de la fase 4, con su vara escrita:
+1. **El superbloque por flujo** — la pieza grande de la fase 4, con su vara escrita:
    el largo solo paga donde sigue al flujo caliente (a través del BRA constante, del
    punto de retorno), no estirando el tramo estático. Piezas: descubrimiento no
    contiguo, `pc[]` por instrucción en vez de `pc0 + 2i`, las palabras extra al
-   verificador. La cuenta que lo motiva: 38-47 % de las fronteras son cruces de enlace
-   (`DCEMU_JIT_SONDA_CRUCES=1`), el bloque caliente mide 6,3 instrucciones (un tercio
-   del estático), y el costo de frontera ronda el 15-25 % del trabajo emitido de CT.
-3. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
+   verificador (los campos `extra_*` ya existen y `jit_verificar` ya los compara).
+   La cuenta que lo motiva, remedida en la fase 0: 36-42 % de las fronteras son
+   cruces de enlace, el bloque corrido mide 7,8-11,7 instrucciones (un tercio a la
+   mitad del traducido), y el costo de frontera ronda el 15-25 % del trabajo emitido
+   de CT. **Primer commit: cerrar el agujero de la página del anfitrión** — el
+   registro vigila solo la página de 4 KB de la cabeza (`jit.c`, `jit_pag_codigo`) y
+   desde el paso 1 un bloque sin MMU puede cruzar el límite: una escritura sobre la
+   cola no mueve la época. Ningún banco lo observa; es la clase de agujero del corte
+   de época y se cierra marcando cabeza y cola (y con trazas, cada segmento).
+2. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
    el viaje C; falta la marca de «contexto ensuciado» para cuando el intérprete corrió
    en el medio. Con hogares canónicos ya colocados, es la mitad que las costuras no
    alcanzan.
-4. **La clave FD por bloque** (en vez de global) si los ~11 M de rechazos por FD de
-   SR2 pesan alguna vez por sí solos: cada uno es una vuelta entera por el despachador.
-5. **La fase 3 original: el parque entero** — el barrido de 135 demos y los 14 juegos
+3. **La clave FD por bloque** (en vez de global) si los ~11 M de rechazos por FD de
+   SR2 pesan alguna vez por sí solos: cada uno es una vuelta entera por el despachador
+   (la fase 0 los reconfirmó: 11 119 520 en su banco de 60 s).
+4. **La fase 3 original: el parque entero** — el barrido de 135 demos y los 14 juegos
    con `DCEMU_JIT=2` contra su corrida de control, que es lo que decide la adopción
    por omisión (hoy el JIT es build aparte a propósito: el A/B corre sobre una sola
    imagen).
+
+Las fases que exceden al recompilador — ARM7, reloj por eventos, fastmem, elisión de
+ociosos — viven en `docs/estado-del-arte-plan.md`, con este reparto como su fase 0.
 
 ## La expectativa original, saldada
 

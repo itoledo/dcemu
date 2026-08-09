@@ -29,11 +29,17 @@
 # a eliminar. Tras cada corrida del traductor se exige el resumen "jit:" en
 # stderr: si el recompilador no se engancho, el perfil describiria al interprete
 # dos veces y nadie lo notaria.
+#
+# Sega Rally 2 entra al banco SOLO con -Jit (soloJit): es el tercer guest
+# verificado del traductor y su capa de reentrenamiento era la mayor del parque
+# (3-6 % entre ciclos) justamente porque no entrenaba. El binario normal no lo
+# corre: su banco y su linea base quedan como estaban.
 param(
 	[string] $Exe = "",
 	[switch] $Jit,
 	[int]    $SegundosKatana = 90,
-	[int]    $SegundosCE     = 20
+	[int]    $SegundosCE     = 20,
+	[int]    $SegundosRally  = 60
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,7 +108,11 @@ Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue | Remove-Item
 $bancos = @(
 	@{ n = "crazytaxi"; img = "roms\Crazy Taxi (USA).cdi";                                                  s = $SegundosKatana; teclas = $true;  peso = 1 },
 	@{ n = "vtennis";   img = "roms\Virtua Tennis (2000)(Sega)(US)[cr DCRES][f PAL 60Hz][repack].cdi";      s = $SegundosKatana; teclas = $true;  peso = 1 },
-	@{ n = "dcdoom";    img = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi";                                     s = $SegundosCE;     teclas = $false; peso = 7 }
+	@{ n = "dcdoom";    img = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi";                                     s = $SegundosCE;     teclas = $false; peso = 7 },
+	# 60 s = la ventana entera de su banco de medicion (la receta de
+	# rendimiento-plan-2.md, sin teclas): SR2 es el guest cuyo perfil faltaba,
+	# asi que acortarle el entrenamiento iria contra lo que viene a arreglar.
+	@{ n = "rally2";    img = "roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"; s = $SegundosRally; teclas = $false; peso = 1; soloJit = $true }
 )
 
 # Con -Jit cada banco se desdobla en sus dos formas; sin el, la unica corrida no
@@ -117,6 +127,7 @@ if ($Jit) { $formas = @("0", "2") }
 $corridas = @()
 
 foreach ($b in $bancos) {
+	if ($b.soloJit -and -not $Jit) { continue }
 	foreach ($f in $formas) {
 		$c = $b.Clone()
 		$c.forma = $f
