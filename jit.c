@@ -1940,6 +1940,10 @@ typedef struct jit_plantilla jit_plantilla;
 struct jit_traduccion
 {
 	DWORD					pc0;
+	/* El PC de cada instruccion. Hoy es pc0 + 2*i; con el superbloque por
+	   flujo la traza deja de ser contigua y este arreglo es la verdad. Toda
+	   emision que necesite el PC de la instruccion i lee de aca. */
+	DWORD					pc[JIT_MAX_INSTR];
 	WORD					palabra[JIT_MAX_INSTR];
 	const jit_plantilla *	pl[JIT_MAX_INSTR];
 	int						n;
@@ -2144,7 +2148,7 @@ static void pl_mov3(jit_gen * g, jit_traduccion * t, int i)		/* MOV Rm,Rn */
 static void pl_movl2(jit_gen * g, jit_traduccion * t, int i)
 {
 	WORD  w   = t->palabra[i];
-	DWORD pc  = t->pc0 + (DWORD) (2 * i);
+	DWORD pc  = t->pc[i];
 	DWORD dir = (DWORD) (w & 0xFF) * 4 + (pc & 0xFFFFFFFCul) + 4;
 
 	jit_x64_mov_ri(&g->e, X64_RCX, dir);
@@ -2419,11 +2423,21 @@ static void pl_shlr16(jit_gen * g, jit_traduccion * t, int i)
    interprete. En los dos casos el corte va antes, con el PC de destino. */
 static void tr_seguir_en(jit_gen * g, jit_traduccion * t, DWORD dest)
 {
-	if (dest >= t->pc0 && dest < t->pc0 + (DWORD) (2 * t->n)
-		&& ((dest - t->pc0) & 1) == 0)
-	{
-		int j = (int) ((dest - t->pc0) / 2);
+	int j = -1;
+	int k;
 
+	/* La pertenencia se decide por el arreglo de PC, no por aritmetica sobre
+	   pc0: con la traza por flujo el tramo deja de ser contiguo. Es lineal
+	   sobre <= 64 entradas y corre solo al traducir. */
+	for (k = 0; k < t->n; k++)
+		if (t->pc[k] == dest)
+		{
+			j = k;
+			break;
+		}
+
+	if (j >= 0)
+	{
 		gen_corte(g, dest);
 
 		if (t->etiqueta[j] != NULL)
@@ -2446,7 +2460,7 @@ static void tr_seguir_en(jit_gen * g, jit_traduccion * t, DWORD dest)
 static DWORD tr_destino8(const jit_traduccion * t, int i)
 {
 	WORD  w  = t->palabra[i];
-	DWORD pc = t->pc0 + (DWORD) (2 * i);
+	DWORD pc = t->pc[i];
 
 	return (DWORD) (int) ((int) (signed char) (w & 0xFF) * 2) + pc + 4;
 }
@@ -2466,7 +2480,7 @@ static void pl_bf(jit_gen * g, jit_traduccion * t, int i)
 	tr_seguir_en(g, t, tr_destino8(t, i));
 	jit_x64_fijar(&g->e, no_toma);
 
-	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+	gen_corte(g, t->pc[i] + 2);
 }
 
 /* BF/S: si toma, corre la ranura y salta; si no toma **la ranura no corre** y
@@ -2494,7 +2508,7 @@ static void pl_bfs(jit_gen * g, jit_traduccion * t, int i)
 	tr_seguir_en(g, t, tr_destino8(t, i));
 	jit_x64_fijar(&g->e, no_toma);
 
-	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+	gen_corte(g, t->pc[i] + 2);
 }
 
 
@@ -2793,7 +2807,7 @@ static void pl_movw8(jit_gen * g, jit_traduccion * t, int i)	/* MOV.W @Rm,Rn */
 static void pl_movw1(jit_gen * g, jit_traduccion * t, int i)
 {
 	WORD  w   = t->palabra[i];
-	DWORD pc  = t->pc0 + (DWORD) (2 * i);
+	DWORD pc  = t->pc[i];
 	DWORD dir = (DWORD) (w & 0xFF) * 2 + pc + 4;
 
 	jit_x64_mov_ri(&g->e, X64_RCX, dir);
@@ -2922,7 +2936,7 @@ static void tr_manejador_fpu(jit_gen * g, jit_traduccion * t, int i,
 	jit_x64_mov_rm(&g->e, CYC, CTX, O_CYC);
 
 	if (i + 1 < t->n)
-		gen_corte(g, t->pc0 + (DWORD) (2 * i) + 2);
+		gen_corte(g, t->pc[i] + 2);
 }
 
 static void pl_fadd189(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador_fpu(g, t, i, (const void *) fadd189); }
@@ -3317,7 +3331,7 @@ static void pl_bt104(jit_gen * g, jit_traduccion * t, int i)
 	tr_seguir_en(g, t, tr_destino8(t, i));
 	jit_x64_fijar(&g->e, no_toma);
 
-	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+	gen_corte(g, t->pc[i] + 2);
 }
 
 /* La ranura de una rama condicional, emitida adentro del camino que toma. */
@@ -3346,13 +3360,13 @@ static void pl_bts105(jit_gen * g, jit_traduccion * t, int i)	/* BT/S */
 	tr_seguir_en(g, t, tr_destino8(t, i));
 	jit_x64_fijar(&g->e, no_toma);
 
-	gen_corte(g, t->pc0 + (DWORD) (2 * i + 2));
+	gen_corte(g, t->pc[i] + 2);
 }
 
 static DWORD tr_destino12(const jit_traduccion * t, int i)
 {
 	WORD  w  = t->palabra[i];
-	DWORD pc = t->pc0 + (DWORD) (2 * i);
+	DWORD pc = t->pc[i];
 	int   d  = (int) (w & 0x0FFF);
 
 	if (d & 0x0800)
@@ -3373,7 +3387,7 @@ static void pl_bra(jit_gen * g, jit_traduccion * t, int i)
 
 static void pl_bsr108(jit_gen * g, jit_traduccion * t, int i)
 {
-	DWORD pc = t->pc0 + (DWORD) (2 * i);
+	DWORD pc = t->pc[i];
 
 	jit_x64_add_ri(&g->e, CYC, 2);
 	jit_x64_inc_r(&g->e, N);
@@ -3392,7 +3406,7 @@ static void pl_bsr108(jit_gen * g, jit_traduccion * t, int i)
 static void tr_salto_dinamico(jit_gen * g, jit_traduccion * t, int i,
 	int ciclos, int reg_destino, int guardar_pr)
 {
-	DWORD pc = t->pc0 + (DWORD) (2 * i);
+	DWORD pc = t->pc[i];
 
 	jit_x64_add_ri(&g->e, CYC, ciclos);
 	jit_x64_inc_r(&g->e, N);
@@ -3433,7 +3447,7 @@ static void pl_rts112(jit_gen * g, jit_traduccion * t, int i)
 static void tr_salto_relativo(jit_gen * g, jit_traduccion * t, int i,
 	int guardar_pr)
 {
-	DWORD pc = t->pc0 + (DWORD) (2 * i);
+	DWORD pc = t->pc[i];
 
 	jit_x64_add_ri(&g->e, CYC, 3);
 	jit_x64_inc_r(&g->e, N);
@@ -3504,7 +3518,7 @@ static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
 	tr_prologo(g, t);
 
 	if (i + 1 < t->n)
-		gen_corte(g, t->pc0 + (DWORD) (2 * i) + 2);
+		gen_corte(g, t->pc[i] + 2);
 }
 
 static void pl_div1s52(jit_gen * g, jit_traduccion * t, int i)
@@ -3553,7 +3567,7 @@ static void pl_or77(jit_gen * g, jit_traduccion * t, int i)		/* OR #imm,R0 */
 static void pl_mova34(jit_gen * g, jit_traduccion * t, int i)
 {
 	WORD  w   = t->palabra[i];
-	DWORD pc  = t->pc0 + (DWORD) (2 * i);
+	DWORD pc  = t->pc[i];
 	DWORD val = (DWORD) (w & 0xFF) * 4 + ((pc + 4) & 0xFFFFFFFCul);
 	int   h0  = tr_h(t, 0);
 
@@ -4236,6 +4250,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			t->fpu = (int) jit_fpu_visto;
 		}
 
+		t->pc[i]      = pc + (DWORD) (2 * i);
 		t->palabra[i] = instr;
 		t->pl[i]      = p;
 		t->n          = i + 1;
@@ -4284,7 +4299,7 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 	for (i = 0; i < t->n; i++)
 	{
 		const jit_plantilla * p = t->pl[i];
-		DWORD pc_i   = t->pc0 + (DWORD) (2 * i);
+		DWORD pc_i   = t->pc[i];
 		DWORD pc_sig = pc_i + 2;
 
 		t->etiqueta[i] = jit_x64_aqui(&g->e);
@@ -4347,7 +4362,7 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		(void) fin;
 	}
 
-	gen_salir_enlazable(g, t, t->pc0 + (DWORD) (2 * t->n));
+	gen_salir_enlazable(g, t, t->pc[t->n - 1] + 2);
 	tr_epilogo(g, t);
 }
 
