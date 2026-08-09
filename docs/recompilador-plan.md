@@ -1997,3 +1997,66 @@ del banco. **La fase paga**; las costuras por arista se llevan el 40-47 % de las
 fronteras a ~cero, y los hogares canónicos habilitan además la elisión en las
 reentradas por despachador (los no volátiles sobreviven el viaje C; falta solo la
 marca de «contexto ensuciado» para cuando el intérprete corrió en el medio).
+
+### La v1: hogares canónicos híbridos y la elisión de recarga
+
+El censo de presencia por registro (ponderado por veces, en el resumen bajo la misma
+sonda) **refinó el diseño antes de escribirlo**: los hogares canónicos puros perderían
+el 35-45 % del cacheo actual — r8 pesa 50 % en CT y r5 44 % en DCDoom, fuera de
+cualquier top-5 universal —, así que la **selección** de qué cachear sigue siendo la
+codiciosa por uso (calidad intra-bloque idéntica por construcción) y solo la
+**colocación** se fija: r0/r2/r3/r4/r15 (presencias 74/46/48/46/35 % entre los tres
+guests) van a ranuras fijas y los demás llenan las libres.
+
+Con eso, `jit_parchear_enlace` cose los enlaces directos (recibe el bloque fuente, que
+sus tres llamadores ya tenían): el que salta ya volcó todo — el contexto está al día y
+el volcado no toca los registros —, así que la intersección canónica ya está donde el
+sucesor la espera. Tres casos: B⊆A → salto directo a `b->cuerpo` (la entrada
+post-prólogo, costura vacía); un subconjunto falta → un talón con solo esas cargas; nada
+en común → el prólogo entero de siempre. Los puentes quedan con prólogo completo en la
+v1, y una costura es válida para siempre por arista (los bloques no se reemiten; la
+guarda de época del sitio decide sola). `DCEMU_JIT_SIN_HOGARES=1` es el aislamiento —
+colocación secuencial vieja, cero costuras, emisión bit-idéntica a la anterior.
+
+**Exactitud**: DCDoom canónico al dígito con captura **dos veces con 6 924 costuras de
+conteo idéntico** — determinista con las costuras activas —; SR2 canónico con 8 450; CT
+canónico con 10 525 activas… y un ±1 672 bimodal entre corridas que la investigación
+cerró como **el jitter analógico del mando** (domingo a la mañana): discreto — dos
+únicos valores, no una dispersión —, con el canónico reproducible en el medio, con
+`SIN_HOGARES` igual de expuesto, y con los dos guests sin sensibilidad analógica
+perfectos. La regla de medición de siempre, con evidencia nueva: el XInput global puede
+valer ±1 672 instrucciones en CT, no solo ±50.
+
+**El A/B del talón con cargas parciales PERDIÓ** — CT +0,7 % consistente con rangos
+disjuntos (96 932 contra 96 269 ms), DCDoom ruidoso ~+0,5 %, SR2 inutilizable por carga
+ajena de la máquina (un 69,9 s salvaje en la tanda — domingo por la mañana). La causa es
+de manual una vez medida: el talón agrega **un salto extra y una línea fría de icache**
+por cruce, y las 4-5 cargas que elide eran baratas — contexto caliente en L1. La
+aritmética del diseño contaba operaciones y las operaciones no eran el costo.
+
+**El pivote: solo la costura vacía.** Cuando B⊆A el salto va directo al cuerpo — cero
+saltos extra, cero líneas nuevas, el prólogo entero elidido — y es exactamente la forma
+de las aristas más calientes (el lazo que se encadena a sí mismo, las cadenas mutuas
+apretadas). Todo lo demás vuelve al prólogo completo. El talón queda tras
+`DCEMU_JIT_COSTURAS=2` para remedirlo si el reparto cambia.
+
+La lección que esto deja para la fase entera: **las costuras fuera de línea no pagan con
+bloques de 6-12 instrucciones** — cualquier variante con salto extra (incluida la
+elisión de volcado por arista) repetirá el veredicto. El ataque real al costo de
+frontera es hacerlo menos frecuente: **superbloques** (la fase 4 del plan original,
+«solo si el perfil lo pide» — y este perfil acaba de pedirlo con nombre: 3 108 M de
+fronteras a 6,3 instrucciones el bloque en CT).
+
+La cadena de aterrizaje de la v1 (hogares + costuras vacías por omisión): ctest 23/23,
+exactitud canónica con captura en los tres guests — CT con ambas formas al dígito, el
+mando quieto en esa ventana — y la tanda con los tres cocientes levemente mejores que
+la ronda anterior, consistente con una forma de riesgo cero:
+
+| banco | intérprete | traductor | cociente | ronda anterior |
+| --- | --- | --- | --- | --- |
+| DCDoom, 35 s | 42 385 ms | **33 222 ms** (dispersión 0,06 %) | **−21,6 %, 1,054×** | −21,4 % |
+| Crazy Taxi, 180 s | 112 151 ms | 95 186 ms | −15,1 % | −14,2 % |
+| Sega Rally 2, 60 s | 72 228 ms | 66 951 ms | −7,3 % | −6,6 % |
+
+(los absolutos del intérprete están inflados ~1-2 % por carga ajena de la máquina — es
+domingo por la mañana —, así que los cocientes son la lectura, como siempre).

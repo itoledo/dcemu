@@ -402,6 +402,16 @@ typedef struct
 {
 	DWORD			pc;					/* la entrada, en el espacio del guest */
 	void			(* codigo)(void);
+	/* La entrada post-prologo y que registros del guest cachea (mascara de
+	   bits): lo que una costura por arista necesita para cargar solo la
+	   diferencia, y lo que el censo de uso pondera por veces. `canonicas` es
+	   el subconjunto colocado en hogar canonico (elidible en una costura si
+	   el que salta tambien lo cachea); `mapa` es la ranura de cada registro,
+	   que la costura necesita para cargar los no canonicos donde va. */
+	void			(* cuerpo)(void);
+	unsigned		ranuras;
+	unsigned		canonicas;
+	signed char		mapa[16];
 	const WORD *	palabras;			/* el tramo contiguo original */
 	int				n_palabras;
 	/* Palabras sueltas fuera del tramo (el callback del JSR en Crazy Taxi). */
@@ -457,6 +467,29 @@ static int			jit_corte_epoca = 0;
    NULL = apagado, y el epilogo salta a tramp_salir como siempre. */
 static unsigned char *	jit_buscador = NULL;
 static int				jit_buscador_activo = 0;
+
+/*
+	Los hogares canonicos y las costuras (la fase de registros persistentes,
+	ver el plan). La SELECCION de que cachear sigue siendo la codiciosa por
+	uso -- la calidad intra-bloque no cambia por construccion --; solo la
+	COLOCACION se fija para los cinco universales del censo ponderado por
+	veces (r0 74 %, r3 48 %, r2 46 %, r4 46 %, r15 35 % entre los tres
+	guests), y los demas toman las ranuras que sobren. Con eso, el parche de
+	un enlace directo puede coser: la interseccion canonica ya esta en los
+	hogares (el volcado completo del que salta dejo el contexto al dia sin
+	tocar los registros), y la costura carga solo la diferencia.
+	DCEMU_JIT_SIN_HOGARES=1 vuelve a la colocacion secuencial de antes y
+	apaga las costuras: aislamiento y linea base anterior.
+*/
+static const signed char	jit_canonico[16] =
+{
+	0, -1, 1, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4
+};
+
+static int					jit_hogares = 1;
+static int					jit_costuras_talones = 0;	/* DCEMU_JIT_COSTURAS=2 */
+static unsigned long long	jit_costuras = 0;		/* talones emitidos */
+static unsigned long long	jit_costuras_vacias = 0;	/* saltos directos al cuerpo */
 
 /* La cuenta que decide la fase de registros persistentes (ver el plan):
    cuantas fronteras de bloque son cruces de enlace -- que una costura por
@@ -1899,6 +1932,7 @@ struct jit_traduccion
 	int						fpu;			/* modo FPU al traducir, o -1 */
 
 	signed char				slot[16];		/* indice en jit_a[], o -1 */
+	unsigned				desp_cuerpo;	/* el largo del prologo emitido */
 
 	unsigned char *			etiqueta[JIT_MAX_INSTR];
 	x64_parche				adelante[JIT_MAX_INSTR];
@@ -3809,21 +3843,63 @@ static void tr_asignar_registros(jit_traduccion * t)
 			uso[TM(w)]++;
 	}
 
-	for (s = 0; s < JIT_SLOTS; s++)
+	/*
+		La seleccion: los JIT_SLOTS mas usados, como siempre. La colocacion
+		depende de los hogares: con ellos, un seleccionado canonico va a SU
+		ranura fija y los demas llenan las libres -- mismo conjunto cacheado,
+		otra numeracion --, que es lo que hace elidible la interseccion en
+		una costura de enlace.
+	*/
 	{
-		int mejor = -1, mejor_uso = 0;
+		int elegido[JIT_SLOTS];
+		int n_elegidos = 0;
 
-		for (i = 0; i < 16; i++)
-			if (t->slot[i] < 0 && uso[i] > mejor_uso)
-			{
-				mejor     = i;
-				mejor_uso = uso[i];
-			}
+		for (s = 0; s < JIT_SLOTS; s++)
+		{
+			int mejor = -1, mejor_uso = 0;
 
-		if (mejor < 0)
-			break;
+			for (i = 0; i < 16; i++)
+				if (t->slot[i] < 0 && uso[i] > mejor_uso)
+				{
+					mejor     = i;
+					mejor_uso = uso[i];
+				}
 
-		t->slot[mejor] = (signed char) s;
+			if (mejor < 0)
+				break;
+
+			/* Marca provisoria para que la busqueda no lo repita. */
+			t->slot[mejor]        = 0;
+			elegido[n_elegidos++] = mejor;
+		}
+
+		if (!jit_hogares)
+		{
+			for (i = 0; i < n_elegidos; i++)
+				t->slot[elegido[i]] = (signed char) i;
+		}
+		else
+		{
+			unsigned ocupada = 0;
+
+			for (i = 0; i < n_elegidos; i++)
+				if (jit_canonico[elegido[i]] >= 0)
+				{
+					t->slot[elegido[i]] = jit_canonico[elegido[i]];
+					ocupada |= 1u << jit_canonico[elegido[i]];
+				}
+
+			for (i = 0; i < n_elegidos; i++)
+				if (jit_canonico[elegido[i]] < 0)
+				{
+					for (s = 0; s < JIT_SLOTS; s++)
+						if (!(ocupada & (1u << s)))
+							break;
+
+					t->slot[elegido[i]] = (signed char) s;
+					ocupada |= 1u << s;
+				}
+		}
 	}
 }
 
@@ -4182,6 +4258,8 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 	if (jit_sonda_cruces)
 		jit_x64_add64_mi(&g->e, CTX, D(&jit_bloques_corridos), 1);
 
+	t->desp_cuerpo = jit_x64_largo(&g->e);
+
 	for (i = 0; i < t->n; i++)
 	{
 		const jit_plantilla * p = t->pl[i];
@@ -4274,10 +4352,86 @@ static unsigned long long jit_puentes_atados = 0;
 	viejo. Eso fue una divergencia de 815 millones de instrucciones y una
 	captura distinta -- la primera de esta serie que se vio a simple vista.
 */
-static void jit_parchear_enlace(jit_enlace * e, DWORD pc_fuente,
+/*
+	La costura de un enlace directo (fase de registros persistentes). El que
+	salta ya volco TODO su conjunto -- el contexto esta al dia -- y el volcado
+	no toca los registros: lo que ambos colocan en hogar canonico ya esta
+	donde el sucesor lo espera. Devuelve a donde saltar:
+
+	 - B ⊆ A en canonicas y sin libres: directo al cuerpo, costura vacia.
+	 - falta un subconjunto: un talon con solo esas cargas y el salto.
+	 - nada en comun, sin hogares, sin lugar o sin cuerpo: NULL, y el parche
+	   usa el prologo completo de siempre.
+
+	Un reparcheo (sitio indirecto que aprende otro destino) emite otra
+	costura y abandona la anterior: crecimiento acotado por
+	JIT_MAX_REPARCHEOS, contado en jit_costuras.
+*/
+static unsigned char * jit_emitir_costura(const jit_bloque * fuente,
+	const jit_bloque * destino)
+{
+	unsigned		faltan;
+	x64_emisor		e;
+	unsigned char *	inicio;
+	unsigned		usado;
+	int				r;
+
+	if (!jit_hogares || fuente == NULL || destino->cuerpo == NULL)
+		return NULL;
+
+	faltan = (destino->canonicas & ~fuente->canonicas)
+		   | (destino->ranuras & ~destino->canonicas);
+
+	if (faltan == destino->ranuras && faltan != 0)
+		return NULL;					/* nada elidible: prologo entero */
+
+	if (faltan == 0)
+	{
+		jit_costuras_vacias++;
+		return (unsigned char *) (size_t) destino->cuerpo;
+	}
+
+	/* El talon con cargas parciales PERDIO su A/B (CT +0,7 % consistente,
+	   rangos disjuntos): el salto extra y la linea fria de icache cuestan
+	   mas que las 4-5 cargas de contexto caliente que eliden. Queda detras
+	   de DCEMU_JIT_COSTURAS=2 para remedirlo si el reparto cambia; por
+	   omision solo la costura vacia -- B dentro de A, salto directo al
+	   cuerpo, cero saltos extra -- que es ganancia pura. */
+	if (!jit_costuras_talones)
+		return NULL;
+
+	jit_codigo_us = (jit_codigo_us + 15u) & ~15u;
+
+	if (jit_codigo_us >= jit_codigo_tam)
+		return NULL;
+
+	jit_x64_iniciar(&e, jit_codigo + jit_codigo_us,
+		jit_codigo_tam - jit_codigo_us);
+	inicio = jit_x64_aqui(&e);
+
+	for (r = 0; r < 16; r++)
+		if (faltan & (1u << r))
+			jit_x64_mov_rm(&e, jit_a[destino->mapa[r]], CTX, O_R(r));
+
+	jit_x64_jmp_a(&e, (const unsigned char *) (size_t) destino->cuerpo);
+
+	if (e.desborde || !jit_disp_ok)
+		return NULL;
+
+	/* El arena entero es PAGE_EXECUTE_READWRITE desde jit_arena_reservar():
+	   no hay proteccion que cambiar. */
+	usado = jit_x64_largo(&e);
+	jit_codigo_us += usado;
+	jit_costuras++;
+
+	return inicio;
+}
+
+static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * fuente,
 	const jit_bloque * destino)
 {
 	int          disp = D(&destino->epoca);
+	DWORD        pc_fuente = fuente->pc;
 	unsigned char * salto;
 	long long    rel, rel_talon = 0;
 	int          puente;
@@ -4327,6 +4481,17 @@ static void jit_parchear_enlace(jit_enlace * e, DWORD pc_fuente,
 		return;
 
 	salto = puente ? e->talon : (unsigned char *) (size_t) destino->codigo;
+
+	/* El enlace directo intenta coser (los puentes quedan con el prologo
+	   entero en esta fase; su talon ya paga la llamada de busqueda). */
+	if (!puente)
+	{
+		unsigned char * costura = jit_emitir_costura(fuente, destino);
+
+		if (costura != NULL)
+			salto = costura;
+	}
+
 	rel   = (long long) (salto - (e->sitio_jmp + 4));
 
 	if (!jit_disp_ok || rel < -2147483647LL || rel > 2147483647LL)
@@ -4393,7 +4558,7 @@ static void jit_enlazar(jit_bloque * nuevo)
 		d = jit_buscar(nuevo->enlace[i].pc);
 
 		if (d != NULL)
-			jit_parchear_enlace(&nuevo->enlace[i], nuevo->pc, d);
+			jit_parchear_enlace(&nuevo->enlace[i], nuevo, d);
 	}
 
 	for (k = 0; k < jit_n_bloques; k++)
@@ -4406,7 +4571,7 @@ static void jit_enlazar(jit_bloque * nuevo)
 		for (i = 0; i < b->n_enlaces; i++)
 			if (b->enlace[i].sitio_pc == NULL
 				&& b->enlace[i].pc == nuevo->pc)
-				jit_parchear_enlace(&b->enlace[i], b->pc, nuevo);
+				jit_parchear_enlace(&b->enlace[i], b, nuevo);
 	}
 }
 
@@ -4457,7 +4622,7 @@ static void jit_aprender_destino(int sitio, DWORD destino)
 	e->veces++;
 
 	if (jit_sin_indirectos != 2)
-		jit_parchear_enlace(e, b->pc, d);
+		jit_parchear_enlace(e, b, d);
 
 	jit_enlaces_dinamicos++;
 }
@@ -4546,9 +4711,31 @@ static jit_bloque * tr_traducir(DWORD pc)
 	memset(b, 0, sizeof(*b));
 	b->pc         = t.pc0;
 	b->codigo     = (void (*)(void)) (jit_codigo + jit_codigo_us);
+	b->cuerpo     = (void (*)(void)) (jit_codigo + jit_codigo_us
+									  + t.desp_cuerpo);
 	b->n_palabras = t.n;
 	b->mmu        = t.modo;
 	b->fpu        = t.fpu;
+
+	{
+		int r;
+
+		b->ranuras   = 0;
+		b->canonicas = 0;
+
+		for (r = 0; r < 16; r++)
+		{
+			b->mapa[r] = t.slot[r];
+
+			if (t.slot[r] >= 0)
+			{
+				b->ranuras |= 1u << r;
+
+				if (jit_hogares && jit_canonico[r] == t.slot[r])
+					b->canonicas |= 1u << r;
+			}
+		}
+	}
 
 	memcpy(b->copia, t.palabra, (size_t) t.n * sizeof(WORD));
 	b->palabras = b->copia;
@@ -4890,8 +5077,41 @@ static void jit_resumen(void)
 			100.0 * (double) (jit_bloques_corridos - jit_entradas)
 				  / (double) jit_bloques_corridos);
 
+	/* El censo de uso de ranuras, ponderado por veces: con que registros del
+	   guest conviene quedarse si los hogares pasan a ser canonicos. Camina la
+	   tabla al salir; cero costo en caliente. */
+	if (jit_sonda_cruces && jit_n_bloques > 0)
+	{
+		unsigned long long	peso[16];
+		unsigned long long	total = 0;
+		int					r, k;
+
+		for (r = 0; r < 16; r++)
+			peso[r] = 0;
+
+		for (k = 0; k < jit_n_bloques; k++)
+		{
+			total += jit_bloques[k].veces;
+
+			for (r = 0; r < 16; r++)
+				if (jit_bloques[k].ranuras & (1u << r))
+					peso[r] += jit_bloques[k].veces;
+		}
+
+		fprintf(stderr, "jit: presencia de cada registro en las ranuras,"
+			" ponderada por veces (%% de %llu):\n", total);
+
+		for (r = 0; r < 16; r++)
+			if (peso[r])
+				fprintf(stderr, "jit:   r%-2d  %5.1f %%\n", r,
+					total ? 100.0 * (double) peso[r] / (double) total : 0.0);
+	}
+
 	if (!jit_traductor)
 		return;
+
+	fprintf(stderr, "jit: %llu costuras (%llu vacias: salto directo al"
+		" cuerpo)\n", jit_costuras + jit_costuras_vacias, jit_costuras_vacias);
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
@@ -5026,8 +5246,15 @@ void jit_iniciar(void)
 
 		{
 			const char * sc = getenv("DCEMU_JIT_SONDA_CRUCES");
+			const char * sh = getenv("DCEMU_JIT_SIN_HOGARES");
+			const char * co = getenv("DCEMU_JIT_COSTURAS");
 
 			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
+
+			if (sh != NULL && atoi(sh) != 0)
+				jit_hogares = 0;
+
+			jit_costuras_talones = (co != NULL && atoi(co) >= 2);
 		}
 	}
 
