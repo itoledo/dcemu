@@ -458,6 +458,14 @@ static int			jit_corte_epoca = 0;
 static unsigned char *	jit_buscador = NULL;
 static int				jit_buscador_activo = 0;
 
+/* La cuenta que decide la fase de registros persistentes (ver el plan):
+   cuantas fronteras de bloque son cruces de enlace -- que una costura por
+   arista dejaria casi gratis -- contra entradas por el despachador. Con
+   DCEMU_JIT_SONDA_CRUCES=1 cada cabeza de bloque emite un contador;
+   cruces = corridos - entradas. Cero costo apagada (decision de emision). */
+static unsigned long long	jit_bloques_corridos = 0;
+static int					jit_sonda_cruces = 0;
+
 /*
 	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
 	dice que -- y **tiene que estar indexada por el PC entero**, no por
@@ -4153,6 +4161,9 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 
 	tr_prologo(g, t);
 
+	if (jit_sonda_cruces)
+		jit_x64_add64_mi(&g->e, CTX, D(&jit_bloques_corridos), 1);
+
 	for (i = 0; i < t->n; i++)
 	{
 		const jit_plantilla * p = t->pl[i];
@@ -4854,6 +4865,13 @@ static void jit_resumen(void)
 		jit_entradas ? (double) jit_estado.instr / (double) jit_entradas : 0.0,
 		jit_rechazos);
 
+	if (jit_bloques_corridos)
+		fprintf(stderr, "jit: %llu bloques corridos, %llu cruces de enlace"
+			" (%.1f %% de las fronteras)\n",
+			jit_bloques_corridos, jit_bloques_corridos - jit_entradas,
+			100.0 * (double) (jit_bloques_corridos - jit_entradas)
+				  / (double) jit_bloques_corridos);
+
 	if (!jit_traductor)
 		return;
 
@@ -4987,6 +5005,12 @@ void jit_iniciar(void)
 
 		jit_corte_epoca     = (ce != NULL && atoi(ce) != 0);
 		jit_buscador_activo = (ba != NULL && atoi(ba) != 0);
+
+		{
+			const char * sc = getenv("DCEMU_JIT_SONDA_CRUCES");
+
+			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
+		}
 	}
 
 	jit_arena = (unsigned char *) jit_arena_reservar(JIT_ARENA_TAM);

@@ -1964,3 +1964,21 @@ despacho ya en 11,9-16,4 instrucciones y el buscador quitando el viaje C, la fro
 por bloque es el costo fijo que queda; si los cruces dinámicos resultan ser la mayoría
 de las fronteras, la fase paga. Ese contador es el primer paso de la implementación, y
 es una tarde de trabajo aparte de esta noche.
+
+**El contador está hecho y censado** (`DCEMU_JIT_SONDA_CRUCES=1`: una suma emitida en
+la cabeza de cada bloque, cero costo apagada; cruces = corridos − entradas):
+
+| guest | bloques corridos | cruces de enlace | largo dinámico |
+| --- | --- | --- | --- |
+| Crazy Taxi, 180 s | 3 108 M | **1463 M — 47,0 %** | 6,3 instr/bloque |
+| DCDoom, 35 s | 382 M | 147 M — 38,5 % | 11,8 |
+| Sega Rally 2, 60 s | 831 M | 349 M — 41,9 % | 9,0 |
+
+Dos lecturas. La primera: **el largo dinámico es un tercio del estático** (6,3 contra
+19,0 en CT) — los bloques calientes son cortos, y por eso cada punto porcentual de
+frontera pesa tanto. La segunda, la cuenta: a ~10-14 operaciones de volcado+recarga por
+frontera, las 3 108 M de fronteras de CT son del orden del 15-25 % del trabajo emitido
+del banco. **La fase paga**; las costuras por arista se llevan el 40-47 % de las
+fronteras a ~cero, y los hogares canónicos habilitan además la elisión en las
+reentradas por despachador (los no volátiles sobreviven el viaje C; falta solo la
+marca de «contexto ensuciado» para cuando el intérprete corrió en el medio).
