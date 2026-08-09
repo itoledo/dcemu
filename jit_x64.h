@@ -88,6 +88,7 @@ void jit_x64_mov_ri  (x64_emisor * e, x64_reg dst, unsigned imm);
 void jit_x64_mov_mi  (x64_emisor * e, x64_reg base, int disp, unsigned imm);
 
 void jit_x64_mov64_rm(x64_emisor * e, x64_reg dst, x64_reg base, int disp);
+void jit_x64_mov64_mr(x64_emisor * e, x64_reg base, int disp, x64_reg src);
 
 /* Con indice escalado: [base + indice*escala + disp]. Es lo que pide una tabla
    indexada por el byte alto de la direccion (mem_base_lectura) y la suma

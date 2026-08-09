@@ -131,6 +131,8 @@ typedef struct
 	void *					p_mmucr;
 	void *					entrada;		/* el cuerpo del bloque a entrar */
 	void *					h_busqueda;		/* jit_busqueda_puente() */
+	void *					h_leer_par;		/* jit_leer_par() */
+	void *					h_escribir_par;	/* jit_escribir_par() */
 } jit_estado_t;
 
 static jit_estado_t jit_estado;
@@ -291,6 +293,25 @@ void jit_escribir32_fis(DWORD fisica, DWORD valor)
 void jit_busqueda_puente(void)
 {
 	(void) MMU_FETCH_PUNTERO(PC);
+}
+
+/*
+	El par de sz1 viaja como UN acceso de 8 bytes, igual que en los
+	manejadores (memread/memwrite de sizeof(DWORD)*2): todo-o-nada ante una
+	falta, sin orden interno que reproducir. El puntero de banco se
+	desreferencia aca adentro, en el momento del acceso, asi que el
+	intercambio por el bit FR no necesita guarda.
+*/
+void jit_leer_par(DWORD dir, DWORD desp)
+{
+	memread(dir, (unsigned char *) core.context.FR_BANK + desp,
+		sizeof(DWORD) * 2);
+}
+
+void jit_escribir_par(DWORD dir, DWORD desp)
+{
+	memwrite(dir, (unsigned char *) core.context.FR_BANK + desp,
+		sizeof(DWORD) * 2);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -652,6 +673,8 @@ static int D(const void * p)
 #define D_EPOCA		D(&jit_validez)
 #define D_ENTRADA	D(&jit_estado.entrada)
 #define D_BUSQUEDA	D(&jit_estado.h_busqueda)
+#define D_LEER_PAR	D(&jit_estado.h_leer_par)
+#define D_ESCR_PAR	D(&jit_estado.h_escribir_par)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_MMU		D(&mmu_activa)
@@ -2723,6 +2746,83 @@ static void pl_fldi1171(jit_gen * g, jit_traduccion * t, int i)
 	jit_x64_mov_mi(&g->e, X64_RCX, FR_DESP(TN(w)), 0x3F800000);
 }
 
+/* --- los pares de sz1: el FMOV de 64 bits ------------------------------- */
+
+#define DR_DESP(x)	((int) offsetof(FPR_BANK, FP.dreg) + 8 * (x))
+
+/* La direccion ya viene en RCX; el segundo argumento del ayudante es el
+   desplazamiento del DR dentro del banco. */
+static void tr_par(jit_gen * g, const void * f, int disp_tabla, int dr)
+{
+	jit_x64_mov_ri(&g->e, X64_RDX, (unsigned) DR_DESP(dr));
+	gen_llamar(g, f, disp_tabla);
+}
+
+static void pl_fmov179(jit_gen * g, jit_traduccion * t, int i)	/* FMOV DRm,DRn */
+{
+	WORD w = t->palabra[i];
+	int  n = (w >> 9) & 7, m = (w >> 5) & 7;
+
+	jit_x64_mov64_rm(&g->e, X64_RCX, CTX, O_FRB);
+	jit_x64_mov64_rm(&g->e, X64_RAX, X64_RCX, DR_DESP(m));
+	jit_x64_mov64_mr(&g->e, X64_RCX, DR_DESP(n), X64_RAX);
+}
+
+static void pl_fmov180(jit_gen * g, jit_traduccion * t, int i)	/* FMOV @Rm,DRn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	tr_par(g, (const void *) jit_leer_par, D_LEER_PAR, (w >> 9) & 7);
+}
+
+static void pl_fmov181(jit_gen * g, jit_traduccion * t, int i)	/* @(R0,Rm),DRn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TM(w));
+	tr_par(g, (const void *) jit_leer_par, D_LEER_PAR, (w >> 9) & 7);
+}
+
+/* @Rm+ : el incremento se compromete despues de que la lectura volvio. */
+static void pl_fmov182(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TM(w));
+	tr_par(g, (const void *) jit_leer_par, D_LEER_PAR, (w >> 9) & 7);
+	tr_alu_ri(g, t, X64_ADD, TM(w), 8);
+}
+
+static void pl_fmov183(jit_gen * g, jit_traduccion * t, int i)	/* DRm,@Rn */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	tr_par(g, (const void *) jit_escribir_par, D_ESCR_PAR, (w >> 5) & 7);
+}
+
+/* @-Rn : R(n) se compromete despues de que la escritura volvio. */
+static void pl_fmov184(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, TN(w));
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RCX, 8);
+	tr_par(g, (const void *) jit_escribir_par, D_ESCR_PAR, (w >> 5) & 7);
+	tr_alu_ri(g, t, X64_SUB, TN(w), 8);
+}
+
+static void pl_fmov185(jit_gen * g, jit_traduccion * t, int i)	/* DRm,@(R0,Rn) */
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TN(w));
+	tr_par(g, (const void *) jit_escribir_par, D_ESCR_PAR, (w >> 5) & 7);
+}
+
 /* --- aritmetica y corrimientos que el censo pidio ------------------------ */
 
 static void pl_cmpeq43(jit_gen * g, jit_traduccion * t, int i)	/* CMP/EQ #imm,R0 */
@@ -3236,6 +3336,15 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "FSTS FPUL,FRn",       0, 0, 0, 0, pl_fsts187,  1 },
 	{ NULL, "FLDI0 FRn",           0, 0, 0, 0, pl_fldi0170, 1 },
 	{ NULL, "FLDI1 FRn",           0, 0, 0, 0, pl_fldi1171, 1 },
+	/* Los pares de sz1: un acceso de 8 bytes, como en los manejadores. El 0
+	   de FMOV DRm,DRn es del manejador. */
+	{ NULL, "FMOV DRm,DRn",        0, 0, 0, 0, pl_fmov179,  1 },
+	{ NULL, "FMOV @Rm,DRn",        2, 1, 0, 0, pl_fmov180,  1 },
+	{ NULL, "FMOV @(R0,Rm),DRn",   2, 1, 0, 0, pl_fmov181,  1 },
+	{ NULL, "FMOV @Rm+,DRn",       2, 1, 0, 0, pl_fmov182,  1 },
+	{ NULL, "FMOV DRm,@Rn",        1, 1, 0, 0, pl_fmov183,  1 },
+	{ NULL, "FMOV DRm,@-Rn",       1, 1, 0, 0, pl_fmov184,  1 },
+	{ NULL, "FMOV DRm,@(R0,Rn)",   2, 1, 0, 0, pl_fmov185,  1 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3258,6 +3367,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	fmov172, fmovs173, fmovs174, fmovs175, fmovs176, fmovs177, fmovs178,
 	fadd189, fsub198, fmul195, fdiv192, fcmpeq190, fcmpgt191, float193,
 	ftrc199, fneg196, fabs188, fsqrt197, flds186, fsts187, fldi0170, fldi1171,
+	fmov179, fmov180, fmov181, fmov182, fmov183, fmov184, fmov185,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -4580,6 +4690,8 @@ void jit_iniciar(void)
 	jit_estado.p_pteh       = (void *) PTEH;
 	jit_estado.p_mmucr      = (void *) MMUCR;
 	jit_estado.h_busqueda   = (void *) jit_busqueda_puente;
+	jit_estado.h_leer_par   = (void *) jit_leer_par;
+	jit_estado.h_escribir_par = (void *) jit_escribir_par;
 
 	for (i = 0; i < JIT_HASH_N; i++)
 		jit_hash[i] = -1;

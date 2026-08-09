@@ -556,6 +556,10 @@ static void las_formas_con_indice_de_la_mmu(void)
 	arrancar();								/* mov word [rax+r8], dx */
 	jit_x64_mov16_mr_idx(&e, X64_RAX, X64_R8, 1, 0, X64_RDX);
 	ESPERAR_EMITIDO(0x66, 0x42, 0x89, 0x14, 0x00);
+
+	arrancar();
+	jit_x64_mov64_mr(&e, X64_RCX, 0x10, X64_RAX);		/* mov [rcx+10h], rax */
+	ESPERAR_EMITIDO(0x48, 0x89, 0x41, 0x10);
 }
 
 /* ------------------------------------------------------------------------ */

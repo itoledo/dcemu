@@ -211,6 +211,13 @@ void jit_x64_mov64_rm(x64_emisor * e, x64_reg dst, x64_reg base, int disp)
 	modrm_m(e, dst, base, disp);
 }
 
+void jit_x64_mov64_mr(x64_emisor * e, x64_reg base, int disp, x64_reg src)
+{
+	rex(e, 1, src, base, 0);
+	b1(e, 0x89);				/* MOV r/m64, r64 */
+	modrm_m(e, src, base, disp);
+}
+
 void jit_x64_mov64_ri(x64_emisor * e, x64_reg dst, unsigned long long imm)
 {
 	rex(e, 1, 0, dst, 0);

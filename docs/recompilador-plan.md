@@ -1598,6 +1598,34 @@ orden: los pares de `sz1` (los `FMOV` de 64 bits que el flip de SZ encierra — 
 maquinaria, filas nuevas), y levantar la compuerta MMU+FPU resolviendo la restricción de
 orden documentada arriba.
 
+## Los pares de sz1: las matrices dejan de cortar
+
+Las siete filas de `FMOV` bajo `SZ=1` — la carga que los 13,2 millones de flips por
+minuto encierran. **El par viaja como un solo acceso de 8 bytes**, exactamente como en
+los manejadores (`memread`/`memwrite` de `sizeof(DWORD)*2`): todo-o-nada ante una falta,
+sin orden interno que reproducir — dos ayudantes (`jit_leer_par`/`jit_escribir_par`) con
+la dirección en `rcx` y el desplazamiento del DR como segundo argumento, y el puntero de
+banco desreferenciado adentro, en el momento del acceso, a prueba de flips de FR.
+`FMOV DRm,DRn` se emite entero (una copia de 64 bits — el `mov64_mr` que el emisor no
+tenía, con su caso byte a byte); `@-Rn` compromete después, patrón `movl12`; los ciclos
+(0/2/2/2/1/1/2 — el 0 del par registro-a-registro es del manejador) copiados leyendo los
+cuerpos enteros.
+
+| | Crazy Taxi |
+| --- | --- |
+| cobertura | 84,9 → **87,1 %** |
+| entradas al despacho | 2018 → **1796 M (−11 %)** |
+| instrucciones por entrada | 9,3 → **10,8** |
+
+**92 283 ms — dispersión 0,03 % entre corridas, −15,5 % contra su intérprete, −2,3 % en
+la ronda.** Las secuencias de matrices ya no cortan en cada par, que era el corte más
+denso que quedaba. DCDoom intacto por diseño (cuentas idénticas), exactitud canónica en
+ambos con capturas.
+
+**La serie completa del recompilador en Crazy Taxi: de 134,6 a 92,3 segundos (−31 %).**
+Queda en la frontera FPU una sola puerta: la compuerta MMU+FPU, con su restricción de
+orden documentada y su instrumental listo.
+
 El lote quedó como diff en el scratchpad de la sesión (`fpu-v1.diff`) y el árbol
 revertido y exacto.
 
