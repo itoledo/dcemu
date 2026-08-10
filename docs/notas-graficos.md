@@ -934,8 +934,20 @@ cubierta por el vidrio (atlas de reflejos 128×128, alfa 0.90, con sus vetas osc
 de reflejo env-mapeadas — UV casi constante estirada sobre quads largos (3×2 texeles sobre 95×8
 píxeles), color de vértice 0.58, modulate-alpha contra un atlas 256×256 que contiene **dos vistas
 completas del auto** (con pinta de RTT del propio juego usado como mapa de reflejo). Ninguna de
-las tres vías la dibuja distinto; si en consola real esa pila se ve más clara, lo que falta no es
-ni orden ni mezcla — **el árbitro pendiente es una captura de hardware de esta pantalla**.
+las tres vías la dibuja distinto — y **el árbitro llegó ese mismo día: en consola real el auto es
+opaco**. Un longplay en hardware real (YouTube `MGJDPzvvekE`, «Sega Rally 2 10 Year Championship
+PAL Dreamcast Actual Hardware», t≈215 s, pantalla CAR SETTINGS con el mismo fondo de baldosas)
+muestra la carrocería sólida, sin una baldosa a través del cuerpo — mientras el F6 del usuario en
+dcemu muestra el texto del fondo legible a través del guardabarros, dependiente de la pose. O sea:
+en los píxeles del sangrado dcemu no apila ningún fragmento opaco del cuerpo donde el chip sí lo
+tiene — faltan fragmentos o llevan alfa < 1 que no deberían. Los sospechosos que quedan vivos, con
+las tres pistas que los señalan (el atlas 256×256 con las dos vistas del auto sale ROSA/OLIVA —
+grises de ARGB1555 o un canal R/B invertido leídos como RGB565 —, la carrocería se ve como un
+collage de parches de calcas, y el sangrado ondula con la pose): **el contenido que dcemu sirve a
+esos atlas** — si son blancos de render a textura, el camino del volcado del framebuffer
+(`glReadPixels` → empaquetado 565 → ventana de 32) puede estar entregando canales o cuadros
+equivocados — y la caché de texturas sirviendo una entrada rancia o en colisión. Ese es el hilo
+del que tirar; orden, mezcla, culling y decodificador ya están absueltos con evidencia.
 Absueltos con evidencia, para no repetir la caza: el decodificador de texturas (destwiddle propio
 del volcado de VRAM = idéntico), el tejido de las ventanas (escritor por SQ→`0x11` y lector de 64
 bits son el mismo espacio), `mmu_traducir_sq` (direcciones secuenciales limpias), `SB_LMMODE0`
