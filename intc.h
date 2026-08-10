@@ -26,6 +26,10 @@ void check_ints();
 bool intc_check();
 void intc_add(DWORD inttoadd, int cnt);
 
+/* El vencimiento mas cercano de las demoras (~0ull sin ninguna): un insumo
+   del reloj por eventos (tmu.h). Absoluto, en ciclos de reloj_total. */
+unsigned long long intc_proximo_vence(void);
+
 /* Si main_loop tiene que llamar a check_ints(): demoras corriendo, cola
    externa, o una linea del ASIC afirmada (SB_ISTNRM contra las mascaras --
    la peticion es por nivel, asi que es estado y no cola). */

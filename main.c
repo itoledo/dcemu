@@ -488,6 +488,107 @@ void dma_check()
    restaurar la instantanea de la MMU no debe hacer retroceder el reloj. */
 static unsigned long long marca_linea = 0;
 
+/* ------------------------------------------------------------------------ */
+/* El reloj por eventos (fase 5 de docs/estado-del-arte-plan.md; tmu.h)     */
+/* ------------------------------------------------------------------------ */
+
+/* Hasta donde estan al dia los dos temporizadores. */
+static unsigned long long marca_ticks = 0;
+
+/*
+	Los pone al dia hasta la ultima frontera consumida, en un solo tramo: la
+	aritmetica de resto de tmu_tick()/wdt_tick() da lo mismo en un tramo que
+	en muchos, y el instante de cada subdesborde lo garantiza el vencimiento,
+	no esta llamada. La usa el bloque periodico, y regmap_read() cuando el
+	guest sondea TCNT o WTCNT -- que tiene que ver el valor de la frontera,
+	como siempre.
+*/
+void reloj_sincronizar_ticks(void)
+{
+	if (reloj_total == marca_ticks)
+		return;
+
+	timer_check((DWORD) (reloj_total - marca_ticks));
+	wdt_tick((DWORD) (reloj_total - marca_ticks));
+	marca_ticks = reloj_total;
+}
+
+/* 1 si el DMAC propio tiene un canal con trabajo posible: con eso el bloque
+   no se saltea, porque dma_check() avanza por sondeo. Los registros se
+   escriben por regmap_write(), que invalida. */
+static int dma_auto_activo(void)
+{
+	if (!(*DMAOR & DME))
+		return 0;
+
+	return ((*CHCR0 & DE) && !(*CHCR0 & CHCR_TE) && CHCR_RS(*CHCR0) == CHCR_RS_AUTO)
+	    || ((*CHCR1 & DE) && !(*CHCR1 & CHCR_TE) && CHCR_RS(*CHCR1) == CHCR_RS_AUTO)
+	    || ((*CHCR2 & DE) && !(*CHCR2 & CHCR_TE) && CHCR_RS(*CHCR2) == CHCR_RS_AUTO)
+	    || ((*CHCR3 & DE) && !(*CHCR3 & CHCR_TE) && CHCR_RS(*CHCR3) == CHCR_RS_AUTO);
+}
+
+/*
+	El proximo vencimiento, absoluto sobre reloj_total. Conservador por
+	construccion: quedarse corto solo hace correr el bloque de mas -- que es
+	exactamente lo de hoy --; pasarse seria una entrega tardia, y por eso
+	cada insumo es la aritmetica exacta de su subsistema. La linea de barrido
+	esta siempre (<= ~6400 ciclos), asi que nunca es infinito y el delta de
+	los temporizadores cabe en DWORD.
+*/
+static unsigned long long reloj_calcular(void)
+{
+	static int eventos = -2;			/* -2: sin leer el entorno */
+	unsigned long long v, t;
+
+	if (eventos == -2)
+	{
+		const char * e = getenv("DCEMU_SIN_RELOJ_EVENTOS");
+
+		/* Con el hilo del AICA no se saltea nada: ese camino publica trabajo
+		   en cada frontera y no tiene vencimiento que calcular. */
+		eventos = !(e != NULL && atoi(e) != 0) && !opciones.hilos;
+	}
+
+	if (!eventos || dma_auto_activo())
+		return 0;
+
+	v = marca_linea + pvr_ciclos_linea;			/* la linea de barrido */
+
+	/* La inversa del AICA son dos divisiones de 64 bits y su argumento solo
+	   cambia cuando una muestra se produce: memoizada, el servicio tipico
+	   --el de la linea de barrido-- no las paga. Puro valor calculado, asi
+	   que no puede mover nada. */
+	{
+		static unsigned long long m_memo = ~0ull, t_memo;
+		unsigned long long m = aica_muestras_hechas() + 1;
+
+		if (m != m_memo)
+		{
+			m_memo = m;
+			t_memo = aica_reloj_de_muestra(m);
+		}
+
+		t = t_memo;
+	}
+
+	if (t < v)
+		v = t;
+
+	t = tmu_proximo();
+	if (t != ~0ull && reloj_total + t < v)
+		v = reloj_total + t;
+
+	t = wdt_proximo();
+	if (t != ~0ull && reloj_total + t < v)
+		v = reloj_total + t;
+
+	t = intc_proximo_vence();
+	if (t < v)
+		v = t;
+
+	return v;
+}
+
 /* Tiempo real (SDL_GetTicks) al entrar a main_loop, para --limitar. */
 static unsigned long real_inicio = 0;
 
@@ -1059,32 +1160,52 @@ void main_loop(void)
 				// ya no hay acumuladores que sumen y resten cantidades
 				// distintas. Ver docs/clock-plan.md, fase 2.
 				DWORD ciclos = core.context.cycles;
-				PERF_MARCA_MUESTRA(t_serv, n_serv);
 
 				core.context.cycles -= ciclos;
 				reloj_total += ciclos;
-				intc_sh4_reintentar = 0;
 
 #ifdef DCEMU_JIT
 				/* De donde salen los candidatos del traductor. Aqui y no en el
 				   bucle de instrucciones: este bloque corre cada RELOJ_GRANO
 				   ciclos --unas 130 instrucciones-- asi que muestrear no
-				   cuesta nada en el camino caliente. Ver jit.h. */
+				   cuesta nada en el camino caliente. Ver jit.h. Queda en la
+				   frontera barata a proposito: asi el descubrimiento del
+				   traductor no depende del reloj por eventos. */
 				jit_muestrear(PC);
 #endif
 
 				/* El punto de control por ms que NO apaga el JIT (DCEMU_CP_MS).
 				   Arranca en -2 ("sin leer"), asi que la primera pasada entra,
 				   lee el entorno y lo deja en -1 si esta apagado: costo cero
-				   en regimen. */
+				   en regimen. Tambien en la frontera barata: su cadencia no
+				   puede depender del interruptor. */
 				if (traza_cp_tope != -1)
 					traza_cp_periodico();
 
+				/*
+					El reloj por eventos (tmu.h): si ningun vencimiento llego y
+					nadie invalido, la frontera termina aca. La grilla y la
+					contabilidad quedaron identicas -- lo unico que se ahorra
+					es el servicio, que hoy descubre mil veces de cada mil que
+					no hay nada que hacer. Con DCEMU_SIN_RELOJ_EVENTOS=1 el
+					vencimiento vive en 0 y esto es siempre verdadero.
+				*/
+				if (reloj_total >= reloj_vencimiento || intc_sh4_reintentar)
+				{
+				/* Si algo se postea durante este mismo servicio (SCANINT, la
+				   linea del AICA), su reloj_tocar() tiene que sobrevivir al
+				   recalculo del final: se muestrea aca y alla se compara. */
+				unsigned reloj_toques_entrada = reloj_toques;
+
+				PERF_MARCA_MUESTRA(t_serv, n_serv);
+				intc_sh4_reintentar = 0;
+
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan
 				// su propio resto, cada uno con su divisor. Ninguno entrega su
-				// interrupcion: solo dejan su bandera puesta.
-				timer_check(ciclos);
-				wdt_tick(ciclos);
+				// interrupcion: solo dejan su bandera puesta. La cantidad es lo
+				// acumulado desde el ultimo servicio: con el interruptor
+				// apagado es el mismo delta de siempre.
+				reloj_sincronizar_ticks();
 
 				// El AICA no recibe ciclos: compara contra su propia marca de
 				// reloj_total, porque su reloj es otro -- 44100 Hz de muestreo
@@ -1214,6 +1335,17 @@ void main_loop(void)
 	//	   				cnt = 0;
 					break; // salimos de este ciclo y vamos al siguiente
 				}
+
+				/* El proximo vencimiento, con todo ya al dia -- la linea
+				   recien avanzada incluida. El break del fin de cuadro se lo
+				   saltea a proposito: la frontera siguiente corre el bloque
+				   completo y lo recalcula, que una vez por cuadro es gratis.
+				   Y si alguien invalido durante el servicio, el 0 que dejo
+				   manda: recalcular aca postergaria esa entrega hasta el
+				   proximo vencimiento -- se vio como el vblank tarde. */
+				if (reloj_toques == reloj_toques_entrada)
+					reloj_vencimiento = reloj_calcular();
+				} /* fin del servicio del reloj por eventos */
 			}
 
 		}

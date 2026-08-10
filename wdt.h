@@ -94,6 +94,9 @@ void wdt_escribir(unsigned long fisica, void * p, size_t size);
 */
 int wdt_tick(DWORD ciclos);
 
+/* Ciclos hasta el desborde, para el reloj por eventos (ver tmu.h). */
+unsigned long long wdt_proximo(void);
+
 /* Estado, expuesto para las pruebas. */
 BYTE wdt_contador(void);
 BYTE wdt_control(void);

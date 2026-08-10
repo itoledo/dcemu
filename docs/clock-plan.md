@@ -1,7 +1,10 @@
 # Plan: una sola base de tiempo
 
 Estado: **completo**. Julio de 2026, sobre `master`. Las cuatro fases están implementadas y
-los cuatro hitos alcanzados; ver [Lo que quedó](#lo-que-quedó) al final.
+los cuatro hitos alcanzados; ver [Lo que quedó](#lo-que-quedó) al final. En agosto se sumó
+la **fase 5, el reloj por eventos** (la fase 5 de `estado-del-arte-plan.md`): el servicio
+del bloque periódico corre solo cuando un vencimiento llegó, sobre la misma grilla — la
+última sección de este documento.
 
 ## El problema, con números
 
@@ -379,3 +382,101 @@ Va apagado por omisión para no cambiar el comportamiento de lo que ya funcionab
   instrucción se ejecuta dos veces— pero conviene tenerlo presente.
 - El límite duerme por frame, o sea con granularidad de ~16 ms. Para un ritmo más parejo habría
   que frenar por línea, que es mucho más caro.
+
+## Fase 5 — El reloj por eventos (2026-08-10)
+
+La fase 5 de `estado-del-arte-plan.md`, cerrada en forma de conclusiones. La bitácora
+completa está en git.
+
+### Qué es, y qué no es
+
+Hoy el bloque periódico corre entero en cada frontera de `RELOJ_GRANO` (400) ciclos y
+descubre, mil veces de cada mil, que no hay nada que hacer. El reloj por eventos calcula el
+**próximo vencimiento** — el mínimo entre la línea de barrido (`marca_linea +
+pvr_ciclos_linea`, siempre presente, ≤ ~6400 ciclos), la muestra siguiente del AICA (la
+inversa `aica_reloj_de_muestra()`, memoizada porque su argumento solo cambia al producirse
+una muestra), `tmu_proximo()`, `wdt_proximo()` y las demoras del INTC
+(`intc_proximo_vence()`) — y **saltea el servicio** mientras `reloj_total` no lo alcance y
+nadie lo invalide. Con el DMAC propio activo en auto-request (`dma_auto_activo()`) no se
+saltea nada, porque `dma_check()` avanza por sondeo.
+
+**La grilla no cambia.** La frontera sigue cada 400 ciclos, `reloj_total` avanza igual, el
+muestreo del JIT (`jit_muestrear`) y la cadencia de `DCEMU_CP_MS` quedan en la frontera
+barata, y toda entrega cae en el mismo ciclo emulado que antes: lo único que se ahorra es el
+cuerpo del servicio. Eso es lo que hace a la fase **exacta por construcción** — quedarse
+corto en un vencimiento solo corre el bloque de más, que es lo de hoy; cada fórmula es la
+aritmética exacta de su subsistema y las suites `tmu` y `wdt` prueban que aciertan el
+instante (un ciclo antes no pasa nada, en el ciclo pasa).
+
+La mitad que **no** entró, a propósito: alargar las cadenas del JIT hasta el vencimiento
+(cortan en `RELOJ_GRANO`, unas 130 instrucciones). Mover ese corte cambia la grilla de
+cuantización de las entregas — un evento caería en el ciclo exacto del vencimiento en vez
+del múltiplo de 400 siguiente — y eso **rompe la identidad byte a byte contra el
+intérprete**, que es el contrato que ancla todas las compuertas del árbol. Si algún día se
+hace, exige su propia línea base canónica nueva.
+
+### Las reglas (las que costaron una divergencia cada una)
+
+**Todo lo que pueda mover un vencimiento o una entrega llama a `reloj_tocar()`**: las
+escrituras on-chip (`regmap_write`), las del PVR/ASIC (`pvr_write`: máscaras SB, acuses de
+ISTNRM, SPG, arranques de DMA, lectora, Maple), las de la ventana de registros del AICA
+(`aica_escribir`) y los eventos nuevos del INTC (`intc_add`, `intc_add_ext`,
+`intc_remove_ext`). `intc_sh4_reintentar` se conserva tal cual y la condición del servicio
+lo mira (`reloj_total >= reloj_vencimiento || intc_sh4_reintentar`).
+
+Las tres compuertas rojas de la primera pasada fueron tres agujeros del mismo tipo —
+momentos que mueven una entrega sin invalidar — y valen como lección:
+
+1. **El servicio se postea eventos a sí mismo y el recálculo pisaba la invalidación.**
+   SCANINT1/SCANINT2 se postean en la comparación de línea, *después* de que
+   `intc_revisar_sh4()` y `check_ints()` ya corrieron en ese mismo servicio; su
+   `reloj_tocar()` ponía el vencimiento en 0 y el recálculo del final lo sobreescribía. El
+   vblank llegaba hasta una línea entera tarde (~6350 ciclos contra ≤400), cada cuadro, en
+   todos los guests — se vio como menos instrucciones ejecutadas con signo consistente. El
+   arreglo es el contador `reloj_toques`: el servicio lo muestrea al entrar y **solo
+   recalcula si nadie tocó en el medio**; si alguien tocó, el 0 queda y la frontera
+   siguiente corre el bloque completo — la cadencia de hoy.
+2. **Los ticks pendientes deben aplicarse antes de que una escritura on-chip aterrice.**
+   `regmap_write` ahora llama a `reloj_sincronizar_ticks()` antes de despachar: el delta
+   acumulado desde el último servicio corre sobre el estado *viejo* del registro, y tras
+   sincronizar el único pendiente es el grano en curso — igual que hoy, donde nunca hay más
+   de un grano pendiente. Sin esto, arrancar un canal por TSTR le acreditaba de una hasta
+   16 granos de cuenta.
+3. **Una escritura del SH-4 al AICA puede mover la línea hacia el ASIC ahora mismo**
+   (`pedir_int()` con MCIEB habilitada, el bit 5 de MCIPD, el acuse de MCIRE que la baja) y
+   la entrega vive en el bloque periódico: `aica_escribir()` invalida. El ARM no necesita
+   nada — corre adentro de `aica_tick()`, dentro del servicio, y la entrega sale en ese
+   mismo servicio.
+
+**La lectura de TCNT/WTCNT sincroniza primero** (`regmap_read` → `reloj_sincronizar_ticks()`),
+así el guest que sondea ve el valor de la última frontera consumida — ni más fresco ni más
+viejo que hoy. La sincronización es segura a mitad de instrucción porque `tmu_tick()` y
+`wdt_tick()` solo dejan banderas; la entrega sigue siendo del bloque (la regla de siempre:
+los periféricos no entregan su propia interrupción).
+
+### Los números
+
+- **Exactitud**: las nueve compuertas canónicas (capturas de DOOM ×3 formas, SR2, `.wav` de
+  CT y modplug, palanca 0/1) con totales al dígito en los árbitros inmunes al pad; CT dentro
+  de su bimodalidad documentada con el `.wav` byte a byte — una corrida dio otro `.wav` en
+  la ventana ruidosa de la máquina y las dos re-corridas en quieto devolvieron el canónico,
+  que es exactamente el criterio del árbol para el pad. **Barrido KOS completo: 139 de 139
+  demos idénticas** entre palanca 0 y 1. `ctest` 23/23 con cinco casos nuevos
+  (`tmu_proximo`/`wdt_proximo`).
+- **Tiempo** (tanda reentrenada, palanca dentro del mismo binario, orden alternado): **SR2
+  −0,7/−1,0 %** (6/6 rondas limpias a favor), **CT −0,5 %** (rangos disjuntos en la tanda
+  con la máquina quieta), **DOOM neutro** — perdía +0,8 % consistente hasta memoizar la
+  inversa del AICA en `reloj_calcular()` (dos divisiones de 64 bits que solo cambian al
+  producirse una muestra); DOOM es el guest denso en invalidaciones (tick de WinCE por
+  `regmap_write`, flujo de la lectora) y por eso paga más servicios.
+- **El techo era conocido**: el reparto de la fase 0 dejó el bloque periódico *neto* en
+  5-7,4 % — la mayor parte del balde del perfil es `aica_tick` con el ARM adentro, trabajo
+  exacto que no se puede saltear. Lo elidible es la tajada ociosa fina, y eso es lo que la
+  fase recoge.
+
+### La palanca
+
+`DCEMU_SIN_RELOJ_EVENTOS=1` deja el vencimiento en 0 para siempre: el bloque completo corre
+en cada frontera, **el comportamiento anterior bit a bit** (el barrido lo probó sobre las
+139). Viene **encendido por omisión**. Con `--hilos` el camino del hilo del AICA no calcula
+vencimientos y el interruptor queda inerte.

@@ -89,6 +89,47 @@ extern unsigned long long reloj_total;
 */
 #define RELOJ_GRANO		400
 
+/*
+	El reloj por eventos (fase 5 de docs/estado-del-arte-plan.md): la frontera
+	del bloque periodico sigue siendo cada RELOJ_GRANO ciclos --la grilla no
+	cambia, y con ella ninguna entrega--, pero el servicio completo corre solo
+	cuando reloj_total alcanzo el vencimiento mas cercano (subdesborde de TMU o
+	WDT, muestra del AICA, linea de barrido, demora del INTC, DMA propio) o
+	cuando alguien lo invalido. Todo lo que pueda mover un vencimiento tiene
+	que llamar a reloj_tocar(): las escrituras a registros on-chip
+	(regmap_write), las del PVR/ASIC (pvr_write, que cubre las mascaras SB) y
+	los eventos nuevos del INTC. Conservador por construccion: correr el bloque
+	de mas es exactamente lo de hoy; correrlo de menos seria una entrega
+	tardia.
+
+	DCEMU_SIN_RELOJ_EVENTOS=1 deja el vencimiento en 0 para siempre: el bloque
+	completo corre en cada frontera, que es el comportamiento anterior bit a
+	bit, y el A/B.
+
+	El contador de toques existe porque el servicio mismo postea eventos --las
+	comparaciones de linea postean SCANINT despues de que intc_revisar_sh4() ya
+	corrio-- y el recalculo del final pisaria esa invalidacion: la entrega, que
+	hoy sale en la frontera siguiente, se iria hasta el proximo vencimiento.
+	main_loop() muestrea el contador al entrar al servicio y solo recalcula si
+	nadie toco en el medio; si alguien toco, el vencimiento queda en 0 y la
+	frontera siguiente corre el bloque completo -- la misma cadencia de hoy.
+*/
+extern unsigned long long reloj_vencimiento;
+extern unsigned reloj_toques;
+
+#define reloj_tocar()	(reloj_vencimiento = 0, reloj_toques++)
+
+/* Ciclos hasta el primer subdesborde del TMU (~0ull si ningun canal corre),
+   con el estado como quedo en el ultimo tick: entre medio nadie lo consulta,
+   porque las escrituras invalidan. */
+unsigned long long tmu_proximo(void);
+
+/* Pone al dia los temporizadores hasta la ultima frontera consumida: lo que
+   un guest que sondea TCNT o WTCNT tiene que ver es el valor de esa
+   frontera, ni mas fresco ni mas viejo. Vive en main.c, que es quien lleva
+   la marca; mem.c lo llama desde la lectura de esos registros. */
+void reloj_sincronizar_ticks(void);
+
 /* Microsegundos de tiempo emulado. */
 unsigned long long reloj_us(void);
 

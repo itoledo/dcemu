@@ -1690,6 +1690,13 @@ void aica_escribir(unsigned long direccion, void * p, size_t size)
 	unsigned long off = (direccion & 0x00FFFFFF) - AICA_REG_BASE;
 	DWORD dw = 0;
 
+	/* Una escritura del SH-4 puede mover la linea hacia el ASIC ahora mismo
+	   --pedir_int() si MCIEB la habilita, el bit 5 de MCIPD, el reconocer de
+	   MCIRE que la baja-- y la entrega vive en el bloque periodico: sin
+	   invalidar, esa entrega esperaria al proximo vencimiento en vez de a la
+	   frontera siguiente. Frio (unas decenas por cuadro). Ver tmu.h. */
+	reloj_tocar();
+
 	memcpy(&dw, p, size > sizeof(dw) ? sizeof(dw) : size);
 
 	if (size < 4)

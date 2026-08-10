@@ -262,6 +262,41 @@ static void el_caso_del_ejemplo_de_kos(void)
 
 /* ------------------------------------------------------------------------ */
 
+/* -------------------------------------------------- el vencimiento ------ */
+
+/*
+	wdt_proximo() es el insumo del reloj por eventos (tmu.h): ciclos hasta el
+	desborde con el estado del ultimo tick. Como en el TMU, la propiedad es
+	que acierta el instante exacto.
+*/
+static void parado_no_hay_vencimiento(void)
+{
+	arnes_reset();
+	wdt_reset();
+
+	ESPERAR(wdt_proximo() == ~0ull);
+}
+
+static void el_vencimiento_acierta_el_desborde(void)
+{
+	arnes_reset();
+
+	/* Desde 0xFD faltan 3 pasos del divisor 32: el desborde es a los 96. */
+	arrancar_intervalo(0xFD);
+
+	ESPERAR(wdt_proximo() == 96);
+
+	/* Con fraccion acumulada la descuenta. */
+	wdt_tick(10);
+	ESPERAR(wdt_proximo() == 86);
+
+	/* Un ciclo antes no desborda, en el ciclo si. */
+	ESPERAR_U32(wdt_tick(85), 0);
+	ESPERAR_U32(wdt_tick(1), 1);
+}
+
+/* ------------------------------------------------------------------------ */
+
 static const dc_caso casos[] =
 {
 	CASO(reset_deja_todo_parado),
@@ -276,6 +311,8 @@ static const dc_caso casos[] =
 	CASO(desborde_en_modo_intervalo_pide_iti),
 	CASO(desborde_en_modo_watchdog_no_pide_iti),
 	CASO(el_caso_del_ejemplo_de_kos),
+	CASO(parado_no_hay_vencimiento),
+	CASO(el_vencimiento_acierta_el_desborde),
 };
 
 const dc_suite suite_wdt = DEFINIR_SUITE("wdt", casos);

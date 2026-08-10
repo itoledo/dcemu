@@ -14,6 +14,15 @@
 /* Ciclos de CPU desde el arranque. Lo incrementa main_loop(). */
 unsigned long long reloj_total = 0;
 
+/* El proximo vencimiento del bloque periodico (ver tmu.h). En 0 el bloque
+   completo corre en la frontera siguiente; vive junto al reloj porque es
+   quien lo compara, y aqui ademas lo ven las suites sin arrastrar main.c. */
+unsigned long long reloj_vencimiento = 0;
+
+/* Cuantas veces alguien invalido (reloj_tocar). Solo se compara por igualdad
+   alrededor de un servicio, asi que el desborde no importa. */
+unsigned reloj_toques = 0;
+
 /* Resto de ciclos que todavia no alcanzo para una cuenta, por canal. */
 static DWORD resto[TMU_CANALES];
 
@@ -88,6 +97,40 @@ DWORD reloj_ciclos_por_linea(DWORD vcount, DWORD spg_control)
 		campos_x100 = 6000;					/* VGA, 60 Hz */
 
 	return (DWORD) ((DC_CPU_HZ * 100ull) / ((unsigned long long) vcount * campos_x100));
+}
+
+/*
+	Ciclos que faltan para el primer subdesborde, con el estado del ultimo
+	tick. El paso que dispara UNF es el que llega con TCNT en 0, o sea que
+	faltan TCNT+1 pasos del divisor, menos lo ya acumulado en el resto. Un
+	canal recien arrancado (TSTR escrito) no se ve aca: esa escritura paso por
+	regmap_write, que invalido el vencimiento, y el tick siguiente procesa el
+	flanco -- igual que hoy.
+*/
+unsigned long long tmu_proximo(void)
+{
+	DWORD * tcnt[TMU_CANALES] = { TCNT0, TCNT1, TCNT2 };
+	WORD  * tcr [TMU_CANALES] = { TCR0,  TCR1,  TCR2  };
+
+	BYTE arrancados = *TSTR;
+	unsigned long long menor = ~0ull;
+	int  n;
+
+	for (n = 0; n < TMU_CANALES; n++)
+	{
+		unsigned long long divisor, falta;
+
+		if (!(arrancados & TMU_TSTR_STR(n)))
+			continue;
+
+		divisor = tmu_divisor(*tcr[n]);
+		falta   = ((unsigned long long) *tcnt[n] + 1) * divisor - resto[n];
+
+		if (falta < menor)
+			menor = falta;
+	}
+
+	return menor;
 }
 
 int tmu_tick(DWORD ciclos)

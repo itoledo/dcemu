@@ -349,6 +349,58 @@ static void sin_vcount_no_divide_por_cero(void)
 				reloj_ciclos_por_linea(0x20C, 0x100));
 }
 
+/* -------------------------------------------------- el vencimiento ------ */
+
+/*
+	tmu_proximo() es el insumo del reloj por eventos (tmu.h): ciclos hasta el
+	primer subdesborde con el estado del ultimo tick. La propiedad que lo hace
+	correcto es que acierta el instante exacto: un ciclo antes no pasa nada y
+	en el ciclo pasa. Pasarse seria una entrega tardia; quedarse corto, solo
+	un servicio de mas.
+*/
+static void sin_canales_no_hay_vencimiento(void)
+{
+	partir();
+
+	ESPERAR(tmu_proximo() == ~0ull);
+}
+
+static void el_vencimiento_acierta_el_subdesborde(void)
+{
+	partir();
+
+	/* TPSC 0 (divisor 16) y dos cuentas: el paso que llega con TCNT en 0 es
+	   el tercero, o sea a los 48 ciclos. */
+	arrancar(0, 0, 2, 0);
+	tmu_tick(0);						/* procesa el flanco de arranque */
+
+	ESPERAR(tmu_proximo() == 48);
+
+	/* Con resto acumulado la cuenta lo descuenta. */
+	tmu_tick(10);
+	ESPERAR(tmu_proximo() == 38);
+
+	/* Un ciclo antes del vencimiento no hay subdesborde... */
+	tmu_tick(37);
+	ESPERAR((*TCR0 & TMU_TCR_UNF) == 0);
+
+	/* ...y en el vencimiento, si. */
+	tmu_tick(1);
+	ESPERAR((*TCR0 & TMU_TCR_UNF) != 0);
+}
+
+static void el_vencimiento_es_el_minimo_de_los_canales(void)
+{
+	partir();
+
+	/* Canal 0 lejos (mil cuentas a divisor 64), canal 1 cerca. */
+	arrancar(0, 1, 999, 0);
+	arrancar(1, 0, 4, 0);
+	tmu_tick(0);
+
+	ESPERAR(tmu_proximo() == 5 * 16);
+}
+
 /* ------------------------------------------------------------------------ */
 
 static const dc_caso casos[] =
@@ -369,6 +421,9 @@ static const dc_caso casos[] =
 	CASO(ciclos_por_linea_segun_la_norma),
 	CASO(un_campo_dura_lo_que_debe),
 	CASO(sin_vcount_no_divide_por_cero),
+	CASO(sin_canales_no_hay_vencimiento),
+	CASO(el_vencimiento_acierta_el_subdesborde),
+	CASO(el_vencimiento_es_el_minimo_de_los_canales),
 };
 
 const dc_suite suite_tmu = DEFINIR_SUITE("tmu", casos);

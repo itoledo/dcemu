@@ -304,6 +304,10 @@ void intc_add(DWORD inttoadd, int cnt)
 {
 	censo_evento(inttoadd);
 
+	/* Un evento nuevo -- inmediato o demorado -- es un vencimiento nuevo:
+	   que la frontera siguiente corra el bloque completo. Ver tmu.h. */
+	reloj_tocar();
+
 #ifdef INT_QUEUE
 	PENDING_INT * tmp;
 
@@ -408,6 +412,8 @@ static void censo_evento(DWORD inttoadd)
    pero contra ASIC_ACK_B y las mascaras _B. */
 void intc_add_ext(DWORD inttoadd)
 {
+	reloj_tocar();							/* ver intc_add() */
+
 	if (intc_queuemask_ext & inttoadd)
 	{
 		logxmsg(LOG_INTC, "descartando int externa %x\n", inttoadd);
@@ -422,8 +428,28 @@ void intc_add_ext(DWORD inttoadd)
 
 void intc_remove_ext(DWORD int2remove)
 {
+	reloj_tocar();
+
 	REMOVE_BIT(ASIC_ACK_B, int2remove);
 	REMOVE_BIT(intc_queuemask_ext, int2remove);
+}
+
+/* El vencimiento mas cercano de las demoras (~0ull sin ninguna), para el
+   reloj por eventos. Lo inmediato no necesita vencimiento: entro por
+   intc_add(), que invalido. */
+unsigned long long intc_proximo_vence(void)
+{
+	unsigned long long menor = ~0ull;
+	int di;
+
+	if (intc_demorados == 0)
+		return menor;
+
+	for (di = 0; di < INTC_DEMORAS; di++)
+		if (intc_demora[di].evt != 0 && intc_demora[di].vence < menor)
+			menor = intc_demora[di].vence;
+
+	return menor;
 }
 
 #ifdef INT_QUEUE

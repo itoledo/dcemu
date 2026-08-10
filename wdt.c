@@ -110,6 +110,17 @@ void wdt_escribir(unsigned long fisica, void * p, size_t size)
 /* El contador                                                              */
 /* ------------------------------------------------------------------------ */
 
+/* Ciclos hasta el desborde (~0ull con el temporizador parado). El paso que
+   desborda es el que llega con el contador en 0xFF. Ver tmu_proximo(). */
+unsigned long long wdt_proximo(void)
+{
+	if (!(wtcsr & WTCSR_TME))
+		return ~0ull;
+
+	return ((unsigned long long) (0xFFu - wtcnt) + 1) * WDT_DIVISOR(wtcsr)
+	     - acumulado;
+}
+
 int wdt_tick(DWORD ciclos)
 {
 	DWORD divisor;

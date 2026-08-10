@@ -1623,6 +1623,12 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 	bool last;
 	unsigned long fisica = direccion & 0x00FFFFFF;
 
+	/* Las mascaras SB_IML*, SPG_LOAD/SPG_CONTROL (el periodo de linea), los
+	   arranques de DMA: todo lo que pasa por aca puede cambiar que es
+	   entregable o cuando vence algo. Frio -- decenas de escrituras por
+	   cuadro -- y cierra todos los agujeros de esta ventana de una vez. */
+	reloj_tocar();
+
 	if (GDROM_ES_REGISTRO(fisica))
 	{
 		gdrom_write(direccion, p, size);
@@ -2776,6 +2782,14 @@ void video_write(unsigned long direccion, void * p, size_t size)
 
 void regmap_read(unsigned long direccion, void * p, size_t size)
 {
+	/* Un guest que sondea TCNT o WTCNT tiene que ver el valor de la ultima
+	   frontera consumida, como siempre: con el reloj por eventos los ticks
+	   pueden estar sin correr desde hace rato, asi que se ponen al dia aca,
+	   solo hasta esa frontera -- ni mas fresco ni mas viejo que hoy. */
+	if (((direccion & 0x00FFF000) == 0xD80000 && (direccion & 0xFFF) <= 0x2C)
+	 || wdt_es_registro(direccion & 0x00FFFFFF))
+		reloj_sincronizar_ticks();
+
 	// PDTRA (0xFF800030): el puerto A del SH-4 esta cableado al detector de
 	// tipo de cable de video. El boot ROM escribe un patron en PCTRA y espera
 	// que los bits bajos de PDTRA respondan; si no lo consigue en diez vueltas
@@ -2841,6 +2855,18 @@ void regmap_read(unsigned long direccion, void * p, size_t size)
 
 void regmap_write(unsigned long direccion, void * p, size_t size)
 {
+	/* Cualquier registro on-chip puede mover un vencimiento del reloj por
+	   eventos -- TSTR que arranca un canal, TCNT recargado, WTCSR, un CHCR
+	   del DMAC --: la frontera siguiente corre el bloque completo y
+	   recalcula. Ver tmu.h. Y los ticks pendientes se aplican ANTES de que
+	   la escritura aterrice, para que corran sobre el estado viejo: hoy
+	   nunca hay mas de un grano pendiente y ese grano cae despues de la
+	   escritura -- lo mismo que queda aca, porque tras sincronizar el unico
+	   pendiente es el grano en curso. Sin esto, arrancar un canal por TSTR
+	   le acreditaba de una el delta entero desde el ultimo servicio. */
+	reloj_sincronizar_ticks();
+	reloj_tocar();
+
 	// Antes del respaldo: el WDT valida una clave y guarda su estado aparte.
 	if (wdt_es_registro(direccion & 0x00FFFFFF))
 	{
