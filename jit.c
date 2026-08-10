@@ -449,6 +449,10 @@ typedef struct
 	   compara lo no contiguo palabra a palabra, con el mecanismo que ya
 	   tenian los bloques a mano. */
 	DWORD			pcs[JIT_MAX_INSTR];
+	/* En que termino el descubrimiento (JIT_FIN_*): el censo de la frontera,
+	   ponderado por veces en el resumen. Es lo que dice DONDE esta el costo
+	   de frontera de verdad, por peso de ejecucion y no por sitios. */
+	unsigned char	fin;
 	unsigned long long veces;
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
@@ -533,15 +537,35 @@ static unsigned long long	jit_flujo_seguidos = 0;	/* BRA */
 static unsigned long long	jit_flujo_bsr = 0;
 static unsigned long long	jit_flujo_rts = 0;
 
-/* El par de retorno: un RTS cuya ranura accede a memoria ya no corta el
-   bloque. Es el epilogo estandar de Katana (rts; lds.l @r15+,pr), asi que
-   sin esto CADA retorno de llamada paga salida + despacho + dos
-   instrucciones interpretadas. La emision sincroniza con el PC de la RAMA
-   antes de tocar nada -- una falta en la ranura reejecuta desde el RTS,
-   como el interprete -- que es exactamente lo que faltaba en el expediente
-   de las 616. DCEMU_JIT_SIN_PAR_RTS=1 lo apaga para el A/B. */
+/* Los pares de rama: una rama cuya ranura accede a memoria ya no corta el
+   bloque (RTS, BRA, JMP y BRAF -- el campo `par` de la fila; las que
+   escriben PR quedan afuera, ver alla). El caso que lo inauguro es el
+   epilogo estandar de Katana (rts; lds.l @r15+,pr): sin esto CADA retorno
+   de llamada paga salida + despacho + dos instrucciones interpretadas. La
+   emision sincroniza con el PC de la RAMA antes de tocar nada -- una falta
+   en la ranura reejecuta desde la rama, como el interprete -- que es
+   exactamente lo que faltaba en el expediente de las 616.
+   DCEMU_JIT_SIN_PARES=1 lo apaga para el A/B. */
 static int					jit_par_rts = 1;
 static unsigned long long	jit_pares_rts = 0;
+
+/* En que termino el descubrimiento de una traza: el censo de la frontera. */
+#define JIT_FIN_PLANTILLA	0	/* palabra sin plantilla (el censo la nombra) */
+#define JIT_FIN_TOPE		1	/* JIT_MAX_INSTR */
+#define JIT_FIN_VENTANA		2	/* el limite de 1 KB bajo MMU */
+#define JIT_FIN_RANURA		3	/* rama/FPU en la ranura, o rama al final */
+#define JIT_FIN_RANURA_MEM	4	/* ranura con memoria de una rama no-RTS */
+#define JIT_FIN_PAR			5	/* el par de retorno */
+#define JIT_FIN_LAZO		6	/* el destino ya estaba en la traza */
+#define JIT_FIN_FPU			7	/* la compuerta o FD */
+#define JIT_FIN_N			8
+
+static const char * const jit_fin_nombre[JIT_FIN_N] =
+{
+	"sin plantilla", "tope de 64", "ventana de 1 KB", "rama/FPU en ranura",
+	"ranura con memoria (sin par)", "par de rama", "lazo cerrado",
+	"compuerta FPU"
+};
 
 /*
 	La tabla de bloques por PC. El mapa de bits dice "puede haber algo" y esta
@@ -742,6 +766,7 @@ static const x64_reg jit_a[5] =
 #define O_PC	((int) offsetof(context_t, PC_REG))
 #define O_SR	((int) offsetof(context_t, SR_REG))
 #define O_PR	((int) offsetof(context_t, PR_REG))
+#define O_GBR	((int) offsetof(context_t, GBR_REG))
 #define O_MACL	((int) offsetof(context_t, MACL_REG))
 
 /* El banco FR es un PUNTERO en el contexto y los intercambios del bit FR lo
@@ -1993,6 +2018,7 @@ struct jit_traduccion
 	   salto interno; la salida dinamica de siempre queda para el camino que
 	   no coincide. Se limpia por fila al anexar. */
 	DWORD					sigue_en[JIT_MAX_INSTR];
+	int						fin;			/* JIT_FIN_*: en que termino */
 
 	unsigned char *			etiqueta[JIT_MAX_INSTR];
 	x64_parche				adelante[JIT_MAX_INSTR];
@@ -2044,6 +2070,13 @@ struct jit_plantilla
 	/* La fila apila PR (STS.L PR,@-Rn): el rastreo recuerda que lo apilado
 	   es el punto de retorno vigente, para que el pop lo reponga. */
 	unsigned char	apila_pr;
+	/* La rama admite el par con ranura de memoria: RTS, BRA, JMP y BRAF.
+	   JSR, BSR y BSRF quedan afuera porque escriben PR ANTES de la ranura:
+	   en el interprete una falta de la ranura lo revierte por instantanea,
+	   y el emitido no tiene con que revertirlo -- el marco de excepcion del
+	   guest veria el PR nuevo. Los condicionales (BF/S, BT/S) quedan para
+	   cuando el censo los pida. */
+	unsigned char	par;
 };
 
 #define TN(w)	(((w) >> 8) & 0x0F)
@@ -3435,6 +3468,32 @@ static DWORD tr_destino12(const jit_traduccion * t, int i)
    plegarse como arista del bloque. */
 static void pl_bra(jit_gen * g, jit_traduccion * t, int i)
 {
+	/* El par con ranura de memoria: como tr_salto_dinamico_mem pero el
+	   destino es constante, asi que no necesita el lugar seguro -- solo la
+	   sincronizacion con el PC de la rama y la cuenta de la ranura antes. */
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		const jit_plantilla * r = t->pl[i + 1];
+
+		tr_sync(g, t, t->pc[i]);
+
+		jit_x64_inc_r(&g->e, N);
+		gen_volcar_cuenta(g);
+
+		r->emitir(g, t, i + 1);
+
+		if (r->ciclos)
+			jit_x64_add_ri(&g->e, CYC, r->ciclos);
+
+		/* Despues de la ranura, como el interprete: la regla de los ciclos
+		   evaporados (ver tr_salto_dinamico_mem). */
+		jit_x64_add_ri(&g->e, CYC, 2);
+
+		jit_pares_rts++;
+		tr_seguir_en(g, t, tr_destino12(t, i));
+		return;
+	}
+
 	jit_x64_add_ri(&g->e, CYC, 2);
 	jit_x64_inc_r(&g->e, N);
 	tr_emitir_ranura(g, t, i + 1);
@@ -3482,8 +3541,64 @@ static void tr_salto_dinamico(jit_gen * g, jit_traduccion * t, int i,
 	gen_salir_dinamico(g, t);
 }
 
+/*
+	El par con ranura de memoria de un salto dinamico SIN escritura de PR
+	(JMP, BRAF, RTS): la sincronizacion va antes de todo y con el PC de la
+	rama -- una falta de la ranura deja el contexto en la rama, la semantica
+	de la instantanea del interprete --, el destino viaja por el lugar seguro
+	del estado (el PC del contexto debe seguir siendo el de la rama hasta
+	despues de la ranura), y el intento de la ranura se cuenta ANTES de su
+	memoria (la regla de run(): una falta cuenta). Las ramas que escriben PR
+	quedan afuera: ver el comentario del campo `par`.
+*/
+static void tr_salto_dinamico_mem(jit_gen * g, jit_traduccion * t, int i,
+	int ciclos, int reg_destino, int relativo)
+{
+	const jit_plantilla * r = t->pl[i + 1];
+
+	tr_sync(g, t, t->pc[i]);
+
+	if (reg_destino >= 0)
+		tr_cargar(g, t, X64_RAX, reg_destino);
+	else
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PR);
+
+	if (relativo)
+		jit_x64_alu_ri(&g->e, X64_ADD, X64_RAX, (int) (t->pc[i] + 4));
+
+	jit_x64_mov_mr(&g->e, CTX, D(&jit_estado.destino), X64_RAX);
+
+	jit_x64_inc_r(&g->e, N);
+	gen_volcar_cuenta(g);
+
+	r->emitir(g, t, i + 1);
+
+	if (r->ciclos)
+		jit_x64_add_ri(&g->e, CYC, r->ciclos);
+
+	/* Los ciclos de la rama van DESPUES de la ranura, como el manejador del
+	   interprete. No es cosmetico: la sync ya volco CYC, y una ranura por
+	   manejador (NEGC) recarga CYC del contexto -- ciclos sumados al registro
+	   antes de ella se evaporan en la recarga. Costo 16 784 instrucciones de
+	   divergencia en DOOM con la captura intacta: los cortes corridos mueven
+	   la entrega, no la salida. */
+	jit_x64_add_ri(&g->e, CYC, ciclos);
+
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D(&jit_estado.destino));
+	jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
+
+	jit_pares_rts++;
+	gen_salir_dinamico(g, t);
+}
+
 static void pl_jmp110(jit_gen * g, jit_traduccion * t, int i)
 {
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		tr_salto_dinamico_mem(g, t, i, 3, TN(t->palabra[i]), 0);
+		return;
+	}
+
 	tr_salto_dinamico(g, t, i, 3, TN(t->palabra[i]), 0);
 }
 
@@ -3527,42 +3642,11 @@ static void pl_rts112(jit_gen * g, jit_traduccion * t, int i)
 		return;
 	}
 
-	/*
-		El par de retorno: la ranura accede a memoria (rts; lds.l @r15+,pr,
-		el epilogo estandar). La sincronizacion va ANTES de todo y con el PC
-		del RTS: si la ranura falta, el longjmp deja el contexto en la rama y
-		la reejecucion entra por el RTS -- la semantica de la instantanea del
-		interprete, que restaura el estado pre-RTS. Por lo mismo el destino
-		NO puede viajar en el PC del contexto (tiene que seguir siendo el del
-		RTS hasta despues de la ranura): va por el lugar seguro del estado.
-
-		El intento de la ranura se cuenta ANTES de su memoria (la regla de
-		run(): el nested execute cuenta antes de despachar, y una falta
-		cuenta), asi que aqui no sirve tr_emitir_ranura, que cuenta despues.
-	*/
+	/* El par de retorno (rts; lds.l @r15+,pr, el epilogo estandar): el caso
+	   que inauguro el mecanismo, hoy por el ayudante comun. */
 	if (i + 1 < t->n && t->pl[i + 1]->accede)
 	{
-		const jit_plantilla * r = t->pl[i + 1];
-
-		tr_sync(g, t, t->pc[i]);
-		jit_x64_add_ri(&g->e, CYC, 3);
-
-		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PR);
-		jit_x64_mov_mr(&g->e, CTX, D(&jit_estado.destino), X64_RAX);
-
-		jit_x64_inc_r(&g->e, N);
-		gen_volcar_cuenta(g);
-
-		r->emitir(g, t, i + 1);
-
-		if (r->ciclos)
-			jit_x64_add_ri(&g->e, CYC, r->ciclos);
-
-		jit_x64_mov_rm(&g->e, X64_RAX, CTX, D(&jit_estado.destino));
-		jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
-
-		jit_pares_rts++;
-		gen_salir_dinamico(g, t);
+		tr_salto_dinamico_mem(g, t, i, 3, -1, 0);
 		return;
 	}
 
@@ -3595,12 +3679,53 @@ static void tr_salto_relativo(jit_gen * g, jit_traduccion * t, int i,
 
 static void pl_braf(jit_gen * g, jit_traduccion * t, int i)
 {
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		tr_salto_dinamico_mem(g, t, i, 3, TN(t->palabra[i]), 1);
+		return;
+	}
+
 	tr_salto_relativo(g, t, i, 0);
 }
 
 static void pl_bsrf109(jit_gen * g, jit_traduccion * t, int i)
 {
 	tr_salto_relativo(g, t, i, 1);
+}
+
+/* MOV.W @(R0,Rm),Rn -- el gemelo de 16 bits de movl27/movb25: uno de los dos
+   cortadores del lazo de columnas de DOOM (9,4 M de pasadas por segmento). */
+static void pl_movw26(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+
+	tr_cargar(g, t, X64_RCX, 0);
+	tr_ecx_alu(g, t, X64_ADD, TM(w));
+	tr_leer_a(g, t, TN(w), 2);
+}
+
+/* MOV.W R0,@(disp,Rn) -- el otro cortador del lazo. OJO con los campos: n va
+   en los bits 4-7 y el desplazamiento en 0-3, como en el manejador. */
+static void pl_movw17(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+	int  n = (w >> 4) & 0x0F;
+	int  d = (int) (w & 0x0F) * 2;
+
+	tr_cargar(g, t, X64_RCX, n);
+
+	if (d)
+		jit_x64_add_ri(&g->e, X64_RCX, d);
+
+	tr_escribir_de(g, t, 0, 2);
+}
+
+/* LDC Rm,GBR -- la forma de registro (4m1E), 1086 sitios estaticos en SR2.
+   GBR no es SR: no gobierna modo ni bancos, es un mov al contexto. */
+static void pl_ldc117(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_cargar(g, t, X64_RAX, TN(t->palabra[i]));
+	jit_x64_mov_mr(&g->e, CTX, O_GBR, X64_RAX);
 }
 
 static void tr_prologo(jit_gen * g, jit_traduccion * t);
@@ -3677,6 +3802,15 @@ static void pl_shld93(jit_gen * g, jit_traduccion * t, int i)
 static void pl_macl62(jit_gen * g, jit_traduccion * t, int i)
 {
 	tr_manejador(g, t, i, (const void *) macl62);
+}
+
+/* NEGC muta Rn y T con la formula exacta del manejador (dos comparaciones
+   encadenadas, no un sbb): por el manejador, como DIV1 y SHAD. No accede a
+   memoria ni puede faltar; el accede=1 de su fila es la sincronizacion que
+   la llamada necesita, como en todos estos. */
+static void pl_negc68(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) negc68);
 }
 
 static void pl_or77(jit_gen * g, jit_traduccion * t, int i)		/* OR #imm,R0 */
@@ -3771,11 +3905,11 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "SHLL16 Rn",          1, 0, 0, 0, pl_shll16 },
 	{ NULL, "BT",                 2, 0, 1, 0, pl_bt104 },
 	{ NULL, "BT/S",               2, 0, 1, 1, pl_bts105 },
-	{ NULL, "BRA",                2, 0, 1, 1, pl_bra, 0, 0, 0, 1 },
+	{ NULL, "BRA",                2, 0, 1, 1, pl_bra, 0, 0, 0, 1, 0, 0, 1 },
 	{ NULL, "BSR",                2, 0, 1, 1, pl_bsr108, 0, 0, 0, 2 },
-	{ NULL, "JMP @Rn",            3, 0, 1, 1, pl_jmp110 },
+	{ NULL, "JMP @Rn",            3, 0, 1, 1, pl_jmp110, 0, 0, 0, 0, 0, 0, 1 },
 	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111, 0, 0, 0, 0, 1 },
-	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112, 0, 0, 0, 3 },
+	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112, 0, 0, 0, 3, 0, 0, 1 },
 	/* Lo que el censo de Crazy Taxi pidio (2026-08-08): el pushpop de PR corta
 	   todo prologo y epilogo de funcion del guest. Ciclos copiados de cada
 	   manejador; el 0 de LDS.L @Rm+,PR es del manejador, no un olvido. */
@@ -3806,7 +3940,7 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "DIV0S Rm,Rn",        0, 1, 0, 0, pl_div0s53 },
 	{ NULL, "DIV0U",              0, 1, 0, 0, pl_div0u54 },
 	{ NULL, "SHAD Rm,Rn",         0, 1, 0, 0, pl_shad90 },
-	{ NULL, "BRAF Rn",            3, 0, 1, 1, pl_braf },
+	{ NULL, "BRAF Rn",            3, 0, 1, 1, pl_braf, 0, 0, 0, 0, 0, 0, 1 },
 	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109, 0, 0, 0, 0, 1 },
 	/* El cuarto lote: MAC.L por el manejador reordenado, SHLD, y lo que el
 	   censo listo tras el tercero. El 5 de OR #imm es del manejador. */
@@ -3867,6 +4001,12 @@ static jit_plantilla jit_plantillas[] =
 	/* El mini-lote del censo de SR2. */
 	{ NULL, "CLRT",                1, 0, 0, 0, pl_clrt115 },
 	{ NULL, "SETT",                1, 0, 0, 0, pl_sett145 },
+	/* El mini-lote del censo de la frontera (2026-08-09): los cortadores del
+	   lazo de columnas de DOOM (las dos MOV.W), NEGC y LDC Rm,GBR. */
+	{ NULL, "MOV.W @(R0,Rm),Rn",   2, 1, 0, 0, pl_movw26 },
+	{ NULL, "MOV.W R0,@(d,Rn)",    1, 1, 0, 0, pl_movw17, 0, 0, 1 },
+	{ NULL, "NEGC Rm,Rn",          0, 1, 0, 0, pl_negc68 },
+	{ NULL, "LDC Rm,GBR",          3, 0, 0, 0, pl_ldc117 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -3893,6 +4033,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	movw5, movb19, neg67, xor83, shar92, clrs114,
 	dt, movw14, cmpstr51,
 	clrt115, sett145,
+	movw26, movw17, negc68, ldc117,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -4328,6 +4469,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	t->n_adelante = 0;
 	t->modo       = mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO;
 	t->fpu        = -1;
+	t->fin        = JIT_FIN_TOPE;	/* si nada corta antes, corto el tope */
 
 	while (t->n < JIT_MAX_INSTR)
 	{
@@ -4336,7 +4478,10 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		const jit_plantilla * p;
 
 		if (mmu_activa && (pc & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana)
+		{
+			t->fin = JIT_FIN_VENTANA;
 			break;
+		}
 
 		/* Una traza que ya siguio un flujo puede desembocar en codigo que ya
 		   tiene: ahi se corta, y el salto interno o la salida hacia la propia
@@ -4353,7 +4498,10 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				}
 
 			if (ya)
+			{
+				t->fin = JIT_FIN_LAZO;
 				break;
+			}
 		}
 
 		instr = *codigo;
@@ -4363,6 +4511,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		if (p == NULL)
 		{
 			jit_censar(instr);
+			t->fin = JIT_FIN_PLANTILLA;
 			break;
 		}
 
@@ -4393,6 +4542,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			if (fpu_deshabilitada)
 			{
 				jit_censar(instr);
+				t->fin = JIT_FIN_FPU;
 				break;
 			}
 
@@ -4403,6 +4553,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			if (t->modo == JIT_ACC_MMU && !jit_fpu_mmu)
 			{
 				jit_censar(instr);
+				t->fin = JIT_FIN_FPU;
 				break;
 			}
 
@@ -4443,8 +4594,8 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			codigo frio dispersa lo caliente. (El RTS seguido por flujo, que
 			exige ranura sin memoria, pasa por su propio camino mas abajo.)
 		*/
-		if (p->sigue == 3 && jit_par_rts
-			&& !(jit_flujo && pr_valido)
+		if (p->par && jit_par_rts
+			&& !(jit_flujo && pr_valido && p->sigue == 3)
 			&& t->n < JIT_MAX_INSTR
 			&& !(mmu_activa
 				&& ((pc + 2) & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana))
@@ -4461,6 +4612,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				t->pl[t->n]       = rp;
 				t->sigue_en[t->n] = 0;
 				t->n++;
+				t->fin = JIT_FIN_PAR;
 				break;
 			}
 		}
@@ -4486,6 +4638,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 					&& ((pc + 2) & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana))
 			{
 				t->n--;
+				t->fin = JIT_FIN_RANURA;
 				break;
 			}
 
@@ -4497,7 +4650,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				/* El par de retorno sobrevive al flujo: un RTS con ranura de
 				   memoria no se sigue, pero tampoco se corta -- el par se
 				   anexa y la traza termina ahi, como en el camino sin flujo. */
-				if (p->sigue == 3 && jit_par_rts && rp != NULL
+				if (p->par && jit_par_rts && rp != NULL
 					&& rp->accede && !rp->rama && !rp->fpu && !rp->propia)
 				{
 					t->pc[t->n]       = pc + 2;
@@ -4505,10 +4658,13 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 					t->pl[t->n]       = rp;
 					t->sigue_en[t->n] = 0;
 					t->n++;
+					t->fin = JIT_FIN_PAR;
 					break;
 				}
 
 				t->n--;
+				t->fin = (rp != NULL && rp->accede) ? JIT_FIN_RANURA_MEM
+													: JIT_FIN_RANURA;
 				break;
 			}
 
@@ -4540,6 +4696,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 					jit_flujo_rts++;
 				}
 
+				t->fin = JIT_FIN_LAZO;
 				break;
 			}
 
@@ -4561,7 +4718,10 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			   sale como siempre (enlace, o la salida dinamica del RTS). */
 			if (mmu_activa
 				&& (dest & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana)
+			{
+				t->fin = JIT_FIN_VENTANA;
 				break;
+			}
 
 			/* Seguir el flujo. El puntero del destino no tiene efectos: bajo
 			   MMU es la misma pagina vigente (la guarda de arriba), y sin
@@ -4619,10 +4779,12 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 
 		if (r != NULL && !r->rama && !r->fpu
 			&& (!r->accede
-				|| (jit_par_rts && t->pl[i]->sigue == 3 && !r->propia)))
+				|| (jit_par_rts && t->pl[i]->par && !r->propia)))
 			continue;
 
-		t->n = i;
+		t->n   = i;
+		t->fin = (r != NULL && r->accede && !r->rama && !r->fpu)
+			? JIT_FIN_RANURA_MEM : JIT_FIN_RANURA;
 		break;
 	}
 
@@ -5131,6 +5293,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 									  + t.desp_cuerpo);
 	b->mmu        = t.modo;
 	b->fpu        = t.fpu;
+	b->fin        = (unsigned char) t.fin;
 
 	/* El prefijo contiguo lo verifica el puntero de busqueda, como siempre;
 	   lo seguido por flujo va como palabras sueltas, que jit_verificar ya
@@ -5588,8 +5751,42 @@ static void jit_resumen(void)
 	}
 
 	if (jit_pares_rts != 0)
-		fprintf(stderr, "jit: %llu pares de retorno emitidos (rts con ranura"
+		fprintf(stderr, "jit: %llu pares de rama emitidos (rama con ranura"
 			" de memoria)\n", jit_pares_rts);
+
+	/* El censo de la frontera: en que termina cada bloque, ponderado por las
+	   veces que se corrio. Es lo que separa "hay muchos sitios" de "por ahi
+	   pasa la ejecucion": el costo de frontera vive donde pesan las veces. */
+	{
+		unsigned long long	veces_fin[JIT_FIN_N];
+		int					bloques_fin[JIT_FIN_N];
+		unsigned long long	total = 0;
+		int					j;
+
+		memset(veces_fin, 0, sizeof(veces_fin));
+		memset(bloques_fin, 0, sizeof(bloques_fin));
+
+		for (j = 0; j < jit_n_bloques; j++)
+			if (jit_bloques[j].mmu != -1)
+			{
+				veces_fin[jit_bloques[j].fin] += jit_bloques[j].veces;
+				bloques_fin[jit_bloques[j].fin]++;
+				total += jit_bloques[j].veces;
+			}
+
+		if (total != 0)
+		{
+			fprintf(stderr, "jit: la frontera, por peso (fin del bloque,"
+				" %% de las entradas, bloques):\n");
+
+			for (j = 0; j < JIT_FIN_N; j++)
+				if (veces_fin[j] != 0)
+					fprintf(stderr, "jit:   %-28s %5.1f %%  %6d\n",
+						jit_fin_nombre[j],
+						100.0 * (double) veces_fin[j] / (double) total,
+						bloques_fin[j]);
+		}
+	}
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
@@ -5727,7 +5924,7 @@ void jit_iniciar(void)
 			const char * sh = getenv("DCEMU_JIT_SIN_HOGARES");
 			const char * co = getenv("DCEMU_JIT_COSTURAS");
 			const char * fl = getenv("DCEMU_JIT_FLUJO");
-			const char * pr = getenv("DCEMU_JIT_SIN_PAR_RTS");
+			const char * pr = getenv("DCEMU_JIT_SIN_PARES");
 
 			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
 
