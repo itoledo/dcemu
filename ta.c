@@ -4,6 +4,8 @@
 
 *****************************************************************************/
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "main.h"
@@ -191,6 +193,78 @@ int ta_tam_vertice(int vertice)
 	}
 }
 
+/*
+	DCEMU_VOLCAR_TA=archivo:desde:hasta -- vuelca los bloques crudos de 32
+	bytes del embudo del TA, tal como llegan y ANTES de todo rearmado, mientras
+	la cuenta de escenas rendidas (graficos.c la empuja con
+	ta_sonda_escena_poner()) cae en [desde, hasta]. Escenas en decimal, como
+	DCEMU_TRAZA_ESCENA. Es la verdad de base del flujo de geometria: separa
+	"el guest no lo mando" de "dcemu lo perdio en el rearmado" -- la pregunta
+	que un volcado de TriangleStrip[] no puede contestar, porque ya paso por
+	el rearmado.
+*/
+static FILE *	ta_sonda_fp = NULL;
+static int		ta_sonda_desde = -2;	/* -2: sin leer; -1: apagada */
+static int		ta_sonda_hasta = -1;
+static int		ta_sonda_escena = 0;
+
+void ta_sonda_escena_poner(int escena)
+{
+	ta_sonda_escena = escena;
+}
+
+static void ta_sonda_bloque(const void * bloque)
+{
+	if (ta_sonda_desde == -2)
+	{
+		const char *	e = getenv("DCEMU_VOLCAR_TA");
+
+		ta_sonda_desde = -1;
+
+		/* Los dos numeros se cortan DESDE LA DERECHA: una ruta de Windows
+		   lleva "C:" y un sscanf con %[^:] se detiene ahi. */
+		if (e != NULL)
+		{
+			char	temp[240];
+			char *	u1, * u2;
+
+			strncpy(temp, e, sizeof(temp) - 1);
+			temp[sizeof(temp) - 1] = 0;
+
+			u2 = strrchr(temp, ':');
+			u1 = NULL;
+
+			if (u2 != NULL)
+			{
+				*u2 = 0;
+				u1 = strrchr(temp, ':');
+			}
+
+			if (u1 != NULL && u1 != temp)
+			{
+				*u1 = 0;
+				ta_sonda_fp = fopen(temp, "wb");
+
+				if (ta_sonda_fp != NULL)
+				{
+					ta_sonda_desde = atoi(u1 + 1);
+					ta_sonda_hasta = atoi(u2 + 1);
+					fprintf(stderr, "ta: sonda de bloques armada, escenas"
+						" %d..%d -> %s\n", ta_sonda_desde, ta_sonda_hasta,
+						temp);
+				}
+			}
+		}
+	}
+
+	if (ta_sonda_fp == NULL
+	||  ta_sonda_escena < ta_sonda_desde || ta_sonda_escena > ta_sonda_hasta)
+		return;
+
+	fwrite(bloque, 1, 32, ta_sonda_fp);
+	fflush(ta_sonda_fp);
+}
+
 /* Despacha un parametro ya completo. */
 static void ta_despachar(DWORD * parametro)
 {
@@ -214,6 +288,8 @@ void ta_procesar_bloque(void * bloque)
 	DWORD	pcw;
 	int		tipo, tam;
 	int		global, vertice;
+
+	ta_sonda_bloque(bloque);
 
 	/* La mitad que faltaba: se pega y sale el parametro entero. */
 	if (ta_faltan)

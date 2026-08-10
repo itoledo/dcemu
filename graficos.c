@@ -1416,26 +1416,29 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 
 	vram64_leer(memorypos, plano, plano_bytes);
 
-	/* DCEMU_VOLCAR_TEX=hex: la primera vez que se decodifica la textura de
-	   esa direccion, el bloque juntado tal cual sale a tex-<addr>.bin. Es la
-	   verdad de que bytes consumio el decodificador EN EL MOMENTO del draw,
-	   que un --volcar al salir no puede dar si la region se reescribe. */
+	/* DCEMU_VOLCAR_TEX=hex: CADA vez que se decodifica la textura de esa
+	   direccion, el bloque juntado tal cual sale a tex-<addr>-<n>.bin (tope
+	   40). Es la verdad de que bytes consumio el decodificador EN EL MOMENTO
+	   del draw, que un --volcar al salir no puede dar si la region se
+	   reescribe -- y la CUENTA de volcados dice cuantas veces la caché de
+	   texturas volvio a decodificar: cero re-decodificaciones con el guest
+	   reescribiendo la region es la firma de una invalidacion rota. */
 	if (traza_activa)
 	{
 		const char * e = getenv("DCEMU_VOLCAR_TEX");
 
 		if (e != NULL && (DWORD) strtoul(e, NULL, 16) == memorypos)
 		{
-			static int hecho = 0;
+			static int hechos = 0;
 
-			if (!hecho)
+			if (hechos < 40)
 			{
 				char nom[64];
 				FILE * fp;
 
-				hecho = 1;
-				snprintf(nom, sizeof(nom), "tex-%06lx.bin",
-					(unsigned long) memorypos);
+				snprintf(nom, sizeof(nom), "tex-%06lx-%02d.bin",
+					(unsigned long) memorypos, hechos);
+				hechos++;
 				fp = fopen(nom, "wb");
 
 				if (fp != NULL)
@@ -2923,6 +2926,11 @@ static void cb_tastart_cuerpo(DWORD addr, void * p, size_t size)
 	{
 		traza_ultimas[traza_rendidas % TRAZA_ULTIMAS] = (int) strip_count;
 		traza_rendidas++;
+
+		/* La sonda de bloques del TA cuenta escenas con este mismo numero:
+		   los bloques que llegan despues de rendir la N alimentan la N+1, que
+		   es el valor que queda aqui. */
+		ta_sonda_escena_poner(traza_rendidas);
 	}
 
 	/* Con --traza-mem, reportar las primeras rendidas **con geometria**:
@@ -4069,6 +4077,9 @@ static void tira_estado(DWORD i)
 			}
 }
 
+/* La palanca de DCEMU_SIN_TEX, leida una vez en dibujar_escena(). */
+static DWORD sin_tex = 0;
+
 static void dibujar_escena(void)
 {
 	/* Cada escena arranca sin suponer nada: entre una y otra pasaron el
@@ -4093,6 +4104,24 @@ static void dibujar_escena(void)
 	   pasada o del marcado de la plantilla. */
 	if (getenv("DCEMU_SIN_VOLUMEN"))
 		vol_count = 0;
+
+	/* DCEMU_SIN_TEX=hex: descarta al dibujar toda tira cuya textura viva en
+	   esa direccion. Diagnostico, hex como los demas volcadores: separa "lo
+	   que tapa" de "lo que falta" -- si una figura se compone quitando las
+	   tiras de un atlas, esas tiras la PINTABAN encima; si queda un agujero,
+	   lo de abajo nunca estuvo. */
+	{
+		static DWORD sin_tex_val = 0xFFFFFFFF;		/* FFFFFFFF: sin leer */
+
+		if (sin_tex_val == 0xFFFFFFFF)
+		{
+			const char * e = getenv("DCEMU_SIN_TEX");
+
+			sin_tex_val = (e != NULL) ? (DWORD) strtoul(e, NULL, 16) : 0;
+		}
+
+		sin_tex = sin_tex_val;
+	}
 
 	vol_opaca = hay_volumen_de(1);
 	vol_trans = hay_volumen_de(3);
@@ -4127,6 +4156,9 @@ static void dibujar_escena(void)
 	for (i = 0; i < strip_count; i++)
 	{
 		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type == 2)
+			continue;
+
+		if (sin_tex != 0 && TriangleStrip[i].texture.surface == sin_tex)
 			continue;
 
 		/* La cuenta de llamadas de estado antes y despues: si no se movio, esta
@@ -4233,6 +4265,9 @@ static void dibujar_escena(void)
 	for (i = 0; i < strip_count; i++)
 	{
 		if (TriangleStrip[i].count == 0 || TriangleStrip[i].type != 2)
+			continue;
+
+		if (sin_tex != 0 && TriangleStrip[i].texture.surface == sin_tex)
 			continue;
 
 		/*

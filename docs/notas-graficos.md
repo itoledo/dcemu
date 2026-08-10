@@ -938,22 +938,43 @@ las tres vías la dibuja distinto — y **el árbitro llegó ese mismo día: en 
 opaco**. Un longplay en hardware real (YouTube `MGJDPzvvekE`, «Sega Rally 2 10 Year Championship
 PAL Dreamcast Actual Hardware», t≈215 s, pantalla CAR SETTINGS con el mismo fondo de baldosas)
 muestra la carrocería sólida, sin una baldosa a través del cuerpo — mientras el F6 del usuario en
-dcemu muestra el texto del fondo legible a través del guardabarros, dependiente de la pose. O sea:
-en los píxeles del sangrado dcemu no apila ningún fragmento opaco del cuerpo donde el chip sí lo
-tiene — faltan fragmentos o llevan alfa < 1 que no deberían. Los sospechosos que quedan vivos, con
-las tres pistas que los señalan (el atlas 256×256 con las dos vistas del auto sale ROSA/OLIVA —
-grises de ARGB1555 o un canal R/B invertido leídos como RGB565 —, la carrocería se ve como un
-collage de parches de calcas, y el sangrado ondula con la pose): **el contenido que dcemu sirve a
-esos atlas** — si son blancos de render a textura, el camino del volcado del framebuffer
-(`glReadPixels` → empaquetado 565 → ventana de 32) puede estar entregando canales o cuadros
-equivocados — y la caché de texturas sirviendo una entrada rancia o en colisión. Ese es el hilo
-del que tirar; orden, mezcla, culling y decodificador ya están absueltos con evidencia.
-Absueltos con evidencia, para no repetir la caza: el decodificador de texturas (destwiddle propio
-del volcado de VRAM = idéntico), el tejido de las ventanas (escritor por SQ→`0x11` y lector de 64
-bits son el mismo espacio), `mmu_traducir_sq` (direcciones secuenciales limpias), `SB_LMMODE0`
-(vale 0), el reloj por eventos (la palanca no lo mueve), el culling (el modo 1 «cull if small» se
-dibuja entero — `graficos.c`, el `switch` de `gl_cull` — y los modos 2/3 tienen a conio de
-testigo), el alfa de lo apilado (sonda 4: brillante y correcto) y, ahora, la mezcla misma. Dos
+dcemu muestra el texto del fondo legible a través del guardabarros, dependiente de la pose.
+
+**La segunda vuelta de la caza (mismo día) absolvió, con la verdad de base, a todo el resto de la
+maquinaria** — y esto es lo que NO hay que volver a sospechar:
+
+- **El TA no pierde geometría.** `DCEMU_VOLCAR_TA` (los bloques crudos del embudo, escenas
+  1599-1601) contra el volcado de `TriangleStrip[]`: el juego manda **quads sueltos de 4 vértices**
+  (herencia Model 3 — 1058,7 tiras TR por escena, todas de 4, un encabezado `820c000e` compartido
+  cada ~5) y el buffer registra exactamente 1058. Sin pérdida, sin recorte de tiras largas (los
+  pares idx-contiguos no comparten arista: nunca fueron tiras largas).
+- **El JIT es fiel también aquí**: intérprete y traductor dan el cuadro byte a byte idéntico a los
+  28 s. La sospecha del camino rápido de memoria en línea, muerta.
+- **Los colores y offsets de vértice se leen bien**: en el crudo, la palabra 6 es `ff969696`
+  (gris 0.588, el 43 % del auto), `feffffff`, `e6969696` (alfa 0.90), `2cffffff` (0.17) — lo mismo
+  que el volcado imprime — y la palabra 7 (color de offset) **es cero de verdad** en el 79 % de los
+  vértices: el `off=(0,0,0)` con offset habilitado es del juego, no una lectura corrida.
+- **El contenido del atlas y la caché están sanos, y el «rosa» era un fantasma del método**: el
+  atlas `467880` es un *slot* que el juego realquila. En SELECT CAR contiene dos vistas del auto
+  (el contenido rosa/oliva — presumiblemente arte de esa pantalla); al entrar a SELECT TRANSMISSION
+  (el **segundo** A de la receta, ~30,3 s) el juego lee «MTEX» del disco (DMAREAD 0x11, 254
+  sectores desde 381886), lo descomprime (~0,2 s en un LZ de 42 instrucciones) y lo sube — y la
+  caché **re-decodifica la librea perfecta ~0,5 s después de la entrada** (`DCEMU_VOLCAR_TEX`
+  extendido a volcados numerados: el -01 es la librea impecable del 206). El volcado «rosa» del
+  primer diagnóstico era la *primera* decodificación — contenido legítimo de la pantalla anterior.
+- Y de la primera vuelta: decodificador (destwiddle propio = idéntico), tejido de ventanas,
+  `mmu_traducir_sq`, `SB_LMMODE0`, reloj por eventos, culling (modo 1 «cull if small» se dibuja
+  entero; 2/3 con conio de testigo), el alfa de lo apilado (sonda 4), y la mezcla misma.
+
+**Lo que queda abierto, bien acotado**: con la librea correcta en su lugar, la pantalla sigue
+mostrando la banda oscura y la impresión de transparencia (el F6 del usuario: fondo legible a
+través del guardabarros). Los ingredientes medidos: el 43 % del auto lleva color de vértice gris
+0.588 modulando la librea (¿iluminación por software por pose? — verificable comparando los
+histogramas de la palabra 6 entre dos poses con `DCEMU_VOLCAR_TA`), más el vidrio a 0.90 y quads
+de reflejo con UV casi constante (3×2 texeles sobre 95×8 píxeles). `DCEMU_SIN_TEX` separa las
+capas (sin `467880` el auto queda en silueta: ese atlas ES la carrocería). Falta el árbitro fino:
+el video PAL muestra otra pantalla y otro auto (CAR SETTINGS, Lancia) — **hace falta un longplay
+del modo arcade US con el 206 en SELECT TRANSMISSION** para comparar manzanas con manzanas. Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado

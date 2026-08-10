@@ -89,6 +89,13 @@ void ta_procesar_bloque(void * bloque);
 */
 void ta_reiniciar(void);
 
+/*
+	El numero de escena vigente para DCEMU_VOLCAR_TA (el volcado crudo de
+	bloques del TA acotado por escena). Lo empuja graficos.c con la cuenta de
+	traza_rendidas; sin --traza-mem la cuenta no avanza y la sonda no vuelca.
+*/
+void ta_sonda_escena_poner(int escena);
+
 /* El parametro completo, para que graficos.c lo lea. Apunta al buffer de
    armado cuando el parametro medía 64 bytes, y al bloque original cuando 32. */
 extern DWORD * ta_address_pointer;
