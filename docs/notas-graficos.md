@@ -981,10 +981,26 @@ sin banda, sin velo, sin fondo a través del cuerpo, en las dos poses. dcemu, mi
 grisáceo con la banda y los parches. De los histogramas por pose (`DCEMU_VOLCAR_TA` en las
 escenas 1620 y 1990): la cola de grises `ffcccccc`/`ffb3b3b3`/… **cambia con la pose** —
 iluminación por software, legítima — mientras `ff969696` (41 %) y `feffffff` son constantes.
-Con todas las entradas verificadas fieles, lo que queda por auditar es la COMPOSICIÓN por píxel
-de esas capas: el próximo paso es reconstruir a mano la pila de un píxel del sangrado contra la
-verdad cruda de su pose (las herramientas ya existen), y revisar los bits de flip/clamp del TSP
-en el muestreo de esos quads. Dos
+Con todas las entradas verificadas fieles, quedaba auditar la COMPOSICIÓN por píxel — y **la
+reconstrucción a mano cerró (2026-08-10): dcemu compone exactamente lo que los datos mandan.**
+Sobre la escena 1698 (volcado de tiras + TA crudo + BMP de la misma corrida, ancla por hash), la
+aritmética capa por capa — barycéntricas en el punto, UV con corrección de perspectiva desde el
+crudo (`Σλ·uq / Σλ·q`; ojo: **el volcado de escena imprime `t1,t2` premultiplicadas por `q`**, las
+UV reales salen del crudo), muestreo Morton 565/4444 bilineal, modulate-alpha y la cadena de
+mezcla en el orden del dibujo — reproduce el render al LSB: el píxel «blanco lavado» (160,212) da
+(176,173,176) contra (178,172,178) del BMP, y el negro (217,208) da (15,14,15) contra (0,0,0). El
+blanco lavado ES «texel blanco de librea × vértice 0.69 de la iluminación por software»; el negro
+ES texeles casi-negros del propio atlas. De paso quedó identificada la maquinaria del auto: el
+atlas `489880` es un **mapa de entorno (cielo al atardecer) con máscara especular en el alfa**
+(brillos en vetas, alfa 0 = «aquí no hay brillo» — capas que se evaporan por diseño), `491880` el
+vidrio con vetas, y flip/clamp del TSP dominante en cero. **El único sospechoso vivo que queda en
+dcemu son los cuadrados de ruido del atlas de la librea**: parches de moteado negro (p. ej.
+alrededor del texel (231,181) del `467880`) que conviven con arte impecable y de los que el píxel
+negro de la banda tomó su última palabra — ¿basura de la subida/descompresión («MTEX» del disco,
+LZ propio del juego) o arte legítimo (¿fibra de carbono? ¿dither?)? Dos vías para cerrarlo:
+extraer el MTEX del `.gdi` reimplementando el LZ de 42 instrucciones del descompresor del juego
+(el desensamblado está en la traza), o conseguir el 206 en SELECT TRANSMISSION en hardware real
+(los dos videos muestran Lancia y Celica — otros autos, otras libreas). Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado
