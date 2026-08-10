@@ -912,38 +912,54 @@ static const char * fuente_fs_resolver =
 	"\n"
 	"#define CAPAS 32\n"
 	"\n"
-	"vec3 factor(uint cod, vec3 propio, float propio_a, vec3 otro, float otro_a)\n"
+	/*
+		**Los codigos 4-7 nombran su operando de forma absoluta** --alfa del
+		ORIGEN, alfa del DESTINO-- y valen igual de los dos lados; solo 2 y 3
+		("el otro color") dependen del lado. Es la regla que separa las dos
+		tablas de blend_modes en graficos.c, y la primera version de esto la
+		violo pasando propio/otro simetricos: del lado del destino el codigo 4
+		leia el alfa del DESTINO. Como la tanda opaca deja el fondo con alfa
+		1.0, el factor de destino de la mezcla clasica (4,5) salia 1-dst.a = 0
+		y toda tira con alfa < 1 **borraba el fondo acumulado** -- la pantalla
+		de seleccion de Sega Rally 2, cuya grilla es un quad translucido a
+		pantalla completa, salia casi negra. Las nueve demos de control no lo
+		delataron porque sus mezclas coinciden por casualidad: con alfa 1.0 el
+		factor da 0 por las dos vias, y el destino ONE de las aditivas no
+		consume alfa.
+
+		Por eso la firma lleva los dos alfas con su nombre y solo "el otro"
+		cambia de lado entre las dos llamadas.
+	*/
+	"vec3 factor(uint cod, vec3 otro, float sa, float da)\n"
 	"{\n"
 	"	if (cod == 0u) return vec3(0.0);\n"
 	"	if (cod == 1u) return vec3(1.0);\n"
 	"	if (cod == 2u) return otro;\n"
 	"	if (cod == 3u) return vec3(1.0) - otro;\n"
-	"	if (cod == 4u) return vec3(propio_a);\n"
-	"	if (cod == 5u) return vec3(1.0 - propio_a);\n"
-	"	if (cod == 6u) return vec3(otro_a);\n"
-	"	return vec3(1.0 - otro_a);\n"
+	"	if (cod == 4u) return vec3(sa);\n"
+	"	if (cod == 5u) return vec3(1.0 - sa);\n"
+	"	if (cod == 6u) return vec3(da);\n"
+	"	return vec3(1.0 - da);\n"
 	"}\n"
 	"\n"
 	/*
-		El factor del ALFA no es el rojo del factor del color.
-
-		Para los codigos escalares --Zero, One, y los cuatro de alfa-- da lo
-		mismo, pero los codigos 2 y 3 son "el otro color": su factor de color es
-		un vector RGB y su factor de alfa es el ALFA del otro, no su
-		componente roja. Es la misma regla que aplica GL con GL_DST_COLOR, y
-		tomar el rojo daba un alfa arbitrario en las escenas que mezclan por
-		color -- que son justo las que usan el alfa del destino despues.
+		El factor del ALFA no es el rojo del factor del color: los codigos 2 y
+		3 son "el otro color", cuyo factor de color es un vector RGB y cuyo
+		factor de alfa es el ALFA del otro, no su componente roja. Es la misma
+		regla que aplica GL con GL_DST_COLOR, y tomar el rojo daba un alfa
+		arbitrario en las escenas que mezclan por color -- que son justo las
+		que usan el alfa del destino despues.
 	*/
-	"float factor_a(uint cod, float propio_a, float otro_a)\n"
+	"float factor_a(uint cod, float otro_a, float sa, float da)\n"
 	"{\n"
 	"	if (cod == 0u) return 0.0;\n"
 	"	if (cod == 1u) return 1.0;\n"
 	"	if (cod == 2u) return otro_a;\n"
 	"	if (cod == 3u) return 1.0 - otro_a;\n"
-	"	if (cod == 4u) return propio_a;\n"
-	"	if (cod == 5u) return 1.0 - propio_a;\n"
-	"	if (cod == 6u) return otro_a;\n"
-	"	return 1.0 - otro_a;\n"
+	"	if (cod == 4u) return sa;\n"
+	"	if (cod == 5u) return 1.0 - sa;\n"
+	"	if (cod == 6u) return da;\n"
+	"	return 1.0 - da;\n"
 	"}\n"
 	"\n"
 	"uniform int solo_fondo;\n"		/* DCEMU_OIT_SOLO_FONDO: ver glmoderno.c */
@@ -1052,11 +1068,11 @@ static const char * fuente_fs_resolver =
 	"	{\n"
 	"		vec4 src = unpackUnorm4x8(oit_nodos[lista[i]].color);\n"
 	"		uint m = oit_nodos[lista[i]].mezcla;\n"
-	"		vec3 fs = factor((m >> 4) & 7u, src.rgb, src.a, dst.rgb, dst.a);\n"
-	"		vec3 fd = factor(m & 7u, dst.rgb, dst.a, src.rgb, src.a);\n"
+	"		vec3 fs = factor((m >> 4) & 7u, dst.rgb, src.a, dst.a);\n"
+	"		vec3 fd = factor(m & 7u, src.rgb, src.a, dst.a);\n"
 	"\n"
-	"		float as = factor_a((m >> 4) & 7u, src.a, dst.a);\n"
-	"		float ad = factor_a(m & 7u, dst.a, src.a);\n"
+	"		float as = factor_a((m >> 4) & 7u, dst.a, src.a, dst.a);\n"
+	"		float ad = factor_a(m & 7u, src.a, src.a, dst.a);\n"
 	"\n"
 	"		dst = vec4(src.rgb * fs + dst.rgb * fd, src.a * as + dst.a * ad);\n"
 	"	}\n"

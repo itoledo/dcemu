@@ -708,10 +708,14 @@ VAOs. Note `screeninit()` puts the `glOrtho` in the MODELVIEW and leaves PROJECT
 - **`--render=oit` orders the translucent list per pixel**, which is what the chip does; today's
   `qsort` orders it per strip and its own comment admits interpenetrating geometry can come out
   wrong. Per-pixel linked lists (SSBO + atomic image), resolved in a full-screen pass that sorts
-  each list and applies the TSP's eight blend factors in order. **Nine of the twelve control demos
-  are byte-identical to `--render=shader`**; the three that differ (`2ndmix`, `kgl-tunnel`,
-  `tsunami-banner`) are exactly the ones with overlapping translucent layers, which is what
-  validates the re-implemented blend factors.
+  each list and applies the TSP's eight blend factors in order. **The TSP blend codes 4-7 name
+  their operand absolutely — SRC alpha, DST alpha, on both sides; only 2/3 are "the other one"** —
+  the same rule that separates the two `blend_modes` tables. The first resolve passed propio/otro
+  symmetrically, so every α<1 strip erased the accumulated background (Sega Rally 2's transmission
+  screen, nearly black, exposed it, 2026-08-10). With that fixed, **eleven of the twelve control
+  demos are byte-identical to `--render=shader`** and the other two (`2ndmix`, `tsunami-banner`)
+  agree to ≤2 LSB — the quantization residue of packing each fragment to 8 bits at stacking time
+  while GL blends unquantized and rounds per strip.
 - **Modifier volumes are resolved per pixel**, which is what the chip does: the face count goes to an
   image the fragment shader can read, so the polygon picks between its two parameter sets inside the
   shader instead of being drawn twice with the stencil as a gate. Parameter set 1 rides in texture

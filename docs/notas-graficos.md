@@ -919,26 +919,35 @@ orden de envío la llama se mezclaba encima de la píldora — toda translucidez
 capas compuestas al revés. Por tira es una aproximación: geometría translúcida que se interpenetra
 igual puede ordenarse mal donde por píxel no lo haría.
 
-**El caso real más rico de esa aproximación es Sega Rally 2, las pantallas de selección
-(2026-08-10).** El auto que gira en SELECT CAR / SELECT TRANSMISSION es un modelo 3D de ~726 tiras
-que el juego mete **entero en la lista translúcida** con la escritura de Z apagada — carrocería con
-alfa 1.0, vidrios a 0.74, sombra a 0.17 — confiando en el autosort por píxel del chip. Con el orden
-por tira, cualquier par mal ordenado hace que la superficie *lejana* (alfa 1.0 = reemplazo) pinte
-encima de la cercana donde se solapan: el interior y el lado lejano del auto sangran a través del
-capó como vetas oscuras onduladas, que a tamaño normal se leen como «el auto está semitransparente».
-`--render=oit` lo saca **sólido** — la prueba del mecanismo — pero en esa misma escena oscurece el
-fondo (la grilla ARCADE es un quad translúcido a pantalla completa de un atlas ARGB4444, y la mezcla
-de la resolución OIT ahí difiere): la pantalla es el mejor caso de prueba encontrado para cerrar la
-mezcla de la OIT, mejor que las tres demos de control que difieren. Lo descartado con evidencia
-durante la caza, para no repetirla: el decodificador de texturas (destwiddle propio del volcado de
-VRAM = idéntico), el tejido de las ventanas (escritor por SQ→`0x11` y lector de 64 bits son el
-mismo espacio), `mmu_traducir_sq` (direcciones secuenciales limpias), `SB_LMMODE0` (vale 0), y el
-reloj por eventos (la palanca no lo mueve). Dos trampas de método que costaron horas: **el estado
-de la VMU cambia el flujo de menús** (misma receta de teclas, otra pantalla — fijar `--vmu=` a una
-copia por corrida), y **las direcciones de las baldosas son de un asignador del guest** — el mapa
-de una corrida no vale para otra. El rayado horizontal fino del fotomontaje del título quedó
-caracterizado aparte: está en los datos que el guest compone en VRAM (el volcado lo muestra), con
-camino de escritura absuelto — puede ser el arte mismo; sin veredicto.
+**El caso que parecía más rico de esa aproximación era Sega Rally 2, las pantallas de selección
+(2026-08-10) — y cerrar la mezcla de la OIT desmintió la atribución ese mismo día.** El auto que
+gira en SELECT CAR / SELECT TRANSMISSION es un modelo 3D de ~726 tiras que el juego mete **entero
+en la lista translúcida** con la escritura de Z apagada — carrocería con alfa 1.0, vidrios a
+0.74-0.90, sombra a 0.17 — y a tamaño normal se lee «semitransparente». El diagnóstico original
+culpó al orden por tira, con la OIT de entonces como prueba («por píxel sale sólido»); con la
+mezcla de la resolución corregida (la quinta falla, sección de la transparencia ordenada) el
+experimento se dio vuelta: **ventana, shader y OIT coinciden a ≤2 niveles en toda la pantalla,
+banda oscura incluida**, así que el orden por tira quedó absuelto en este cuadro — el «auto
+sólido» de la OIT rota era su propia mezcla borrando el fondo acumulado, no el orden. Lo que la
+banda es de verdad, tira por tira (escena 1600 del flujo determinista): la línea de ventanillas,
+cubierta por el vidrio (atlas de reflejos 128×128, alfa 0.90, con sus vetas oscuras) y por tiras
+de reflejo env-mapeadas — UV casi constante estirada sobre quads largos (3×2 texeles sobre 95×8
+píxeles), color de vértice 0.58, modulate-alpha contra un atlas 256×256 que contiene **dos vistas
+completas del auto** (con pinta de RTT del propio juego usado como mapa de reflejo). Ninguna de
+las tres vías la dibuja distinto; si en consola real esa pila se ve más clara, lo que falta no es
+ni orden ni mezcla — **el árbitro pendiente es una captura de hardware de esta pantalla**.
+Absueltos con evidencia, para no repetir la caza: el decodificador de texturas (destwiddle propio
+del volcado de VRAM = idéntico), el tejido de las ventanas (escritor por SQ→`0x11` y lector de 64
+bits son el mismo espacio), `mmu_traducir_sq` (direcciones secuenciales limpias), `SB_LMMODE0`
+(vale 0), el reloj por eventos (la palanca no lo mueve), el culling (el modo 1 «cull if small» se
+dibuja entero — `graficos.c`, el `switch` de `gl_cull` — y los modos 2/3 tienen a conio de
+testigo), el alfa de lo apilado (sonda 4: brillante y correcto) y, ahora, la mezcla misma. Dos
+trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
+receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
+las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado
+horizontal fino del fotomontaje del título quedó caracterizado aparte: está en los datos que el
+guest compone en VRAM (el volcado lo muestra), con camino de escritura absuelto — puede ser el
+arte mismo; sin veredicto.
 
 **Las tiras con cero vértices se saltan al dibujar, y ese salto sostiene el peso** — los
 encabezados de sombra de un juego dejan cientos de registros vacíos de fin de tira por escena. No
@@ -1060,9 +1069,34 @@ escrita igual. Los dos programas son el mismo fuente salvo esa línea y se manti
 programa y no hay transparencia ordenada, que es preferible a dibujar lo que debería estar tapado.
 
 El arreglo subió de 5 a 9 (de 12) las demos de control byte a byte iguales entre `--render=shader`
-y `--render=oit`. Las tres que quedan —`2ndmix`, `kgl-tunnel`, `tsunami-banner`— son exactamente
-las que tienen capas translúcidas superpuestas, que es donde el orden por píxel *debe* diferir del
-orden por tira.
+y `--render=oit`, y en ese momento las tres que quedaban —`2ndmix`, `kgl-tunnel`, `tsunami-banner`—
+se atribuyeron a que el orden por píxel *debe* diferir del orden por tira. La quinta falla (abajo)
+demostró que la atribución era en su mayor parte falsa: también eran la mezcla.
+
+### La quinta falla silenciosa: los factores 4-7 son absolutos de los dos lados (2026-08-10)
+
+Los códigos de mezcla del TSP 4-7 nombran su operando de forma absoluta — alfa del ORIGEN, alfa del
+DESTINO — y valen igual como factor de origen que como factor de destino; sólo 2 y 3 («el otro
+color») dependen del lado. Es exactamente la regla que separa las dos tablas de `blend_modes` en
+`graficos.c`, escrita en el comentario de esas tablas… y el shader de resolución la violaba: pasaba
+propio/otro simétricos a las dos llamadas, así que del lado del destino el código 4 (`SRC_ALPHA`)
+leía el alfa del **destino** y el 6 (`DST_ALPHA`) el del **origen**. Como la tanda opaca deja el
+fondo con alfa 1.0 en toda la pantalla (lo dice la sonda 3), el factor de destino de la mezcla
+clásica (4,5) salía `1-dst.a = 0` en vez de `1-src.a`: **toda tira con alfa < 1 borraba el fondo
+acumulado** y quedaba su color multiplicado por su alfa sobre negro. La pantalla SELECT
+TRANSMISSION de Sega Rally 2 — cuya grilla ARCADE es un quad translúcido a pantalla completa —
+salía casi negra, y fue el caso que lo destapó; la sonda 4 (el color apilado, brillante y correcto)
+apuntó la culpa a la mezcla en una sola corrida.
+
+Por qué nueve demos de control no lo delataron: sus mezclas coinciden por casualidad — con alfa 1.0
+el factor de destino da 0 por las dos vías, y el destino `ONE` de las aditivas no consume alfa.
+Con la corrección, **once de las doce salen byte a byte idénticas a `--render=shader`** —
+`kgl-tunnel` incluida, cuya diferencia nunca fue el orden — y las dos que quedan (`2ndmix`,
+`tsunami-banner`) difieren en ≤2 niveles en <0.7 % de los píxeles: el residuo de cuantización (el
+nodo empaqueta el fragmento a 8 bits con `packUnorm4x8` y la resolución acumula en flotante,
+mientras GL mezcla el fragmento sin cuantizar y redondea al escribir cada tira). La pantalla de
+SR2 queda igual: ≤2 niveles contra shader en los 307 200 píxeles. Condiciones de la compuerta,
+para reproducirla: binario `build-jit`, 8 s emulados, `--sin-vmu`, `DCEMU_RTC_FIJO=1000000`.
 
 ### Las sondas de `DCEMU_OIT_SOLO_FONDO`, y la que mintió
 
