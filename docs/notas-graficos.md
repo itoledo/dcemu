@@ -972,9 +972,19 @@ través del guardabarros). Los ingredientes medidos: el 43 % del auto lleva colo
 0.588 modulando la librea (¿iluminación por software por pose? — verificable comparando los
 histogramas de la palabra 6 entre dos poses con `DCEMU_VOLCAR_TA`), más el vidrio a 0.90 y quads
 de reflejo con UV casi constante (3×2 texeles sobre 95×8 píxeles). `DCEMU_SIN_TEX` separa las
-capas (sin `467880` el auto queda en silueta: ese atlas ES la carrocería). Falta el árbitro fino:
-el video PAL muestra otra pantalla y otro auto (CAR SETTINGS, Lancia) — **hace falta un longplay
-del modo arcade US con el 206 en SELECT TRANSMISSION** para comparar manzanas con manzanas. Dos
+capas (sin `467880` el auto queda en silueta: ese atlas ES la carrocería). **El árbitro fino llegó
+(2026-08-10): en hardware real, la MISMA pantalla con el auto girando sale sólida y blanca.** Un
+segundo video en consola real (YouTube `ycHDQlu9_1M`, modo arcade JP filmado de la pantalla,
+t≈30 s SELECT TRANSMISSION y t≈34 s NAME ENTRY, ambos con el Celica ST205 girando sobre las
+baldosas rojas): carrocería blanco brillante — el mismo blanco de las placas AUTOMATIC/MANUAL —
+sin banda, sin velo, sin fondo a través del cuerpo, en las dos poses. dcemu, misma pantalla:
+grisáceo con la banda y los parches. De los histogramas por pose (`DCEMU_VOLCAR_TA` en las
+escenas 1620 y 1990): la cola de grises `ffcccccc`/`ffb3b3b3`/… **cambia con la pose** —
+iluminación por software, legítima — mientras `ff969696` (41 %) y `feffffff` son constantes.
+Con todas las entradas verificadas fieles, lo que queda por auditar es la COMPOSICIÓN por píxel
+de esas capas: el próximo paso es reconstruir a mano la pila de un píxel del sangrado contra la
+verdad cruda de su pose (las herramientas ya existen), y revisar los bits de flip/clamp del TSP
+en el muestreo de esos quads. Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado
