@@ -116,26 +116,6 @@ static DWORD onda_leer16(DWORD a)
 	}
 }
 
-/*
-	La busqueda de instruccion, separada de arm7_leer() a proposito.
-
-	El ARM ejecuta desde la misma RAM de onda que sondea, asi que si el censo de
-	paginas contara tambien las busquedas taparia justo lo que se busca separar:
-	que paginas se leen como **dato** y cuales se escriben. Ver perf.h.
-
-	De paso es el camino corto que docs/arm7-plan.md pide en su punto 1.4: la
-	busqueda siempre son 4 bytes y casi siempre en RAM de onda.
-*/
-static DWORD arm7_buscar(DWORD direccion)
-{
-	direccion &= ARM7_BUS;
-
-	if (direccion & 0x00800000)
-		return aica_arm_leer(direccion & (AICA_REG_SIZE - 1), 4);
-
-	return onda_leer32(direccion & (AICA_ONDA_SIZE - 1));
-}
-
 DWORD arm7_leer(DWORD direccion, int tam)
 {
 	direccion &= ARM7_BUS;
@@ -1378,6 +1358,482 @@ int arm7_cobertura = 0;
 
 #define ARM7_INDICE(op)		((((op) >> 16) & 0xFF0) | (((op) >> 4) & 0xF))
 
+/* ------------------------------------------------------------------------ */
+/* Predecodificacion                                                        */
+/* ------------------------------------------------------------------------ */
+
+/*
+	La tabla de despacho evita decodificar el patron, pero cada manejador
+	vuelve a extraer sus campos de la palabra en cada ejecucion: op_salto
+	extiende el signo del desplazamiento 555 millones de veces por corrida,
+	op_datos rota el inmediato y separa la forma del operando, y op_bloque
+	cuenta los bits de la lista en un lazo de dieciseis vueltas. Nada de eso
+	depende del estado: es funcion pura de la palabra, o sea que se puede
+	hacer una vez y guardar.
+
+	Una entrada por palabra de la RAM de onda guarda la palabra cruda, los
+	campos ya extraidos y un manejador especializado por forma. La validez es
+	comparar la palabra guardada contra la que la memoria tiene AHORA -- la
+	misma regla que jit_verificar() en el otro nucleo, y la unica que aguanta
+	a todos los que escriben RAM de onda sin pasar por arm7_escribir(): el
+	DMA interno del AICA (aica.c), el DSP (aicadsp.c) y la suite de pruebas,
+	que mete los programas con memcpy. La busqueda ya carga la palabra en
+	cada paso, asi que validar cuesta una comparacion, no una carga extra.
+
+	Los manejadores d_* son transcripciones de los op_* de arriba con los
+	campos leidos de la entrada; el nucleo de la ALU esta factorizado en
+	alu_nucleo() para que las tres formas no puedan derivar entre si. Lo que
+	no tiene forma caliente cae en d_generico(), que despacha por la tabla
+	vieja: MUL, SWP, SWI, las formas con desplazamiento por registro.
+
+	Dos decisiones que no son de gusto:
+
+	  - el salto guarda el desplazamiento RELATIVO y no el destino, porque
+	    las entradas se indexan por palabra fisica y los 2 MB se repiten en
+	    la ventana de 16: dos PC distintos pueden ejecutar la misma palabra;
+	  - la tabla arranca entera como la decodificacion de la palabra 0 --
+	    AND EQ R0,R0,R0, lo que esos bytes significan de verdad -- para que
+	    una entrada fria nunca coincida por casualidad con un fn sin poner.
+	    Y la palabra 0 se ejecuta en serio: el lazo de spu_init() que da la
+	    vuelta al bus recorre ceros.
+
+	DCEMU_SIN_PREDECO_ARM=1 lo apaga en el mismo binario, que es el A/B.
+*/
+
+typedef struct arm7_deco_s arm7_deco;
+
+struct arm7_deco_s
+{
+	DWORD			palabra;			/* de que palabra se decodifico */
+	unsigned char	cond;
+	unsigned char	b0, b1, b2;			/* campos chicos, por forma */
+	DWORD			imm;				/* inmediato / desplazador / lista */
+	DWORD			imm2;				/* segundo inmediato (mascara de MSR) */
+	void		 (* fn)(const arm7_deco * e);
+};
+
+static arm7_deco	arm7_deco_tabla[AICA_ONDA_SIZE / 4];
+static int			arm7_predeco = 0;
+static unsigned long long arm7_deco_decodificadas = 0;
+
+/* Todo lo que no tiene manejador especializado: despacha por la tabla de
+   siempre. Frio a proposito. */
+static void d_generico(const arm7_deco * e)
+{
+	arm7_oplist[ARM7_INDICE(e->palabra)](e->palabra);
+}
+
+/* op_salto con el desplazamiento ya extendido: imm = (desp << 2) + 8, y en
+   b0 si es BL. */
+static void d_salto(const arm7_deco * e)
+{
+	if (e->b0)									/* BL: guarda el retorno */
+		arm7.r[14] = arm7.r[15] + 4;
+
+	{
+		DWORD pc_salto = arm7.r[15];
+		DWORD destino  = (arm7.r[15] + e->imm) & ARM7_BUS;
+
+		if (destino < pc_salto && !e->b0
+		 && arm7_memo_borde(destino, pc_salto))
+			return;								/* repuesto: PC y ciclos ya estan */
+
+		arm7.r[15] = destino;
+	}
+
+	pc_cambio  = 1;
+	ciclos_op += 2;
+}
+
+/*
+	El nucleo del proceso de datos: op_datos desde el switch para abajo, con
+	los operandos ya resueltos por el prologo de cada forma. La unica
+	diferencia deliberada es que el acarreo y el desborde solo se calculan
+	con S=1, que es cuando alguien los consume.
+*/
+static void alu_nucleo(int codigo, int s, DWORD a, DWORD b, DWORD c, int rd)
+{
+	DWORD r = 0;
+	int   escribe = 1;
+	int   aritmetica = 0;
+	DWORD acarreo = 0, desborde = 0;
+
+	switch (codigo)
+	{
+	case 0x0:	r = a & b;					break;	/* AND */
+	case 0x1:	r = a ^ b;					break;	/* EOR */
+	case 0x2:	r = a - b;   aritmetica = 1;	break;	/* SUB */
+	case 0x3:	r = b - a;   aritmetica = 2;	break;	/* RSB */
+	case 0x4:	r = a + b;   aritmetica = 3;	break;	/* ADD */
+	case 0x5:	r = a + b + ((arm7.cpsr & ARM7_C) ? 1 : 0); aritmetica = 4; break;	/* ADC */
+	case 0x6:	r = a - b - ((arm7.cpsr & ARM7_C) ? 0 : 1); aritmetica = 5; break;	/* SBC */
+	case 0x7:	r = b - a - ((arm7.cpsr & ARM7_C) ? 0 : 1); aritmetica = 6; break;	/* RSC */
+	case 0x8:	r = a & b;   escribe = 0;	break;	/* TST */
+	case 0x9:	r = a ^ b;   escribe = 0;	break;	/* TEQ */
+	case 0xA:	r = a - b;   escribe = 0; aritmetica = 1;	break;	/* CMP */
+	case 0xB:	r = a + b;   escribe = 0; aritmetica = 3;	break;	/* CMN */
+	case 0xC:	r = a | b;					break;	/* ORR */
+	case 0xD:	r = b;						break;	/* MOV */
+	case 0xE:	r = a & ~b;					break;	/* BIC */
+	default:	r = ~b;						break;	/* MVN */
+	}
+
+	if (s && aritmetica)
+	{
+		DWORD x, y;							/* los dos sumandos efectivos */
+		DWORD llevada;
+
+		switch (aritmetica)
+		{
+		case 1:		x = a; y = ~b; llevada = 1; break;					/* SUB, CMP */
+		case 2:		x = b; y = ~a; llevada = 1; break;					/* RSB */
+		case 3:		x = a; y =  b; llevada = 0; break;					/* ADD, CMN */
+		case 4:		x = a; y =  b; llevada = (arm7.cpsr & ARM7_C) ? 1 : 0; break;
+		case 5:		x = a; y = ~b; llevada = (arm7.cpsr & ARM7_C) ? 1 : 0; break;
+		default:	x = b; y = ~a; llevada = (arm7.cpsr & ARM7_C) ? 1 : 0; break;
+		}
+
+		{
+			unsigned long long suma =
+				(unsigned long long) x + (unsigned long long) y + llevada;
+
+			acarreo  = (DWORD) ((suma >> 32) & 1);
+			desborde = (~(x ^ y) & (x ^ (DWORD) suma) & 0x80000000u) ? 1 : 0;
+		}
+	}
+
+	if (escribe)
+		poner_r(rd, r);
+
+	if (s)
+	{
+		if (rd == 15 && escribe)
+			poner_cpsr(arm7.spsr);
+		else
+		{
+			poner_nz(r);
+
+			if (aritmetica)
+			{
+				poner_c(acarreo);
+				poner_v(desborde);
+			}
+			else
+				poner_c(c);
+		}
+	}
+
+	if (rd == 15 && escribe)
+		ciclos_op += 2;
+}
+
+/* Forma inmediata: imm ya rotado; en b0, el codigo y (bit 4) si la rotacion
+   produjo acarreo. Con S=0 el acarreo no le importa a nadie. */
+static void d_alu_imm_s0(const arm7_deco * e)
+{
+	alu_nucleo(e->b0 & 0xF, 0, LEER_R(e->b1), e->imm, 0, e->b2);
+}
+
+static void d_alu_imm_s1(const arm7_deco * e)
+{
+	DWORD c = (e->b0 & 0x10) ? (e->imm >> 31)
+	                         : ((arm7.cpsr & ARM7_C) ? 1u : 0u);
+
+	alu_nucleo(e->b0 & 0xF, 1, LEER_R(e->b1), e->imm, c, e->b2);
+}
+
+/* Forma con desplazamiento inmediato: rm, tipo y cantidad empacados en imm. */
+static void d_alu_reg_s0(const arm7_deco * e)
+{
+	DWORD c = (arm7.cpsr & ARM7_C) ? 1 : 0;
+	DWORD b = desplazar(LEER_R((int) (e->imm & 0xF)), (int) ((e->imm >> 8) & 3),
+	                    (e->imm >> 16) & 0x1F, 0, &c);
+
+	alu_nucleo(e->b0 & 0xF, 0, LEER_R(e->b1), b, c, e->b2);
+}
+
+static void d_alu_reg_s1(const arm7_deco * e)
+{
+	DWORD c = (arm7.cpsr & ARM7_C) ? 1 : 0;
+	DWORD b = desplazar(LEER_R((int) (e->imm & 0xF)), (int) ((e->imm >> 8) & 3),
+	                    (e->imm >> 16) & 0x1F, 0, &c);
+
+	alu_nucleo(e->b0 & 0xF, 1, LEER_R(e->b1), b, c, e->b2);
+}
+
+/* op_transferencia con inmediato, partido por carga/almacenamiento. En b0:
+   bit 0 pre, bit 1 suma, bit 2 byte, bit 3 writeback. */
+static void d_ldr_imm(const arm7_deco * e)
+{
+	DWORD base = LEER_R(e->b1);
+	DWORD dir  = (e->b0 & 1) ? ((e->b0 & 2) ? base + e->imm : base - e->imm)
+	                         : base;
+	DWORD v    = arm7_leer(dir, (e->b0 & 4) ? 1 : 4);
+
+	if (!(e->b0 & 4) && (dir & 3))
+	{
+		DWORD rot = (dir & 3) * 8;
+
+		v = (v >> rot) | (v << (32 - rot));
+	}
+
+	/* El writeback se aplica antes de cargar el destino: si son el mismo
+	   registro gana el dato. */
+	if (!(e->b0 & 1) || (e->b0 & 8))
+	{
+		DWORD nueva = (e->b0 & 1) ? dir
+		            : ((e->b0 & 2) ? base + e->imm : base - e->imm);
+
+		if (e->b1 != e->b2)
+			poner_r(e->b1, nueva);
+	}
+
+	poner_r(e->b2, v);
+	ciclos_op += 2;
+}
+
+static void d_str_imm(const arm7_deco * e)
+{
+	DWORD base = LEER_R(e->b1);
+	DWORD dir  = (e->b0 & 1) ? ((e->b0 & 2) ? base + e->imm : base - e->imm)
+	                         : base;
+
+	/* Guardar R15 da PC+12, no PC+8. */
+	arm7_escribir(dir, (e->b0 & 4) ? 1 : 4, LEER_R_12(e->b2));
+
+	if (!(e->b0 & 1) || (e->b0 & 8))
+		poner_r(e->b1, (e->b0 & 1) ? dir
+		             : ((e->b0 & 2) ? base + e->imm : base - e->imm));
+
+	ciclos_op += 1;
+}
+
+/* op_bloque con la lista ya contada (n en imm[20:16]) y las tres decisiones
+   estaticas resueltas en b2: bit 0 banco de usuario, bit 1 escribir la base
+   al final, bit 2 CPSR = SPSR al final. En b0: pre, suma, carga. */
+static void d_bloque(const arm7_deco * e)
+{
+	DWORD lista = e->imm & 0xFFFF;
+	int   n     = (int) (e->imm >> 16);
+	int   carga = (e->b0 & 4) != 0;
+	DWORD base  = LEER_R(e->b1);
+	int   banco_viejo = arm7.banco;
+	DWORD dir, fin;
+	int   i;
+
+	if (e->b0 & 2)
+	{
+		dir = (e->b0 & 1) ? base + 4 : base;
+		fin = base + (DWORD) n * 4;
+	}
+	else
+	{
+		fin = base - (DWORD) n * 4;
+		dir = (e->b0 & 1) ? fin : fin + 4;
+	}
+
+	if (e->b2 & 1)
+		cambiar_banco(ARM7_B_USR);
+
+	for (i = 0; i < 16; i++)
+	{
+		if (!(lista & (1u << i)))
+			continue;
+
+		if (carga)
+		{
+			DWORD v = arm7_leer(dir, 4);
+
+			if (i == 15)
+				poner_r(15, v);
+			else
+				arm7.r[i] = v;
+		}
+		else
+			arm7_escribir(dir, 4, (i == 15) ? arm7.r[15] + 12 : arm7.r[i]);
+
+		dir += 4;
+	}
+
+	if (e->b2 & 1)
+		cambiar_banco(banco_viejo);
+
+	if (e->b2 & 2)
+		arm7.r[e->b1] = fin;
+
+	if (e->b2 & 4)
+		poner_cpsr(arm7.spsr);
+
+	ciclos_op += n + (carga ? 1 : 0);
+}
+
+static void d_mrs(const arm7_deco * e)
+{
+	poner_r(e->b1, e->b0 ? arm7.spsr : arm7.cpsr);
+}
+
+/* op_msr con la mascara de campos ya armada en imm2 y, en la forma
+   inmediata, el valor ya rotado en imm. En b0: bit 0 inmediato, bit 1 SPSR.
+   La restriccion de modo usuario depende del estado y se queda aqui. */
+static void d_msr(const arm7_deco * e)
+{
+	DWORD valor   = (e->b0 & 1) ? e->imm : LEER_R(e->b1);
+	DWORD mascara = e->imm2;
+
+	if (!(e->b0 & 2) && (arm7.cpsr & ARM7_MODO) == ARM7_MODO_USR)
+		mascara &= 0xFF000000u;
+
+	if (e->b0 & 2)
+	{
+		arm7.spsr = (arm7.spsr & ~mascara) | (valor & mascara);
+		return;
+	}
+
+	poner_cpsr((arm7.cpsr & ~mascara) | (valor & mascara));
+}
+
+/*
+	La decodificacion: pura de la palabra, nunca del estado -- lo que dependa
+	del estado (la restriccion de usuario de MSR, el acarreo de entrada) se
+	resuelve en el manejador. La forma se elige por el manejador que la tabla
+	expandida ya conoce, no repitiendo los patrones: asi no hay dos tablas
+	que puedan derivar.
+*/
+static void arm7_decodificar(arm7_deco * e, DWORD op)
+{
+	void (* m)(DWORD palabra) = arm7_oplist[ARM7_INDICE(op)];
+
+	arm7_deco_decodificadas++;
+
+	e->palabra = op;
+	e->cond    = (unsigned char) (op >> 28);
+	e->b0 = e->b1 = e->b2 = 0;
+	e->imm  = 0;
+	e->imm2 = 0;
+	e->fn   = d_generico;
+
+	if (m == op_salto)
+	{
+		long desp = (long) (op & 0x00FFFFFF);
+
+		if (desp & 0x00800000)
+			desp |= ~0x00FFFFFFL;				/* signo */
+
+		e->imm = (DWORD) ((desp << 2) + 8);
+		e->b0  = (op & 0x01000000) != 0;
+		e->fn  = d_salto;
+	}
+	else
+	if (m == op_datos)
+	{
+		int codigo = (int) ((op >> 21) & 0xF);
+		int s      = (int) ((op >> 20) & 1);
+
+		e->b1 = (unsigned char) ((op >> 16) & 0xF);		/* rn */
+		e->b2 = (unsigned char) ((op >> 12) & 0xF);		/* rd */
+
+		if (op & 0x02000000)					/* inmediato rotado */
+		{
+			DWORD imm = op & 0xFF;
+			DWORD rot = ((op >> 8) & 0xF) * 2;
+
+			e->imm = rot ? ((imm >> rot) | (imm << (32 - rot))) : imm;
+			e->b0  = (unsigned char) (codigo | (rot ? 0x10 : 0));
+			e->fn  = s ? d_alu_imm_s1 : d_alu_imm_s0;
+		}
+		else
+		if (!(op & 0x10))						/* desplazamiento inmediato */
+		{
+			e->b0  = (unsigned char) codigo;
+			e->imm = (op & 0xF)					/* rm */
+			       | (((op >> 5) & 3) << 8)		/* tipo */
+			       | (((op >> 7) & 0x1F) << 16);	/* cantidad */
+			e->fn  = s ? d_alu_reg_s1 : d_alu_reg_s0;
+		}
+		/* el desplazamiento por registro queda en d_generico */
+	}
+	else
+	if (m == op_transferencia)
+	{
+		if (!(op & 0x02000000))					/* solo la forma inmediata */
+		{
+			e->b0 = (unsigned char) ((((op) >> 24) & 1)			/* pre */
+			      | ((((op) >> 23) & 1) << 1)					/* suma */
+			      | ((((op) >> 22) & 1) << 2)					/* byte */
+			      | ((((op) >> 21) & 1) << 3));					/* writeback */
+			e->b1 = (unsigned char) ((op >> 16) & 0xF);			/* rn */
+			e->b2 = (unsigned char) ((op >> 12) & 0xF);			/* rd */
+			e->imm = op & 0xFFF;
+			e->fn  = (op & 0x00100000) ? d_ldr_imm : d_str_imm;
+		}
+	}
+	else
+	if (m == op_bloque)
+	{
+		DWORD lista = op & 0xFFFF;
+		int   n = 0;
+		int   i;
+
+		for (i = 0; i < 16; i++)
+			if (lista & (1u << i))
+				n++;
+
+		if (n > 0)								/* lista vacia: d_generico */
+		{
+			int carga = (op & 0x00100000) != 0;
+			int s     = (op & 0x00400000) != 0;
+			int escr  = (op & 0x00200000) != 0;
+			int rn    = (int) ((op >> 16) & 0xF);
+
+			e->b0 = (unsigned char) ((((op) >> 24) & 1)			/* pre */
+			      | ((((op) >> 23) & 1) << 1)					/* suma */
+			      | (carga ? 4 : 0));
+			e->b1 = (unsigned char) rn;
+			e->b2 = (unsigned char)
+			        ((s && !(carga && (lista & 0x8000)) ? 1 : 0)
+			       | ((escr && !(carga && (lista & (1u << rn)))) ? 2 : 0)
+			       | ((carga && s && (lista & 0x8000)) ? 4 : 0));
+			e->imm = lista | ((DWORD) n << 16);
+			e->fn  = d_bloque;
+		}
+	}
+	else
+	if (m == op_mrs)
+	{
+		e->b0 = (op & 0x00400000) != 0;
+		e->b1 = (unsigned char) ((op >> 12) & 0xF);
+		e->fn = d_mrs;
+	}
+	else
+	if (m == op_msr)
+	{
+		DWORD campos  = (op >> 16) & 0xF;
+		DWORD mascara = 0;
+
+		if (campos & 1)		mascara |= 0x000000FFu;
+		if (campos & 2)		mascara |= 0x0000FF00u;
+		if (campos & 4)		mascara |= 0x00FF0000u;
+		if (campos & 8)		mascara |= 0xFF000000u;
+
+		e->imm2 = mascara;
+		e->b0   = (unsigned char) (((op & 0x02000000) ? 1 : 0)
+		        | ((op & 0x00400000) ? 2 : 0));
+
+		if (op & 0x02000000)
+		{
+			DWORD imm = op & 0xFF;
+			DWORD rot = ((op >> 8) & 0xF) * 2;
+
+			e->imm = rot ? ((imm >> rot) | (imm << (32 - rot))) : imm;
+		}
+		else
+			e->b1 = (unsigned char) (op & 0xF);
+
+		e->fn = d_msr;
+	}
+	/* MUL/MLA, SWP, SWI e indefinidas quedan en d_generico. */
+}
+
 void arm7_init(void)
 {
 	int i, f;
@@ -1409,6 +1865,31 @@ void arm7_init(void)
 	}
 
 	memset(arm7_usada, 0, sizeof(arm7_usada));
+
+	/*
+		La tabla de predecodificacion, entera como la palabra 0. Ver el
+		comentario del bloque: la unica condicion de validez es
+		palabra == memoria, y con este llenado vale tambien para una entrada
+		fria que se encuentre con un cero de verdad. Una vez al arrancar,
+		como todas las sondas del arbol; apagada no se toca ni una pagina.
+	*/
+	{
+		const char * e = getenv("DCEMU_SIN_PREDECO_ARM");
+
+		arm7_predeco = !(e != NULL && atoi(e) != 0);
+
+		if (arm7_predeco)
+		{
+			arm7_deco cero;
+
+			arm7_decodificar(&cero, 0);
+
+			for (i = 0; i < (int) (AICA_ONDA_SIZE / 4); i++)
+				arm7_deco_tabla[i] = cero;
+
+			arm7_deco_decodificadas = 0;
+		}
+	}
 }
 
 int arm7_filas(void)					{ return ARM7_FILAS; }
@@ -1455,6 +1936,10 @@ void arm7_perfil_resumen(void)
 		return;
 
 	fprintf(stderr, "\narm7: %llu pasos con perfil\n", arm7_perfil_pasos);
+
+	if (arm7_predeco)
+		fprintf(stderr, "arm7: %llu palabras decodificadas (el resto de los "
+			"pasos reuso una entrada)\n", arm7_deco_decodificadas);
 
 	fprintf(stderr, "arm7: por fila de la tabla de despacho\n");
 
@@ -1554,7 +2039,7 @@ void arm7_reset(void)
 int arm7_paso(void)
 {
 	DWORD op;
-	int   idx;
+	DWORD dir;
 
 	ciclos_op = 1;
 	pc_cambio = 0;
@@ -1571,14 +2056,23 @@ int arm7_paso(void)
 		return 3;
 	}
 
-	op = arm7_buscar(arm7.r[15]);
+	/*
+		La busqueda, separada de arm7_leer() a proposito: el ARM ejecuta desde
+		la misma RAM de onda que sondea, y si el censo de paginas contara las
+		busquedas taparia justo lo que separa -- que paginas se leen como
+		**dato**. Vive aqui y no en una funcion porque la direccion resuelta
+		tambien es el indice de la tabla de predecodificacion.
+	*/
+	dir = arm7.r[15] & ARM7_BUS;
+	op  = (dir & 0x00800000)
+	    ? aica_arm_leer(dir & (AICA_REG_SIZE - 1), 4)
+	    : onda_leer32(dir & (AICA_ONDA_SIZE - 1));
+
 	arm7.instrucciones++;
 
 	if (arm7_perfil)
 	{
-		DWORD p = (arm7.r[15] & ARM7_BUS) >> 2;
-
-		arm7_perfil_pc[p % ARM7_PERFIL_PCS]++;
+		arm7_perfil_pc[(dir >> 2) % ARM7_PERFIL_PCS]++;
 		arm7_perfil_pasos++;
 
 		{
@@ -1601,8 +2095,6 @@ int arm7_paso(void)
 	*/
 	if ((op >> 28) == 0xE || condicion(op))
 	{
-		idx = (int) ARM7_INDICE(op);
-
 		/*
 			El censo de filas que la suite lee por arm7_fila_usada(). Es un
 			instrumento de tests/ y estaba escribiendo en cada instruccion del
@@ -1610,10 +2102,28 @@ int arm7_paso(void)
 			paso, por un dato que en produccion nadie mira. Misma regla que el
 			resto de los instrumentos: apagado, cuesta una comparacion.
 		*/
-		if (arm7_cobertura && arm7_opfila[idx] >= 0)
-			arm7_usada[arm7_opfila[idx]] = 1;
+		if (arm7_cobertura)
+		{
+			int f = arm7_opfila[ARM7_INDICE(op)];
 
-		arm7_oplist[idx](op);
+			if (f >= 0)
+				arm7_usada[f] = 1;
+		}
+
+		if (arm7_predeco && !(dir & 0x00800000))
+		{
+			arm7_deco * e = &arm7_deco_tabla[(dir & (AICA_ONDA_SIZE - 1)) >> 2];
+
+			/* La validez es esta comparacion y nada mas: si la memoria ya no
+			   tiene la palabra de la que se decodifico, se decodifica de
+			   nuevo. Cubre el codigo automodificado, el DMA y a la suite. */
+			if (e->palabra != op)
+				arm7_decodificar(e, op);
+
+			e->fn(e);
+		}
+		else
+			arm7_oplist[ARM7_INDICE(op)](op);
 	}
 
 	if (!pc_cambio)

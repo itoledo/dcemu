@@ -253,6 +253,8 @@ Por eso la opción queda en OFF: el número está medido, la adopción no está 
 | LTCG | −10,0 % | −1,4 % |
 | la búsqueda de una palabra de una vez | −1,9 % | −0,28 % |
 | no ejecutar el sondeo (sin implementar) | hasta −50 % | hasta −7 % |
+| el sondeo, implementado (la memoización, abajo) | −6,8 % de los pasos | −0,49 % |
+| **la predecodificación** (última sección) | **−25 a −33 %** | **−3,3 a −5,1 %** |
 
 ---
 
@@ -418,3 +420,101 @@ cronómetro **no pueden ir en la misma corrida**, igual que `--captura-gl`.
 binario con `DCEMU_SIN_MEMO_ARM=1` —que es lo que prueba que la comparación aísla el mecanismo—;
 `ctest` 21/21; `dcemu_sh4json` 113 191 ok / 0 fallan; y la captura de GL de DCDoom en
 `36578F59…`.
+
+---
+
+# La predecodificación: 3,3-5,1 % de la corrida entera (2026-08-09)
+
+Es la fase 4 de `estado-del-arte-plan.md` («caché de predecodificación primero») y **la mayor
+ganancia del ARM7 en la historia del árbol** — LTCG valía 1,4 % de la corrida, la memoización
+0,5 %. Está encendida por omisión; `DCEMU_SIN_PREDECO_ARM=1` la apaga en el mismo binario, que
+es el A/B.
+
+## Qué paga
+
+La tabla de despacho ya evitaba decodificar el patrón, pero **cada manejador volvía a extraer
+sus campos de la palabra en cada ejecución**: `op_salto` extendía el signo del desplazamiento
+555 millones de veces por corrida, `op_datos` rotaba el inmediato, separaba la forma del
+operando y calculaba acarreo y desborde aun con S=0, y `op_bloque` contaba los bits de la
+lista en un lazo de dieciséis vueltas — 183 millones de veces. Nada de eso depende del estado:
+es función pura de la palabra.
+
+## Cómo funciona
+
+Una entrada de 24 bytes por palabra de la RAM de onda (512 K entradas, 12 MB en `.bss`):
+la palabra cruda, los campos ya extraídos y un manejador especializado por forma
+(`d_salto`, `d_alu_imm_s0/s1`, `d_alu_reg_s0/s1`, `d_ldr_imm`, `d_str_imm`, `d_bloque`,
+`d_mrs`, `d_msr`; lo frío cae en `d_generico`, que despacha por la tabla vieja). El núcleo
+de la ALU está factorizado en `alu_nucleo()` para que las tres formas no puedan derivar; la
+especialización S=0/S=1 elimina el cálculo muerto de acarreo/desborde.
+
+Tres decisiones que no son de gusto, cada una con su porqué:
+
+- **La validez es comparar la palabra guardada contra la que la memoria tiene ahora** — la
+  regla de `jit_verificar()` — y no un gancho de invalidación, porque tres escritores tocan
+  la RAM de onda sin pasar por `arm7_escribir()`: el DMA interno del AICA (`aica.c`), el DSP
+  (`aicadsp.c`) y la suite, que mete los programas con `memcpy`. La búsqueda ya carga la
+  palabra en cada paso, así que validar cuesta una comparación, no una carga extra.
+- **El salto guarda el desplazamiento relativo, no el destino**: las entradas se indexan por
+  palabra física y los 2 MB se repiten en la ventana de 16 — dos PC distintos pueden ejecutar
+  la misma palabra (el lazo de `spu_init()` que da la vuelta al bus lo hace de verdad).
+- **La tabla arranca entera como la decodificación de la palabra 0** (AND EQ R0,R0,R0, lo que
+  esos bytes significan): no existe un valor de palabra imposible con el que marcar una
+  entrada fría, así que la única forma de que la comparación sea la única condición es que
+  «frío» y «palabra 0 de verdad» decodifiquen igual — y los ceros se ejecutan, ver arriba.
+
+## Las compuertas, todas en verde
+
+- `ctest` 23/23 con la predecodificación puesta (la suite del ARM la ejercita: `arnes.c`
+  llama a `arm7_init()`).
+- **Los pasos del ARM y el histograma entero, idénticos al dígito** con la palanca en las dos
+  posiciones: 376 860 131 pasos en DCDoom 35 s, 37 líneas de perfil iguales. Y el mecanismo
+  trabaja: **2449 palabras decodificadas en esos 377 millones de pasos** — ~154 000 reusos por
+  decodificación.
+- Capturas GL **canónicas** en los árbitros inmunes al pad, en las dos formas: DCDoom
+  `198B396F…` (traductor e intérprete), Sega Rally 2 `1B28D0D9…`; totales `jit:` al dígito.
+- `.wav` byte a byte: Crazy Taxi con el reverb del banco (`405689A4…`) y cpp-modplug
+  (`81C62F1C…`). En CT el conteo del SH-4 osciló +101/−843 instrucciones en 20 mil millones
+  con el `.wav` intacto: la bimodalidad documentada del pad XInput, no una divergencia — y
+  modplug, que es puro ARM, salió al dígito.
+
+## La tanda (binario `58A1EF76…`, reentrenado, traductor, orden alternado)
+
+| guest | predeco | sin | ganancia |
+| --- | --- | --- | --- |
+| DCDoom 35 s | 31 878 / 32 053 / 32 263 | 33 072 / 33 234 / 33 816 | **−3,6 %** |
+| Crazy Taxi 180 s | 92 734 / 93 277 | 97 904 / 98 126 | **−5,1 %** |
+| Sega Rally 2 60 s | 65 864 / 66 674 | 68 509 / 68 531 | **−3,3 %** |
+
+**Rangos disjuntos en los tres** — el peor con predecodificación queda por debajo del mejor
+sin ella — con el trabajo idéntico al dígito dentro de cada modo. Contra el propio ARM
+(9-18 % de la corrida bajo el JIT), el escalón le quitó **entre un cuarto y un tercio de su
+costo**.
+
+## Lo que cambia del mapa
+
+El camino 1 («acelerar el intérprete») pasó de «mucho menos rentable de lo que el código
+sugiere» a **el más rentable que ha tenido este subsistema**, y la diferencia con las
+mediciones de arriba es dónde ataca: la búsqueda byte a byte valía 1,9 % del ARM porque
+MSVC ya reconocía el patrón; la extracción de campos y el popcount no los podía quitar
+ningún compilador, porque rehacerlos era la semántica del código.
+
+## El reparto rehecho, y una confirmación cara de la regla de los binarios
+
+El corchete del ARM bajo `--perf`, **dentro del binario reentrenado** (DOOM 35 s, palanca):
+**5074 ms sin predecodificación → 3759 ms con ella, −25,9 %** — coherente con la tanda. La
+lectura ingenua contra los logs de la fase 0 decía lo contrario (+1 a +7 % de ARM), porque
+esos logs son de **otro binario** — anterior al superbloque, al lote del censo y a dos
+reentrenamientos —: es la comparación que la regla del árbol prohíbe, y aquí se la vio
+fabricar un empeoramiento de la nada. Los `--perf` de referencia con la predecodificación
+puesta quedan en `logs/perfil-jit-*.txt`.
+
+El mapa vigente (instrumentado, metodología de la fase 0): ARM7 **10,9 %** en DOOM,
+**18,9 %** en CT, **8,9 %** en SR2 — la porción se sostiene aunque el ARM se abarató,
+porque el SH-4 se aceleró 17-25 % entre medio (fases 2-3 del plan). Sigue por encima del
+umbral de parada del plan (~2-3 %), así que **el traductor ARM7→x64 sobre `jit_x64.c` queda
+abierto como segundo escalón de la fase 4**: emisión por identidad de manejador del
+intérprete de este archivo — la receta que ya funcionó dos veces —, con la tabla de
+predecodificación como forma decodificada de entrada, suite nueva comparando traductor
+contra intérprete paso a paso, y las mismas compuertas de esta ronda (`.wav`, histogramas,
+capturas canónicas). Palanca prevista: `DCEMU_SIN_JIT_ARM=1`.

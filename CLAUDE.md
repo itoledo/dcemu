@@ -268,6 +268,7 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_SONDA_SIN_BANCOS_FPU=1` | la instantánea de excepciones no copia los bancos de coma flotante |
 | `DCEMU_SONDA_SIN_INSTANTANEA=1` | la instantánea no copia nada. **Rompe el guest a propósito**: sirve para saber que el mecanismo es portante, no para cronometrar |
 | `DCEMU_SIN_MEMO_ARM=1` | apaga la memoización de barridos de sondeo del ARM7. Encendida elide **6,8 % de los pasos del ARM** y vale **0,5 %** de la corrida; en DCDoom no elide nada. Ver `docs/arm7-plan.md` |
+| `DCEMU_SIN_PREDECO_ARM=1` | apaga la predecodificación del ARM7: una entrada por palabra de la RAM de onda con los campos ya extraídos y un manejador por forma, válida mientras la memoria tenga la palabra de la que se decodificó (la regla de `jit_verificar` — aguanta al DMA, al DSP y a la suite, que escriben sin pasar por `arm7_escribir`). Encendida vale **3,3-5,1 % de la corrida** (DOOM −3,6, CT −5,1, SR2 −3,3; rangos disjuntos), la mayor ganancia del ARM7 del árbol; pasos e histograma del ARM idénticos al dígito, capturas canónicas y `.wav` byte a byte. Ver `docs/arm7-plan.md`, última sección |
 | `DCEMU_SONDA_ONDA=1` | censo por páginas de 1 KB de la RAM de onda: lecturas de datos del ARM contra escrituras de quien sea. Es lo que contesta si el sondeo del ARM7 se puede saltear — ver `docs/arm7-plan.md` |
 | `DCEMU_ARCH` (compilación) | conjunto de instrucciones (`AVX2`, `AVX`, `SSE2`, `OFF`). **Medido: `AVX2` cuesta 2,1 %**, por tamaño del código caliente; viene en `OFF` |
 | `DCEMU_SIN_ALINEAR` (compilación) | apaga `DC_ALINEADO`, o sea la alineación a 64 de `core`, de la instantánea y de los bancos de FPU. Es el A/B de la alineación: **vale 2,4 % en Crazy Taxi y 1,9 % en Virtua Tennis, ≈0 en DCDoom**, ver `docs/interprete-plan.md` |
@@ -887,7 +888,9 @@ phase increment **linearly** — which is exactly what produces the table's asym
 sample-interval interrupt (INTON, bit 10) is emulated as well, pended only when SCIEB/MCIEB enables
 it. `CD_SCAN` speed remains unemulated with a sentinel in the trace. The census counters stay as
 per-run usage reporting; the probe has its own test (`el_censo_del_lfo_cuenta`). The ARM7 is the
-biggest cost after the SH-4 interpreter, 14-15% of a run.
+biggest cost after the SH-4 interpreter — 8.9-18.9% of a run under the JIT even after the
+predecode cache (`DCEMU_SIN_PREDECO_ARM` in the table above), which took a quarter to a
+third off it; the ARM7→x64 translator is the open second step (`docs/arm7-plan.md`).
 
 → `docs/notas-aica.md` and `docs/arm7-plan.md`.
 
