@@ -518,3 +518,75 @@ intérprete de este archivo — la receta que ya funcionó dos veces —, con la
 predecodificación como forma decodificada de entrada, suite nueva comparando traductor
 contra intérprete paso a paso, y las mismas compuertas de esta ronda (`.wav`, histogramas,
 capturas canónicas). Palanca prevista: `DCEMU_SIN_JIT_ARM=1`.
+
+## El diseño del escalón 2, y los cuatro teoremas que lo hacen exacto
+
+El escalón intermedio es **bloques en C sobre la predecodificación** — la escalera de la
+fusión → JIT del SH-4: construye toda la infraestructura del traductor (descubrimiento,
+validez, presupuesto, salidas laterales, despachador) siendo medible por sí sola, y la
+emisión x64 la reutiliza entera si el reparto la sigue pidiendo. Un bloque es un tramo
+recto de instrucciones **que no pueden tocar PC ni el modo** (análisis estático sobre la
+entrada predecodificada), ejecutado con una verificación por entrada y un solo chequeo de
+FIQ, avanzando PC de a 4 sin preguntar.
+
+Los teoremas, cada uno con su porqué:
+
+1. **La FIQ solo puede cambiar de estado, dentro de un lote, cuando el ARM toca el archivo
+   de registros del AICA o escribe CPSR.** `aica_tick()` corre entre lotes, no adentro; el
+   SH-4 tampoco (un solo hilo). Es la misma observación que ya usa la memoización. Entonces:
+   chequear FIQ una vez a la entrada del bloque + terminar el bloque en los escritores de
+   CPSR (estático) + salida lateral tras cualquier acceso al archivo (dinámico, ver 4) ≡
+   chequear en cada frontera.
+2. **El presupuesto: entrar al bloque solo si sus ciclos máximos caben en los que quedan.**
+   El intérprete arranca la instrucción i si le queda saldo; si el costo máximo del bloque
+   entero ≤ saldo, todo prefijo también cabía, así que el punto donde el lote se detiene es
+   el mismo. Sin esta compuerta, el ARM se adelantaría dentro de la ventana de muestra y la
+   FIQ del lote siguiente lo encontraría en otro PC — la misma regla que la reposición de
+   la memoización.
+3. **La memoización es transparente y convive**: reponer suma las mismas cuentas que
+   ejecutar. Los bloques no corren mientras se graba (`arm7_memo_fin != ~0`), y el borde de
+   atrás — donde se decide grabar y reponer — es un salto, que siempre ejecuta por el
+   intérprete. Nada de la memoización cambia.
+4. **Un acceso con dirección dinámica puede caer en el archivo de registros** (bit 23), y
+   ahí el estado de FIQ pudo cambiar: el manejador de memoria deja una bandera y el bloque
+   sale por el costado en esa frontera — que es exactamente la frontera donde el intérprete
+   habría mirado. El censo dice que es el 0,08-2,65 % de las lecturas: la salida es fría.
+
+Terminan el bloque (estático, sobre la entrada predecodificada): `d_salto`, `d_msr`,
+`d_generico` entero (MUL/SWP/SWI/indefinidas/formas Rs pueden escribir PC o levantar
+excepción), ALU con rd=15 que escribe (códigos fuera de 8-11), LDR con rd=15, writeback
+sobre R15, LDM con PC en la lista o con CPSR final. Las condicionales entran (la condición
+se evalúa adentro, fallada = 1 ciclo, igual que el intérprete). PC avanza +4 por
+instrucción **siempre** — los manejadores leen `LEER_R(15)` relativo al paso, así que no es
+elidible en C; bakearlo es trabajo de la emisión x64.
+
+## Los bloques en C, medidos: −0,4 a −1,8 %, y la infraestructura queda (2026-08-10)
+
+Implementados en `arm7.c` (`arm7_blq_*`: 4096 ranuras directas, bloques de 2 a 12,
+verificación por `memcmp` de las palabras a la entrada — acotada para no cruzar ni hacia el
+archivo de registros ni un espejo de los 2 MB, porque el memcmp es lineal). Encendidos por
+omisión; `DCEMU_SIN_BLOQUES_ARM=1` los apaga (y apagar la predecodificación los apaga
+también: ejecutan por sus entradas).
+
+**Compuertas, todas en verde**: ctest 23/23; capturas canónicas en DOOM (las dos formas) y
+SR2; `.wav` byte a byte en CT y modplug; totales al dígito en las dos ramas; histograma del
+ARM idéntico (la única línea que difiere es el contador de decodificaciones: 2594 contra
+2449, el descubrimiento decodifica también los terminadores). El engagement: **61,4 % de
+los pasos corren en bloques, 3,3 instrucciones por bloque** — los cuerpos de los lazos de
+sondeo sin su salto, como el censo predecía.
+
+**La tanda** (binario `81AB3D79…`, reentrenado, palanca, orden alternado): DOOM
+32 635/32 885/32 897 contra 32 899/33 079/33 084 (**−0,6 %**), CT 97 115/97 854 contra
+98 825/99 749 (**−1,8 %**), SR2 68 720/69 107 contra 69 136/69 267 (**−0,4 %**). Rangos
+disjuntos en los tres — dos por poco (2 ms en DOOM, 29 en SR2) — y dirección uniforme en
+las siete parejas: real, y modesto.
+
+**La lectura honesta**: con bloques de 3,3, lo que el lazo en C ahorra por instrucción — el
+chequeo de FIQ, las máscaras de la búsqueda, la rama del avance, los centinelas — es poco,
+y cada salto (un cuarto de los pasos) paga un intento fallido a la entrada. Lo que sigue en
+la mesa es exactamente lo que la emisión x64 cobra y el lazo en C no puede: la llamada
+indirecta por instrucción, los operandos leídos de la entrada en vez de bakeados, `LEER_R`
+con su ternario del PC, y el propio PC+8 como constante por instrucción. **El escalón que
+queda de la fase 4 es esa emisión**, sobre esta misma infraestructura: `arm7_blq_correr()`
+es el punto único donde un puntero a código emitido reemplaza al lazo — descubrimiento,
+clasificación, validez, presupuesto y salidas laterales ya están pagados y probados.

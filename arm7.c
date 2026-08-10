@@ -116,6 +116,15 @@ static DWORD onda_leer16(DWORD a)
 	}
 }
 
+/*
+	1 cuando el ultimo acceso de datos cayo en el archivo de registros del
+	AICA. Es la salida lateral de los bloques (ver abajo): ahi el estado de la
+	FIQ pudo cambiar, asi que el bloque termina en esa frontera -- que es
+	exactamente donde el interprete habria mirado. Lo ponen los dos caminos
+	frios de arm7_leer()/arm7_escribir(); lo limpia el bloque al entrar.
+*/
+static int arm7_toco_reg = 0;
+
 DWORD arm7_leer(DWORD direccion, int tam)
 {
 	direccion &= ARM7_BUS;
@@ -129,6 +138,7 @@ DWORD arm7_leer(DWORD direccion, int tam)
 			perf_onda_arm_reg_lect++;
 
 		arm7_memo_abortar_por(ARM7_MEMO_REGISTRO);
+		arm7_toco_reg = 1;
 
 		return aica_arm_leer(direccion & (AICA_REG_SIZE - 1), tam);
 	}
@@ -161,6 +171,7 @@ void arm7_escribir(DWORD direccion, int tam, DWORD valor)
 
 	if (direccion & 0x00800000)
 	{
+		arm7_toco_reg = 1;
 		aica_arm_escribir(direccion & (AICA_REG_SIZE - 1), tam, valor);
 		return;
 	}
@@ -1416,6 +1427,13 @@ static arm7_deco	arm7_deco_tabla[AICA_ONDA_SIZE / 4];
 static int			arm7_predeco = 0;
 static unsigned long long arm7_deco_decodificadas = 0;
 
+/* Los bloques sobre la predecodificacion (la seccion vive mas abajo, tras el
+   perfil). Necesitan la tabla de arriba: sin predecodificacion, sin bloques.
+   Los contadores viven aca porque el resumen del perfil los imprime. */
+static int			arm7_bloques = 0;
+static unsigned long long	arm7_blq_corridos = 0;
+static unsigned long long	arm7_blq_pasos    = 0;
+
 /* Todo lo que no tiene manejador especializado: despacha por la tabla de
    siempre. Frio a proposito. */
 static void d_generico(const arm7_deco * e)
@@ -1875,8 +1893,13 @@ void arm7_init(void)
 	*/
 	{
 		const char * e = getenv("DCEMU_SIN_PREDECO_ARM");
+		const char * b = getenv("DCEMU_SIN_BLOQUES_ARM");
 
 		arm7_predeco = !(e != NULL && atoi(e) != 0);
+
+		/* Los bloques ejecutan por las entradas predecodificadas: apagar la
+		   predecodificacion los apaga tambien. */
+		arm7_bloques = arm7_predeco && !(b != NULL && atoi(b) != 0);
 
 		if (arm7_predeco)
 		{
@@ -1940,6 +1963,13 @@ void arm7_perfil_resumen(void)
 	if (arm7_predeco)
 		fprintf(stderr, "arm7: %llu palabras decodificadas (el resto de los "
 			"pasos reuso una entrada)\n", arm7_deco_decodificadas);
+
+	if (arm7_bloques && arm7_blq_corridos)
+		fprintf(stderr, "arm7: %llu bloques corridos, %llu pasos en bloque "
+			"(%.1f %% de los pasos, %.1f por bloque)\n",
+			arm7_blq_corridos, arm7_blq_pasos,
+			100.0 * (double) arm7_blq_pasos / (double) arm7_perfil_pasos,
+			(double) arm7_blq_pasos / (double) arm7_blq_corridos);
 
 	fprintf(stderr, "arm7: por fila de la tabla de despacho\n");
 
@@ -2010,6 +2040,278 @@ void arm7_perfil_resumen(void)
 			"%llu pasos (%.1f %%)\n", distintas, resto,
 			100.0 * (double) resto / (double) arm7_perfil_pasos);
 	}
+}
+
+/* ------------------------------------------------------------------------ */
+/* Bloques sobre la predecodificacion                                       */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El escalon 2 de la fase 4 (docs/arm7-plan.md, "El diseno del escalon 2"):
+	un tramo recto de instrucciones que no pueden tocar PC ni el modo,
+	ejecutado con la verificacion hecha una vez, un solo chequeo de FIQ y el
+	PC avanzando de a 4 sin preguntar. Lo que quita por instruccion respecto
+	de arm7_paso(): el chequeo de FIQ, la busqueda con sus mascaras, la rama
+	del avance de PC y los centinelas de la memoizacion.
+
+	Los cuatro teoremas que lo hacen exacto estan en el plan; en resumen:
+
+	  1. dentro de un lote, la FIQ solo cambia de estado si el ARM toca el
+	     archivo de registros o escribe CPSR -- aica_tick() corre entre lotes;
+	  2. se entra al bloque solo si sus ciclos maximos caben en el saldo, asi
+	     el lote se detiene en la misma frontera que deteniendose paso a paso;
+	  3. la memoizacion convive: no se corre bloque mientras se graba, y el
+	     borde de atras -- donde se graba y repone -- es un salto, que siempre
+	     ejecuta por el interprete;
+	  4. un acceso con direccion dinamica puede caer en el archivo de
+	     registros: arm7_toco_reg deja la marca y el bloque sale por el
+	     costado en esa frontera, que es donde el interprete habria mirado.
+
+	DCEMU_SIN_BLOQUES_ARM=1 los apaga en el mismo binario, que es el A/B.
+*/
+
+#define ARM7_BLQ_RANURAS	4096			/* directa, potencia de dos */
+#define ARM7_BLQ_MAX		12				/* instrucciones por bloque */
+#define ARM7_BLQ_MIN		2				/* mas corto que esto no paga */
+
+typedef struct
+{
+	DWORD			base;					/* direccion de bus de la palabra 0 */
+	unsigned char	n;						/* 0: marca negativa (aca no conviene) */
+	unsigned char	relleno[3];
+	int				ciclos_max;
+	DWORD			palabras[ARM7_BLQ_MAX];
+} arm7_blq;
+
+static arm7_blq	arm7_blqs[ARM7_BLQ_RANURAS];
+
+static int		arm7_blq_ult_pasos;			/* del ultimo bloque corrido */
+
+/*
+	-1 si la instruccion no puede ir en un bloque; si puede, su costo maximo
+	en ciclos. Todo estatico sobre la entrada predecodificada. Terminan el
+	bloque: d_salto y d_msr (PC y CPSR), d_generico entero (MUL/SWP/SWI/
+	indefinidas/formas Rs pueden escribir PC o levantar excepcion), y toda
+	forma con destino o writeback sobre R15.
+*/
+static int arm7_blq_cabe(const arm7_deco * e)
+{
+	if (e->fn == d_alu_imm_s0 || e->fn == d_alu_imm_s1
+	 || e->fn == d_alu_reg_s0 || e->fn == d_alu_reg_s1)
+	{
+		int codigo = e->b0 & 0xF;
+
+		/* rd=15 con escritura es un salto; los codigos 8-11 no escriben. */
+		if (e->b2 == 15 && !(codigo >= 0x8 && codigo <= 0xB))
+			return -1;
+
+		return 1;
+	}
+
+	if (e->fn == d_ldr_imm)
+	{
+		if (e->b2 == 15)					/* carga al PC */
+			return -1;
+
+		if (e->b1 == 15 && (!(e->b0 & 1) || (e->b0 & 8)))	/* writeback a R15 */
+			return -1;
+
+		return 3;
+	}
+
+	if (e->fn == d_str_imm)
+	{
+		if (e->b1 == 15 && (!(e->b0 & 1) || (e->b0 & 8)))
+			return -1;
+
+		return 2;
+	}
+
+	if (e->fn == d_bloque)
+	{
+		if (e->imm & 0x8000)				/* PC en la lista */
+			return -1;
+
+		if (e->b1 == 15 && (e->b2 & 2))		/* fin escrito sobre R15 */
+			return -1;
+
+		return 1 + (int) (e->imm >> 16) + ((e->b0 & 4) ? 1 : 0);
+	}
+
+	if (e->fn == d_mrs)
+		return (e->b1 == 15) ? -1 : 1;
+
+	return -1;
+}
+
+/*
+	Descubre el bloque que empieza en `dir` (bus, bit 23 en cero) y llena la
+	ranura. El tramo no puede cruzar hacia el archivo de registros: el avance
+	del PC es lineal y la ventana de onda termina en 0x00800000.
+*/
+static void arm7_blq_descubrir(arm7_blq * b, DWORD dir)
+{
+	int n = 0;
+	int ciclos = 0;
+
+	b->base = dir;
+
+	/* Dos cotas ademas del largo: no cruzar hacia el archivo de registros
+	   (la ventana de onda termina en 0x00800000) y no cruzar un espejo de
+	   los 2 MB -- la verificacion es un memcmp lineal sobre sound_mem. */
+	while (n < ARM7_BLQ_MAX && dir + (DWORD) n * 4 < 0x00800000u
+	    && (dir & (AICA_ONDA_SIZE - 1)) + (DWORD) (n + 1) * 4 <= AICA_ONDA_SIZE)
+	{
+		DWORD fis = (dir + (DWORD) n * 4) & (AICA_ONDA_SIZE - 1);
+		DWORD op  = onda_leer32(fis);
+		arm7_deco * e = &arm7_deco_tabla[fis >> 2];
+		int c;
+
+		if (e->palabra != op)
+			arm7_decodificar(e, op);
+
+		c = arm7_blq_cabe(e);
+
+		if (c < 0)
+			break;
+
+		b->palabras[n] = op;
+		ciclos += c;
+		n++;
+	}
+
+	if (n < ARM7_BLQ_MIN)
+	{
+		/* La marca negativa guarda la palabra de cabecera: si alguien la
+		   reescribe, la marca se invalida sola por la misma comparacion. */
+		b->palabras[0] = onda_leer32(dir & (AICA_ONDA_SIZE - 1));
+		b->n = 0;
+		return;
+	}
+
+	b->n = (unsigned char) n;
+	b->ciclos_max = ciclos;
+}
+
+/* Corre el bloque entero (o hasta la salida lateral). Devuelve los ciclos
+   consumidos y deja en arm7_blq_ult_pasos las instrucciones ejecutadas. */
+static int arm7_blq_correr(const arm7_blq * b)
+{
+	DWORD base    = b->base;
+	int   gastado = 0;
+	int   i;
+
+	arm7_toco_reg = 0;
+
+	for (i = 0; i < (int) b->n; i++)
+	{
+		DWORD op = b->palabras[i];
+		arm7_deco * e =
+			&arm7_deco_tabla[((base + (DWORD) i * 4) & (AICA_ONDA_SIZE - 1)) >> 2];
+
+		ciclos_op = 1;
+		arm7.instrucciones++;
+
+		if (arm7_perfil)
+		{
+			arm7_perfil_pc[((arm7.r[15] & ARM7_BUS) >> 2) % ARM7_PERFIL_PCS]++;
+			arm7_perfil_pasos++;
+
+			{
+				int f = arm7_opfila[ARM7_INDICE(op)];
+
+				if (f >= 0)
+					arm7_perfil_fila[f]++;
+			}
+		}
+
+		if ((op >> 28) == 0xE || condicion(op))
+		{
+			if (arm7_cobertura)
+			{
+				int f = arm7_opfila[ARM7_INDICE(op)];
+
+				if (f >= 0)
+					arm7_usada[f] = 1;
+			}
+
+			/* La entrada pudo quedar decodificada de otra palabra (se
+			   comparte con el paso a paso): la palabra del bloque ya esta
+			   verificada contra la memoria, asi que manda ella. */
+			if (e->palabra != op)
+				arm7_decodificar(e, op);
+
+			e->fn(e);
+		}
+
+		arm7.r[15] += 4;
+		gastado    += ciclos_op;
+
+		/* Teorema 4: el acceso cayo en el archivo de registros y la FIQ pudo
+		   cambiar. Se sale en esta frontera, que es donde el interprete
+		   habria mirado. */
+		if (arm7_toco_reg)
+		{
+			i++;
+			break;
+		}
+	}
+
+	arm7_blq_ult_pasos = i;
+	arm7_blq_corridos++;
+	arm7_blq_pasos += (unsigned long long) i;
+
+	return gastado;
+}
+
+/*
+	Intenta correr un bloque desde el PC. Devuelve los ciclos consumidos, o 0
+	si aca no hay bloque que valga -- y entonces el lote da un paso normal,
+	que es donde viven la FIQ, los saltos, la memoizacion y todo lo demas.
+*/
+static int arm7_blq_intentar(void)
+{
+	DWORD      dir = arm7.r[15] & ARM7_BUS;
+	arm7_blq * b;
+
+	if (dir & 0x00800000)
+		return 0;
+
+	/* Teorema 1: la FIQ del limite de instruccion se mira una vez aca; si
+	   esta por entregarse, que la entregue arm7_paso(). */
+	if (!(arm7.cpsr & ARM7_F) && aica_fiq_pendiente())
+		return 0;
+
+	/* Teorema 3: mientras se graba un barrido, todo va por el interprete. */
+	if (arm7_memo_fin != ~0u)
+		return 0;
+
+	b = &arm7_blqs[(dir >> 2) & (ARM7_BLQ_RANURAS - 1)];
+
+	if (b->base != dir)
+		arm7_blq_descubrir(b, dir);
+	else
+	if (b->n == 0)
+	{
+		/* Marca negativa vigente mientras la cabecera no cambie. */
+		if (b->palabras[0] == onda_leer32(dir & (AICA_ONDA_SIZE - 1)))
+			return 0;
+
+		arm7_blq_descubrir(b, dir);
+	}
+	else
+	if (memcmp(b->palabras, sound_mem + (dir & (AICA_ONDA_SIZE - 1)),
+	           (size_t) b->n * 4) != 0)
+		arm7_blq_descubrir(b, dir);
+
+	if (b->n == 0)
+		return 0;
+
+	/* Teorema 2: el bloque entero tiene que caber en el saldo. */
+	if ((long) b->ciclos_max > arm7.ciclos)
+		return 0;
+
+	return arm7_blq_correr(b);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2185,12 +2487,36 @@ void arm7_ejecutar(long ciclos)
 			   salteables. Para eso esta DCEMU_PERFIL_ARM; ver arm7.h. */
 			DWORD antes = arm7.r[15];
 
+			if (arm7_bloques)
+			{
+				int c = arm7_blq_intentar();
+
+				if (c > 0)
+				{
+					arm7.ciclos    -= c;
+					perf_arm_pasos += (unsigned long long) arm7_blq_ult_pasos;
+					continue;			/* un bloque nunca deja el PC quieto */
+				}
+			}
+
 			arm7.ciclos -= arm7_paso();
 
 			perf_arm_pasos++;
 
 			if (arm7.r[15] == antes)
 				perf_arm_ocioso++;
+		}
+
+		return;
+	}
+
+	if (arm7_bloques)
+	{
+		while (arm7.ciclos > 0)
+		{
+			int c = arm7_blq_intentar();
+
+			arm7.ciclos -= (c > 0) ? c : arm7_paso();
 		}
 
 		return;
