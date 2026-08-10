@@ -919,6 +919,27 @@ orden de envío la llama se mezclaba encima de la píldora — toda translucidez
 capas compuestas al revés. Por tira es una aproximación: geometría translúcida que se interpenetra
 igual puede ordenarse mal donde por píxel no lo haría.
 
+**El caso real más rico de esa aproximación es Sega Rally 2, las pantallas de selección
+(2026-08-10).** El auto que gira en SELECT CAR / SELECT TRANSMISSION es un modelo 3D de ~726 tiras
+que el juego mete **entero en la lista translúcida** con la escritura de Z apagada — carrocería con
+alfa 1.0, vidrios a 0.74, sombra a 0.17 — confiando en el autosort por píxel del chip. Con el orden
+por tira, cualquier par mal ordenado hace que la superficie *lejana* (alfa 1.0 = reemplazo) pinte
+encima de la cercana donde se solapan: el interior y el lado lejano del auto sangran a través del
+capó como vetas oscuras onduladas, que a tamaño normal se leen como «el auto está semitransparente».
+`--render=oit` lo saca **sólido** — la prueba del mecanismo — pero en esa misma escena oscurece el
+fondo (la grilla ARCADE es un quad translúcido a pantalla completa de un atlas ARGB4444, y la mezcla
+de la resolución OIT ahí difiere): la pantalla es el mejor caso de prueba encontrado para cerrar la
+mezcla de la OIT, mejor que las tres demos de control que difieren. Lo descartado con evidencia
+durante la caza, para no repetirla: el decodificador de texturas (destwiddle propio del volcado de
+VRAM = idéntico), el tejido de las ventanas (escritor por SQ→`0x11` y lector de 64 bits son el
+mismo espacio), `mmu_traducir_sq` (direcciones secuenciales limpias), `SB_LMMODE0` (vale 0), y el
+reloj por eventos (la palanca no lo mueve). Dos trampas de método que costaron horas: **el estado
+de la VMU cambia el flujo de menús** (misma receta de teclas, otra pantalla — fijar `--vmu=` a una
+copia por corrida), y **las direcciones de las baldosas son de un asignador del guest** — el mapa
+de una corrida no vale para otra. El rayado horizontal fino del fotomontaje del título quedó
+caracterizado aparte: está en los datos que el guest compone en VRAM (el volcado lo muestra), con
+camino de escritura absuelto — puede ser el arte mismo; sin veredicto.
+
 **Las tiras con cero vértices se saltan al dibujar, y ese salto sostiene el peso** — los
 encabezados de sombra de un juego dejan cientos de registros vacíos de fin de tira por escena. No
 dibujaban nada pero pagaban toda la agitación de estado GL, que es por lo que entró el salto; lo
