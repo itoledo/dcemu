@@ -360,13 +360,14 @@ static int manejador_sin_aborto(opcode_f * f)
 
 unsigned char excepcion_instr_exenta[65536];
 
-int find_opcode(DWORD mempos)
+/* La busqueda sobre la palabra ya leida, para quien la tiene en la mano: el
+   desensamblador la lee por la via fisica --leer por memread desde un volcado
+   avanza MMUCR.URC, y de el depende que entrada reemplaza el LDTLB del
+   guest-- y no debe pagarse una segunda lectura con efectos. */
+int find_opcode_palabra(WORD target)
 {
 	int i, ret = -1;
-	WORD target;
 	bool cont;
-	
-	ReadMemoryW(mempos, &target);
 
 	for (i = 0; opcodes[i].opdesc; i++)
 	{
@@ -427,6 +428,15 @@ int find_opcode(DWORD mempos)
 	}
 
 	return ret;
+}
+
+int find_opcode(DWORD mempos)
+{
+	WORD target;
+
+	ReadMemoryW(mempos, &target);
+
+	return find_opcode_palabra(target);
 }
 
 void checkopcodes()

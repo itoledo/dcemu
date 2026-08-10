@@ -13,6 +13,7 @@
 #include "BFont.h"
 #include <time.h>
 #include "main.h"
+#include "mmu.h"			/* mmu_traducir_mirar: desensamblar sin mover URC */
 
 // Al arrancar se ejecuta de inmediato y con la pantalla normal. F12 muestra la
 // vista de depuracion, F10 detiene, F11 vuelve a correr, F9 avanza un paso.
@@ -233,10 +234,25 @@ void disasm(DWORD address, char *buffer)
 {
 	WORD opcode;
 	WORD op;
+	DWORD lugar;
 
-	memread(address, &opcode, 2);
+	/* Esto corre fuera de una instruccion --los volcados de la traza,
+	   --desensamblar, la vista F12-- y los PC que recibe pueden ser basura.
+	   Leer por memread avanzaria MMUCR.URC, que decide que entrada reemplaza
+	   el LDTLB del guest, o sea su camino de ejecucion: un volcado de 96 PC
+	   del anillo corrompio a Sega Rally 2 entero. La mirada traduce sin URC
+	   ni excepciones; si no resuelve, se dice en vez de leer cualquier cosa. */
+	lugar = mmu_traducir_mirar(address);
 
-	op = find_opcode(address);
+	if (lugar == 0 && address != 0)
+	{
+		sprintf(buffer, "(sin traduccion en la UTLB)");
+		return;
+	}
+
+	memread_fisico(lugar, &opcode, 2);
+
+	op = find_opcode_palabra(opcode);
 
 	if (op != 0xffff) {
 		switch(opcodes[op].params) 

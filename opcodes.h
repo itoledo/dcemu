@@ -4,6 +4,7 @@
 #include "main.h"
 
 int find_opcode(DWORD mempos);
+int find_opcode_palabra(WORD target);
 void initopcodes();
 
 // extern int oplist[65536];
