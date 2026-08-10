@@ -1034,11 +1034,26 @@ cruda ni comprimida con el LZ — barrido entero con filtro de prefijo), o sea q
 compone en RAM a partir de piezas**, y las piezas viajan por lo único no verificado: el flujo
 (`MULTI_DMAREAD`/`REQ_DMA_TRANS` — cuyo consumidor en `dcopcodes.c` se lee correcto función por
 función) MEZCLADO con DMAREADs sueltos de 1 sector sobre la misma zona, con el compositor del
-guest corriendo entre medio. El plan siguiente: (1) darle al banco de teclas a ciegas las
-direcciones (`DCEMU_PULSAR_IZQ/DER`, el gemelo de `PULSAR_A`) para reproducir el Celica por
-guion; (2) con eso, `DCEMU_VOLCAR_TEX` numerado sobre la página del Celica y hallar su verdad
-Castrol en el disco; (3) auditar la danza flujo+DMAREAD+compositor contra el driver real (el HLE
-de flycast como referencia de semántica, como con el resto del hook). Dos
+guest corriendo entre medio.
+
+**La séptima vuelta (mismo día) llegó más lejos que el plan por un camino mejor: la grabadora y
+el replay del mando** (`DCEMU_GRABAR_MANDO`/`DCEMU_MANDO`, ver la tabla — validados en lazo
+cerrado: receta grabada → replay → captura byte a byte). El usuario grabó su navegación al Celica
+una vez y la receta quedó autónoma en el repo: `herramientas/mando-sr2-celica.txt` +
+`herramientas/vmu-sr2-menus.bin` (la tarjeta de la que arranca — la regla de siempre), replay con
+`DCEMU_MANDO=` y `--salir-tras=36`. Con ella cayeron en cadena: **la página del Celica llega
+PRISTINA a la VRAM** (volcado `-01`: el atlas Castrol impecable — capó, frente TOYOTA, puertas,
+placas «6»), sus tiras llevan los MISMOS estados que las del 206 (565, α=1, env=3, z coherentes
+0,20-0,33, colores de vértice 0,58-0,81 — censos idénticos), **y sin embargo el render es
+confeti**. Y la reconstrucción aritmética — exacta al LSB en el 206 — **falla en el flanco del
+Celica**: el modelo predice gris (95,93,95) con el cuerpo presente; el render da azul oscuro
+(36,31,97). Primera divergencia modelo-contra-render del expediente. Las capas de encima quedaron
+absueltas por palanca (`DCEMU_SIN_TEX` de `489880` cielo, `491880` vidrio y `39a080` — que
+resultó ser el atlas de los paneles de UI — no cambian el auto): **el velo está en cómo se dibuja
+el cuerpo mismo**, en algo que el modelo aritmético no captura. El siguiente paso es de caja
+blanca: instrumentar el ligado de textura en el draw (qué textura GL y de qué decodificación
+sirve cada tira de `467880` en la escena final) y recorrer una línea de píxeles comparando modelo
+contra render para delimitar la capa fantasma. Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado
