@@ -290,6 +290,153 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 
 	*jx = (mando.joyx != JOYSTICK_NEUTRAL) ? mando.joyx : joyx;
 	*jy = (mando.joyy != JOYSTICK_NEUTRAL) ? mando.joyy : joyy;
+
+	/*
+		DCEMU_GRABAR_MANDO=archivo / DCEMU_MANDO=archivo: la grabadora y el
+		replay de la entrada, al nivel de lo que ve el Maple.
+
+		La grabadora escribe una linea por CAMBIO de estado, con el numero de
+		sondeo (el mismo reloj de PULSAR_START: ~60 por segundo emulado):
+
+		    v1
+		    <sondeo> <botones hex> <lt> <rt> <jx> <jy>
+
+		y el replay la reproduce: desde ese sondeo rige ese estado, hasta el de
+		la linea siguiente. Va AL FINAL de todas las mezclas a proposito, por
+		las dos puntas: lo que se graba es exactamente lo que el guest vio
+		--pulsaciones de PULSAR_START/SOLO_A incluidas, asi que una receta
+		vieja se puede grabar una vez y reemitir identica--, y en replay el
+		estado grabado REEMPLAZA todo, teclado, XInput y variables: el jitter
+		analogico de un mando enchufado ya movio corridas (ver la disciplina de
+		medicion) y colarse aqui arruinaria el determinismo que es todo el
+		punto.
+
+		El sondeo cuenta en tiempo emulado, o sea que grabar jugando con
+		--limitar y reproducir a toda velocidad da la misma secuencia. La VMU
+		sigue la regla de siempre: grabar y reproducir tienen que arrancar de
+		la misma imagen de tarjeta.
+	*/
+	{
+		typedef struct {
+			int		sondeo;
+			WORD	botones;
+			BYTE	lt, rt, jx, jy;
+		} entrada_paso_t;
+
+		static int				modo = -2;		/* -2 sin leer, 0 nada, 1 graba, 2 replay */
+		static FILE *			grabar_fp = NULL;
+		static WORD				ult_botones;
+		static BYTE				ult_lt, ult_rt, ult_jx, ult_jy;
+		static entrada_paso_t *	pasos = NULL;
+		static int				pasos_n = 0, paso_actual = 0;
+		static int				sondeo = 0;
+
+		sondeo++;
+
+		if (modo == -2)
+		{
+			const char *	r = getenv("DCEMU_MANDO");
+			const char *	g = getenv("DCEMU_GRABAR_MANDO");
+
+			modo = 0;
+
+			if (r != NULL)
+			{
+				FILE *	fp = fopen(r, "r");
+				char	linea[80];
+
+				if (fp != NULL && fgets(linea, sizeof(linea), fp) != NULL
+					&& strncmp(linea, "v1", 2) == 0)
+				{
+					int		cap = 0;
+					int		s;
+					unsigned b, plt, prt, pjx, pjy;
+
+					while (fscanf(fp, "%d %x %u %u %u %u",
+						&s, &b, &plt, &prt, &pjx, &pjy) == 6)
+					{
+						if (pasos_n == cap)
+						{
+							cap = cap ? cap * 2 : 256;
+							pasos = (entrada_paso_t *) realloc(pasos,
+								(size_t) cap * sizeof(entrada_paso_t));
+						}
+
+						pasos[pasos_n].sondeo  = s;
+						pasos[pasos_n].botones = (WORD) b;
+						pasos[pasos_n].lt = (BYTE) plt;
+						pasos[pasos_n].rt = (BYTE) prt;
+						pasos[pasos_n].jx = (BYTE) pjx;
+						pasos[pasos_n].jy = (BYTE) pjy;
+						pasos_n++;
+					}
+
+					modo = 2;
+					fprintf(stderr, "mando: replay de %s, %d pasos\n",
+						r, pasos_n);
+				}
+				else
+					fprintf(stderr, "mando: no pude leer %s; replay apagado\n",
+						r);
+
+				if (fp != NULL)
+					fclose(fp);
+			}
+			else
+			if (g != NULL)
+			{
+				grabar_fp = fopen(g, "w");
+
+				if (grabar_fp != NULL)
+				{
+					fprintf(grabar_fp, "v1\n");
+					modo = 1;
+					fprintf(stderr, "mando: grabando la entrada en %s\n", g);
+				}
+			}
+		}
+
+		if (modo == 2)
+		{
+			while (paso_actual + 1 < pasos_n
+				&& pasos[paso_actual + 1].sondeo <= sondeo)
+				paso_actual++;
+
+			if (pasos_n > 0 && pasos[0].sondeo <= sondeo)
+			{
+				*botones = pasos[paso_actual].botones;
+				*lt = pasos[paso_actual].lt;
+				*rt = pasos[paso_actual].rt;
+				*jx = pasos[paso_actual].jx;
+				*jy = pasos[paso_actual].jy;
+			}
+			else
+			{
+				/* Antes del primer paso grabado: todo suelto y en reposo. */
+				*botones = 0xFFFF;
+				*lt = *rt = 0;
+				*jx = *jy = JOYSTICK_NEUTRAL;
+			}
+		}
+		else
+		if (modo == 1
+			&& (sondeo == 1 || *botones != ult_botones || *lt != ult_lt
+				|| *rt != ult_rt || *jx != ult_jx || *jy != ult_jy))
+		{
+			/* fflush por linea: la sesion se cierra con la ventana y un
+			   buffer sin vaciar perderia la cola de la grabacion. */
+			fprintf(grabar_fp, "%d %04x %u %u %u %u\n", sondeo,
+				(unsigned) *botones, (unsigned) *lt, (unsigned) *rt,
+				(unsigned) *jx, (unsigned) *jy);
+			fflush(grabar_fp);
+
+			ult_botones = *botones;
+			ult_lt = *lt;
+			ult_rt = *rt;
+			ult_jx = *jx;
+			ult_jy = *jy;
+		}
+	}
 }
 bool gui_visible=true;
 

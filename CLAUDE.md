@@ -229,6 +229,7 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | variable | qué hace |
 | --- | --- |
 | `DCEMU_PULSAR_START=N[,...]` / `DCEMU_SOLO_A=N[,...]` + `DCEMU_PULSAR_A=1` | aprietan el botón durante 20 sondeos desde cada número; 60 sondeos por segundo emulado |
+| `DCEMU_GRABAR_MANDO=archivo` / `DCEMU_MANDO=archivo` | la grabadora y el replay de la entrada, al nivel de lo que ve el Maple: una línea por cambio de estado con su número de sondeo. La grabación va **después** de todas las mezclas (teclado, XInput y las variables de arriba: lo grabado es lo que el guest vio, así que una receta vieja se graba una vez y se reemite idéntica), y el replay **reemplaza** la entrada real entera — el jitter analógico de un mando enchufado no se cuela. El sondeo es tiempo emulado: se graba jugando con `--limitar` y se reproduce a toda velocidad. La VMU sigue la regla de siempre: grabar y reproducir arrancan de la misma imagen. Validado en lazo cerrado: receta grabada → replay → captura byte a byte idéntica |
 | `DCEMU_CAPTURA_TODAS=N` | guarda un cuadro de cada N a un archivo numerado propio |
 | `DCEMU_TRAZA_EXC=1\|2\|3` | histograma de excepciones / censo de sitios de syscall / flujo completo |
 | `DCEMU_TRAZA_SYSCALL=dest[:pr[:N[:K]]]` | traza de instrucciones en la K-ésima aparición de ese syscall (hex:hex:dec:dec) |
