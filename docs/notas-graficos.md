@@ -1020,8 +1020,25 @@ SELECT CAR (misma librea desde otro slot) muestra el mismo parcheado oscuro en l
 el golpe de gracia queda una sola rendija: romper el índice del contenedor de los packs por auto
 (FAD 360392) o volcar el caché en RAM del pack tras la carga (~26 s) y comparar los cuadrados
 ahí. Con todos los eslabones verificados exactos y los valores con estructura de arte, el
-veredicto provisional es que **el auto de dcemu es un retrato fiel de los datos del juego**, y
-la comparación pendiente contra hardware exige el 206 mismo (los videos tienen Lancia y Celica). Dos
+veredicto provisional fue que el auto de dcemu era un retrato fiel de los datos del juego.
+
+**Y el golpe de gracia lo dio vuelta (2026-08-10, la sexta vuelta): el CELICA en dcemu contra el
+Celica del video de hardware — mismo auto, misma librea Castrol, misma pantalla, mismo modo — y
+dcemu lo saca hecho un collage de confeti** (F6 del usuario, `f6-celica` en el expediente):
+fragmentos rojos/verdes/azules regados por la carrocería donde la consola muestra blanco Castrol
+limpio y sólido. Ya no hay excusa de arte: **la página de texturas que dcemu compone para el auto
+está mal**, en el Celica de forma flagrante y en el 206 de forma leve — los «cuadrados de ruido»
+pasan de «probablemente arte» a **probablemente la forma leve del mismo bug**. Las coordenadas
+del sospechoso que deja la vuelta MTEX: la página del auto NO existe textual en el disco (ni
+cruda ni comprimida con el LZ — barrido entero con filtro de prefijo), o sea que **el juego la
+compone en RAM a partir de piezas**, y las piezas viajan por lo único no verificado: el flujo
+(`MULTI_DMAREAD`/`REQ_DMA_TRANS` — cuyo consumidor en `dcopcodes.c` se lee correcto función por
+función) MEZCLADO con DMAREADs sueltos de 1 sector sobre la misma zona, con el compositor del
+guest corriendo entre medio. El plan siguiente: (1) darle al banco de teclas a ciegas las
+direcciones (`DCEMU_PULSAR_IZQ/DER`, el gemelo de `PULSAR_A`) para reproducir el Celica por
+guion; (2) con eso, `DCEMU_VOLCAR_TEX` numerado sobre la página del Celica y hallar su verdad
+Castrol en el disco; (3) auditar la danza flujo+DMAREAD+compositor contra el driver real (el HLE
+de flycast como referencia de semántica, como con el resto del hook). Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado
