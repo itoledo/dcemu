@@ -22,6 +22,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/aicadsp.c
 	${CMAKE_SOURCE_DIR}/cdda.c
 	${CMAKE_SOURCE_DIR}/arm7.c
+	${CMAKE_SOURCE_DIR}/arm7jit.c
 	${CMAKE_SOURCE_DIR}/g2dma.c
 	${CMAKE_SOURCE_DIR}/gdrom.c
 	${CMAKE_SOURCE_DIR}/log.c
@@ -62,6 +63,7 @@ set(DCEMU_PRUEBAS
 	test_aica.c
 	test_dsp.c
 	test_arm7.c
+	test_arm7jit.c
 	test_g2dma.c
 	test_jit_x64.c
 	test_gdrom.c

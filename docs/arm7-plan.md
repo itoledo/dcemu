@@ -590,3 +590,48 @@ con su ternario del PC, y el propio PC+8 como constante por instrucción. **El e
 queda de la fase 4 es esa emisión**, sobre esta misma infraestructura: `arm7_blq_correr()`
 es el punto único donde un puntero a código emitido reemplaza al lazo — descubrimiento,
 clasificación, validez, presupuesto y salidas laterales ya están pagados y probados.
+
+---
+
+# El traductor a x64, y el cierre de la fase 4: −2,4/−2,4/−2,0 % más, todo exacto (2026-08-10)
+
+`arm7jit.c`, sobre el emisor `jit_x64.c` (que ganó dos primitivas con sus casos byte a byte:
+`shift_cl` para la rotación de la carga desalineada y la condición `O` para leer V). Compila
+solo con `DCEMU_JIT`, como `jit.c` y por lo mismo; `DCEMU_SIN_JIT_ARM=1` lo deja sin
+instalar, que es el A/B. Se enchufa donde el escalón anterior lo dejó previsto:
+`arm7_blq_correr()` corre el puntero emitido si existe — con `arm7.r[15] == base` exacto,
+porque el PC viaja bakeado — y el lazo en C queda de respaldo (y es el camino del perfil y
+del censo, que llevan sus ganchos).
+
+**Plantillas por forma**: la ALU con inmediato en sus dos S (con MOV/MVN S=1 resolviendo N,
+Z y C en constantes de emisión), la ALU con desplazamiento inmediato S=0 (los casos de
+cantidad cero resueltos al emitir; RRX con `rcr` tras materializar C con `shl 3` del CPSR —
+el último bit expulsado es el 29), LDR/STR con inmediato (writeback adelantado — `arm7_leer`
+no mira `arm7.r` — para que solo la dirección sobreviva la llamada; la rotación desalineada
+por CL sin rama, porque rotar por cero es inocuo) y MRS. Lo demás — LDM/STM, los tres con
+acarreo de entrada con S, la forma con desplazamiento por registro — se emite como llamada
+al manejador de la entrada privada del bloque: idéntico al lazo por construcción. Las
+banderas del ARM se arman de las del anfitrión (N=SF, Z=ZF, V=OF, y C es CF invertido en la
+clase de las restas), con los receptores en cero **antes** de la operación, porque `xor`
+pisa lo que se viene a capturar.
+
+**La suite nueva** (`tests/test_arm7jit.c`, 6 casos): cada programa corre dos veces por
+`arm7_ejecutar()` — lazo en C contra emitido — y compara los dieciséis registros, CPSR,
+SPSR, banco, ciclos, instrucciones y la RAM de onda entera. Cubre los bordes que la emisión
+resuelve distinto: las banderas, la cantidad cero, la desalineada, el PC como operando y
+guardado (+12) y cargado relativo, el respaldo adentro del bloque, la salida lateral.
+**6/6 a la primera**, y las compuertas del emulador igual: capturas canónicas en DOOM y
+SR2, `.wav` de referencia en CT y modplug, totales al dígito. El emitido trabaja: 2560
+bloques en DOOM (1,3 MB de arena de 16), 5232 en CT, **cero declinados**.
+
+**La tanda** (binario `AD1E5DB1…`, reentrenado, palanca, orden alternado): DOOM
+31 333/31 164/31 185 contra 31 965/31 939/31 694 (**−2,4 %**), CT 92 135/92 413 contra
+94 701/94 470 (**−2,4 %**, los totales del pad apareados por ronda), SR2 64 815/64 943
+contra 66 197/69 029 (**−2,0 a −4,0 %**). Rangos disjuntos en los tres.
+
+**El cierre de la fase**: los tres escalones dentro de sus propios binarios suman
+−3,6/−0,6/−2,4 en DOOM, −5,1/−1,8/−2,4 en CT y −3,3/−0,4/−2,0 en SR2 — y las marcas
+absolutas del árbol quedaron en **DOOM 31 164 ms (1,12× tiempo real), CT 92 135 ms
+(1,95×), SR2 64 815 ms (0,93×)**, las tres mejores que se hayan medido. El siguiente
+movimiento del plan maestro es rehacer el reparto (`perfil-jit.ps1`) y entrar a la fase 5,
+el reloj por eventos.

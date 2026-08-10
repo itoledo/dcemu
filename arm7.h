@@ -176,6 +176,62 @@ int arm7_paso(void);
 DWORD arm7_leer(DWORD direccion, int tam);
 void  arm7_escribir(DWORD direccion, int tam, DWORD valor);
 
+/*
+	La entrada de la predecodificacion, publica porque el traductor a x64
+	(arm7jit.c) emite a partir de ella: la palabra cruda, los campos ya
+	extraidos y el manejador especializado. Que significa cada campo depende
+	de la forma -- ver arm7_decodificar() en arm7.c, que es el unico que los
+	llena.
+*/
+struct arm7_deco_s
+{
+	DWORD			palabra;			/* de que palabra se decodifico */
+	unsigned char	cond;
+	unsigned char	b0, b1, b2;			/* campos chicos, por forma */
+	DWORD			imm;				/* inmediato / desplazador / lista */
+	DWORD			imm2;				/* segundo inmediato (mascara de MSR) */
+	void		 (* fn)(const struct arm7_deco_s * e);
+};
+
+typedef struct arm7_deco_s arm7_deco;
+
+/*
+	La forma de una entrada, para quien no puede comparar los manejadores --
+	que son estaticos de arm7.c a proposito. El traductor elige plantilla por
+	esto; ARM7_DF_OTRA es "llama al manejador por e->fn".
+*/
+enum
+{
+	ARM7_DF_OTRA,
+	ARM7_DF_ALU_IMM_S0, ARM7_DF_ALU_IMM_S1,
+	ARM7_DF_ALU_REG_S0, ARM7_DF_ALU_REG_S1,
+	ARM7_DF_LDR_IMM, ARM7_DF_STR_IMM,
+	ARM7_DF_BLOQUE, ARM7_DF_MRS
+};
+
+int arm7_deco_forma(const arm7_deco * e);
+
+/*
+	Lo que el codigo emitido necesita tocar por direccion absoluta: el costo
+	de la instruccion en curso (los manejadores lo suman sobre 1), la marca de
+	"el acceso cayo en el archivo de registros" (la salida lateral de los
+	bloques) y las instrucciones que el ultimo bloque ejecuto.
+*/
+extern int arm7_ciclos_op;
+extern int arm7_toco_reg;
+extern int arm7_blq_ult_pasos;
+
+/*
+	Instala el traductor de bloques: `emitir` recibe las entradas ya
+	decodificadas de un bloque recto (sin PC ni modo, ver arm7_blq_cabe) y
+	devuelve un puntero a codigo `int fn(void)` que lo ejecuta entero --
+	devuelve los ciclos consumidos y deja en arm7_blq_ult_pasos los pasos --
+	o NULL para dejarle ese bloque al lazo en C. `dir` es la direccion de bus
+	de la primera palabra, con la garantia arm7.r[15] == dir a la entrada.
+*/
+void arm7_blq_instalar_emisor(void * (* emitir)(const arm7_deco * entradas,
+                                                int n, DWORD dir));
+
 /* Cuantas filas de la tabla existen, y cuantas se ejercitaron. Es lo que mira
    la suite de cobertura. */
 /* El censo de filas ejercitadas que la suite pide al terminar. Lo enciende

@@ -366,6 +366,13 @@ void jit_x64_shift_ri(x64_emisor * e, x64_shift op, x64_reg dst, int cuenta)
 	b1(e, (unsigned) cuenta);
 }
 
+void jit_x64_shift_cl(x64_emisor * e, x64_shift op, x64_reg dst)
+{
+	rex(e, 0, 0, dst, 0);
+	b1(e, 0xD3);						/* op r/m32, cl */
+	modrm_rr(e, (int) op, dst);
+}
+
 void jit_x64_neg_r(x64_emisor * e, x64_reg dst)
 {
 	rex(e, 0, 0, dst, 0);

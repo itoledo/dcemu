@@ -345,7 +345,7 @@ endif()
 
 if(DCEMU_JIT)
 	target_compile_definitions(dcemu PRIVATE DCEMU_JIT)
-	target_sources(dcemu PRIVATE jit.c jit_x64.c)
+	target_sources(dcemu PRIVATE jit.c jit_x64.c arm7jit.c)
 endif()
 
 if(DCEMU_SONDA_URC)

@@ -42,6 +42,7 @@ static const dc_suite * const suites[] =
 	&suite_g2dma,
 	&suite_aica,
 	&suite_arm7,
+	&suite_arm7jit,
 	&suite_vmu,
 	&suite_dsp,
 	&suite_jit_x64,

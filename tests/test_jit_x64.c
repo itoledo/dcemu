@@ -546,6 +546,20 @@ static void corrimientos_y_extensiones(void)
 	jit_x64_shift_ri(&e, X64_SAR, X64_RAX, 1);			/* sar eax, 1 */
 	ESPERAR_EMITIDO(0xD1, 0xF8);
 
+	/* Por CL: la rotacion de una carga desalineada del ARM7. */
+	arrancar();
+	jit_x64_shift_cl(&e, X64_ROR, X64_RAX);				/* ror eax, cl */
+	ESPERAR_EMITIDO(0xD3, 0xC8);
+
+	arrancar();
+	jit_x64_shift_cl(&e, X64_SHR, X64_R12);				/* shr r12d, cl */
+	ESPERAR_EMITIDO(0x41, 0xD3, 0xEC);
+
+	/* La condicion de desborde, que el traductor del ARM7 lee como V. */
+	arrancar();
+	jit_x64_setcc(&e, X64_O, X64_RCX);					/* seto cl */
+	ESPERAR_EMITIDO(0x0F, 0x90, 0xC1);
+
 	arrancar();
 	jit_x64_movsx_b(&e, X64_RAX, X64_RCX);				/* movsx eax, cl */
 	ESPERAR_EMITIDO(0x0F, 0xBE, 0xC1);

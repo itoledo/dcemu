@@ -43,6 +43,7 @@
 #endif
 #ifdef DCEMU_JIT
 #include "jit.h"
+#include "arm7jit.h"
 #endif
 #include "hilo_aica.h"
 #include "ubc.h"
@@ -1892,6 +1893,12 @@ int main(int argc, char *argv[])
 	arm7_init();
 	arm7_reset();
 
+#ifdef DCEMU_JIT
+	// El traductor de bloques del ARM7 a x64 (DCEMU_SIN_JIT_ARM=1 lo deja
+	// sin instalar). Vive en el binario del JIT por lo mismo que jit.c.
+	arm7jit_iniciar();
+#endif
+
 	// La salida de sonido: la tarjeta y/o el .wav de --captura-audio.
 	audio_iniciar();
 ///*	
@@ -2484,6 +2491,9 @@ int main(int argc, char *argv[])
 	traza_resumen();
 	perf_resumen();
 	arm7_perfil_resumen();
+#ifdef DCEMU_JIT
+	arm7jit_resumen();
+#endif
 
 //	SDL_RemoveTimer(timer_id);
 //	SDL_RemoveTimer(vblank_id);

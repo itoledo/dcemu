@@ -122,8 +122,9 @@ static DWORD onda_leer16(DWORD a)
 	FIQ pudo cambiar, asi que el bloque termina en esa frontera -- que es
 	exactamente donde el interprete habria mirado. Lo ponen los dos caminos
 	frios de arm7_leer()/arm7_escribir(); lo limpia el bloque al entrar.
+	Exportado: la salida lateral emitida lo mira por direccion absoluta.
 */
-static int arm7_toco_reg = 0;
+int arm7_toco_reg = 0;
 
 DWORD arm7_leer(DWORD direccion, int tam)
 {
@@ -448,8 +449,12 @@ static int condicion(DWORD op)
 /* ------------------------------------------------------------------------ */
 
 /* Los ciclos que costo la instruccion en curso. El modelo es el del manual,
-   simplificado: 1 por instruccion secuencial, mas los accesos a memoria. */
-static int ciclos_op;
+   simplificado: 1 por instruccion secuencial, mas los accesos a memoria.
+   Exportado con nombre propio porque el codigo emitido lo pone en 1 antes de
+   llamar a un manejador y lo recoge despues; el define conserva el nombre
+   corto en todo este archivo. */
+int arm7_ciclos_op;
+#define ciclos_op arm7_ciclos_op
 
 static void poner_nz(DWORD r)
 {
@@ -1411,17 +1416,9 @@ int arm7_cobertura = 0;
 	DCEMU_SIN_PREDECO_ARM=1 lo apaga en el mismo binario, que es el A/B.
 */
 
-typedef struct arm7_deco_s arm7_deco;
-
-struct arm7_deco_s
-{
-	DWORD			palabra;			/* de que palabra se decodifico */
-	unsigned char	cond;
-	unsigned char	b0, b1, b2;			/* campos chicos, por forma */
-	DWORD			imm;				/* inmediato / desplazador / lista */
-	DWORD			imm2;				/* segundo inmediato (mascara de MSR) */
-	void		 (* fn)(const arm7_deco * e);
-};
+/* La estructura de la entrada es publica (arm7.h): el traductor de bloques
+   emite a partir de ella. Llenarla sigue siendo asunto exclusivo de
+   arm7_decodificar(), aqui abajo. */
 
 static arm7_deco	arm7_deco_tabla[AICA_ONDA_SIZE / 4];
 static int			arm7_predeco = 0;
@@ -1852,6 +1849,22 @@ static void arm7_decodificar(arm7_deco * e, DWORD op)
 	/* MUL/MLA, SWP, SWI e indefinidas quedan en d_generico. */
 }
 
+/* La forma de una entrada, para el traductor -- que no puede comparar los
+   manejadores porque son estaticos de este archivo a proposito. */
+int arm7_deco_forma(const arm7_deco * e)
+{
+	if (e->fn == d_alu_imm_s0)	return ARM7_DF_ALU_IMM_S0;
+	if (e->fn == d_alu_imm_s1)	return ARM7_DF_ALU_IMM_S1;
+	if (e->fn == d_alu_reg_s0)	return ARM7_DF_ALU_REG_S0;
+	if (e->fn == d_alu_reg_s1)	return ARM7_DF_ALU_REG_S1;
+	if (e->fn == d_ldr_imm)		return ARM7_DF_LDR_IMM;
+	if (e->fn == d_str_imm)		return ARM7_DF_STR_IMM;
+	if (e->fn == d_bloque)		return ARM7_DF_BLOQUE;
+	if (e->fn == d_mrs)			return ARM7_DF_MRS;
+
+	return ARM7_DF_OTRA;
+}
+
 void arm7_init(void)
 {
 	int i, f;
@@ -2081,11 +2094,32 @@ typedef struct
 	unsigned char	relleno[3];
 	int				ciclos_max;
 	DWORD			palabras[ARM7_BLQ_MAX];
+
+	/* La copia privada de las entradas: el traductor emite leyendo de aca, y
+	   por eso el codigo emitido no depende de la tabla compartida -- que un
+	   paso ajeno puede redecodificar. Inmutables entre emision y corrida. */
+	arm7_deco		entradas[ARM7_BLQ_MAX];
+	void *			codigo;					/* emitido, o NULL: el lazo en C */
 } arm7_blq;
 
 static arm7_blq	arm7_blqs[ARM7_BLQ_RANURAS];
 
-static int		arm7_blq_ult_pasos;			/* del ultimo bloque corrido */
+int				arm7_blq_ult_pasos;			/* del ultimo bloque corrido; lo
+											   escribe tambien el emitido */
+
+/* El traductor instalado, o NULL: todo por el lazo en C. */
+static void * (* arm7_blq_emitir)(const arm7_deco * entradas, int n,
+                                  DWORD dir) = NULL;
+
+void arm7_blq_instalar_emisor(void * (* emitir)(const arm7_deco * entradas,
+                                                int n, DWORD dir))
+{
+	arm7_blq_emitir = emitir;
+
+	/* Los bloques ya descubiertos quedaron sin codigo (o con codigo de un
+	   emisor anterior): que se redescubran. */
+	memset(arm7_blqs, 0, sizeof(arm7_blqs));
+}
 
 /*
 	-1 si la instruccion no puede ir en un bloque; si puede, su costo maximo
@@ -2176,6 +2210,7 @@ static void arm7_blq_descubrir(arm7_blq * b, DWORD dir)
 			break;
 
 		b->palabras[n] = op;
+		b->entradas[n] = *e;
 		ciclos += c;
 		n++;
 	}
@@ -2185,12 +2220,19 @@ static void arm7_blq_descubrir(arm7_blq * b, DWORD dir)
 		/* La marca negativa guarda la palabra de cabecera: si alguien la
 		   reescribe, la marca se invalida sola por la misma comparacion. */
 		b->palabras[0] = onda_leer32(dir & (AICA_ONDA_SIZE - 1));
-		b->n = 0;
+		b->n      = 0;
+		b->codigo = NULL;
 		return;
 	}
 
 	b->n = (unsigned char) n;
 	b->ciclos_max = ciclos;
+
+	/* Con traductor instalado, el bloque sale emitido; NULL deja el lazo en
+	   C, que es tambien el destino de todo bloque si el arena se llena. */
+	b->codigo = (arm7_blq_emitir != NULL)
+	          ? arm7_blq_emitir(b->entradas, n, dir)
+	          : NULL;
 }
 
 /* Corre el bloque entero (o hasta la salida lateral). Devuelve los ciclos
@@ -2200,6 +2242,17 @@ static int arm7_blq_correr(const arm7_blq * b)
 	DWORD base    = b->base;
 	int   gastado = 0;
 	int   i;
+
+	/*
+		El camino emitido. Tres condiciones ademas de tener codigo: el PC tiene
+		que ser EXACTAMENTE la base (el emitido bakea PC+8 como constante, y
+		tras el tope del bus r15 puede traer bits altos de mas), y los dos
+		instrumentos por paso -- el perfil y el censo de la suite -- corren por
+		el lazo en C, que es el que lleva sus ganchos.
+	*/
+	if (b->codigo != NULL && arm7.r[15] == base
+	 && !arm7_perfil && !arm7_cobertura)
+		return ((int (*)(void)) b->codigo)();
 
 	arm7_toco_reg = 0;
 

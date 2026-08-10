@@ -46,6 +46,8 @@ typedef enum
    Estan las que el JIT usa; el resto se agrega cuando haga falta. */
 typedef enum
 {
+	X64_O   = 0x0,	/* desborde: lo que el traductor del ARM7 lee como V */
+	X64_NO  = 0x1,
 	X64_E   = 0x4,	/* igual / cero */
 	X64_NE  = 0x5,
 	X64_B   = 0x2,	/* menor sin signo */
@@ -141,6 +143,10 @@ typedef enum
 } x64_shift;
 
 void jit_x64_shift_ri(x64_emisor * e, x64_shift op, x64_reg dst, int cuenta);
+
+/* Por la cuenta que este en CL: la rotacion de una carga desalineada del ARM7
+   depende de la direccion, que solo existe en tiempo de ejecucion. */
+void jit_x64_shift_cl(x64_emisor * e, x64_shift op, x64_reg dst);
 
 /* De 64 bits, y la comparacion de un byte con indice: es lo que el camino
    rapido de escritura emitido necesita para mirar el mapa de paginas con
