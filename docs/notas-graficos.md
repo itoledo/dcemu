@@ -996,11 +996,32 @@ atlas `489880` es un **mapa de entorno (cielo al atardecer) con máscara especul
 vidrio con vetas, y flip/clamp del TSP dominante en cero. **El único sospechoso vivo que queda en
 dcemu son los cuadrados de ruido del atlas de la librea**: parches de moteado negro (p. ej.
 alrededor del texel (231,181) del `467880`) que conviven con arte impecable y de los que el píxel
-negro de la banda tomó su última palabra — ¿basura de la subida/descompresión («MTEX» del disco,
-LZ propio del juego) o arte legítimo (¿fibra de carbono? ¿dither?)? Dos vías para cerrarlo:
-extraer el MTEX del `.gdi` reimplementando el LZ de 42 instrucciones del descompresor del juego
-(el desensamblado está en la traza), o conseguir el 206 en SELECT TRANSMISSION en hardware real
-(los dos videos muestran Lancia y Celica — otros autos, otras libreas). Dos
+negro de la banda tomó su última palabra. **La vuelta MTEX (2026-08-10, la quinta) los dejó a un
+paso de absueltos.** Lo que quedó probado con el disco en la mano: el LZ del juego está
+**revertido y reimplementado exacto** — banderas por byte MSB-primero, bit 1 = match con
+`largo = (A&0xF)+3` y `desplazamiento = ((B<<4)|(A>>4))+1` (tope 4096, copia solapable), bit 0 =
+literal, y **la recarga del byte de banderas ocurre ANTES del payload del octavo token** (el
+error que cuesta cometer al reimplementarlo); cada entrada lleva 16 bytes de encabezado con el
+tamaño descomprimido en `+4` y datos en `+16`; los archivos «MTEX» llevan la cuenta de entradas
+en el byte 4 y una tabla de `{tipo, formato, offset, tamaño}` de a 16 bytes desde `+0x10`. Con él
+se verificó **la cadena entera de dcemu de punta a punta** para el pack del carrusel (254
+sectores desde FAD 381886, track21 del `.gdi`): disco → lectora → RAM del guest (byte a byte) →
+LZ → subida → VRAM → caché → decodificación, y la entrada 0 descomprime EXACTO a las «dos vistas
+rosas» — **el rosa es arte embarcado del juego**, no corrupción. El flujo del juego quedó
+mapeado: un lector por streaming con reposicionamientos (`MULTI_DMAREAD`), 31 archivos MTEX
+anidados en la región 381798+, los logos de los autos en el de FAD 382140 (cinco entradas,
+descomprimen impecables), el modelo en 383021/384143, y **los packs por auto de 301 sectores en
+FAD 360392/360994** — un contenedor propio, sin firma MTEX, donde vive la librea (cargada en
+SELECT CAR, re-subida a `467880` al entrar a la transmisión desde el caché en RAM). La librea no
+está cruda en el disco (barrida) ni en las ~400 primeras entradas LZ de 0x20000 del track. Los
+valores de los cuadrados (0x0841/0x4208/0x39C7/0x2945 con claros 0xF79E) son **grises 565
+estructurados en trama — material tramado (¿parrilla/carbono?), no basura** — y el 206 del
+SELECT CAR (misma librea desde otro slot) muestra el mismo parcheado oscuro en los arcos. Para
+el golpe de gracia queda una sola rendija: romper el índice del contenedor de los packs por auto
+(FAD 360392) o volcar el caché en RAM del pack tras la carga (~26 s) y comparar los cuadrados
+ahí. Con todos los eslabones verificados exactos y los valores con estructura de arte, el
+veredicto provisional es que **el auto de dcemu es un retrato fiel de los datos del juego**, y
+la comparación pendiente contra hardware exige el 206 mismo (los videos tienen Lancia y Celica). Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado
