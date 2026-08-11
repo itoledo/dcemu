@@ -1050,10 +1050,28 @@ Celica**: el modelo predice gris (95,93,95) con el cuerpo presente; el render da
 (36,31,97). Primera divergencia modelo-contra-render del expediente. Las capas de encima quedaron
 absueltas por palanca (`DCEMU_SIN_TEX` de `489880` cielo, `491880` vidrio y `39a080` — que
 resultó ser el atlas de los paneles de UI — no cambian el auto): **el velo está en cómo se dibuja
-el cuerpo mismo**, en algo que el modelo aritmético no captura. El siguiente paso es de caja
-blanca: instrumentar el ligado de textura en el draw (qué textura GL y de qué decodificación
-sirve cada tira de `467880` en la escena final) y recorrer una línea de píxeles comparando modelo
-contra render para delimitar la capa fantasma. Dos
+el cuerpo mismo**, en algo que el modelo aritmético no captura.
+
+**RESUELTO (2026-08-10, la novena vuelta): la clave de la caché de texturas no incluía el formato
+de píxel.** El desenlace lo destapó el usuario mirando el atlas «rosa»: «¿no será un problema de
+ARGB/RGBA?» — y sí: los bytes «rosas» son **fotos ARGB1555 perfectas** (el 306 Maxi y el Corolla
+WRC del carrusel) que solo eran rosas a través de un visor que asumía 565; en dcemu nunca se
+vieron rosas. Pero la observación destapó lo real: **los menús de SR2 usan la misma dirección
+(`467880`) como fotos 1555 en SELECT CAR y como página de librea 565 en SELECT TRANSMISSION — y
+la clave de la caché ({dirección, tamaño, bpp, paleta, mip}) no distinguía el formato**, así que
+una sola entrada servía a los dos declarantes y su decodificación era la del último que la
+regeneró: las tiras del cuerpo muestreaban la página re-empaquetada con los bits corridos
+(1555↔565), que es exactamente el confeti del Celica, la banda y los «cuadrados de ruido» del
+206, y el «auto semitransparente» que abrió el expediente. El arreglo es la misma regla que ya
+tenía el bit de mipmap: **el formato entra a la clave** (`fmt` en `cached_textures`), con
+`DCEMU_SIN_FMT_CLAVE=1` como interruptor que reproduce el comportamiento anterior. Compuertas:
+**la canónica de DOOM intacta al byte (198B396F…, sobre el `.cdi` — ojo: la referencia es sobre
+el CDI, no el GDI del mismo directorio, que arranca distinto y costó una bisección en falso)**,
+las doce demos de control byte a byte sin cambio, y los dos autos quedan **idénticos al hardware
+real**: el Celica blanco Castrol sólido y el 206 blanco con su león. La divergencia
+modelo-render del flanco era esto mismo (el modelo muestreaba el volcado de la decodificación
+correcta; el render, la entrada aliased), y la sonda del ligado no podía verlo porque el id de GL
+era el mismo — lo que cambiaba era el contenido decodificado adentro. Dos
 trampas de método que costaron horas: **el estado de la VMU cambia el flujo de menús** (misma
 receta de teclas, otra pantalla — fijar `--vmu=` a una copia por corrida), y **las direcciones de
 las baldosas son de un asignador del guest** — el mapa de una corrida no vale para otra. El rayado

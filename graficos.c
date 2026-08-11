@@ -392,6 +392,16 @@ struct cached_texture
 	   la muestrea BLANCA (el "mundo blanco" intermitente del juego). */
 	DWORD	con_mip;
 
+	/* El formato de pixel entra a la clave por la misma regla: la misma
+	   direccion declarada ARGB1555 por una tira y RGB565 por otra son
+	   decodificaciones distintas de los mismos bytes. No es teorico: los
+	   menus de Sega Rally 2 usan un mismo slot (467880) como fotos 1555 en
+	   SELECT CAR y como pagina de librea 565 en SELECT TRANSMISSION -- solo
+	   la generacion de la subida salvaba la colision, y una tira que pidiera
+	   el formato nuevo antes de la escritura ligaria la decodificacion del
+	   viejo sin que nada lo informe. */
+	DWORD	fmt;
+
 	/* Los cuatro parametros de muestreo que quedaron puestos en este objeto de
 	   GL la ultima vez. Son estado **del objeto**, no del contexto, asi que
 	   volverlos a poner con el mismo valor no cambia nada y cuesta cuatro
@@ -1006,6 +1016,14 @@ static GLint wrap_gl(DWORD w)
 static void gl_ligar(GLuint t);
 
 static int env_sin_cache_tex  = -1;
+
+/* DCEMU_SIN_FMT_CLAVE=1: la clave de la cache vuelve a ignorar el formato de
+   pixel -- el comportamiento anterior byte a byte, que es lo que prueba que
+   el interruptor aisla el cambio. Con el formato fuera de la clave, una misma
+   direccion declarada 1555 por una tira y 565 por otra comparte entrada y la
+   decodificacion que sirve es la del ultimo que la regenero: el auto confeti
+   de los menus de Sega Rally 2. */
+static int env_sin_fmt_clave  = -1;
 static int env_sin_alphatest  = -1;
 
 static int env_interruptor(const char * nombre, int * cache)
@@ -1313,7 +1331,9 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 		&&  cached_textures[i].vsize == vsize
 		&&  cached_textures[i].bpp == bpp
 		&&  cached_textures[i].paleta == paleta
-		&&  cached_textures[i].con_mip == TriangleStrip[strip].texture.mipmapped)
+		&&  cached_textures[i].con_mip == TriangleStrip[strip].texture.mipmapped
+		&&  (env_interruptor("DCEMU_SIN_FMT_CLAVE", &env_sin_fmt_clave)
+			|| cached_textures[i].fmt == TriangleStrip[strip].texture.pvr_texture_pixelpack))
 		{
 			if (cached_textures[i].gen == gen_ahora
 			&&  cached_textures[i].gen_pal == pal_ahora)
@@ -1396,6 +1416,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 	cached_textures[cur_tex_count].gen = gen_ahora;
 	cached_textures[cur_tex_count].gen_pal = pal_ahora;
 	cached_textures[cur_tex_count].con_mip = TriangleStrip[strip].texture.mipmapped;
+	cached_textures[cur_tex_count].fmt = TriangleStrip[strip].texture.pvr_texture_pixelpack;
 
 	if (rehash)
 		tex_hash_meter(cur_tex_count);
