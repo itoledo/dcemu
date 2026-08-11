@@ -2773,6 +2773,10 @@ static long censo_vol_grupos;		/* triangulos que cierran un volumen */
 #define TRAZA_ULTIMAS	12
 
 static int traza_rendidas = 0;
+
+/* La escena pedida por DCEMU_TRAZA_ESCENA traza tambien su dibujo: el ligado
+   real de textura por tira, preguntado a GL y no a la sombra. */
+static int traza_escena_dibujo = 0;
 static int traza_ultimas[TRAZA_ULTIMAS];
 
 /* Los TA_LIST_INIT que no presentaron por no traer nada registrado. Es la
@@ -3070,6 +3074,11 @@ static void cb_tastart_cuerpo(DWORD addr, void * p, size_t size)
 			pedida = 1;
 			obj_quedan--;
 		}
+
+		/* La escena pedida tambien traza su DIBUJO: el ligado real de textura
+		   por tira (abajo, en los bucles), que es lo que un volcado del estado
+		   no puede dar -- la sombra puede mentir y esto pregunta a GL. */
+		traza_escena_dibujo = pedida;
 
 		if (volcadas < 2 || pedida)
 		{
@@ -4302,6 +4311,19 @@ static void dibujar_escena(void)
 
 			dibujar_tira(i);
 
+			/* El ligado REAL, preguntado a GL: si difiere del declarado, la
+			   sombra mintio y la tira salio con la textura de otra. */
+			if (traza_escena_dibujo)
+			{
+				GLint ligada = 0;
+
+				glGetIntegerv(GL_TEXTURE_BINDING_2D, &ligada);
+				fprintf(stderr, "dibujo: tira %lu tex=%08x gl=%d\n",
+					(unsigned long) i,
+					(unsigned) TriangleStrip[i].texture.surface,
+					(int) ligada);
+			}
+
 			if (px)
 				glmoderno_u_volumen(0);
 		}
@@ -4351,6 +4373,8 @@ static void dibujar_escena(void)
 	   la vista de depuracion-- espera encontrarlo ahi. */
 	glmoderno_acum_destino(0);
 	glmoderno_acum_fuente(0);
+
+	traza_escena_dibujo = 0;
 
 	PERF_SUMAR(t_escena, perf_ns_escena);
 }
