@@ -1147,6 +1147,17 @@ void hack_gdrom()
 				if (R(4) != multi_id || multi_id == 0
 					|| tam == 0 || tam > multi_restante)
 				{
+					/* El rechazo con su porque: un pedazo rebotado no deja
+					   rastro y el guest que contaba con el (por ejemplo, con
+					   el adelanto del flujo que aqui no se emula) saltea una
+					   pieza en silencio -- la forma de falla de siempre. */
+					if (traza_activa)
+						fprintf(stderr, "hack: REQ_DMA_TRANS RECHAZADO:"
+							" id=%lx (multi=%lx) tam=%lu restante=%lu\n",
+							(unsigned long) R(4), (unsigned long) multi_id,
+							(unsigned long) tam,
+							(unsigned long) multi_restante);
+
 					R(0) = (DWORD) -1;		// GDC_ERR
 					break;
 				}
