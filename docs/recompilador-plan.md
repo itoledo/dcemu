@@ -10,32 +10,33 @@ archivo guarda las conclusiones que hacen falta para trabajar, no el camino.
 `build-pgo/dcemu-jit.pgd` — ver la sección de PGO de CLAUDE.md). `DCEMU_JIT=2` es el
 traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
 
-- **121 plantillas**, seleccionadas por censo de qué corta bloques (no por completar
-  `opcodes[]`) — las últimas cuatro las pidió **el censo de la frontera por peso**
+- **122 plantillas**, seleccionadas por censo de qué corta bloques (no por completar
+  `opcodes[]`) — las últimas cinco las pidió **el censo de la frontera por peso**
   (abajo): las dos `MOV.W` que picaban el lazo de columnas de DOOM en ocho bloques de
   2-10 instrucciones corridos 9,4 M de veces cada uno, `NEGC` (por manejador) y
-  `LDC Rm,GBR`. Lo que corta hoy: palabras de datos (deben cortar), escritores de SR,
-  `TRAPA`, lo que la clave FPU gobierna, y las ranuras con memoria de las ramas sin
-  par (abajo).
-- **Los pares de rama** (`rts`/`bra`/`jmp`/`braf` + ranura con memoria — el epílogo
-  estándar de Katana y sus parientes) ya no cortan: la emisión sincroniza con el PC
+  `LDC Rm,GBR`, más `MOV.L @(disp,GBR),R0` (C6xx). Lo que corta hoy: palabras de
+  datos (deben cortar), escritores de SR, `TRAPA` y lo que la clave FPU gobierna.
+- **Los pares de rama** (`rts`/`bra`/`jmp`/`braf`/`jsr`/`bsr`/`bsrf` + ranura con
+  memoria) ya no cortan: la emisión sincroniza con el PC
   de la RAMA antes de tocar nada (la falta reejecuta desde la rama, como la
   instantánea del intérprete), el destino dinámico viaja por el lugar seguro del
   estado, y el par TERMINA la traza (lo que sigue es otra función; dejar la cola le
-  costó a SR2 dos puntos y +27 % de arena). **JSR/BSR/BSRF quedan sin par**: escriben
-  PR antes de la ranura, y una falta lo revertiría por instantánea en el intérprete
-  pero no en el emitido — el marco de excepción del guest vería el PR nuevo.
-  `DCEMU_JIT_SIN_PARES=1` los apaga.
+  costó a SR2 dos puntos y +27 % de arena). En las llamadas, PR se compromete
+  **después** de la ranura y el par solo se admite si esta no lee ni escribe PR:
+  una falta conserva el PR viejo y el éxito deja `pc+4`, igual que el intérprete.
+  `DCEMU_JIT_SIN_PARES=1` los apaga todos; `DCEMU_JIT_SIN_PARES_LLAMADA=1` aísla
+  solo los tres nuevos.
 - **El censo de la frontera** (en el resumen `jit:`, siempre): en qué termina cada
   bloque, ponderado por las veces que se corrió. Es lo que separa «hay muchos sitios»
   de «por ahí pasa la ejecución», y lo que eligió el lote de arriba. El residuo que
-  nombra hoy: `MOV.L @(disp,GBR)` (C6xx) y el 15-18 % de ranuras sin par (los JSR).
+  nombra hoy palabras de datos, `TRAPA` y escritores de SR.
 - **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **89,8 %**
-  de cobertura, **43,2 por entrada** — las entradas bajaron 50 % con el lote del
-  censo), Crazy Taxi (**90,1 %**, 12,4) y Sega Rally 2 (MMU+FPU, **92,9 %**, 21,3).
-  Mejores marcas (tanda 2026-08-09 noche): DCDoom **31 826 ms, −25,5 %, 1,10× tiempo
-  real**; CT **92 510 ms, −16,7 %** su mejor cociente; SR2 **65 781 ms, −9,6 %**
-  (0,91×).
+  de cobertura antes de este lote, ahora **93,8 % y 48,4 por entrada**), Crazy Taxi
+  (**96,2 %**, 20,1) y Sega Rally 2 (MMU+FPU, **95,2 %**, 24,8). Tanda final
+  2026-08-10, binario `4BDA443CB17BD1B6`: DCDoom **31 654 ms, −26,5 %**; CT
+  **91 419 ms, −19,3 %**; SR2 **67 635 ms, −8,4 %**. Los pares de llamada solos,
+  aislados dentro del mismo binario, valen ~1,0/5,5/0,4 % respectivamente; C6xx es
+  neutra en SR2 (~0,1 %) y queda porque elimina la frontera sin costo.
 - El traductor emite **por identidad de manejador** (`OP_HANDLER` de la `oplist` real):
   no existe un segundo decodificador que pueda divergir del primero. Los ciclos de cada
   plantilla se copian leyendo el cuerpo ENTERO del manejador — nunca por cercanía: un
@@ -125,6 +126,7 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | El par de retorno con la cola dentro | **perdió** (SR2 −6,3 % contra −8,3) | la caminata seguía de largo tras el RTS y anexaba la función siguiente: +27 % de arena, el código frío dispersa lo caliente (la lección del tope de 96) |
 | El par de retorno terminando la traza | **mixto-marginal, quedó encendido** | DOOM −21,9 y CT −15,6/−16,7 (mejor), SR2 −7,5 (−0,8 pt, dentro de su dispersión); cobertura +2,5/+2,8 pt y entradas −9,6/−12,7 % |
 | El lote del censo de la frontera (4 plantillas + pares BRA/JMP/BRAF) | **ganó en los tres, el mayor salto de la serie** | DOOM −25,5 % (1,10×, entradas −50 %), CT −16,7 %, SR2 −9,6 % (92,9 % de cobertura): el censo por peso encontró el residuo interpretado que el flujo no |
+| C6xx + pares BSR/JSR/BSRF | **ganó en los tres; encendido** | PR se compromete tras una ranura que no lo toca; los pares solos valen ~1,0/5,5/0,4 % en DOOM/CT/SR2 y llevan las entradas a 48,4/20,1/24,8 instrucciones |
 | Ciclos de la rama antes de la ranura en un par | **la divergencia de los ±15-19 k** | tr_manejador recarga CYC del contexto: lo sumado tras la sync se evapora; después de la ranura, como el intérprete |
 | Llamar al ayudante en cada acceso | **perdió** — el camino rápido se emite en línea | 2,2 ns (~9 ciclos) por acceso, la mitad de la ganancia del bloque |
 | Redespacho en el arena por ayudante C | **perdió dos veces** (+2,2/+4,6 % y +0,5/+0,6 %) | las llamadas fallidas superan a los aciertos |
@@ -167,24 +169,17 @@ mezclador del AICA ya pesa 2,9-7,4 %.
 
 ## Lo pendiente, en orden
 
-(El superbloque por flujo y el lote del censo se hicieron enteros — 2026-08-09, con
-el agujero de la página del anfitrión cerrado de paso —; los veredictos están en la
-tabla y lo encendido por omisión son los pares de rama y las 121 plantillas.)
+(El mini-lote C6xx + pares de llamada se cerró el 2026-08-10; lo encendido por
+omisión son todos los pares de rama y las 122 plantillas.)
 
-1. **El próximo mini-lote del censo**: `MOV.L @(disp,GBR)` y su familia (C6xx, lo
-   que el censo nombra hoy), y el par para `jsr`/`bsr`/`bsrf` — que exige resolver
-   el peligro de PR (escriben PR antes de la ranura; una falta lo revertiría por
-   instantánea en el intérprete y no en el emitido). La salida probable: retrasar la
-   escritura de PR a después de la ranura SOLO si la ranura no lee PR (el censo dirá
-   si el caso con lectura existe).
-2. **La época por página** (en vez de global): los rechazos de DCDoom quedaron en
+1. **La época por página** (en vez de global): los rechazos de DCDoom quedaron en
    8,2 M — cada movimiento de mapeo de WinCE invalida TODOS los bloques y la
    revalidación por palabras falla ~7 % de las entradas. Una generación por página
    de guest dejaría en pie lo que no se movió.
-3. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
+2. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
    el viaje C; falta la marca de «contexto ensuciado». Con las entradas de DOOM a la
    mitad, su techo bajó — medir antes de escribirla.
-4. **La fase 3 original: el parque entero** — el barrido de 135 demos y los 14 juegos
+3. **La fase 3 original: el parque entero** — el barrido de 135 demos y los 14 juegos
    con `DCEMU_JIT=2` contra su corrida de control, que es lo que decide la adopción
    por omisión (hoy el JIT es build aparte a propósito: el A/B corre sobre una sola
    imagen).

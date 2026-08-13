@@ -538,15 +538,15 @@ static unsigned long long	jit_flujo_bsr = 0;
 static unsigned long long	jit_flujo_rts = 0;
 
 /* Los pares de rama: una rama cuya ranura accede a memoria ya no corta el
-   bloque (RTS, BRA, JMP y BRAF -- el campo `par` de la fila; las que
-   escriben PR quedan afuera, ver alla). El caso que lo inauguro es el
-   epilogo estandar de Katana (rts; lds.l @r15+,pr): sin esto CADA retorno
-   de llamada paga salida + despacho + dos instrucciones interpretadas. La
-   emision sincroniza con el PC de la RAMA antes de tocar nada -- una falta
-   en la ranura reejecuta desde la rama, como el interprete -- que es
-   exactamente lo que faltaba en el expediente de las 616.
-   DCEMU_JIT_SIN_PARES=1 lo apaga para el A/B. */
+   bloque. El caso que lo inauguro es el epilogo estandar de Katana
+   (rts; lds.l @r15+,pr): sin esto CADA retorno de llamada paga salida +
+   despacho + dos instrucciones interpretadas. La emision sincroniza con el
+   PC de la RAMA antes de tocar nada -- una falta en la ranura reejecuta
+   desde la rama, como el interprete -- que es exactamente lo que faltaba en
+   el expediente de las 616. DCEMU_JIT_SIN_PARES=1 los apaga todos;
+   DCEMU_JIT_SIN_PARES_LLAMADA=1 solo BSR/JSR/BSRF, para su A/B. */
 static int					jit_par_rts = 1;
+static int					jit_par_llamadas = 1;
 static unsigned long long	jit_pares_rts = 0;
 
 /* En que termino el descubrimiento de una traza: el censo de la frontera. */
@@ -555,7 +555,7 @@ static unsigned long long	jit_pares_rts = 0;
 #define JIT_FIN_VENTANA		2	/* el limite de 1 KB bajo MMU */
 #define JIT_FIN_RANURA		3	/* rama/FPU en la ranura, o rama al final */
 #define JIT_FIN_RANURA_MEM	4	/* ranura con memoria de una rama no-RTS */
-#define JIT_FIN_PAR			5	/* el par de retorno */
+#define JIT_FIN_PAR			5	/* par de rama */
 #define JIT_FIN_LAZO		6	/* el destino ya estaba en la traza */
 #define JIT_FIN_FPU			7	/* la compuerta o FD */
 #define JIT_FIN_N			8
@@ -2070,12 +2070,12 @@ struct jit_plantilla
 	/* La fila apila PR (STS.L PR,@-Rn): el rastreo recuerda que lo apilado
 	   es el punto de retorno vigente, para que el pop lo reponga. */
 	unsigned char	apila_pr;
-	/* La rama admite el par con ranura de memoria: RTS, BRA, JMP y BRAF.
-	   JSR, BSR y BSRF quedan afuera porque escriben PR ANTES de la ranura:
-	   en el interprete una falta de la ranura lo revierte por instantanea,
-	   y el emitido no tiene con que revertirlo -- el marco de excepcion del
-	   guest veria el PR nuevo. Los condicionales (BF/S, BT/S) quedan para
-	   cuando el censo los pida. */
+	/* La rama admite el par con ranura de memoria. En JSR, BSR y BSRF la
+	   escritura de PR se retrasa hasta que la ranura termina, y el par solo
+	   se forma si esa ranura no lee ni escribe PR: ante una falta queda el
+	   valor anterior, como tras restaurar la instantanea del interprete; al
+	   volver, comprometerlo tarde es indistinguible. Los condicionales
+	   (BF/S, BT/S) quedan para cuando el censo los pida. */
 	unsigned char	par;
 };
 
@@ -3504,6 +3504,30 @@ static void pl_bsr108(jit_gen * g, jit_traduccion * t, int i)
 {
 	DWORD pc = t->pc[i];
 
+	/* El par de llamada: descubrimiento ya probo que la ranura no observa ni
+	   modifica PR, asi que se puede comprometer despues del acceso. */
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		const jit_plantilla * r = t->pl[i + 1];
+
+		tr_sync(g, t, pc);
+
+		jit_x64_inc_r(&g->e, N);
+		gen_volcar_cuenta(g);
+
+		r->emitir(g, t, i + 1);
+
+		if (r->ciclos)
+			jit_x64_add_ri(&g->e, CYC, r->ciclos);
+
+		jit_x64_mov_mi(&g->e, CTX, O_PR, pc + 4);
+		jit_x64_add_ri(&g->e, CYC, 2);
+
+		jit_pares_rts++;
+		tr_seguir_en(g, t, tr_destino12(t, i));
+		return;
+	}
+
 	jit_x64_add_ri(&g->e, CYC, 2);
 	jit_x64_inc_r(&g->e, N);
 	jit_x64_mov_mi(&g->e, CTX, O_PR, pc + 4);
@@ -3591,6 +3615,44 @@ static void tr_salto_dinamico_mem(jit_gen * g, jit_traduccion * t, int i,
 	gen_salir_dinamico(g, t);
 }
 
+/*
+	El equivalente para JSR/BSRF. El descubrimiento ya probo que la ranura no
+	lee ni escribe PR, por lo que comprometer el retorno despues del acceso
+	conserva ambos caminos: una falta deja el PR viejo y el exito deja pc+4.
+*/
+static void tr_llamada_dinamica_mem(jit_gen * g, jit_traduccion * t, int i,
+	int relativo)
+{
+	const jit_plantilla * r  = t->pl[i + 1];
+	DWORD				 pc = t->pc[i];
+
+	tr_sync(g, t, pc);
+
+	tr_cargar(g, t, X64_RAX, TN(t->palabra[i]));
+
+	if (relativo)
+		jit_x64_alu_ri(&g->e, X64_ADD, X64_RAX, (int) (pc + 4));
+
+	jit_x64_mov_mr(&g->e, CTX, D(&jit_estado.destino), X64_RAX);
+
+	jit_x64_inc_r(&g->e, N);
+	gen_volcar_cuenta(g);
+
+	r->emitir(g, t, i + 1);
+
+	if (r->ciclos)
+		jit_x64_add_ri(&g->e, CYC, r->ciclos);
+
+	jit_x64_mov_mi(&g->e, CTX, O_PR, pc + 4);
+	jit_x64_add_ri(&g->e, CYC, 3);
+
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D(&jit_estado.destino));
+	jit_x64_mov_mr(&g->e, CTX, O_PC, X64_RAX);
+
+	jit_pares_rts++;
+	gen_salir_dinamico(g, t);
+}
+
 static void pl_jmp110(jit_gen * g, jit_traduccion * t, int i)
 {
 	if (i + 1 < t->n && t->pl[i + 1]->accede)
@@ -3604,6 +3666,12 @@ static void pl_jmp110(jit_gen * g, jit_traduccion * t, int i)
 
 static void pl_jsr111(jit_gen * g, jit_traduccion * t, int i)
 {
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		tr_llamada_dinamica_mem(g, t, i, 0);
+		return;
+	}
+
 	tr_salto_dinamico(g, t, i, 3, TN(t->palabra[i]), 1);
 }
 
@@ -3690,6 +3758,12 @@ static void pl_braf(jit_gen * g, jit_traduccion * t, int i)
 
 static void pl_bsrf109(jit_gen * g, jit_traduccion * t, int i)
 {
+	if (i + 1 < t->n && t->pl[i + 1]->accede)
+	{
+		tr_llamada_dinamica_mem(g, t, i, 1);
+		return;
+	}
+
 	tr_salto_relativo(g, t, i, 1);
 }
 
@@ -3726,6 +3800,20 @@ static void pl_ldc117(jit_gen * g, jit_traduccion * t, int i)
 {
 	tr_cargar(g, t, X64_RAX, TN(t->palabra[i]));
 	jit_x64_mov_mr(&g->e, CTX, O_GBR, X64_RAX);
+}
+
+/* MOV.L @(disp,GBR),R0 -- C6xx, lo que quedo arriba del censo de SR2. */
+static void pl_movl33(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+	int  d = (int) (w & 0xFF) * 4;
+
+	jit_x64_mov_rm(&g->e, X64_RCX, CTX, O_GBR);
+
+	if (d)
+		jit_x64_add_ri(&g->e, X64_RCX, d);
+
+	tr_leer_a(g, t, 0, 4);
 }
 
 static void tr_prologo(jit_gen * g, jit_traduccion * t);
@@ -3906,9 +3994,9 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "BT",                 2, 0, 1, 0, pl_bt104 },
 	{ NULL, "BT/S",               2, 0, 1, 1, pl_bts105 },
 	{ NULL, "BRA",                2, 0, 1, 1, pl_bra, 0, 0, 0, 1, 0, 0, 1 },
-	{ NULL, "BSR",                2, 0, 1, 1, pl_bsr108, 0, 0, 0, 2 },
+	{ NULL, "BSR",                2, 0, 1, 1, pl_bsr108, 0, 0, 0, 2, 0, 0, 1 },
 	{ NULL, "JMP @Rn",            3, 0, 1, 1, pl_jmp110, 0, 0, 0, 0, 0, 0, 1 },
-	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111, 0, 0, 0, 0, 1 },
+	{ NULL, "JSR @Rn",            3, 0, 1, 1, pl_jsr111, 0, 0, 0, 0, 1, 0, 1 },
 	{ NULL, "RTS",                3, 0, 1, 1, pl_rts112, 0, 0, 0, 3, 0, 0, 1 },
 	/* Lo que el censo de Crazy Taxi pidio (2026-08-08): el pushpop de PR corta
 	   todo prologo y epilogo de funcion del guest. Ciclos copiados de cada
@@ -3941,7 +4029,7 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "DIV0U",              0, 1, 0, 0, pl_div0u54 },
 	{ NULL, "SHAD Rm,Rn",         0, 1, 0, 0, pl_shad90 },
 	{ NULL, "BRAF Rn",            3, 0, 1, 1, pl_braf, 0, 0, 0, 0, 0, 0, 1 },
-	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109, 0, 0, 0, 0, 1 },
+	{ NULL, "BSRF Rn",            3, 0, 1, 1, pl_bsrf109, 0, 0, 0, 0, 1, 0, 1 },
 	/* El cuarto lote: MAC.L por el manejador reordenado, SHLD, y lo que el
 	   censo listo tras el tercero. El 5 de OR #imm es del manejador. */
 	{ NULL, "MAC.L @Rm+,@Rn+",    0, 1, 0, 0, pl_macl62 },
@@ -4007,6 +4095,7 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "MOV.W R0,@(d,Rn)",    1, 1, 0, 0, pl_movw17, 0, 0, 1 },
 	{ NULL, "NEGC Rm,Rn",          0, 1, 0, 0, pl_negc68 },
 	{ NULL, "LDC Rm,GBR",          3, 0, 0, 0, pl_ldc117 },
+	{ NULL, "MOV.L @(d,GBR),R0",   2, 1, 0, 0, pl_movl33 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -4034,6 +4123,7 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	dt, movw14, cmpstr51,
 	clrt115, sett145,
 	movw26, movw17, negc68, ldc117,
+	movl33,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -4123,6 +4213,12 @@ static void tr_asignar_registros(jit_traduccion * t)
 		if (p->emitir == pl_movl27 || p->emitir == pl_movl24
 			|| p->emitir == pl_movb22)
 			uso[0]++;
+
+		if (p->emitir == pl_movl33)
+		{
+			uso[0]++;
+			continue;
+		}
 
 		if (p->emitir == pl_and73 || p->emitir == pl_tst81)
 		{
@@ -4440,6 +4536,12 @@ static unsigned long long	jit_fallidos = 0;
 static unsigned long long	jit_enlaces_atados = 0;
 static unsigned long long	jit_enlaces_dinamicos = 0;
 
+static int tr_es_llamada(const jit_plantilla * p)
+{
+	return p->emitir == pl_bsr108 || p->emitir == pl_jsr111
+		|| p->emitir == pl_bsrf109;
+}
+
 /*
 	Descubrimiento: camina las palabras desde `pc` resolviendo cada una por
 	OP_HANDLER() y parando cuando una no tiene plantilla, cuando se acaba la
@@ -4587,11 +4689,10 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		}
 
 		/*
-			El par de retorno TERMINA la traza: lo que sigue a un RTS es otra
-			funcion. La primera version dejaba a la caminata seguir de largo y
-			anexaba esa cola muerta a cada bloque -- SR2 +27 % de arena y dos
-			puntos de tanda perdidos, la leccion del tope de 96 otra vez: el
-			codigo frio dispersa lo caliente. (El RTS seguido por flujo, que
+			El par TERMINA la traza. En un retorno o una llamada lo que sigue
+			es otra funcion; dejar la cola tras el RTS anexo codigo muerto a
+			cada bloque -- SR2 +27 % de arena y dos puntos de tanda perdidos,
+			la leccion del tope de 96 otra vez. (El RTS seguido por flujo, que
 			exige ranura sin memoria, pasa por su propio camino mas abajo.)
 		*/
 		if (p->par && jit_par_rts
@@ -4605,7 +4706,10 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				jit_plantilla_de(OP_HANDLER(oplist, rinstr));
 
 			if (rp != NULL && rp->accede && !rp->rama && !rp->fpu
-				&& !rp->propia)
+				&& !rp->propia
+				&& (!tr_es_llamada(p)
+					|| (jit_par_llamadas
+						&& !rp->escribe_pr && !rp->apila_pr)))
 			{
 				t->pc[t->n]       = pc + 2;
 				t->palabra[t->n]  = rinstr;
@@ -4647,11 +4751,14 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 
 			if (rp == NULL || rp->accede || rp->rama || rp->fpu)
 			{
-				/* El par de retorno sobrevive al flujo: un RTS con ranura de
-				   memoria no se sigue, pero tampoco se corta -- el par se
-				   anexa y la traza termina ahi, como en el camino sin flujo. */
+				/* El par sobrevive al flujo: una rama con ranura de memoria
+				   no se sigue, pero tampoco se corta -- el par se anexa y
+				   la traza termina ahi, como en el camino sin flujo. */
 				if (p->par && jit_par_rts && rp != NULL
-					&& rp->accede && !rp->rama && !rp->fpu && !rp->propia)
+					&& rp->accede && !rp->rama && !rp->fpu && !rp->propia
+					&& (!tr_es_llamada(p)
+						|| (jit_par_llamadas
+							&& !rp->escribe_pr && !rp->apila_pr)))
 				{
 					t->pc[t->n]       = pc + 2;
 					t->palabra[t->n]  = rinstr;
@@ -4765,11 +4872,11 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	/* Las filas FPU tampoco entran en ranura, aunque no accedan a memoria:
 	   sus manejadores hacen PC += 2 sobre el contexto, y en una ranura eso
 	   pisaria el destino que el salto capturo en O_PC. */
-	/* La excepcion del par de retorno: la ranura con memoria de un RTS no
-	   corta -- su emision sincroniza con el PC de la rama antes de tocar
-	   nada, asi que la falta reejecuta desde el RTS, como el interprete.
-	   Las filas `propia` quedan afuera: cuentan su intento por su cuenta y
-	   el par lo cuenta antes (regla de run()), o sea que contarian doble. */
+	/* La excepcion de los pares: su ranura con memoria no corta -- la emision
+	   sincroniza con el PC de la rama antes de tocar nada, asi que una falta
+	   reejecuta desde ella como en el interprete. En una llamada, ademas, la
+	   ranura no puede tocar PR. Las filas `propia` quedan afuera: cuentan su
+	   intento por su cuenta y el par lo cuenta antes (regla de run()). */
 	for (i = 0; i < t->n; i++)
 	{
 		const jit_plantilla * r = (i + 1 < t->n) ? t->pl[i + 1] : NULL;
@@ -4779,7 +4886,10 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 
 		if (r != NULL && !r->rama && !r->fpu
 			&& (!r->accede
-				|| (jit_par_rts && t->pl[i]->par && !r->propia)))
+				|| (jit_par_rts && t->pl[i]->par && !r->propia
+					&& (!tr_es_llamada(t->pl[i])
+						|| (jit_par_llamadas
+							&& !r->escribe_pr && !r->apila_pr)))))
 			continue;
 
 		t->n   = i;
@@ -5925,6 +6035,7 @@ void jit_iniciar(void)
 			const char * co = getenv("DCEMU_JIT_COSTURAS");
 			const char * fl = getenv("DCEMU_JIT_FLUJO");
 			const char * pr = getenv("DCEMU_JIT_SIN_PARES");
+			const char * pl = getenv("DCEMU_JIT_SIN_PARES_LLAMADA");
 
 			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
 
@@ -5938,6 +6049,9 @@ void jit_iniciar(void)
 
 			if (pr != NULL && atoi(pr) != 0)
 				jit_par_rts = 0;
+
+			if (pl != NULL && atoi(pl) != 0)
+				jit_par_llamadas = 0;
 		}
 	}
 
