@@ -86,11 +86,54 @@ unsigned		jit_epoca = 1;
 unsigned		jit_md_visto = 0;
 unsigned		jit_validez = 2;
 unsigned		jit_ep_escritura = 0;
+unsigned long long	jit_ep_pag_vista = 0;
 unsigned		jit_ep_mapeo = 0;
 unsigned		jit_ep_modo = 0;
 unsigned		jit_fpu_visto = 0;
 unsigned		jit_ep_fpu = 0;
 unsigned char	jit_pag_codigo[0x10000];
+unsigned char	jit_lin_codigo[0x40000];
+
+/*
+	Una escritura de bloque contra la rejilla fina: 1 si toca alguna linea con
+	codigo traducido. Recorre las lineas de verdad en vez de mirar los
+	extremos, que es lo unico que hace bien la pregunta cuando el bloque cubre
+	mas de una. Ver JIT_ESCRITURA_HOST en jit.h.
+*/
+int jit_escritura_bloque(const unsigned char * p, size_t tam)
+{
+	const unsigned char * fin = p + tam - 1;
+	int                   vista = 0;
+
+	for (; p <= fin; p += 64)
+		if (jit_pag_codigo[JIT_PAG_BIT(p)])
+		{
+			vista = 1;
+
+			if (jit_lin_codigo[JIT_LIN_BIT(p)])
+			{
+				jit_ep_pag_vista++;
+
+				return 1;
+			}
+		}
+
+	if (jit_pag_codigo[JIT_PAG_BIT(fin)])
+	{
+		vista = 1;
+
+		if (jit_lin_codigo[JIT_LIN_BIT(fin)])
+		{
+			jit_ep_pag_vista++;
+
+			return 1;
+		}
+	}
+
+	jit_ep_pag_vista += (unsigned) vista;
+
+	return 0;
+}
 
 /* ------------------------------------------------------------------------ */
 /* El estado que el codigo emitido toca                                     */
@@ -226,15 +269,31 @@ void jit_escribir32(DWORD dir, DWORD valor)
 	**URC avanza dos veces**. Los bloques escritos a mano de la fase 0 no lo
 	mostraron porque solo tocan RAM plana; el traductor toca de todo.
 
-	La alineacion y el UBC de operandos ya los comprobo el camino rapido, asi
-	que lo unico que falta es el despacho por zona, que es justo lo que hacen
-	memread_fisico()/memwrite_fisico() -- con sus watchpoints incluidos.
+	La alineacion ya la comprobo el camino rapido, asi que lo unico que falta es
+	el despacho por zona, que es justo lo que hacen memread_fisico() /
+	memwrite_fisico() -- con sus watchpoints incluidos.
+
+	**El break de operando del UBC no**, y esa es la unica cosa que estos
+	ayudantes tienen que hacer de mas. Su guarda dejo de emitirse (se pliega en
+	mem_base_lectura/escritura, como el watchpoint), asi que con el UBC armado
+	toda zona plana baja por aqui -- y el gancho vive en el macro, que este
+	camino se saltea. Compara la direccion **virtual**, que la fisica no
+	sustituye, y por eso llega aparte en jit_ubc_virtual.
 */
+static DWORD jit_ubc_virtual = 0;
+
+static void jit_ubc_fis(const void * valor, size_t tam, int escritura)
+{
+	if (ubc_operando_activa)
+		ubc_operando(jit_ubc_virtual, valor, tam, escritura);
+}
+
 DWORD jit_leer32_fis(DWORD fisica)
 {
 	DWORD v;
 
 	memread_fisico(fisica, &v, sizeof(DWORD));
+	jit_ubc_fis(&v, sizeof(DWORD), 0);
 
 	return v;
 }
@@ -244,6 +303,7 @@ DWORD jit_leer8s_fis(DWORD fisica)
 	BYTE b;
 
 	memread_fisico(fisica, &b, sizeof(BYTE));
+	jit_ubc_fis(&b, sizeof(BYTE), 0);
 
 	return (DWORD) SignExtend8(b);
 }
@@ -253,6 +313,7 @@ DWORD jit_leer16s_fis(DWORD fisica)
 	WORD w;
 
 	memread_fisico(fisica, &w, sizeof(WORD));
+	jit_ubc_fis(&w, sizeof(WORD), 0);
 
 	return (DWORD) SignExtend16(w);
 }
@@ -262,6 +323,7 @@ void jit_escribir8_fis(DWORD fisica, DWORD valor)
 	BYTE b = (BYTE) (valor & 0xFF);
 
 	memwrite_fisico(fisica, &b, sizeof(BYTE));
+	jit_ubc_fis(&b, sizeof(BYTE), 1);
 }
 
 void jit_escribir16_fis(DWORD fisica, DWORD valor)
@@ -269,6 +331,7 @@ void jit_escribir16_fis(DWORD fisica, DWORD valor)
 	WORD w = (WORD) (valor & 0xFFFF);
 
 	memwrite_fisico(fisica, &w, sizeof(WORD));
+	jit_ubc_fis(&w, sizeof(WORD), 1);
 }
 
 void jit_escribir32_fis(DWORD fisica, DWORD valor)
@@ -276,6 +339,7 @@ void jit_escribir32_fis(DWORD fisica, DWORD valor)
 	DWORD v = valor;
 
 	memwrite_fisico(fisica, &v, sizeof(DWORD));
+	jit_ubc_fis(&v, sizeof(DWORD), 1);
 }
 
 /*
@@ -810,6 +874,7 @@ static int D(const void * p)
 #define D_ESCR8F	D(&jit_estado.h_escribir8f)
 #define D_ESCR32F	D(&jit_estado.h_escribir32f)
 #define D_PAG_CODIGO	D(&jit_pag_codigo[0])
+#define D_LIN_CODIGO	D(&jit_lin_codigo[0])
 #define D_EPOCA		D(&jit_validez)
 #define D_ENTRADA	D(&jit_estado.entrada)
 #define D_BUSQUEDA	D(&jit_estado.h_busqueda)
@@ -986,19 +1051,21 @@ typedef struct
 */
 #define JIT_RZ_ALINEACION	0
 #define JIT_RZ_MODO			1	/* mmu_activa cambio dentro del bloque */
-#define JIT_RZ_UBC			2
 /* Las cinco guardas de la traduccion emitida, separadas: la etiqueta (ASID,
    modo y valida), el permiso, la VPN de la pagina y la generacion de la
    entrada de UTLB de la que salio. Juntas no distinguen "la cache es chica"
    de "el guest la invalida", que piden cosas distintas. */
-#define JIT_RZ_TR_PROBAR	3
-#define JIT_RZ_TR_ETIQUETA	4
-#define JIT_RZ_TR_PERMISO	5
-#define JIT_RZ_TR_VPN		6
-#define JIT_RZ_TR_GEN		7
-#define JIT_RZ_ZONA			8	/* la zona no es memoria plana */
-#define JIT_RZ_PAG_CODIGO	9	/* escritura sobre pagina con codigo traducido */
-#define JIT_RZ_N			10
+#define JIT_RZ_TR_PROBAR	2
+#define JIT_RZ_TR_ETIQUETA	3
+#define JIT_RZ_TR_PERMISO	4
+#define JIT_RZ_TR_VPN		5
+#define JIT_RZ_TR_GEN		6
+#define JIT_RZ_ZONA			7	/* la zona no es memoria plana */
+#define JIT_RZ_PAG_CODIGO	8	/* escritura sobre pagina con codigo traducido */
+#define JIT_RZ_N			9
+/* El UBC de operandos tenia razon propia y ya no: su guarda se pliega en las
+   tablas base, asi que un acceso con break armado se cuenta como "zona no
+   plana", que es por donde efectivamente sale. */
 /* Las dos guardas del atajo de P1/P2 no son una causa nueva: el acceso ya lo
    conto la guarda de cache que lo mando al talon. Cuentan como nada. */
 #define JIT_RZ_NADA			JIT_RZ_N
@@ -1009,6 +1076,17 @@ static int					jit_sonda_accesos = 0;
    DCEMU_JIT_SIN_ATAJO_P1P2=1 lo apaga y reproduce la emision anterior
    byte por byte: es el A/B de la fase y la linea base de antes. */
 static int					jit_atajo_p1p2 = 1;
+
+/* Las dos guardas por acceso que el censo mostro muertas -- el cambio de modo
+   del lado MMU y el break de operando del UBC -- se pliegan en otro lado.
+   DCEMU_JIT_GUARDAS_VIEJAS=1 las vuelve a emitir y reproduce la emision
+   anterior byte por byte: es el A/B del escalon y la linea base de antes. */
+static int					jit_guardas_viejas = 0;
+
+/* La rejilla de 64 bytes consultada en linea antes de desviar una escritura
+   sobre una pagina con codigo. DCEMU_JIT_SIN_REJILLA=1 vuelve a desviar por
+   pagina --la emision anterior byte por byte-- y es el A/B del escalon. */
+static int					jit_rejilla_fina = 1;
 static unsigned long long	jit_acc_total = 0;
 static unsigned long long	jit_acc_razon[JIT_RZ_N + 1] = { 0 };
 static unsigned long long	jit_acc_p1p2 = 0;	/* rescatados por el atajo */
@@ -1020,7 +1098,7 @@ static unsigned long long	jit_acc_lento_fis = 0;
 
 static const char * const jit_rz_nombre[JIT_RZ_N] =
 {
-	"desalineado", "cambio de modo", "UBC de operando",
+	"desalineado", "cambio de modo",
 	"trad: sondeo apagado", "trad: etiqueta", "trad: permiso",
 	"trad: VPN", "trad: generacion", "zona no plana", "pagina con codigo"
 };
@@ -1314,11 +1392,49 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 		gen_lento(g, a, X64_NE, JIT_RZ_ALINEACION);
 	}
 
-	jit_x64_cmp_mi(&g->e, CTX, D_MMU, 0);
-	gen_lento(g, a, (modo == JIT_ACC_MMU) ? X64_E : X64_NE, JIT_RZ_MODO);
+	/*
+		**La guarda de modo sobrevive solo del lado plano**, y el censo de
+		accesos es lo que lo decidio: no se dispara ni una vez en los tres
+		guests. La emision ya sabe el modo -- el despacho rechaza un bloque
+		cuyo `mmu` no case (jit_despachar) --, asi que lo unico que la guarda
+		cubria era que el guest encendiera o apagara la MMU **dentro** del
+		bloque que la escribe.
 
-	jit_x64_cmp_mi(&g->e, CTX, D_UBC_OP, 0);
-	gen_lento(g, a, X64_NE, JIT_RZ_UBC);
+		Del lado MMU eso ya tiene respaldo y no hace falta pagarlo por acceso:
+		escribir MMUCR pasa por mmu_mmucr_escrito(), que llama a
+		mmu_tlb_invalidar() y **vacia mmu_datos entero**. Con la cache vacia
+		ningun acceso emitido acierta, todos caen al ayudante -- que es el
+		macro y mira mmu_activa de verdad -- y el unico camino que sigue vivo
+		es el atajo de P1/P2, que da la misma fisica con la MMU encendida o
+		apagada porque mmu_traducir() devuelve P1/P2 sin tocar la UTLB. URC
+		tampoco se mueve: ni el atajo lo avanza ni el macro con la MMU apagada.
+
+		Del lado plano no hay tal respaldo: la tabla de zonas contesta con base
+		directa para 0x0C aunque la traduccion se acabe de encender, asi que la
+		comparacion se queda. Es una sola, y es el guest sin MMU el que la paga.
+	*/
+	if (modo != JIT_ACC_MMU || jit_guardas_viejas)
+	{
+		jit_x64_cmp_mi(&g->e, CTX, D_MMU, 0);
+		gen_lento(g, a, (modo == JIT_ACC_MMU) ? X64_E : X64_NE, JIT_RZ_MODO);
+	}
+
+	/*
+		El break de operando del UBC **ya no se pregunta aqui**: se pliega en
+		mem_base_lectura/escritura, igual que el watchpoint y por lo mismo (ver
+		mem_directo_recalcular()). La prueba de zona que ya se hace mas abajo
+		lo cubre sola, y con el UBC armado el acceso sale por los ayudantes,
+		que corren el gancho con la virtual (jit_ubc_fis).
+
+		Es exacto dentro del bloque que arma el break, no solo entre bloques:
+		la tabla se lee al correr, asi que el acceso siguiente a la escritura
+		de BBRA/BBRB ya la ve en NULL.
+	*/
+	if (jit_guardas_viejas)
+	{
+		jit_x64_cmp_mi(&g->e, CTX, D_UBC_OP, 0);
+		gen_lento(g, a, X64_NE, JIT_RZ_ZONA);
+	}
 
 	if (modo == JIT_ACC_MMU)
 		gen_traducir_mmu(g, a,
@@ -1391,6 +1507,15 @@ static void gen_rapido_fin(jit_gen * g, jit_acceso * a, int disp_fis,
 
 		if (jit_sonda_accesos)
 			jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_lento_fis), 1);
+
+		/* La virtual, para el gancho del UBC que estos ayudantes corren: la
+		   fisica la reemplaza en ECX y el break compara la virtual. Va sobre
+		   el camino lento, no sobre el rapido. Con las guardas viejas el
+		   ayudante fisico no es alcanzable con un break armado --su guarda
+		   desvia antes-- y no se emite, que es lo que hace de la palanca una
+		   reproduccion byte por byte. */
+		if (!jit_guardas_viejas)
+			jit_x64_mov_mr(&g->e, CTX, D(&jit_ubc_virtual), X64_RCX);
 
 		jit_x64_mov_rr(&g->e, X64_RCX, a->fis);
 
@@ -1525,7 +1650,38 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 		jit_x64_alu_ri(&g->e, X64_AND, X64_R9, 0xFFFF);
 		jit_x64_cmp8_mi_idx(&g->e, CTX, X64_R9, 1, D_PAG_CODIGO, 0);
 
-		if (a.n_lento_fis)
+		/*
+			**La rejilla fina, en linea.** La pagina dice si hay codigo en
+			esos 4 KB, no si lo escrito ES codigo, y en Windows CE los datos
+			viven en las mismas paginas: 90 616 485 escrituras de 20 segundos
+			de DCDoom caen en una pagina con codigo y **ni una sola** toca una
+			linea de 64 bytes que lo tenga. Bajar al ayudante por eso son
+			noventa millones de llamadas para nada.
+
+			Preguntarle a la rejilla cuesta cuatro instrucciones mas y un
+			acceso a 256 KB, pero solo en esas -- el caso comun sale por el
+			salto de arriba sin tocarla. Y no hace falta mirar la cola: el
+			acceso del guest va alineado (el error de direccion lo filtra
+			antes de llegar aqui) y ninguno de 1, 2 o 4 bytes cruza un limite
+			de 64.
+		*/
+		if (jit_rejilla_fina)
+		{
+			x64_parche limpia = jit_x64_jcc_corto(&g->e, X64_E);
+
+			jit_x64_lea64_idx(&g->e, X64_R9, X64_RAX, X64_R8, 1, 0);
+			jit_x64_shift64_ri(&g->e, X64_SHR, X64_R9, 6);
+			jit_x64_alu_ri(&g->e, X64_AND, X64_R9, 0x3FFFF);
+			jit_x64_cmp8_mi_idx(&g->e, CTX, X64_R9, 1, D_LIN_CODIGO, 0);
+
+			if (a.n_lento_fis)
+				gen_lento_fis(g, &a, X64_NE, JIT_RZ_PAG_CODIGO);
+			else
+				gen_lento(g, &a, X64_NE, JIT_RZ_PAG_CODIGO);
+
+			jit_x64_fijar(&g->e, limpia);
+		}
+		else if (a.n_lento_fis)
 			gen_lento_fis(g, &a, X64_NE, JIT_RZ_PAG_CODIGO);
 		else
 			gen_lento(g, &a, X64_NE, JIT_RZ_PAG_CODIGO);
@@ -5505,8 +5661,23 @@ static void jit_aprender_destino(int sitio, DWORD destino)
 */
 static void jit_vigilar_tramo(const void * ptr, unsigned bytes)
 {
-	jit_pag_codigo[JIT_PAG_BIT(ptr)] = 1;
-	jit_pag_codigo[JIT_PAG_BIT((const unsigned char *) ptr + bytes - 1)] = 1;
+	const unsigned char * p = (const unsigned char *) ptr;
+	const unsigned char * fin = p + bytes - 1;
+
+	jit_pag_codigo[JIT_PAG_BIT(p)]   = 1;
+	jit_pag_codigo[JIT_PAG_BIT(fin)] = 1;
+
+	/*
+		La rejilla de 64 bytes va **entera**, no cabeza y cola: un bloque de
+		hasta 96 instrucciones son 192 bytes, o sea cuatro lineas, y dejar las
+		del medio sin marcar seria el mismo agujero que la cola de la pagina
+		--una escritura ahi no moveria la epoca y el codigo viejo seguiria
+		corriendo, en silencio-- pero cuatro veces mas probable.
+	*/
+	for (; p <= fin; p += 64)
+		jit_lin_codigo[JIT_LIN_BIT(p)] = 1;
+
+	jit_lin_codigo[JIT_LIN_BIT(fin)] = 1;
 }
 
 /*
@@ -5798,7 +5969,7 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 		int i;
 
 		for (i = 0; i < n_extra; i++)
-			jit_pag_codigo[JIT_PAG_BIT(MMU_FETCH_PUNTERO(extra_dir[i]))] = 1;
+			jit_vigilar_tramo(MMU_FETCH_PUNTERO(extra_dir[i]), 2);
 	}
 
 	jit_registrar_marco(b, jit_x64_largo(&g.e));
@@ -6128,15 +6299,16 @@ static void jit_resumen(void)
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
 		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
 		" %llu salidas con los enlaces agotados,"
-		" %u movimientos de epoca (%u escritura, %u mapeo, %u modo),"
+		" %u movimientos de epoca (%u escritura de %llu sobre pagina con"
+		" codigo, %u mapeo, %u modo),"
 		" %u transiciones de PR/SZ/Enable\n",
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
 		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
 		jit_puentes_atados, jit_enlaces_dinamicos, jit_enlaces_agotados,
-		jit_epoca - 1, jit_ep_escritura, jit_ep_mapeo, jit_ep_modo,
-		jit_ep_fpu);
+		jit_epoca - 1, jit_ep_escritura, jit_ep_pag_vista, jit_ep_mapeo,
+		jit_ep_modo, jit_ep_fpu);
 
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que
@@ -6264,9 +6436,20 @@ void jit_iniciar(void)
 			const char * pl = getenv("DCEMU_JIT_SIN_PARES_LLAMADA");
 			const char * sa = getenv("DCEMU_JIT_SONDA_ACCESOS");
 			const char * ap = getenv("DCEMU_JIT_SIN_ATAJO_P1P2");
+			const char * gv = getenv("DCEMU_JIT_GUARDAS_VIEJAS");
 
 			if (ap != NULL && atoi(ap) != 0)
 				jit_atajo_p1p2 = 0;
+
+			if (gv != NULL && atoi(gv) != 0)
+				jit_guardas_viejas = 1;
+
+			{
+				const char * rj = getenv("DCEMU_JIT_SIN_REJILLA");
+
+				if (rj != NULL && atoi(rj) != 0)
+					jit_rejilla_fina = 0;
+			}
 
 			jit_sonda_cruces  = (sc != NULL && atoi(sc) != 0);
 			jit_sonda_accesos = (sa != NULL && atoi(sa) != 0);

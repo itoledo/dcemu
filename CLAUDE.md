@@ -264,7 +264,9 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_JIT_SONDA_CRUCES=1` | un contador emitido en la cabeza de cada bloque: cruces de enlace (corridos − entradas; 36-42 % de las fronteras) y el censo de presencia de registros ponderado por veces, ambos al salir |
 | `DCEMU_JIT_FLUJO=1` | revive el superbloque por flujo (seguir BRA/BSR/RTS al descubrir, con rastreo de PR y guarda en caliente). **Medido neutro** — entradas −1/−4 % y el tiempo no las siguió — y por eso viene apagado; exacto al dígito en los tres guests |
 | `DCEMU_JIT_SIN_PARES=1` / `DCEMU_JIT_SIN_PARES_LLAMADA=1` | apagan todos los pares de rama o solo BSR/JSR/BSRF. Los de llamada solos valen ~1,0/5,5/0,4 % en DOOM/CT/SR2; el par **termina la traza** |
-| `DCEMU_JIT_SONDA_ACCESOS=1` | el censo de los accesos emitidos: cuántos toman el camino rápido y **por qué guarda** cae el resto al ayudante (desalineado, cambio de modo, UBC, las cinco de la traducción por separado, zona no plana, página con código). Va en corrida aparte, como la sonda de cruces: cambia la emisión. Es la sonda que **reescribió la fase 6** — mostró que la zona no plana era el 2,3 % y la traducción el 33,6 %, y que el 98 % de esos fallos eran P1/P2, que no se traducen. Tres guardas —alineación, modo y UBC— **no se disparan ni una vez** en los tres guests |
+| `DCEMU_JIT_SONDA_ACCESOS=1` | el censo de los accesos emitidos: cuántos toman el camino rápido y **por qué guarda** cae el resto al ayudante (desalineado, cambio de modo, las cinco de la traducción por separado, zona no plana, página con código). Va en corrida aparte, como la sonda de cruces: cambia la emisión. Es la sonda que **reescribió la fase 6** — mostró que la zona no plana era el 2,3 % y la traducción el 33,6 %, y que el 98 % de esos fallos eran P1/P2, que no se traducen. Tres guardas —alineación, modo y UBC— **no se disparan ni una vez** en los tres guests; las dos últimas ya no se emiten y la de alineación no se puede plegar (es el error de dirección, o sea una función) |
+| `DCEMU_JIT_GUARDAS_VIEJAS=1` | vuelve a emitir las dos guardas por acceso que el censo mostró muertas y reproduce la emisión anterior byte por byte. Apagadas por omisión: el **UBC de operando** se pliega en las tablas base como el watchpoint (`mem_directo_recalcular()`, y los ayudantes físicos corren el gancho con la virtual), y el **cambio de modo** desaparece del lado MMU, donde escribir MMUCR ya vacía `mmu_datos` entero y manda todo acceso emitido al ayudante — del lado plano se queda, porque ahí la tabla de zonas contesta con base directa aunque la traducción se acabe de encender. **DCDoom −1,6 %**, rangos disjuntos; SR2 y CT dentro de su dispersión. Emisión −1 132 176 bytes (−3,5 %) |
+| `DCEMU_JIT_SIN_REJILLA=1` | vuelve a desviar al ayudante **toda** escritura sobre una página con código traducido, en vez de preguntarle en línea a una segunda rejilla de 64 bytes. La página dice si hay código en esos 4 KB, no si lo escrito ES código: en Windows CE los datos viven en las mismas páginas, y de las **90 616 485** escrituras de 20 s de DCDoom que caen en una página con código, **ninguna** toca una línea que lo tenga. **DCDoom −1,3 % más** sobre el pliegue de guardas (−2,8 % los dos juntos, tres rangos disjuntos); SR2 y CT dentro de su dispersión. Y lo que lo destapó fue que `JIT_ESCRITURA()` **nunca tuvo un llamador**: la época no se movía por escritura desde que el traductor existe. Ver `docs/recompilador-plan.md` |
 | `DCEMU_JIT_SIN_ATAJO_P1P2=1` | apaga el atajo de P1/P2 en la traducción emitida y reproduce la emisión anterior byte por byte. Encendido por omisión: **DOOM −8,1 %, SR2 −2,1 %**, rangos disjuntos, con el camino rápido de 64,1 % a 91,3 % (DOOM) y de 87,9 % a 96,9 % (SR2). Dos cosas lo hacen así y las dos son medidas: va **adelante** de la consulta a la caché (detrás del fallo, DOOM perdía la mitad) y el modo se resuelve **al emitir**, porque SR.MD vive en la clave de validez y un bloque sólo se despacha en el modo en que se tradujo |
 | `DCEMU_SONDA_URC` (compilación) | la sonda de conservación de avances de URC (`uc` en el único cuerpo C, `ue` emitido, `uv` la virtual del último), impresa por los puntos de control. Es la que cerró la caza de la compuerta en tres corridas |
 | `DCEMU_MMU_DATOS=N` | entradas de la caché de traducciones resueltas (4096 por omisión, tope 8192). Para barrer el tamaño sin recompilar |
@@ -381,6 +383,19 @@ how to believe a measurement of it.
 - **Alternate the order within the pair too, not just the binaries.** If the first run of each
   pair pays anything for being first, "A always goes first" turns that cost into a difference
   between binaries.
+- **Two changes measured through one lever read backwards.** The guard folding and the 64-byte
+  grid were shipped together and A/B'd together: DCDoom came out overlapping and Sega Rally 2
+  disjoint at −0.8 %. With a third arm isolating each half, DCDoom separates cleanly into
+  −1.6 % and −1.3 % — three disjoint ranges, −2.8 % together — and SR2 turns out to be the one
+  that cannot tell (63 620–65 317 ms inside one arm; its −0.8 % did not reproduce). A neutral
+  combined result can be two effects cancelling, or a real one buried under another guest's
+  spread, and nothing in the combined table distinguishes them. One lever per question.
+- **The warm-up is per guest, not per batch.** A batch that warms up on DCDoom and then starts
+  Crazy Taxi pays the disc image's cold cache on Crazy Taxi's first run: 128 372 ms against
+  119-121 k for every other run in that block, which is what left its pair overlapping. Dropping
+  that run afterwards would have produced −1.2 %, which is exactly the post-hoc selection the
+  rest of this section exists to prevent — so the fix is a warm-up per guest, decided before
+  the numbers.
 - **A data-layout optimization measured without pinning the layout does not measure what it
   says**, the same way code optimizations did not before PGO. Reordering `context_t` measured
   ≈0 in Release because `core` had no declared alignment and the linker decided the outcome;
@@ -410,6 +425,17 @@ Rules a wrong edit anywhere in the tree would violate.
   they are all converted.
 - **A translated write of more than one page must be chunked** (`memwrite_paginado()`):
   `memwrite` translates once per call.
+- **Every write to guest memory must reach the translator's epoch hook**, and the two places
+  that guarantee it are `memwrite_fisico` (all internal and slow-path writes) and the direct
+  branch of the `memwrite` macro (which bypasses it). The emitted fast path bypasses both,
+  which is exactly why it carries the page-with-code guard. **This invariant was violated for
+  the whole life of the recompiler**: `JIT_ESCRITURA()` was defined with no caller, so a guest
+  write over translated code never invalidated anything — Sega Rally 2 and Crazy Taxi both do
+  it. The tell was in every run's summary (`0 escritura`) and read for months as "no guest
+  self-modifies"; what distinguishes that from "nobody is looking" is the control counter next
+  to it (`jit_ep_pag_vista`), which is why it now prints unconditionally. Two grids, on
+  purpose: pages (L1-resident) decide cheaply whether to ask, 64-byte lines decide for real —
+  moving the epoch per page would fire 90 million times per 20 emulated seconds of DCDoom.
 - **Instruction handlers own `PC`.** Forgetting `PC += 2` hangs the emulator silently.
 - **Adding an instruction = one row in `opcodes[]` + a handler function.** Nothing else
   changes. Rows must not overlap: `initopcodes()` logs colliding encodings to

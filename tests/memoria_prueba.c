@@ -78,8 +78,15 @@ unsigned char * mem_zone[0x100];
 */
 unsigned char * mem_base_lectura[0x100];
 unsigned char * mem_base_escritura[0x100];
+unsigned char * mem_base_plana[0x100];
 mem_access_read_t * mem_hash_read[0x100];
 mem_access_write_t * mem_hash_write[0x100];
+
+/* Las tablas de arriba quedan en cero, asi que recalcular no es recalcular
+   nada: existe porque ubc.c la llama al armar o soltar un break de operando. */
+void mem_directo_recalcular(void)
+{
+}
 
 DWORD SQ0[8];
 DWORD SQ1[8];

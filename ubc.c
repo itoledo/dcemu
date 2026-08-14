@@ -11,6 +11,8 @@
 #include "excepciones.h"
 #include "traza.h"
 #include "ubc.h"
+#include "mem.h"			/* mem_directo_recalcular(): el break de operando
+							   se pliega en las tablas del camino directo */
 
 DWORD *	UBC_BARA;
 BYTE *	UBC_BAMRA;
@@ -47,6 +49,7 @@ void ubc_reiniciar(void)
 	ubc_secuencia = 0;
 	ubc_activa = 0;
 	ubc_operando_activa = 0;
+	mem_directo_recalcular();
 }
 
 void ubc_registros_escritos(void)
@@ -57,6 +60,15 @@ void ubc_registros_escritos(void)
 	ubc_activa = a || b;
 	ubc_operando_activa = (a && (BBR_ID(*UBC_BBRA) & 2))
 					   || (b && (BBR_ID(*UBC_BBRB) & 2));
+
+	/*
+		El break de operando ya no se pregunta por acceso: se pliega en las
+		tablas del camino directo, como el watchpoint. Recalcularlas aqui es lo
+		que lo hace exacto **dentro del bloque que lo arma** -- la tabla se lee
+		al correr, asi que el acceso siguiente ya baja al camino lento, sin
+		esperar a que el bloque termine. Ver mem_directo_recalcular().
+	*/
+	mem_directo_recalcular();
 
 	/* Reconfigurar los canales reinicia la secuencia. El break pendiente y
 	   CMFA/CMFB no se tocan: los primeros dos son del chip y los flags del

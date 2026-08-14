@@ -62,6 +62,7 @@ unsigned char * mem_zone[0x100]; // para las zonas de memoria
 /* Zonas que son memoria plana. Ver mem.h; la llena mem_hash_setup(). */
 unsigned char * mem_base_lectura[0x100];
 unsigned char * mem_base_escritura[0x100];
+unsigned char * mem_base_plana[0x100];
 
 mem_access_read_t video_read;
 mem_access_read_t ram_read;
@@ -577,6 +578,17 @@ void mem_hash_setup(void)
 	direcciones -- que un acceso de escritura tenga efectos secundarios la
 	descalifica tambien para leer, porque lo que se lee es lo que esos efectos
 	dejaron -- y si el watchpoint correspondiente esta apagado.
+
+	**El UBC de operandos se pliega aqui igual que el watchpoint**, y por la
+	misma razon: su gancho tiene que correr despues del acceso y el camino
+	directo no lo llama. Antes se preguntaba aparte, una comparacion por acceso
+	en el macro y otra emitida por el traductor; el censo de accesos mostro que
+	esa guarda **no se dispara ni una vez** en los tres guests, asi que pagarla
+	siempre para el caso que nunca ocurre es al reves. Con la base en NULL la
+	zona entera baja al camino lento sola, que es donde el gancho vive.
+
+	Y la tercera tabla dice solo "la zona es plana": la usa JIT_ESCRITURA, que
+	necesita la pagina del anfitrion **aunque el acceso se haya desviado**.
 */
 void mem_directo_recalcular(void)
 {
@@ -587,9 +599,13 @@ void mem_directo_recalcular(void)
 		int plana = (mem_hash_read[i] == ram_read
 		             && mem_hash_write[i] == ram_write);
 
-		mem_base_lectura[i]   = (plana && !watchpoint_lectura_dir)
+		mem_base_plana[i]     = plana ? mem_zone[i] : NULL;
+
+		mem_base_lectura[i]   = (plana && !watchpoint_lectura_dir
+		                         && !ubc_operando_activa)
 		                        ? mem_zone[i] : NULL;
-		mem_base_escritura[i] = (plana && !watchpoint_dir)
+		mem_base_escritura[i] = (plana && !watchpoint_dir
+		                         && !ubc_operando_activa)
 		                        ? mem_zone[i] : NULL;
 	}
 }

@@ -110,6 +110,16 @@ extern unsigned			jit_md_visto;
 /* De donde salio cada movimiento de epoca. Solo para el resumen: sin saber cual
    de las tres fuentes manda, «la época se mueve mucho» no dice qué arreglar. */
 extern unsigned			jit_ep_escritura;
+
+/*
+	Cuantas escrituras cayeron en una **pagina** con codigo traducido, o sea
+	cuantas veces la rejilla fina tuvo que decidir. Es el control de la sonda,
+	y no es opcional: sin el, "0 movimientos por escritura" no distingue "el
+	guest no escribe sobre su codigo" de "el gancho no esta conectado" -- que
+	es exactamente lo que este arbol tuvo durante toda la vida del traductor,
+	con el mismo 0 en el resumen de cada corrida.
+*/
+extern unsigned long long	jit_ep_pag_vista;
 extern unsigned			jit_ep_mapeo;
 extern unsigned			jit_ep_modo;
 
@@ -155,32 +165,90 @@ extern unsigned			jit_ep_fpu;
 #define JIT_PAG_BIT(ptr)												\
 	((unsigned) (((size_t) (ptr)) >> 12) & 0xFFFFu)
 
-/* Un byte por pagina y no un bit: el codigo emitido tiene que mirarlo en una
-   comparacion sola, porque su camino rapido de escritura no pasa por
-   memwrite() y si no lo mirara escribiria sin mover la epoca. */
-#define JIT_ESCRITURA_HOST(ptr)											\
+/*
+	**La segunda rejilla, de 64 bytes**, y existe porque la de paginas no
+	alcanza para decidir: dice si la pagina tiene codigo, no si lo escrito ES
+	codigo. En Windows CE los datos viven en las mismas paginas de 4 KB que el
+	codigo, y el censo de accesos lo midio -- **el 8,4 % de los accesos de
+	DCDoom caen en una pagina con codigo traducido**, 90 millones cada 20
+	segundos. Mover la epoca en cada uno desataria todos los enlaces noventa
+	millones de veces, o sea que la pagina sirve para desviar barato pero no
+	para invalidar.
+
+	Toda zona plana vive dentro del mismo bloque de 16 MB (los tres espejos de
+	la RAM apuntan ahi), asi que 18 bits de indice no tienen alias. Se mira
+	**detras** de la de paginas: en el caso comun ni se toca, y la de paginas
+	--4096 entradas utiles-- se queda en L1.
+*/
+#define JIT_LIN_BIT(ptr)												\
+	((unsigned) (((size_t) (ptr)) >> 6) & 0x3FFFFu)
+
+extern unsigned char	jit_lin_codigo[0x40000];
+
+#define JIT_EPOCA_ESCRITURA()											\
 	do																	\
 	{																	\
-		if (jit_pag_codigo[JIT_PAG_BIT(ptr)])							\
+		jit_epoca++;													\
+		jit_validez = (jit_epoca << 1) | jit_md_visto;					\
+		jit_ep_escritura++;												\
+	} while (0)
+
+/*
+	El bloque: una escritura de mas de 8 bytes puede cubrir muchas lineas y
+	hasta cruzar de pagina, asi que no alcanza con mirar donde empieza.
+	`memwrite_paginado` copia trozos de hasta 1 KB --dieciseis lineas-- y los
+	DMA copian mas; mirar cabeza y cola dejaria el medio sin ver, que es el
+	mismo agujero que marcar solo la cabeza de un bloque al traducirlo.
+	Va fuera de linea porque es el camino de los bloques, no el de un acceso.
+*/
+int jit_escritura_bloque(const unsigned char * p, size_t tam);
+
+/* Un byte por pagina y no un bit: el codigo emitido tiene que mirarlo en una
+   comparacion sola, porque su camino rapido de escritura no pasa por
+   memwrite() y si no lo mirara escribiria sin mover la epoca.
+
+   El tamano entra para separar los dos casos, y en todo llamador caliente es
+   una constante de compilacion (`sizeof`), asi que la rama se pliega y no
+   queda nada. Hasta 8 bytes el acceso del guest va alineado --el error de
+   direccion lo filtra antes-- y no cruza limite de 64 ni de pagina; se miran
+   igual las dos lineas, porque las escrituras internas entran por aqui sin
+   pasar por esa comprobacion. */
+#define JIT_ESCRITURA_HOST(ptr, tam)									\
+	do																	\
+	{																	\
+		const unsigned char * _je = (const unsigned char *) (ptr);		\
+																		\
+		if ((tam) > 8)													\
 		{																\
-			jit_epoca++;												\
-			jit_validez = (jit_epoca << 1) | jit_md_visto;				\
-			jit_ep_escritura++;											\
+			if (jit_escritura_bloque(_je, (tam)))						\
+				JIT_EPOCA_ESCRITURA();									\
+		}																\
+		else if (jit_pag_codigo[JIT_PAG_BIT(_je)])						\
+		{																\
+			jit_ep_pag_vista++;											\
+																		\
+			if (jit_lin_codigo[JIT_LIN_BIT(_je)]						\
+			 || jit_lin_codigo[JIT_LIN_BIT(_je + (tam) - 1)])			\
+				JIT_EPOCA_ESCRITURA();									\
 		}																\
 	} while (0)
 
 /* Desde memwrite()/memwrite_fisico(), con la direccion **fisica**: la pagina
-   del anfitrion sale de la base de zona, que es la misma que usa la escritura.
+   del anfitrion sale de la base de zona. **Va por mem_base_plana y no por la
+   de escritura**: esta ultima se pone en NULL para desviar el acceso (el
+   watchpoint, el UBC de operandos) y con ella la epoca no se movia justo
+   cuando algo estaba desviando -- la escritura ocurre igual, y si la pagina
+   tiene codigo traducido hay que invalidarlo igual.
    Sin traductor no se toca nada. */
-#define JIT_ESCRITURA(fisica)											\
+#define JIT_ESCRITURA(fisica, tam)										\
 	do																	\
 	{																	\
 		if (jit_vigila_codigo)											\
 		{																\
-			unsigned char * _jb = mem_base_escritura[(fisica) >> 24];	\
+			unsigned char * _jb = mem_base_plana[(fisica) >> 24];		\
 																		\
 			if (_jb)													\
-				JIT_ESCRITURA_HOST(_jb + ((fisica) & 0xFFFFFF));			\
+				JIT_ESCRITURA_HOST(_jb + ((fisica) & 0xFFFFFF), (tam));	\
 		}																\
 	} while (0)
 
@@ -220,9 +288,9 @@ extern unsigned			jit_ep_fpu;
 	El arbol se compila sin -DDCEMU_JIT, y entonces esto tiene que desaparecer
 	entero: mem.h y mmu.c llaman a los ganchos en sus caminos mas calientes.
 */
-#define jit_vigila_codigo		0
-#define JIT_ESCRITURA(fisica)	do { } while (0)
-#define JIT_ESCRITURA_HOST(ptr)	do { } while (0)
+#define jit_vigila_codigo			0
+#define JIT_ESCRITURA(fisica, tam)		do { } while (0)
+#define JIT_ESCRITURA_HOST(ptr, tam)	do { } while (0)
 #define JIT_EPOCA_MAPEO()		do { } while (0)
 #define JIT_EPOCA_MODO(md)		do { } while (0)
 #define JIT_FPSCR_SONDA(fpscr)	do { } while (0)

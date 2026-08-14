@@ -41,7 +41,7 @@ decide el orden:
 | 3 | La frontera residual: **el censo por peso** eligió el camino — 4 plantillas nuevas (121) + pares de rama BRA/JMP/BRAF | `recompilador-plan.md`, tabla y pendientes | **hecha** (2026-08-09 noche): **el mayor salto de la serie** — DOOM −25,5 % y **1,10×** (entradas −50 %), CT −16,7 %, SR2 −9,6 % (92,9 % de cobertura). La elisión de recargas bajó a pendiente medible; el censo queda en el resumen para elegir cada lote siguiente |
 | 4 | **El ARM7**: caché de predecodificación primero (hoy decodifica en cada paso), traductor ARM7→x64 sobre `jit_x64.c` si el escalón no alcanza; emisión por identidad de manejador del intérprete de `arm7.c`, que queda libre de SDL y enlazable por `tests/` | `notas-aica.md` / `arm7-plan.md` | **hecha entera** (2026-08-09/10), en tres escalones dentro de sus binarios: **la predecodificación** (validez por comparación, manejadores por forma) −3,6/−5,1/−3,3 %; **los bloques en C** (cuatro teoremas de exactitud, 61,4 % de los pasos) −0,6/−1,8/−0,4 %; **el traductor x64** (`arm7jit.c`, plantillas por forma + respaldo por manejador, suite propia 6/6) −2,4/−2,4/−2,0 %. Todas las compuertas al dígito en cada escalón. Marcas del árbol: **DOOM 1,12×, CT 92,1 s, SR2 0,93×**. Sigue: rehacer el reparto y la fase 5 |
 | 5 | **El reloj por eventos**: próximo vencimiento (TMU×3, WDT, muestra de AICA, línea, DMA auto, retardos de `intc_add`) en vez del sondeo cada 400 ciclos; las cadenas del JIT corren hasta el vencimiento. `intc_sh4_reintentar` ya es la mitad event-driven y se conserva | `clock-plan.md`, fase 5 | **hecha** (2026-08-10) como salteo del servicio **sobre la grilla intacta** — alargar las cadenas quedó fuera a propósito: mueve la cuantización de las entregas y rompe la identidad byte a byte, el contrato de las compuertas. Exacta por construcción y verificada entera: 9/9 compuertas canónicas, **barrido KOS 139/139 idéntico** entre palanca 0/1, ctest 23/23. Veredicto del techo conocido (el neto era 5-7,4 %): **SR2 −0,7/−1,0 % (6/6 rondas), CT −0,5 %, DOOM neutro** tras memoizar la inversa del AICA (perdía +0,8 % — es el guest denso en invalidaciones). Tres agujeros encontrados por las compuertas, los tres «mover una entrega sin invalidar»: el recálculo que pisaba el SCANINT posteado por el propio servicio (`reloj_toques`), los ticks aplicados al estado nuevo de una escritura on-chip (sincronizar antes), y la línea ASIC movida por `aica_escribir`. Palanca `DCEMU_SIN_RELOJ_EVENTOS=1` (encendido por omisión). Sigue: rehacer el reparto y la fase 6 |
-| 6 | **El camino de memoria emitido.** Estaba escrita como «fastmem»; **el censo la reescribió** (ver abajo) | `recompilador-plan.md`, tabla de veredictos | **escalón 1 hecho** (2026-08-14): el atajo de P1/P2, **DOOM −8,1 % y SR2 −2,1 %** con rangos disjuntos. Sigue el residuo que el censo nombra, no fastmem |
+| 6 | **El camino de memoria emitido.** Estaba escrita como «fastmem»; **el censo la reescribió** (ver abajo) | `recompilador-plan.md`, tabla de veredictos | **escalones 1 y 2 hechos** (2026-08-14): el atajo de P1/P2 (**DOOM −8,1 %, SR2 −2,1 %**, disjuntos) y después las guardas muertas plegadas + la rejilla de 64 bytes en línea (**DOOM −1,6 % y −1,3 %, tres rangos disjuntos, −2,8 % juntos**; SR2 y CT dentro de su dispersión), que de paso destapó y cerró **el gancho de la época desconectado**. Queda la zona no plana, con techo medido de 2,3 % |
 | 7 | Elisión de lazos ociosos del SH-4, **condicional** a que un perfil muestre sondeo dominante; el precedente es la memoización del ARM7 (salida idéntica, la cuenta se reporta como elisión) | — | — |
 | 8 | El parque entero (135 demos + 14 juegos, `DCEMU_JIT=2` contra control) y la adopción por omisión | `recompilador-plan.md`, pendiente 4 | cierra el plan |
 
@@ -89,6 +89,39 @@ fastmem**: en DCDoom quedan 4,9 % de accesos en «página con código» y 2,3 % 
 tablas base con el truco que ya usa el watchpoint. Fastmem sigue existiendo
 como idea para la zona no plana, pero su techo medido es ese 2,3 %, no lo que
 el plan le atribuía.
+
+### El escalón 2, y lo que encontró debajo (2026-08-14)
+
+Los dos residuos de arriba se cerraron juntos, porque son la misma secuencia
+emitida:
+
+- **las dos guardas muertas dejan de emitirse.** El break de operando del UBC
+  se pliega en `mem_base_lectura/escritura`, igual que el watchpoint: con un
+  break armado la zona entera baja al camino lento sola, y los ayudantes
+  físicos corren el gancho con la virtual. La guarda de modo desaparece del
+  lado MMU, donde el respaldo ya existía —escribir MMUCR vacía `mmu_datos`
+  entero, así que ningún acceso emitido acierta y todos caen al ayudante, que
+  mira `mmu_activa` de verdad—; del lado plano se queda, porque ahí la tabla de
+  zonas contesta con base directa para 0x0C aunque la traducción se acabe de
+  encender. La emisión pesa **1 132 176 bytes menos, un 3,5 %**;
+- **la escritura sobre una página con código se pregunta en línea**, contra una
+  segunda rejilla de 64 bytes, en vez de bajar al ayudante.
+
+Medidos por separado —tres brazos, porque el combinado leyó al revés— valen
+**−1,6 % y −1,3 % más en DCDoom, con los tres rangos disjuntos y −2,8 % juntos**;
+Sega Rally 2 y Crazy Taxi quedan dentro de su dispersión. Que gane justo DCDoom
+es lo que el censo predecía: es el guest con el 8,4 % de accesos sobre página
+con código y el único con la guarda de modo del lado MMU.
+
+Lo segundo destapó lo que estaba debajo, y es lo importante de este escalón:
+**el gancho que movía la época por escritura nunca estuvo conectado**. El
+expediente completo está en `recompilador-plan.md`, «El gancho que nunca estuvo
+conectado»; lo que corresponde repetir acá es la lección de medición, porque es
+la del árbol otra vez: el resumen de cada corrida venía imprimiendo `0
+escritura` desde el primer día del traductor, y ese 0 se leyó siempre como «los
+guests no escriben sobre su código» cuando quería decir «nadie está mirando».
+Lo que separa las dos lecturas es un contador de control —cuántas escrituras
+llegaron a preguntar— y no existía. Ahora se imprime siempre.
 
 ## Gates por fase (prueba de aceptación)
 

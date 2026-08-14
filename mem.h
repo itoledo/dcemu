@@ -46,9 +46,21 @@ extern mem_access_write_t * mem_hash_write[0x100];
 
 	Las arma mem_hash_setup() al final. Si alguna vez se arma un watchpoint
 	despues del arranque, hay que volver a llamar a mem_directo_recalcular().
+	**El UBC de operandos tambien las mueve** (ubc_registros_escritos), por lo
+	mismo que el watchpoint: su gancho vive detras del camino directo.
 */
 extern unsigned char * mem_base_lectura[0x100];
 extern unsigned char * mem_base_escritura[0x100];
+
+/*
+	La tercera tabla: **la zona es plana y nada mas**, sin mirar watchpoints ni
+	UBC. No es del camino rapido -- es de quien necesita la pagina del anfitrion
+	aunque el acceso vaya por el camino lento, o sea JIT_ESCRITURA (jit.h), que
+	con la de escritura se quedaba sin mover la epoca justo cuando algo la
+	desviaba: con --watchpoint armado, una escritura del guest sobre una pagina
+	con codigo traducido no la habria invalidado.
+*/
+extern unsigned char * mem_base_plana[0x100];
 
 void mem_directo_recalcular(void);
 
@@ -101,12 +113,22 @@ void dump_registers();
    -- DMA del Maple y del GD-ROM, DMAC, callbacks del PVR -- entran directo. Se
    llama despues de escribir para que vea el valor que quedo.
 
-   Sin watchpoint puesto, watchpoint_dir vale cero y esto es una comparacion. */
+   Sin watchpoint puesto, watchpoint_dir vale cero y esto es una comparacion.
+
+   **Y por lo mismo va aca el de la epoca del traductor**: que este sea el unico
+   sitio por el que pasan todas las escrituras es justo lo que hace falta para
+   que una escritura del guest sobre codigo ya traducido lo invalide. Es la otra
+   mitad de la guarda que el codigo emitido paga por escritura -- la guarda
+   desvia hasta aca, y hasta que esto existio, aca no habia nadie: el traductor
+   entero corria con el gancho desconectado y `jit_ep_escritura` daba 0 en toda
+   corrida. Sin -DDCEMU_JIT desaparece entero. */
 #define memwrite_fisico(direccion, source, size)						\
 	do																	\
 	{																	\
 		unsigned long _wp_dir = (direccion);							\
 		size_t        _wp_tam = (size);									\
+																		\
+		JIT_ESCRITURA(_wp_dir, _wp_tam);								\
 																		\
 		(*mem_hash_write[_wp_dir >> 24]) (_wp_dir, (source), _wp_tam);	\
 																		\
@@ -250,7 +272,10 @@ void excepcion_direccion(DWORD direccion, int escritura);
 			MMU_TRADUCIR_EN_SITIO(_mmu_d, MMU_DATOS_ESCRIBIR, MMU_ESCRITURA); \
 		_md_b = mem_base_escritura[_mmu_d >> 24]; \
 		if (_md_b) \
+		{ \
+			JIT_ESCRITURA_HOST(_md_b + ((_mmu_d) & 0xFFFFFF), (size)); \
 			MEM_DIRECTO_ESCRIBIR(_md_b + ((_mmu_d) & 0xFFFFFF), (source), (size)); \
+		} \
 		else \
 			memwrite_fisico(_mmu_d, (source), (size)); \
 		if (ubc_operando_activa) \

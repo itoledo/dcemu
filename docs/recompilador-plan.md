@@ -146,7 +146,71 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | `JIT_MAX_SALIDAS` fijo en 64 | **fósil cazado** — hoy escala con el tope | un bloque con más cortes desbordaba la emisión ENTERA y quedaba interpretado para siempre |
 | Parche de desborde del emisor | **así se cayó SR2** — `fijar()` anula el sitio | el productor devolvía uno-más-allá del arena lleno |
 | La época global por escritura de SR | reemplazada por MD en la clave | 8,2 M de movimientos «modo» churneaban los enlaces |
+| Las dos guardas muertas plegadas (modo del lado MMU, UBC de operando) | **ganó en DCDoom: −1,6 %**, rangos disjuntos; SR2 y CT dentro de su dispersión | el censo las dio en 0,00 % en los tres guests; el UBC se pliega en las tablas base como el watchpoint y el modo tiene respaldo en el vaciado de `mmu_datos`. Emisión −1 132 176 bytes (−3,5 %) |
+| La rejilla de 64 bytes consultada en línea antes de desviar una escritura | **ganó en DCDoom: −1,3 % más**, disjunto del anterior (−2,8 % los dos juntos) | la página dice si hay código en 4 KB, no si lo escrito ES código: **90 616 485 desvíos cada 20 s de DCDoom y ninguno hacía falta** |
+| Medir los dos juntos y no por separado | **casi cuesta el veredicto** | el combinado dio solapado en DOOM y disjunto en SR2; con los tres brazos DOOM separa las dos mitades y SR2 resulta ser el que no distingue |
+| Conectar el gancho de la época moviendo la época por **página** | **no se probó, y menos mal** | habría movido la época 90 millones de veces cada 20 s, desatando todos los enlaces: la página sirve para desviar barato, no para invalidar |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
+
+## El gancho que nunca estuvo conectado (2026-08-14)
+
+Es el hallazgo de la sesión y no es de rendimiento: **la época no se movía nunca
+por escritura**, en ninguna corrida, desde que el traductor existe.
+
+El diseño era correcto y está escrito en `jit.h`: un guest que escribe sobre
+código ya traducido tiene que invalidarlo, el camino rápido emitido no pasa por
+`memwrite()` —por eso mira un mapa de páginas y desvía al ayudante si la página
+tiene código—, y el ayudante escribe por `memwrite()`, **que mueve la época**.
+La última mitad nunca se escribió: `JIT_ESCRITURA()` quedó definido y sin un
+solo llamador. `grep` sobre el árbol entero da la definición y nada más, y el
+resumen de cada corrida lo venía diciendo en voz alta — `0 escritura` — sin que
+nadie leyera ese 0 como lo que era.
+
+Lo que sostenía la corrección mientras tanto era la verificación palabra por
+palabra de `jit_verificar()`, que corre cada vez que la clave de validez cambia;
+y en DCDoom cambia sin parar (4,2 M de transiciones de modo cada 20 s). En Crazy
+Taxi, con **cero** rechazos por verificación, no la sostenía nada.
+
+**Y hay clientes.** Con el gancho conectado, Sega Rally 2 mueve la época
+**18 876 veces** cada 20 s emulados y Crazy Taxi **25 743**: los dos escriben
+sobre su propio código traducido. Que las tandas salieran exactas igual no
+absuelve al agujero — dice que no se cobró en la ventana medida.
+
+**La página no alcanza para invalidar, y ese es el motivo de la rejilla.** En
+Windows CE los datos viven en las mismas páginas de 4 KB que el código: de las
+90 616 485 escrituras de DCDoom que caen en una página con código cada 20 s,
+**ninguna** toca una línea de 64 bytes que lo tenga. Conectar el gancho a secas
+habría movido la época noventa millones de veces. Así que hay dos rejillas y
+cada una hace lo suyo: la de páginas —4096 entradas útiles, en L1— decide barato
+si hay que preguntar, y la de 64 bytes —256 KB, tocada sólo detrás de la otra—
+decide de verdad. La fina se consulta **en línea en el código emitido**, que es
+lo que convierte los noventa millones de llamadas al ayudante en noventa
+millones de cuatro instrucciones.
+
+**Lo que cuesta y lo que se gana**, con los tres brazos (`herramientas/rejilla-ab.ps1`,
+binario `4800AC12E8BF0C6C`, un calentamiento **por guest** — el caché frío de la
+imagen se paga por guest, no por tanda, y eso fue lo que dejó solapado el par de
+Crazy Taxi en la primera tanda): en DCDoom el pliegue de guardas vale **−1,6 %**
+y la rejilla **−1,3 % más**, con los tres rangos disjuntos y **−2,8 % juntos**;
+Sega Rally 2 queda dentro de su dispersión (63 620–65 317 ms en un mismo brazo)
+y Crazy Taxi solapado. Que gane justo DCDoom es lo que el censo predecía: es el
+guest con el 8,4 % de accesos sobre página con código y el único con la guarda
+de modo del lado MMU.
+
+**Y la lección de medición está en cómo se leyó primero.** La tanda combinada
+—las dos palancas a la vez— dio DOOM solapado y SR2 disjunto en −0,8 %, o sea
+exactamente al revés de lo que es. Un combinado neutro puede ser dos efectos que
+se cancelan, o uno real escondido bajo el ruido del otro guest; sin el tercer
+brazo no hay forma de saber cuál. El −0,8 % de SR2 no se reprodujo.
+
+Tres cosas quedaron por construcción, no por suerte: la rejilla fina se marca
+**entera** por bloque (hasta cuatro líneas: la cabeza y la cola dejarían el
+medio abierto), el acceso del guest va alineado y por eso no cruza el límite de
+64 —el error de dirección lo filtra antes— pero la versión en C mira cabeza y
+cola porque las escrituras internas copian bloques, y `jit_ep_pag_vista` se
+imprime siempre: sin ese contador, «0 movimientos por escritura» no distingue
+«el guest no escribe su código» de «el gancho no está conectado», que es
+exactamente la confusión que duró toda la vida del traductor.
 
 ## Dónde está el tiempo (rehecho tras las fases 4 y 5, 2026-08-13)
 
@@ -202,15 +266,15 @@ mezclador del AICA ya pesa 2,9-7,4 %.
 P1/P2 el 2026-08-14; lo encendido por omisión son todos los pares de rama, las
 122 plantillas y el atajo.)
 
-0. **El censo de accesos nombra el residuo siguiente** y ya está medido
-   (`DCEMU_JIT_SONDA_ACCESOS=1`, con el atajo puesto): en DCDoom quedan
-   **4,9 % de accesos en «página con código»** —escrituras sobre páginas que
-   tienen código traducido, que bajan al ayudante para mover la época— y
-   **2,3 % de «zona no plana»**; en SR2, 1,2 % y 0,1 %. Las tres guardas de
-   alineación, cambio de modo y UBC **no se disparan ni una vez** en ninguno de
-   los tres guests, así que plegarlas en las tablas base (el truco que ya usa el
-   watchpoint) es exacto y ahorra dos comparaciones por acceso. Eso, y no
-   fastmem, es lo que el censo pide ahora.
+0. **Lo que queda del censo de accesos.** Las dos guardas muertas y la página
+   con código se cerraron el 2026-08-14 (ver «El gancho que nunca estuvo
+   conectado», abajo) y el camino rápido de DCDoom pasó de **88,2 % a 96,6 %**,
+   con «página con código» en **0,00 %**. Lo que queda, en orden: **zona no
+   plana 1,78 %**, **etiqueta de la caché de traducciones 1,24 %** y permiso
+   0,34 %. La zona no plana es el único sitio donde fastmem tendría algo que
+   hacer, y ese 1,78 % es su techo medido. Y la guarda de alineación **tampoco
+   se dispara jamás** pero no se puede plegar: es la comprobación del error de
+   dirección, o sea una función y no una optimización.
 1. **La época por página** (en vez de global): los rechazos de DCDoom quedaron en
    8,2 M — cada movimiento de mapeo de WinCE invalida TODOS los bloques y la
    revalidación por palabras falla ~7 % de las entradas. Una generación por página
