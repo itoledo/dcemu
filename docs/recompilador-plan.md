@@ -30,13 +30,16 @@ traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
   bloque, ponderado por las veces que se corrió. Es lo que separa «hay muchos sitios»
   de «por ahí pasa la ejecución», y lo que eligió el lote de arriba. El residuo que
   nombra hoy palabras de datos, `TRAPA` y escritores de SR.
-- **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **89,8 %**
-  de cobertura antes de este lote, ahora **93,8 % y 48,4 por entrada**), Crazy Taxi
-  (**96,2 %**, 20,1) y Sega Rally 2 (MMU+FPU, **95,2 %**, 24,8). Tanda final
-  2026-08-10, binario `4BDA443CB17BD1B6`: DCDoom **31 654 ms, −26,5 %**; CT
-  **91 419 ms, −19,3 %**; SR2 **67 635 ms, −8,4 %**. Los pares de llamada solos,
-  aislados dentro del mismo binario, valen ~1,0/5,5/0,4 % respectivamente; C6xx es
-  neutra en SR2 (~0,1 %) y queda porque elimina la frontera sin costo.
+- **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **93,8 %**
+  de cobertura, 48,4 por entrada), Crazy Taxi (**96,2 %**, 20,1) y Sega Rally 2
+  (MMU+FPU, **95,2 %**, 24,8). Tanda del 2026-08-14, binario `A15BA7445BC385EF`,
+  con el atajo de P1/P2 puesto: DCDoom **28 866 ms, −32,5 %** y **1,21× tiempo
+  real**; CT **87 069 ms, −21,5 %** (2,07×); SR2 **64 356 ms, −12,0 %** (0,93×).
+  La tanda anterior (2026-08-10, `4BDA443CB17BD1B6`) daba −26,5/−19,3/−8,4 %: lo
+  que se movió en los dos guests con MMU es el atajo, y lo de CT —que no emite
+  traducción alguna— es su capa de reentrenamiento, que vale ±1-2 %. Los pares de
+  llamada solos valen ~1,0/5,5/0,4 %; C6xx es neutra en SR2 (~0,1 %) y queda
+  porque elimina la frontera sin costo.
 - El traductor emite **por identidad de manejador** (`OP_HANDLER` de la `oplist` real):
   no existe un segundo decodificador que pueda divergir del primero. Los ciclos de cada
   plantilla se copian leyendo el cuerpo ENTERO del manejador — nunca por cercanía: un
@@ -127,6 +130,10 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | El par de retorno terminando la traza | **mixto-marginal, quedó encendido** | DOOM −21,9 y CT −15,6/−16,7 (mejor), SR2 −7,5 (−0,8 pt, dentro de su dispersión); cobertura +2,5/+2,8 pt y entradas −9,6/−12,7 % |
 | El lote del censo de la frontera (4 plantillas + pares BRA/JMP/BRAF) | **ganó en los tres, el mayor salto de la serie** | DOOM −25,5 % (1,10×, entradas −50 %), CT −16,7 %, SR2 −9,6 % (92,9 % de cobertura): el censo por peso encontró el residuo interpretado que el flujo no |
 | C6xx + pares BSR/JSR/BSRF | **ganó en los tres; encendido** | PR se compromete tras una ranura que no lo toca; los pares solos valen ~1,0/5,5/0,4 % en DOOM/CT/SR2 y llevan las entradas a 48,4/20,1/24,8 instrucciones |
+| El atajo de P1/P2 en la traducción emitida | **ganó en los dos guests con MMU; encendido** (`DCEMU_JIT_SIN_ATAJO_P1P2=1`) | esas direcciones no se traducen, así que no son clientela de la caché: su ranura queda sin estrenar y cada acceso repagaba el ayudante. DOOM **−8,1 %**, SR2 **−2,1 %**, rangos disjuntos |
+| El atajo detrás del fallo de caché en vez de delante | **perdió** (DOOM −2,8 % contra −8,1) | ahorra el test al que acierta, pero obliga al tercio de accesos de P1/P2 a recorrer índice, etiqueta y cuatro comparaciones antes de salir |
+| Índice de `mmu_datos[]` con los bits altos mezclados | **neutro, revertido** | la hipótesis era choque por alias; el censo la mató (64,1 % antes y después). Los fallos no eran de ranura ocupada sino de ranura **nunca escrita** |
+| Agrandar la caché de traducciones (64 → 8192) | **no mueve nada** (33,0 % contra 33,2 % de fallos) | la firma de que el problema no era capacidad — con capacidad, el tamaño manda |
 | Ciclos de la rama antes de la ranura en un par | **la divergencia de los ±15-19 k** | tr_manejador recarga CYC del contexto: lo sumado tras la sync se evapora; después de la ranura, como el intérprete |
 | Llamar al ayudante en cada acceso | **perdió** — el camino rápido se emite en línea | 2,2 ns (~9 ciclos) por acceso, la mitad de la ganancia del bloque |
 | Redespacho en el arena por ayudante C | **perdió dos veces** (+2,2/+4,6 % y +0,5/+0,6 %) | las llamadas fallidas superan a los aciertos |
@@ -140,6 +147,28 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | Parche de desborde del emisor | **así se cayó SR2** — `fijar()` anula el sitio | el productor devolvía uno-más-allá del arena lleno |
 | La época global por escritura de SR | reemplazada por MD en la clave | 8,2 M de movimientos «modo» churneaban los enlaces |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
+
+## Dónde está el tiempo (rehecho tras las fases 4 y 5, 2026-08-13)
+
+Binario `D06C1A67C6F9E863`, mismo método (`perfil-jit.ps1`). Los porcentajes
+descuentan el AICA, que corre anidado en el bloque periódico.
+
+| | DCDoom 35 s | CT 180 s | SR2 60 s |
+| --- | --- | --- | --- |
+| resto (emitido + despacho + intérprete + MMU) | **78,0 %** | **63,1 %** | **81,0 %** |
+| AICA — ARM7 | 10,1 % | **19,9 %** | 8,4 % |
+| AICA — mezclador | 4,1 % | 7,2 % | 3,1 % |
+| bloque periódico neto | 7,1 % | 1,7 % | 4,5 % |
+| GL entero | 0,7 % | 6,2 % | 2,0 % |
+| cruces de enlace | 66,8 % | 66,0 % | 60,2 % |
+| instrucciones por entrada al despachador | 48,4 | 20,1 | 24,8 |
+
+Lo que cambió contra el reparto de la fase 0: **los cruces de enlace pasaron de
+36-42 % a 60-67 %** — las cadenas se alargaron con los pares de rama, que es lo
+que se buscaba — y el bloque periódico neto de CT cayó a 1,7 %. El SH-4 sigue
+siendo el 63-81 %, así que la fase siguiente sigue apuntando adentro de él; el
+ARM7 de CT sigue siendo la segunda porción con 19,9 % aun después de sus tres
+escalones.
 
 ## Dónde está el tiempo (fase 0 del plan del estado del arte, 2026-08-09)
 
@@ -169,9 +198,19 @@ mezclador del AICA ya pesa 2,9-7,4 %.
 
 ## Lo pendiente, en orden
 
-(El mini-lote C6xx + pares de llamada se cerró el 2026-08-10; lo encendido por
-omisión son todos los pares de rama y las 122 plantillas.)
+(El mini-lote C6xx + pares de llamada se cerró el 2026-08-10, y el atajo de
+P1/P2 el 2026-08-14; lo encendido por omisión son todos los pares de rama, las
+122 plantillas y el atajo.)
 
+0. **El censo de accesos nombra el residuo siguiente** y ya está medido
+   (`DCEMU_JIT_SONDA_ACCESOS=1`, con el atajo puesto): en DCDoom quedan
+   **4,9 % de accesos en «página con código»** —escrituras sobre páginas que
+   tienen código traducido, que bajan al ayudante para mover la época— y
+   **2,3 % de «zona no plana»**; en SR2, 1,2 % y 0,1 %. Las tres guardas de
+   alineación, cambio de modo y UBC **no se disparan ni una vez** en ninguno de
+   los tres guests, así que plegarlas en las tablas base (el truco que ya usa el
+   watchpoint) es exacto y ahorra dos comparaciones por acceso. Eso, y no
+   fastmem, es lo que el censo pide ahora.
 1. **La época por página** (en vez de global): los rechazos de DCDoom quedaron en
    8,2 M — cada movimiento de mapeo de WinCE invalida TODOS los bloques y la
    revalidación por palabras falla ~7 % de las entradas. Una generación por página

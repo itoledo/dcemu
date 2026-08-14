@@ -266,6 +266,22 @@ typedef struct
 
 extern mmu_datos_t	mmu_datos[MMU_DATOS_N];
 extern DWORD		mmu_datos_mascara;
+
+/*
+	El indice de la cache de traducciones resueltas: la pagina, truncada.
+
+	**Se probo mezclar los bits altos** ((dir >> 12) ^ (dir >> 25)), con la
+	hipotesis de que la de kernel 0x8001_0000 y la de usuario 0x0001_0000 se
+	pisaban por caer en la misma ranura. **Medido: neutro** -- el censo de
+	accesos emitidos dio 64,1 % de camino rapido antes y despues --, porque los
+	fallos no encontraban la ranura ocupada sino **sin estrenar**: eran P1/P2,
+	que esta funcion devuelve sin traducir y por eso nunca se guardan aqui. La
+	misma medicion descarto la capacidad (de 64 a 8192 entradas la tasa no se
+	mueve). Ver docs/estado-del-arte-plan.md, "La fase 6, reescrita por su
+	propio censo".
+*/
+#define MMU_DATOS_INDICE(dir)	(((dir) >> 12) & mmu_datos_mascara)
+
 extern DWORD		mmu_utlb_gen[MMU_UTLB_ENTRADAS];
 
 /* Un acceso a la UTLB avanza URC -- acierto de cache incluido. Un solo cuerpo
@@ -313,7 +329,7 @@ extern DWORD				mmu_sonda_uv;
 			break;														\
 		}																\
 																		\
-		_mm_e   = &mmu_datos[((var) >> 12) & mmu_datos_mascara];		\
+		_mm_e   = &mmu_datos[MMU_DATOS_INDICE(var)];					\
 		_mm_tag = ASID_DE(*PTEH) | ((DWORD) (SR_MD == 0) << 8)			\
 				| MMU_CACHE_VALIDA;										\
 																		\

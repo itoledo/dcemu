@@ -958,14 +958,72 @@ typedef void (* jit_valor_f)(jit_gen * g, void * ctx, x64_reg dst);
 typedef struct
 {
 	x64_parche	lento[12];		/* al ayudante que traduce (direccion virtual) */
+	unsigned char razon[12];	/* por que cayo ahi (la sonda de accesos) */
 	int			n_lento;
 	x64_parche	lento_fis[2];	/* al ayudante que NO traduce (ya es fisica) */
+	unsigned char razon_fis[2];
 	int			n_lento_fis;
 	int			corto;			/* los saltos al camino lento caben en rel8 */
 	x64_reg		fis;			/* que registro lleva la direccion fisica */
 	x64_parche	listo;
 	x64_parche	listo2;
 } jit_acceso;
+
+/*
+	La sonda de accesos (DCEMU_JIT_SONDA_ACCESOS=1): cuantos accesos emitidos
+	toma cada camino, y **por que guarda** cae al ayudante el que no toma el
+	rapido. Es el censo que la fase 6 del plan del estado del arte necesita
+	antes de escribirse: separa "el camino rapido cubre casi todo y lo que
+	sobra es la zona no plana" de "se cae por la alineacion" o "por la pagina
+	con codigo", que piden fastmem, o no lo piden, en distinta medida.
+
+	Va en corrida aparte, como la sonda de cruces: cambia la emision (un
+	incremento por guarda fallada) y por eso su tiempo no es una tanda. Los
+	saltos pasan a rel32 mientras esta encendida -- los talones de la cuenta
+	empujan el destino mas alla del alcance de un rel8, y un desborde
+	invalidaria justo los bloques que se quieren censar, sesgando el censo
+	hacia los cortos.
+*/
+#define JIT_RZ_ALINEACION	0
+#define JIT_RZ_MODO			1	/* mmu_activa cambio dentro del bloque */
+#define JIT_RZ_UBC			2
+/* Las cinco guardas de la traduccion emitida, separadas: la etiqueta (ASID,
+   modo y valida), el permiso, la VPN de la pagina y la generacion de la
+   entrada de UTLB de la que salio. Juntas no distinguen "la cache es chica"
+   de "el guest la invalida", que piden cosas distintas. */
+#define JIT_RZ_TR_PROBAR	3
+#define JIT_RZ_TR_ETIQUETA	4
+#define JIT_RZ_TR_PERMISO	5
+#define JIT_RZ_TR_VPN		6
+#define JIT_RZ_TR_GEN		7
+#define JIT_RZ_ZONA			8	/* la zona no es memoria plana */
+#define JIT_RZ_PAG_CODIGO	9	/* escritura sobre pagina con codigo traducido */
+#define JIT_RZ_N			10
+/* Las dos guardas del atajo de P1/P2 no son una causa nueva: el acceso ya lo
+   conto la guarda de cache que lo mando al talon. Cuentan como nada. */
+#define JIT_RZ_NADA			JIT_RZ_N
+
+static int					jit_sonda_accesos = 0;
+
+/* El atajo de P1/P2 en la traduccion emitida (ver gen_traducir_mmu).
+   DCEMU_JIT_SIN_ATAJO_P1P2=1 lo apaga y reproduce la emision anterior
+   byte por byte: es el A/B de la fase y la linea base de antes. */
+static int					jit_atajo_p1p2 = 1;
+static unsigned long long	jit_acc_total = 0;
+static unsigned long long	jit_acc_razon[JIT_RZ_N + 1] = { 0 };
+static unsigned long long	jit_acc_p1p2 = 0;	/* rescatados por el atajo */
+/* Los dos exactos: cuantos accesos llegaron al ayudante. El censo por razon es
+   diagnostico y puede contar dos veces uno que el atajo rescato y que despues
+   fallo la zona; estos no, y son los que dan el porcentaje. */
+static unsigned long long	jit_acc_lento = 0;
+static unsigned long long	jit_acc_lento_fis = 0;
+
+static const char * const jit_rz_nombre[JIT_RZ_N] =
+{
+	"desalineado", "cambio de modo", "UBC de operando",
+	"trad: sondeo apagado", "trad: etiqueta", "trad: permiso",
+	"trad: VPN", "trad: generacion", "zona no plana", "pagina con codigo"
+};
 
 /* Los tres modos de un acceso. PLANO y MMU son politica, no correccion: el
    ayudante siempre esta detras y decide todo lo que el camino rapido no cubre.
@@ -977,9 +1035,43 @@ typedef struct
 #define JIT_ACC_PLANO	1
 #define JIT_ACC_MMU		2
 
+static void gen_censar(jit_gen * g, const x64_parche * p,
+	const unsigned char * razon, int n);
+
 static x64_parche gen_guarda(jit_gen * g, jit_acceso * a, x64_cond cc)
 {
 	return a->corto ? jit_x64_jcc_corto(&g->e, cc) : jit_x64_jcc(&g->e, cc);
+}
+
+/* Las dos salidas al camino lento, anotando por que. Con la sonda apagada la
+   razon no se usa y la emision es la de siempre, byte por byte. */
+static void gen_lento(jit_gen * g, jit_acceso * a, x64_cond cc, int razon)
+{
+	a->razon[a->n_lento]   = (unsigned char) razon;
+	a->lento[a->n_lento++] = gen_guarda(g, a, cc);
+}
+
+/* Una guarda de la cache de traducciones: se anota y se resuelve al final,
+   junto con las demas. */
+static void gen_trad_fallo(jit_gen * g, jit_acceso * a, x64_cond cc, int razon,
+	x64_parche * fallo, unsigned char * fallo_rz, int * nf)
+{
+	(void) a;
+	fallo_rz[*nf] = (unsigned char) razon;
+	fallo[(*nf)++] = gen_guarda(g, a, cc);
+}
+
+/* Y su aterrizaje: un parche ya emitido entra a la lista del camino lento. */
+static void gen_lento_parche(jit_acceso * a, x64_parche p, unsigned char razon)
+{
+	a->razon[a->n_lento]   = razon;
+	a->lento[a->n_lento++] = p;
+}
+
+static void gen_lento_fis(jit_gen * g, jit_acceso * a, x64_cond cc, int razon)
+{
+	a->razon_fis[a->n_lento_fis]   = (unsigned char) razon;
+	a->lento_fis[a->n_lento_fis++] = gen_guarda(g, a, cc);
 }
 
 /*
@@ -1009,16 +1101,73 @@ static x64_parche gen_guarda(jit_gen * g, jit_acceso * a, x64_cond cc)
 */
 static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 {
-	x64_parche sin_urb;
-	const int  DAT = D_MMU_DATOS;
+	x64_parche    sin_urb;
+	x64_parche    p1p2;
+	x64_parche    traducir;
+	x64_parche    fallo[4];
+	unsigned char fallo_rz[4];
+	int           nf = 0;
+	const int     DAT = D_MMU_DATOS;
+
+	/*
+		P1 y P2 **no se traducen nunca**, y por eso no son clientela de la
+		cache de traducciones: mmu_traducir() las devuelve tal cual antes de
+		mirar la UTLB, asi que su ranura queda sin estrenar para siempre y
+		cada acceso volvia a pagar el viaje al ayudante. El censo de accesos
+		emitidos lo midio: **el 98 % de los fallos de traduccion de DCDoom y
+		el 96,6 % de los de Sega Rally 2 son estas direcciones**, o sea un
+		tercio de todos los accesos emitidos de DCDoom.
+
+		**Va adelante de la consulta, y la posicion la decidieron dos tandas.**
+		Detras del fallo de cache sale mas barato para el que acierta, y se
+		midio: Sega Rally 2 pasaba de +1,1 % (solapado, o sea ruido) a neutro,
+		pero DCDoom perdia la mitad de su ganancia -- de −5,9 % a −2,8 %, las
+		dos con rangos disjuntos --, porque con un tercio de sus accesos en
+		P1/P2 obligarlos a recorrer indice, etiqueta y cuatro comparaciones
+		antes del atajo se paga. Se queda la version que gana donde la medicion
+		distingue, y se abarata para el que no la necesita (abajo).
+
+		**El modo se resuelve al emitir, no al correr.** SR.MD vive en la clave
+		de validez (`jit_validez`, jit.h), asi que un bloque solo se despacha en
+		el modo en que se tradujo: en modo usuario no se emite atajo alguno y
+		P1/P2 cae al ayudante, que levanta el error de direccion como siempre.
+		Eso deja el atajo en cuatro instrucciones en vez de siete.
+
+		Lo que se emite es la misma decision de mmu_traducir(): 0x80000000 <=
+		dir < 0xC0000000 -> la fisica ES la virtual. **No avanza URC**: el
+		camino en C vuelve antes de tocar la UTLB, y avanzarlo aqui cambiaria
+		que entrada reemplaza el proximo LDTLB del guest.
+	*/
+	p1p2.sitio = NULL;
+
+	if (jit_atajo_p1p2 && jit_md_visto)
+	{
+		/* bits 31:30 == 10b es P1/P2 */
+		jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
+		jit_x64_shr_ri(&g->e, X64_RAX, 30);
+		jit_x64_cmp_ri(&g->e, X64_RAX, 2);
+		traducir = jit_x64_jcc(&g->e, X64_NE);
+
+		jit_x64_mov_rr(&g->e, X64_R11, X64_RCX);
+
+		if (perf_activa)
+			jit_x64_add64_mi(&g->e, CTX, D_PERF_TRADUCE, 1);
+
+		if (jit_sonda_accesos)
+			jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_p1p2), 1);
+
+		p1p2 = jit_x64_jmp(&g->e);
+		jit_x64_fijar(&g->e, traducir);
+	}
 
 	/* if (!mmu_macro_probar) -> mmu_traducir() */
 	jit_x64_cmp_mi(&g->e, CTX, D_MACRO_PROBAR, 0);
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
+	gen_lento(g, a, X64_E, JIT_RZ_TR_PROBAR);
 
-	/* r9 = ((dir >> 12) & mmu_datos_mascara) * sizeof(mmu_datos_t), en bytes:
-	   el elemento no mide una potencia de dos, asi que el indice viaja ya
-	   multiplicado y la escala del SIB es 1. */
+	/* r9 = MMU_DATOS_INDICE(dir) * sizeof(mmu_datos_t), en bytes: el elemento
+	   no mide una potencia de dos, asi que el indice viaja ya multiplicado y
+	   la escala del SIB es 1. Es el indice de mmu.h y tiene que dar la misma
+	   ranura, o la emitida buscaria donde la otra no guarda. */
 	jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
 	jit_x64_shr_ri(&g->e, X64_RAX, 12);
 	jit_x64_and_rm(&g->e, X64_RAX, CTX, D_DATOS_MASCARA);
@@ -1040,12 +1189,12 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	/* etiqueta */
 	jit_x64_cmp_rm_idx(&g->e, X64_RDX, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, etiqueta));
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+	gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_ETIQUETA, fallo, fallo_rz, &nf);
 
 	/* permisos */
 	jit_x64_test_mi_idx(&g->e, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, permisos), (int) permiso_bit);
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
+	gen_trad_fallo(g, a, X64_E, JIT_RZ_TR_PERMISO, fallo, fallo_rz, &nf);
 
 	/* (dir & ~mascara) == vpn */
 	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
@@ -1054,7 +1203,7 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_and_rr(&g->e, X64_RAX, X64_RCX);
 	jit_x64_cmp_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, vpn));
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+	gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_VPN, fallo, fallo_rz, &nf);
 
 	/* mmu_utlb_gen[entrada] == gen */
 	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
@@ -1062,7 +1211,7 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_RAX, 4, D_UTLB_GEN);
 	jit_x64_cmp_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, gen));
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+	gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_GEN, fallo, fallo_rz, &nf);
 
 	/* --- MMU_URC_AVANZAR() --- */
 	jit_x64_mov64_rm(&g->e, X64_R8, CTX, D_P_MMUCR);
@@ -1109,6 +1258,22 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_and_rr(&g->e, X64_R11, X64_RCX);
 	jit_x64_or_rm_idx(&g->e, X64_R11, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, base));
+
+	/* El talon del fallo: aca llegan las cuatro guardas de la cache. Si la
+	   direccion es de P1/P2 y el modo es privilegiado, la fisica es ella
+	   misma y el acceso sigue por el camino rapido; si no, al ayudante. */
+	/* Las guardas de la cache van derecho al camino lento: el atajo ya
+	   decidio antes de consultarla. */
+	{
+		int i;
+
+		for (i = 0; i < nf; i++)
+			gen_lento_parche(a, fallo[i], fallo_rz[i]);
+	}
+
+	/* Y aca se juntan los dos: el atajo dejo la fisica en R11D. Con el
+	   atajo apagado no hay sitio que fijar y fijar() lo ignora. */
+	jit_x64_fijar(&g->e, p1p2);
 }
 
 /*
@@ -1137,21 +1302,23 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 {
 	a->n_lento     = 0;
 	a->n_lento_fis = 0;
-	a->corto   = (modo != JIT_ACC_MMU);		/* con la traduccion no cabe rel8 */
+	a->corto   = (modo != JIT_ACC_MMU) && !jit_sonda_accesos;
 	a->fis     = (modo == JIT_ACC_MMU) ? X64_R11 : X64_RCX;
+
+	if (jit_sonda_accesos)
+		jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_total), 1);
 
 	if (alineacion)
 	{
 		jit_x64_test_ri8(&g->e, X64_RCX, alineacion);
-		a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+		gen_lento(g, a, X64_NE, JIT_RZ_ALINEACION);
 	}
 
 	jit_x64_cmp_mi(&g->e, CTX, D_MMU, 0);
-	a->lento[a->n_lento++] = gen_guarda(g, a,
-		(modo == JIT_ACC_MMU) ? X64_E : X64_NE);
+	gen_lento(g, a, (modo == JIT_ACC_MMU) ? X64_E : X64_NE, JIT_RZ_MODO);
 
 	jit_x64_cmp_mi(&g->e, CTX, D_UBC_OP, 0);
-	a->lento[a->n_lento++] = gen_guarda(g, a, X64_NE);
+	gen_lento(g, a, X64_NE, JIT_RZ_UBC);
 
 	if (modo == JIT_ACC_MMU)
 		gen_traducir_mmu(g, a,
@@ -1167,12 +1334,43 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 	   traduce la avanzaria de nuevo, asi que esta salida usa la fisica. Sin
 	   MMU no hay traduccion y da lo mismo, asi que va por el camino comun. */
 	if (modo == JIT_ACC_MMU)
-		a->lento_fis[a->n_lento_fis++] = gen_guarda(g, a, X64_E);
+		gen_lento_fis(g, a, X64_E, JIT_RZ_ZONA);
 	else
-		a->lento[a->n_lento++] = gen_guarda(g, a, X64_E);
+		gen_lento(g, a, X64_E, JIT_RZ_ZONA);
 
 	jit_x64_mov_rr(&g->e, X64_R8, a->fis);
 	jit_x64_and_ri(&g->e, X64_R8, 0x00FFFFFF);
+}
+
+/*
+	El aterrizaje de un juego de guardas. Sin sonda es lo que fue siempre: las
+	guardas caen todas en el mismo punto. Con la sonda cada una cae en su
+	propio talon, que suma uno a su contador y salta al comun -- asi el censo
+	dice POR QUE se fue al ayudante, que es la pregunta que la fase 6 hace.
+*/
+static void gen_censar(jit_gen * g, const x64_parche * p,
+	const unsigned char * razon, int n)
+{
+	x64_parche	al_comun[12];
+	int			i;
+
+	if (!jit_sonda_accesos)
+	{
+		for (i = 0; i < n; i++)
+			jit_x64_fijar(&g->e, p[i]);
+
+		return;
+	}
+
+	for (i = 0; i < n; i++)
+	{
+		jit_x64_fijar(&g->e, p[i]);
+		jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_razon[razon[i]]), 1);
+		al_comun[i] = jit_x64_jmp(&g->e);
+	}
+
+	for (i = 0; i < n; i++)
+		jit_x64_fijar(&g->e, al_comun[i]);
 }
 
 /*
@@ -1183,16 +1381,16 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 static void gen_rapido_fin(jit_gen * g, jit_acceso * a, int disp_fis,
 	const void * ayudante_fis, jit_valor_f val, void * ctx)
 {
-	int i;
-
 	a->listo  = jit_x64_jmp(&g->e);
 	a->listo2 = a->listo;
 	a->listo2.sitio = NULL;
 
 	if (a->n_lento_fis)
 	{
-		for (i = 0; i < a->n_lento_fis; i++)
-			jit_x64_fijar(&g->e, a->lento_fis[i]);
+		gen_censar(g, a->lento_fis, a->razon_fis, a->n_lento_fis);
+
+		if (jit_sonda_accesos)
+			jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_lento_fis), 1);
 
 		jit_x64_mov_rr(&g->e, X64_RCX, a->fis);
 
@@ -1203,8 +1401,10 @@ static void gen_rapido_fin(jit_gen * g, jit_acceso * a, int disp_fis,
 		a->listo2 = jit_x64_jmp(&g->e);
 	}
 
-	for (i = 0; i < a->n_lento; i++)
-		jit_x64_fijar(&g->e, a->lento[i]);
+	gen_censar(g, a->lento, a->razon, a->n_lento);
+
+	if (jit_sonda_accesos)
+		jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_lento), 1);
 }
 
 static void gen_acceso_cerrar(jit_gen * g, jit_acceso * a)
@@ -1326,9 +1526,9 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 		jit_x64_cmp8_mi_idx(&g->e, CTX, X64_R9, 1, D_PAG_CODIGO, 0);
 
 		if (a.n_lento_fis)
-			a.lento_fis[a.n_lento_fis++] = gen_guarda(g, &a, X64_NE);
+			gen_lento_fis(g, &a, X64_NE, JIT_RZ_PAG_CODIGO);
 		else
-			a.lento[a.n_lento++] = gen_guarda(g, &a, X64_NE);
+			gen_lento(g, &a, X64_NE, JIT_RZ_PAG_CODIGO);
 
 		val(g, ctx, X64_RDX);
 
@@ -5839,6 +6039,32 @@ static void jit_resumen(void)
 					total ? 100.0 * (double) peso[r] / (double) total : 0.0);
 	}
 
+	/* El censo de accesos: cuantos toma el camino rapido emitido y por que
+	   guarda se va el resto al ayudante. Es el techo de la fase 6 medido en
+	   vez de estimado -- lo que fastmem podria borrar es lo rapido; lo que
+	   caeria en falta de pagina es la zona no plana. */
+	if (jit_sonda_accesos && jit_acc_total)
+	{
+		unsigned long long lento = jit_acc_lento + jit_acc_lento_fis;
+		int                r;
+
+		fprintf(stderr, "jit: %llu accesos emitidos, %llu por el camino rapido"
+			" (%.1f %%), %llu al ayudante; guardas falladas:\n",
+			jit_acc_total, jit_acc_total - lento,
+			100.0 * (double) (jit_acc_total - lento) / (double) jit_acc_total,
+			lento);
+
+		for (r = 0; r < JIT_RZ_N; r++)
+			fprintf(stderr, "jit:   %-20s %12llu   %5.2f %%\n",
+				jit_rz_nombre[r], jit_acc_razon[r],
+				100.0 * (double) jit_acc_razon[r] / (double) jit_acc_total);
+
+		if (jit_acc_p1p2)
+			fprintf(stderr, "jit:   de esas, %llu (%.2f %%) las rescato el"
+				" atajo de P1/P2\n", jit_acc_p1p2,
+				100.0 * (double) jit_acc_p1p2 / (double) jit_acc_total);
+	}
+
 	if (!jit_traductor)
 		return;
 
@@ -6036,8 +6262,14 @@ void jit_iniciar(void)
 			const char * fl = getenv("DCEMU_JIT_FLUJO");
 			const char * pr = getenv("DCEMU_JIT_SIN_PARES");
 			const char * pl = getenv("DCEMU_JIT_SIN_PARES_LLAMADA");
+			const char * sa = getenv("DCEMU_JIT_SONDA_ACCESOS");
+			const char * ap = getenv("DCEMU_JIT_SIN_ATAJO_P1P2");
 
-			jit_sonda_cruces = (sc != NULL && atoi(sc) != 0);
+			if (ap != NULL && atoi(ap) != 0)
+				jit_atajo_p1p2 = 0;
+
+			jit_sonda_cruces  = (sc != NULL && atoi(sc) != 0);
+			jit_sonda_accesos = (sa != NULL && atoi(sa) != 0);
 
 			if (sh != NULL && atoi(sh) != 0)
 				jit_hogares = 0;

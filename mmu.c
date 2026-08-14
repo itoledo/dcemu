@@ -770,7 +770,7 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 		DWORD permiso = escritura ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER;
 
 		etiqueta = ASID_DE(*PTEH) | ((DWORD) usuario << 8) | MMU_CACHE_VALIDA;
-		dc       = &mmu_datos[(direccion >> 12) & mmu_datos_mascara];
+		dc       = &mmu_datos[MMU_DATOS_INDICE(direccion)];
 
 		if (dc->etiqueta == etiqueta && (dc->permisos & permiso)
 			&& (direccion & ~dc->mascara) == dc->vpn
@@ -790,9 +790,20 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 			es capacidad y la salida es tamano. Sin esta distincion las dos
 			hipotesis se parecen y ya se gasto una medicion en la equivocada.
 		*/
-		if (perf_activa && dc->etiqueta != 0)
+		if (perf_activa)
 		{
-			if ((direccion & ~dc->mascara) == dc->vpn)
+			/* Y de esos, cuantos son direcciones que esta funcion devuelve
+			   sin traducir: P1/P2 y P4 no se guardan nunca en la cache --el
+			   comentario de mas abajo dice por que-- asi que su ranura sigue
+			   sin estrenar para siempre y cada acceso vuelve a pagar el
+			   viaje al ayudante. Es la pregunta que separa "la cache anda
+			   mal" de "esto no es clientela de la cache". */
+			if (direccion >= 0x80000000ul)
+				perf_mmu_datos_sin_trad++;
+
+			if (dc->etiqueta == 0)
+				perf_mmu_datos_vacia++;
+			else if ((direccion & ~dc->mascara) == dc->vpn)
 				perf_mmu_datos_choque++;
 			else
 				perf_mmu_datos_capacidad++;

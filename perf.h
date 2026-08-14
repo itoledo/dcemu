@@ -231,6 +231,8 @@ extern unsigned long long perf_mmu_datos_acierto;
 extern unsigned long long perf_mmu_vaciados;		/* mmu_tlb_invalidar(): el vaciado entero */
 extern unsigned long long perf_mmu_datos_choque;	/* fallo con la MISMA pagina: modo o ASID */
 extern unsigned long long perf_mmu_datos_capacidad;	/* fallo con otra pagina: capacidad */
+extern unsigned long long perf_mmu_datos_vacia;		/* fallo con la ranura sin estrenar */
+extern unsigned long long perf_mmu_datos_sin_trad;	/* ... y la direccion no se traduce (P1/P2/P4) */
 extern unsigned long long perf_mmu_fetch_fallo;		/* el acierto no se cuenta: ver mmu.c */
 extern unsigned long long perf_mmu_fetch_acierto2;	/* ... de esos, los que atiende la de 64 */
 extern unsigned long long perf_mmu_falta;			/* traducciones que abortaron */

@@ -57,6 +57,8 @@ unsigned long long perf_mmu_datos_acierto	= 0;
 unsigned long long perf_mmu_vaciados		= 0;
 unsigned long long perf_mmu_datos_choque	= 0;
 unsigned long long perf_mmu_datos_capacidad	= 0;
+unsigned long long perf_mmu_datos_vacia		= 0;
+unsigned long long perf_mmu_datos_sin_trad	= 0;
 unsigned long long perf_mmu_fetch_acierto2	= 0;
 unsigned long long perf_mmu_fetch_fallo		= 0;
 unsigned long long perf_mmu_falta			= 0;
@@ -684,12 +686,23 @@ void perf_resumen(void)
 
 		/* De que tipo son los fallos de esa cache: la respuesta es
 		   asociatividad o tamano, y son cosas distintas. Ver mmu.c. */
-		if (perf_mmu_datos_choque + perf_mmu_datos_capacidad)
-			fprintf(stderr, "perf:   ... de los fallos, %.1f %% son la misma"
-				" pagina con otra etiqueta (modo o ASID)\n",
-				100.0 * (double) perf_mmu_datos_choque
-					/ (double) (perf_mmu_datos_choque
-								+ perf_mmu_datos_capacidad));
+		if (perf_mmu_datos_choque + perf_mmu_datos_capacidad
+			+ perf_mmu_datos_vacia)
+		{
+			unsigned long long f = perf_mmu_datos_choque
+				+ perf_mmu_datos_capacidad + perf_mmu_datos_vacia;
+
+			fprintf(stderr, "perf:   ... de los fallos, %.1f %% misma pagina"
+				" con otra etiqueta (modo o ASID), %.1f %% otra pagina,"
+				" %.1f %% ranura sin estrenar\n",
+				100.0 * (double) perf_mmu_datos_choque    / (double) f,
+				100.0 * (double) perf_mmu_datos_capacidad / (double) f,
+				100.0 * (double) perf_mmu_datos_vacia     / (double) f);
+
+			fprintf(stderr, "perf:   ... y %.1f %% de los fallos son"
+				" direcciones que NO se traducen (P1/P2/P4)\n",
+				100.0 * (double) perf_mmu_datos_sin_trad / (double) f);
+		}
 
 		/*
 			La cache de traduccion y lo que queda del recorrido detras de
