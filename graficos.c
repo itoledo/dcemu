@@ -2597,6 +2597,8 @@ static int env_sin_dibujo = -1;
 static int env_medio_pixel = -1;
 /* La pareja del anterior, del lado de la textura: ver el cierre de tira. */
 int env_medio_texel = -1;
+/* El clamp de borde para las tiras que no se repiten: ver el cierre de tira. */
+static int env_clamp_borde = -1;
 
 static double medio_pixel(double guest, double destino)
 {
@@ -6271,6 +6273,10 @@ void taVertexHandler()
 		{
 			DWORD kq;
 			float du = 0.0f, dv = 0.0f;
+				/* El rango de UV de la tira, para decidir si de verdad pide
+				   repeticion. Ver el bloque del clamp de borde, mas abajo. */
+				float umin = 1.0e30f, umax = -1.0e30f;
+				float vmin = 1.0e30f, vmax = -1.0e30f;
 
 			/*
 				**El medio texel: APAGADO desde el 2026-08-15, y el
@@ -6334,12 +6340,81 @@ void taVertexHandler()
 			{
 				vertex * vp = &VertexBuffer[TriangleStrip[strip_count].index + kq];
 
+				if (vp->t1 < umin) umin = vp->t1;
+				if (vp->t1 > umax) umax = vp->t1;
+				if (vp->u1 < umin) umin = vp->u1;
+				if (vp->u1 > umax) umax = vp->u1;
+				if (vp->t2 < vmin) vmin = vp->t2;
+				if (vp->t2 > vmax) vmax = vp->t2;
+				if (vp->v1 < vmin) vmin = vp->v1;
+				if (vp->v1 > vmax) vmax = vp->v1;
+
 				vp->t1 = (vp->t1 + du) * vp->q;
 				vp->t2 = (vp->t2 + dv) * vp->q;
 				vp->tr  = 0.0f;		vp->tq  = vp->q;
 				vp->u1 = (vp->u1 + du) * vp->q;
 				vp->v1 = (vp->v1 + dv) * vp->q;
 				vp->ur  = 0.0f;		vp->uq  = vp->q;
+			}
+
+			/*
+				**El clamp de borde: una tira que no sale de [0,1] no esta
+				pidiendo repeticion.**
+
+				Es el arreglo de la costura del logo de Crazy Taxi, y el
+				expediente empieza por lo que el guest manda. Esa pantalla esta
+				hecha de cuadros de 16x16 pegados borde con borde --x = 639,9 /
+				655,9 / 671,9 / ...--, cada uno con una textura de 16x16 y UV
+				**exactamente 0..1**, tsp=208824c9: sin Clamp, sin Flip (o sea
+				REPEAT) y filtro bilineal.
+
+				A 1:1 eso es exacto: 16 texeles en 16 pixeles, la muestra cae en
+				el centro de cada texel y el filtro no mezcla nada. Pero el
+				camino de ventana estira 640 a 800, cada cuadro ocupa 20 pixeles,
+				la muestra deja de caer en el centro, y en el borde de cada
+				cuadro **GL envuelve y trae el texel del lado opuesto**: una
+				linea cada 20 pixeles, que es la rejilla que se ve sobre el logo.
+
+				La regla no toca las UV --el intento anterior fue sumarles medio
+				texel y eso rompio a Street Fighter III, ver arriba--: si el
+				rango de UV de la tira cabe en [0,1] la tira **nunca repite**, y
+				ahi REPEAT y CLAMP_TO_EDGE se diferencian unicamente en lo que
+				hace el filtro justo en el borde. Clamp es lo que reproduce al
+				hardware a cualquier aumento.
+
+				**Y a 1:1 tampoco es un no-op, lo que destapa la pregunta
+				siguiente.** La prediccion era que a 1:1 los dos dieran lo mismo
+				--la muestra cae en el centro del texel y nunca llega al
+				borde--, y la medicion dice que no. Con `--render=fbo
+				--escala=1`: con el medio pixel encendido el clamp cambia la
+				imagen, y con `DCEMU_SIN_MEDIO_PIXEL=1` no la cambia. O sea que
+				**el corrimiento del glOrtho desplaza tambien el muestreo de
+				textura**, no solo la cobertura, y lo deja sobre el BORDE del
+				texel en vez de su centro. Eso es lo que hacia ver correcto al
+				parche del medio texel --compensaba ese efecto lateral, pero
+				globalmente, y por eso rompia a quien ya direccionaba centros--.
+				El medio pixel se apoya en la medicion de la columna 0 de
+				DCDoom; que ademas corra el muestreo de textura es una
+				consecuencia que nadie midio, y es el hilo siguiente.
+
+				Por eso es seguro por construccion y no una heuristica: no le
+				cambia el modo a nadie que use la repeticion. Una tira con UV
+				0..4 sigue en REPEAT, y una de atlas con UV 0,2..0,8 no nota la
+				diferencia porque nunca alcanza el borde.
+
+				`DCEMU_SIN_CLAMP_BORDE=1` lo apaga y reproduce la conducta
+				anterior. Cambia las capturas en el camino de ventana --que es
+				donde existe el problema-- y no las de --render=fbo --escala=1.
+			*/
+			if (!env_interruptor("DCEMU_SIN_CLAMP_BORDE", &env_clamp_borde))
+			{
+				if (TriangleStrip[strip_count].texture.wrap_u == 0
+					&& umin >= 0.0f && umax <= 1.0f)
+					TriangleStrip[strip_count].texture.wrap_u = 2;
+
+				if (TriangleStrip[strip_count].texture.wrap_v == 0
+					&& vmin >= 0.0f && vmax <= 1.0f)
+					TriangleStrip[strip_count].texture.wrap_v = 2;
 			}
 		}
 

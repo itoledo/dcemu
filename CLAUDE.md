@@ -214,6 +214,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
+| `DCEMU_SIN_CLAMP_BORDE=1` | vuelve a `GL_REPEAT` en las tiras cuyas UV no salen de [0,1], que es la conducta anterior. Encendido por omisión: **es el arreglo de la costura del logo de Crazy Taxi**. Esa pantalla son cuadros de 16×16 pegados borde con borde con UV **exactamente 0..1** y REPEAT — a 1:1 no hay mezcla, pero la ventana estira 640→800 y en el borde de cada cuadro GL envuelve y trae el texel opuesto: una línea cada 20 píxeles. Si el rango de UV cabe en [0,1] la tira **nunca repite**, así que REPEAT y CLAMP_TO_EDGE solo difieren en el filtro del borde. Seguro por construcción, y la medida lo confirma: de los 15 juegos **11 salen byte a byte iguales** (SF3 entre ellos) y de las 139 demos cambian 13 fuera del piso de ruido, todas de textura a pantalla completa, sin un solo cambio de veredicto. En DCDoom y 4x4 EVO lo que cambia son **2796 píxeles exactos** — el perímetro de 800×600 al píxel |
 | `DCEMU_MEDIO_TEXEL=1` | enciende el medio texel del lado de la textura, que estuvo por omisión un solo día (2026-08-14/15) y **está apagado**: la premisa era que el chip mapea `u=0` al centro del texel 0 y GL a su borde, y **el propio guest la desmiente** — las UV crudas de Street Fighter III son `0,5/256`, `16,5/256` y `32,5/256`, o sea que el juego ya direcciona centros de texel. Sumarle otro medio deja el muestreo sobre la frontera: su fondo pasa de **0 a 5012 picos de costura por columna** y de 0 a 2633 por fila, de una imagen limpia a una rejilla; ChuChu sube 20 %. Cambia todas las capturas del árbol (37 de las 139 demos) y `pvr-fb_tex` sale idéntico con y sin **a 1:1** y no en el camino de ventana, donde el corrimiento de la geometría es 0,4 px. Queda porque **la costura del logo de Crazy Taxi sigue abierta**, con hipótesis nueva: UV 0..1 con REPEAT, el filtro envuelve en `u=1,0`. Ver la regla en «Graphics pipeline» |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
@@ -666,6 +667,26 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   way, costing a row. And **dcemu's own full-screen quads must take it back out** (`DibujarFramebuffer()`):
   they are a 1:1 copy filtered `GL_LINEAR`, so half a pixel does not shift them, it blends every pixel
   with its neighbour.
+- **A strip whose UVs never leave [0,1] is not asking for repetition, so it gets `GL_CLAMP_TO_EDGE`.**
+  This is the fix for Crazy Taxi's logo seams, and the mechanism is entirely in what the guest submits:
+  that screen is 16×16 quads laid edge to edge (x = 639.9 / 655.9 / 671.9 …), each with a 16×16 texture
+  and UV **exactly 0..1**, `tsp=208824c9` — no Clamp, no Flip, so REPEAT, bilinear. At 1:1 that is exact:
+  16 texels across 16 pixels, no blending. The window path stretches 640 to 800, each quad becomes 20
+  pixels, and at every quad edge **GL wraps and pulls in the opposite texel** — one line every 20 pixels.
+  The rule touches no UVs (the previous attempt did, and broke SF3): if the range fits in [0,1] the strip
+  never repeats, so REPEAT and CLAMP_TO_EDGE differ *only* in the filter at the very edge. Safe by
+  construction — a strip with UV 0..4 keeps REPEAT, an atlas strip with 0.2..0.8 never reaches the edge —
+  and the measurement matches that shape: **11 of the 15 games come out byte-identical** (SF3 among
+  them), the other four change where they should (DCDoom and 4x4 EVO change **2796 pixels exactly**, the
+  perimeter of 800×600), and 13 of 139 demos change with zero verdict changes. `DCEMU_SIN_CLAMP_BORDE=1`.
+- **The half-pixel `glOrtho` shift moves texture sampling too, not just coverage — and that is the open
+  thread.** Prediction before measuring: at 1:1 the clamp should be a no-op, because sampling lands on
+  texel centres and never reaches the edge. It is not. With `--render=fbo --escala=1` the clamp changes
+  the image, and with `DCEMU_SIN_MEDIO_PIXEL=1` it stops changing it — so the ortho shift is what puts
+  the sample on the texel **edge** instead of its centre. That is why the half-texel patch below looked
+  right: it was compensating this side effect, globally, which is exactly why it broke a game that
+  already addressed texel centres. The half-pixel shift rests on DCDoom's column-0 measurement; that it
+  also displaces texture sampling is a consequence nobody measured, and it is the next thing to pull on.
 - **That correction was thought to have a companion on the texture side. It does not — the guest says
   so, and the whole episode is worth keeping.** The idea: `u = 0` names texel 0's **centre** on the chip
   and its **edge** in GL (index `u·W − 0.5`), so the UVs were missing half a texel. It shipped on

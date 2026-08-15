@@ -131,6 +131,17 @@ Las 37 movidas por la corrección son todas texturadas, que es la clase predicha
 `pvr-texture_render`, `pvr-pvr_rtt_sized`, las dos `pvr-yuv_converter-*`, `tsunami-*`,
 `tunnel`/`kgl-tunnel`, `plasma`, `png`, `2ndmix`.
 
+**Segunda corrida, el mismo día: el clamp de borde.** El arreglo que sí resolvió la costura del
+logo de Crazy Taxi —`GL_CLAMP_TO_EDGE` en las tiras cuyas UV no salen de [0,1]— se midió contra
+este mismo barrido, aprovechando que `barrido-mt-sin` es el brazo sin él y `barrido-mt-sin2` da
+el piso de ruido. Cambian **53 demos, de las cuales 13 fuera del ruido**: `plasma`, `png`,
+`scrambled`, las tres `pvr-palette-*`, las dos `pvr-yuv_converter-*`, `pvr-plasma`,
+`pvr-modifier_volume_zclip`, `parallax-raster_melt`, `tsunami-banner` y `tsunami-font` — todas
+de textura a pantalla completa o en mosaico, que es la clase donde el borde dejaba de
+envolverse. **Cero cambios de veredicto**, y las diferencias son chicas (0,02-0,5 % de los
+píxeles) salvo `plasma` con 3 %, indistinguible a ojo. Resultados en
+`build/Release/barrido-clamp/`.
+
 **Aviso de lectura, escrito el mismo día que el barrido**: la corrección que este barrido
 verificó **se apagó por omisión unas horas después**, cuando la pasada por los juegos
 comerciales encontró que rompe el fondo de Street Fighter III. El barrido no lo podía ver — las
