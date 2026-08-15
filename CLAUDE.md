@@ -214,7 +214,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
-| `DCEMU_SIN_MEDIO_TEXEL=1` | apaga la **pareja** del anterior, del lado de la textura: el chip mapea `u=0` al centro del texel 0 y GL a su borde, así que faltaba medio texel. Con la geometría corrida y la textura no, todo muestreo caía medio texel afuera — de ahí las costuras de un píxel en el logo de Crazy Taxi (envuelve por REPEAT en el borde de cada cuadro) y la imagen entera desplazada un píxel con la primera columna y fila a media intensidad. **También cambia todas las capturas**, y `pvr-fb_tex` sale idéntico con y sin. Ver la regla en «Graphics pipeline» |
+| `DCEMU_SIN_MEDIO_TEXEL=1` | apaga la **pareja** del anterior, del lado de la textura: el chip mapea `u=0` al centro del texel 0 y GL a su borde, así que faltaba medio texel. Con la geometría corrida y la textura no, todo muestreo caía medio texel afuera — de ahí las costuras de un píxel en el logo de Crazy Taxi (envuelve por REPEAT en el borde de cada cuadro) y la imagen entera desplazada un píxel con la primera columna y fila a media intensidad. **También cambia todas las capturas** — 37 de las 139 demos del parque, medido el 2026-08-15 — y `pvr-fb_tex` sale idéntico con y sin **a 1:1**, que es la condición que faltaba: en el camino de ventana la geometría se corre 0,4 px en vez de 0,5, la cancelación queda incompleta y esa demo también se mueve. Ver la regla en «Graphics pipeline» |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -407,6 +407,20 @@ how to believe a measurement of it.
   as "no gain", check that something is holding the layout still.
 - **Demos that place geometry with `rand()`** (the modifier-volume ones) differ run to run. A
   two-colour BMP proves nothing; run them a few times.
+- **A park sweep is unreadable until you have measured its noise floor, and the floor is 40 of 139.**
+  Run the same arm twice and compare it against itself *before* comparing it against anything else.
+  Measured 2026-08-15: exactly 40 demos differ between two consecutive runs of one binary, and they are
+  **the same 40** that differ against a baseline from five days earlier — so the sweep's apparent "40
+  regressions" were zero. Three causes, none of them the emulator: most console demos **return to the
+  BIOS menu when they finish**, so what the capture holds at `--salir-tras=8` is the boot ROM's screen
+  with the host clock in it (which is why a dozen unrelated demos share one hash and all move together
+  every day); the threading demos race; the modifier-volume ones use `rand()`. `DCEMU_RTC_FIJO=N` pins
+  the first cause but changes every such capture, so it cannot be added to an existing baseline — it has
+  to start one.
+- **The serial verdict survives what the image cannot.** For the demos that end up on the BIOS menu the
+  BMP says nothing at all, while `SUCCEEDED`/`FAIL`/`panic` in `logs/serial.txt` is stable and is the
+  real regression signal. `barrido.ps1` saves it per demo; compare those before concluding anything from
+  hashes.
 - **XInput is read globally, without window focus.** If anyone touches a gamepad during a
   measurement, those presses enter the run. **And an idle pad is enough**: its analog jitter
   alone moved a Crazy Taxi run by ±51 and by ±1 672 instructions with the capture byte-identical
@@ -668,8 +682,14 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   the UVs **before** the `q` premultiplication, which is exact under perspective rather than an
   approximation, since a constant added before the divide survives it. At 1:1 the two corrections nearly
   cancel (0.016 texel left) and sampling lands on the texel centre, which is what the chip does.
-  `DCEMU_SIN_MEDIO_TEXEL=1` isolates it; `pvr-fb_tex` is byte-identical either way, so the demo that
-  validated the half-pixel does not move.
+  `DCEMU_SIN_MEDIO_TEXEL=1` isolates it; `pvr-fb_tex` is byte-identical either way **at 1:1**
+  (`--render=fbo --escala=1`, hash `99C746FD…` in both arms), so the demo that validated the half-pixel
+  does not move — and that cancellation is exactly what "at 1:1 the two corrections nearly cancel"
+  predicts. **The condition is load-bearing and was missing from this claim until 2026-08-15**: in the
+  default window path the target is 800×600, the geometry shift is 0.4 px instead of 0.5, the two
+  corrections no longer cancel, and `pvr-fb_tex` *does* change (deterministically — two runs of each arm
+  hash the same). The park sweep is what caught it: the demo showed up among the 37 the correction
+  moves, which reads as a contradiction until you notice the sweep runs `--render=ventana`.
 - **`pvr-fb_tex` is the only thing in the park that can measure that**, because it reads its own front
   buffer as a strided texture at two texels per screen pixel, where half a pixel is a whole texel. Its
   check is self-contained and does not need a reference image: with the convention right, consecutive

@@ -88,6 +88,60 @@ lista que ya venía —el bit de mipmap, Flip y Clamp de las UV—: **el parque 
 cazar una regresión en ninguna de esas rutas, porque no las ejerce.** Para esas, la línea base
 son los juegos, y por eso conviene medirlos junto con los demos.
 
+## El barrido del 2026-08-15: el medio texel, y el piso de ruido del parque
+
+El barrido que la corrección del medio texel (`770d052`) dejó obligatorio, porque esa
+corrección **mueve todas las capturas del árbol** y ninguna comparación contra una línea base
+anterior se puede leer sin aislarla. Tres corridas de las 139 demos
+(`herramientas/barrido-medio-texel.ps1` y `barrido-ruido.ps1`, binario del árbol reconstruido
+en HEAD, `build/Release/barrido-mt-{sin,con,sin2}/`):
+
+| | |
+| --- | --- |
+| demos | 139 |
+| se mueven solas (piso de ruido) | **40** |
+| distintas contra la línea base del 10-ago | 40 |
+| de esas, **no** explicadas por el ruido | **0** |
+| cambian con el medio texel | 77 |
+| contaminadas por el ruido, ilegibles | 40 |
+| **movidas de verdad por la corrección** | **37** |
+| cambios de veredicto en el serial | **0** |
+
+**Cero regresiones**, y lo que lo prueba no es el 99 de 139 sino que las 40 que difieren
+contra agosto son **exactamente las mismas 40**, nombre por nombre, que difieren entre dos
+corridas consecutivas del mismo binario.
+
+**El piso de ruido es el hallazgo del barrido, y es reutilizable.** La primera lectura decía
+«40 regresiones» y la primera demo que se miró para entenderla fue `hello`, que es trivial y
+determinista: su captura no era la demo sino **el menú del BIOS**, con la fecha del reloj del
+anfitrión. La mayoría de las demos de consola imprimen al serial, terminan, y KOS devuelve el
+control al boot ROM — así que a los 8 segundos emulados lo que quedó en pantalla es el menú, y
+el reloj persiste en `bios/` y avanza entre barridos. Eso explica que una docena de demos sin
+relación compartan un hash y se muevan todas juntas cada día. Las otras dos causas ya estaban
+documentadas: los demos con hilos (carreras) y los de volumen modificador (`rand()`).
+`DCEMU_RTC_FIJO=N` clava la primera, pero cambia todas esas capturas, así que no se puede
+sumar a una línea base existente: hay que estrenar una.
+
+Para esas 40, **el veredicto del serial es la señal de regresión y la imagen no dice nada**;
+comparadas las marcas (`SUCCEEDED`/`SUCCESS`/`PASSED`/`FAIL`/`panic`) de las 139, no cambia
+ninguna.
+
+Las 37 movidas por la corrección son todas texturadas, que es la clase predicha: las cuatro
+`conio-*` (fuente), `parallax-*`, las tres `pvr-palette-*`, `pvr-bumpmap`,
+`pvr-texture_render`, `pvr-pvr_rtt_sized`, las dos `pvr-yuv_converter-*`, `tsunami-*`,
+`tunnel`/`kgl-tunnel`, `plasma`, `png`, `2ndmix`.
+
+**Y una afirmación del árbol que este barrido corrigió**: `pvr-fb_tex` aparecía entre las 37,
+cuando `CLAUDE.md` decía que sale idéntico con y sin la corrección. Las dos cosas son ciertas y
+faltaba la condición: **a 1:1 los dos brazos son byte a byte idénticos** (`--render=fbo
+--escala=1`, hash `99C746FD…`), que es exactamente lo que predice «a 1:1 las dos correcciones
+casi se cancelan (0,016 texel)»; en el camino de ventana el destino es 800×600, la geometría se
+corre 0,4 px en vez de 0,5, la cancelación queda incompleta y la demo sí se mueve — de forma
+determinista, dos corridas de cada brazo dan el mismo hash. El barrido corre
+`--render=ventana`, que es lo que hizo aparecer la contradicción. La columna 0 sigue en cero en
+los dos brazos: ese residuo es del propio demo (su desplazamiento de `-1/1024` en U) y no se
+tocó.
+
 ## El barrido del 2026-08-07: la deuda de verificación, pagada
 
 El barrido entero de los 131 binarios, de noche y con horas: **131 de 131 con captura, cero
