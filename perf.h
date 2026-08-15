@@ -441,6 +441,33 @@ void perf_resumen(void);
    entradas, **toda** entrada muestreada caia sobre una que publicaba: el
    bloque periodico llego a informar 281 % del tiempo real. Un periodo que no
    comparta factores con nada del bucle no se puede sincronizar con el. */
+/*
+	La sonda de tirones (DCEMU_SONDA_CUADROS=1).
+
+	**Un tirón no se ve en una tanda.** El cronómetro de una corrida entera da
+	una media, y la media es justo lo que un tirón no mueve: 350 cuadros de 60
+	ms escondidos entre 20 000 de 16 son medio segundo sobre seis minutos --
+	invisible en el total, y lo único que se siente jugando. Lo que hay que
+	mirar es la **distribución**, y el árbol no tenía con qué.
+
+	Mide el tiempo de pared de cada cuadro, y lo separa en el trabajo y el
+	swap, porque son dos culpables distintos: el trabajo es el emulador, el
+	swap es el vsync del anfitrión.
+
+	Y no se queda en «hay tirones»: de los peores cuadros guarda **qué pasó
+	dentro** -- texturas decodificadas, bloques traducidos, movimientos de
+	época --, que es lo que separa «el JIT tradujo de golpe al entrar a una
+	zona» de «se subieron cuarenta texturas» de «el swap esperó al monitor».
+	Sin eso la sonda confirma el síntoma y no acusa a nadie.
+
+	Apagada cuesta una comparación por cuadro, o sea sesenta por segundo.
+*/
+void perf_cuadro(unsigned long long ns_swap,
+                 unsigned long long jit_traducidos,
+                 unsigned long long jit_epocas,
+                 unsigned long long ns_traducir);
+void perf_cuadros_resumen(void);
+
 #define PERF_MUESTREO		1021
 
 #define PERF_MARCA_MUESTRA(v, n)										\

@@ -1576,25 +1576,45 @@ void main_loop(void)
 		// si el tiempo emulado se adelanto al real se duerme la diferencia. Solo
 		// frena: donde dcemu ya es mas lento que una consola no hace nada. Ver
 		// docs/clock-plan.md, fase 4.
-		if (opciones.limitar)
+		// Lo que el cuadro pasa esperando a proposito -- el freno de --limitar
+		// y el swap -- se mide aparte y se descuenta: la sonda de tirones
+		// pregunta por el TRABAJO del emulador, y sumarle una espera
+		// deliberada la haria acusar al limitador de los tirones que busca.
 		{
-			unsigned long long emulado = reloj_ms();
-			unsigned long      real    = SDL_GetTicks() - real_inicio;
+			unsigned long long ns_espera = 0;
+			unsigned long long t0;
 
-			if (emulado > real)
+			if (opciones.limitar)
 			{
-				unsigned long sobra = (unsigned long) (emulado - real);
+				unsigned long long emulado = reloj_ms();
+				unsigned long      real    = SDL_GetTicks() - real_inicio;
 
-				// Techo por si la cuenta se desmadra: mejor ir rapido que
-				// congelar el emulador esperando.
-				if (sobra > 100)
-					sobra = 100;
+				if (emulado > real)
+				{
+					unsigned long sobra = (unsigned long) (emulado - real);
 
-				SDL_Delay(sobra);
+					// Techo por si la cuenta se desmadra: mejor ir rapido que
+					// congelar el emulador esperando.
+					if (sobra > 100)
+						sobra = 100;
+
+					t0 = perf_ahora();
+					SDL_Delay(sobra);
+					ns_espera += perf_ahora() - t0;
+				}
 			}
-		}
 //		intc_check(ASIC_EVT_PVR_VBLINT);
-		RedibujarPantalla();
+			t0 = perf_ahora();
+			RedibujarPantalla();
+			ns_espera += perf_ahora() - t0;
+
+#ifdef DCEMU_JIT
+			perf_cuadro(ns_espera, jit_cuenta_traducidos(), jit_epoca,
+				jit_ns_traducir);
+#else
+			perf_cuadro(ns_espera, 0, 0, 0);
+#endif
+		}
 
 		// El sonido producido durante el cuadro, al .wav si hay volcado. La
 		// reproduccion no pasa por aqui: de eso se encarga la callback de SDL,
@@ -2768,6 +2788,7 @@ int main(int argc, char *argv[])
 	mando_terminar();
 
 	traza_resumen();
+	perf_cuadros_resumen();		/* la distribucion de tiempos de cuadro */
 	perf_resumen();
 	arm7_perfil_resumen();
 #ifdef DCEMU_JIT

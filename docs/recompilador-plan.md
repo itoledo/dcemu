@@ -150,6 +150,8 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | La rejilla de 64 bytes consultada en línea antes de desviar una escritura | **ganó en DCDoom: −1,3 % más**, disjunto del anterior (−2,8 % los dos juntos) | la página dice si hay código en 4 KB, no si lo escrito ES código: **90 616 485 desvíos cada 20 s de DCDoom y ninguno hacía falta** |
 | Medir los dos juntos y no por separado | **casi cuesta el veredicto** | el combinado dio solapado en DOOM y disjunto en SR2; con los tres brazos DOOM separa las dos mitades y SR2 resulta ser el que no distingue |
 | Conectar el gancho de la época moviendo la época por **página** | **no se probó, y menos mal** | habría movido la época 90 millones de veces cada 20 s, desatando todos los enlaces: la página sirve para desviar barato, no para invalidar |
+| El barrido lineal de `jit_enlazar()` | **era cuadrático, y eran los tirones** — `DCEMU_JIT_ENLACE_LINEAL=1` lo revive | avisarle al bloque nuevo quién lo esperaba recorría todos los ya traducidos: 97 % del tiempo de traducir, 12,8 s de 120 s emulados en CT. Índice por PC destino: **12 802 → 259 ms**, cuadros lentos **14,9 % → 1,5 %** |
+| La sonda de tirones (`DCEMU_SONDA_CUADROS=1`) | **el instrumento que lo encontró** | una tanda da la media y la media es lo único que un tirón no mueve; la distribución por cuadro con el tiempo **emulado** al lado separa «dcemu se frenó» de «el guest hizo un cuadro largo» |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
 
 ## El gancho que nunca estuvo conectado (2026-08-14)

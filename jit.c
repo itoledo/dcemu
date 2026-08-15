@@ -4887,6 +4887,20 @@ static void tr_epilogo(jit_gen * g, jit_traduccion * t)
 
 static int					jit_traductor = 0;	/* DCEMU_JIT=2 */
 static unsigned long long	jit_traducidos = 0;
+
+/* Nanosegundos gastados traduciendo, sin muestrear: la sonda de tirones
+   (perf.h) los mira POR CUADRO, y un muestreo no dice nada de un cuadro
+   concreto. */
+unsigned long long			jit_ns_traducir = 0;
+
+/* Para la sonda de tirones (perf.h): cuantas traducciones lleva la corrida.
+   Un cuadro que traduce cincuenta bloques de golpe --entrar a una zona
+   nueva-- se ve como un tiron, y sin este numero al lado no se distingue de
+   uno que subio texturas. */
+unsigned long long jit_cuenta_traducidos(void)
+{
+	return jit_traducidos;
+}
 static unsigned long long	jit_instr_bloque = 0;
 static unsigned long long	jit_fallidos = 0;
 static unsigned long long	jit_enlaces_atados = 0;
@@ -5565,9 +5579,110 @@ static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * fuente,
 		jit_puentes_atados++;
 }
 
+/* De los nanosegundos de traduccion, los que se van atando enlaces. Ver la
+   sonda de tirones en perf.h: sin separarlos, "traducir cuesta 0,65 ms" no
+   dice si el costo es emitir o buscar a quien avisarle. */
+unsigned long long			jit_ns_enlazar = 0;
+
+/*
+	**El indice de enlaces que esperan un PC.**
+
+	La segunda mitad de jit_enlazar() --avisarle al bloque nuevo quien lo
+	estaba esperando-- barria TODOS los bloques ya traducidos con un bucle
+	interno por sus doce enlaces. Es cuadratico en la cantidad de bloques, y la
+	sonda de tirones (perf.h) lo destapo midiendo por cuadro: en Crazy Taxi,
+	**16,2 s de una corrida de 120 s emulados se iban traduciendo, y el 97 % de
+	eso era este barrido**. Por eso el costo por traduccion sube con la
+	corrida: 0,05 ms al principio y 0,65 ms al final, y un cuadro que traduce
+	87 bloques tarda 58 ms en vez de 16. Los tirones eran esto.
+
+	El indice invierte la pregunta: en vez de buscar quien esperaba, cada
+	enlace estatico se anota bajo el PC que espera cuando su bloque nace, y el
+	bloque nuevo mira su propia cuartilla. La lista se **agrega por la cola**,
+	no por la cabeza, para que recorrerla de el mismo orden que el barrido
+	--bloque ascendente, enlace ascendente--: los parches emiten costuras en el
+	arena, asi que otro orden daria otra disposicion y las emisiones dejarian
+	de compararse byte a byte.
+
+	Los enlaces no se sacan nunca: un enlace ya parcheado tiene que volver a
+	parchearse si mas tarde se traduce otro bloque con el mismo PC, que es lo
+	que hacia el barrido. Y no puede desbordar -- hay una ranura por enlace
+	posible, JIT_MAX_BLOQUES x JIT_MAX_ENLACES -- porque cada traduccion toma
+	un bloque nuevo y el total esta topeado.
+*/
+#define JIT_PEND_N		65536			/* cuartillas, potencia de dos */
+#define JIT_PEND_TOPE	(JIT_MAX_BLOQUES * JIT_MAX_ENLACES)
+
+typedef struct
+{
+	int	bloque;
+	int	enlace;
+	int	sig;
+} jit_pendiente;
+
+static jit_pendiente *	jit_pend = NULL;
+static int				jit_pend_n = 0;
+static int				jit_pend_cabeza[JIT_PEND_N];
+static int				jit_pend_cola[JIT_PEND_N];
+static int				jit_pend_listo = 0;
+
+/* El barrido lineal de antes. DCEMU_JIT_ENLACE_LINEAL=1 lo revive: es el A/B
+   del escalon y la reproduccion exacta de la conducta anterior. */
+static int				jit_enlace_lineal = 0;
+
+#define JIT_PEND_H(pc)	(((unsigned) (pc) >> 1) & (JIT_PEND_N - 1))
+
+static void jit_pend_agregar(int bloque, int enlace, DWORD pc)
+{
+	unsigned h;
+
+	if (!jit_pend_listo)
+	{
+		int j;
+
+		jit_pend = (jit_pendiente *)
+			calloc(JIT_PEND_TOPE, sizeof(jit_pendiente));
+
+		if (jit_pend == NULL)
+		{
+			/* Sin sitio para el indice se vuelve al barrido: lento, pero la
+			   conducta es la misma. Callar y perder enlaces seria cambiar la
+			   ejecucion sin decirlo. */
+			jit_enlace_lineal = 1;
+			jit_pend_listo = 1;
+			fprintf(stderr, "jit: sin memoria para el indice de enlaces;"
+				" se vuelve al barrido lineal\n");
+			return;
+		}
+
+		for (j = 0; j < JIT_PEND_N; j++)
+			jit_pend_cabeza[j] = jit_pend_cola[j] = -1;
+
+		jit_pend_listo = 1;
+	}
+
+	if (jit_pend == NULL || jit_pend_n >= JIT_PEND_TOPE)
+		return;
+
+	h = JIT_PEND_H(pc);
+
+	jit_pend[jit_pend_n].bloque = bloque;
+	jit_pend[jit_pend_n].enlace = enlace;
+	jit_pend[jit_pend_n].sig    = -1;
+
+	if (jit_pend_cola[h] < 0)
+		jit_pend_cabeza[h] = jit_pend_n;
+	else
+		jit_pend[jit_pend_cola[h]].sig = jit_pend_n;
+
+	jit_pend_cola[h] = jit_pend_n++;
+}
+
 static void jit_enlazar(jit_bloque * nuevo)
 {
+	unsigned long long t0 = perf_ahora();
 	int i, k;
+	int nuevo_idx = (int) (nuevo - jit_bloques);
 
 	for (i = 0; i < nuevo->n_enlaces; i++)
 	{
@@ -5576,24 +5691,49 @@ static void jit_enlazar(jit_bloque * nuevo)
 		if (nuevo->enlace[i].sitio_pc != NULL)
 			continue;			/* dinamico: su destino se aprende corriendo */
 
+		if (!jit_enlace_lineal)
+			jit_pend_agregar(nuevo_idx, i, nuevo->enlace[i].pc);
+
 		d = jit_buscar(nuevo->enlace[i].pc);
 
 		if (d != NULL)
 			jit_parchear_enlace(&nuevo->enlace[i], nuevo, d);
 	}
 
-	for (k = 0; k < jit_n_bloques; k++)
+	if (jit_enlace_lineal)
 	{
-		jit_bloque * b = &jit_bloques[k];
+		for (k = 0; k < jit_n_bloques; k++)
+		{
+			jit_bloque * b = &jit_bloques[k];
 
-		if (b == nuevo)
-			continue;
+			if (b == nuevo)
+				continue;
 
-		for (i = 0; i < b->n_enlaces; i++)
-			if (b->enlace[i].sitio_pc == NULL
-				&& b->enlace[i].pc == nuevo->pc)
-				jit_parchear_enlace(&b->enlace[i], b, nuevo);
+			for (i = 0; i < b->n_enlaces; i++)
+				if (b->enlace[i].sitio_pc == NULL
+					&& b->enlace[i].pc == nuevo->pc)
+					jit_parchear_enlace(&b->enlace[i], b, nuevo);
+		}
 	}
+	else
+	{
+		for (k = jit_pend_cabeza[JIT_PEND_H(nuevo->pc)]; k >= 0;
+			 k = jit_pend[k].sig)
+		{
+			jit_bloque * b = &jit_bloques[jit_pend[k].bloque];
+			jit_enlace * e = &b->enlace[jit_pend[k].enlace];
+
+			/* La cuartilla junta los PC que colisionan en el hash, asi que la
+			   igualdad se comprueba igual: el indice acota la busqueda, no la
+			   sustituye. */
+			if (b == nuevo || e->pc != nuevo->pc || e->sitio_pc != NULL)
+				continue;
+
+			jit_parchear_enlace(e, b, nuevo);
+		}
+	}
+
+	jit_ns_enlazar += perf_ahora() - t0;
 }
 
 /*
@@ -6062,7 +6202,17 @@ int jit_despachar(DWORD pc)
 			if (corridos || !jit_traductor)
 				break;
 
-			b = tr_traducir(pc);
+			/* El cronometro de la traduccion, para la sonda de tirones
+			   (perf.h). No va muestreado: la pregunta es de un cuadro
+			   concreto --el que tardo 70 ms-- y un muestreo cada 1021 no
+			   dice nada de UN cuadro. Se paga una lectura de reloj por
+			   traduccion, que son decenas por segundo, no millones. */
+			{
+				unsigned long long t0 = perf_ahora();
+
+				b = tr_traducir(pc);
+				jit_ns_traducir += perf_ahora() - t0;
+			}
 
 			if (b == NULL)
 			{
@@ -6310,6 +6460,19 @@ static void jit_resumen(void)
 		jit_epoca - 1, jit_ep_escritura, jit_ep_pag_vista, jit_ep_mapeo,
 		jit_ep_modo, jit_ep_fpu);
 
+	/* Donde se fue el tiempo de traducir. **El enlace es cuadratico**: cada
+	   bloque nuevo barre TODOS los existentes buscando quien lo esperaba, asi
+	   que traducir se encarece a medida que la corrida avanza. La sonda de
+	   tirones lo destapo -- los cuadros lentos de Crazy Taxi eran traduccion,
+	   y la traduccion era esto. */
+	fprintf(stderr, "jit: traducir %.0f ms, de los cuales enlazar %.0f ms"
+		" (%.0f %%); %.3f ms por traduccion\n",
+		(double) jit_ns_traducir / 1e6, (double) jit_ns_enlazar / 1e6,
+		jit_ns_traducir
+			? 100.0 * (double) jit_ns_enlazar / (double) jit_ns_traducir : 0.0,
+		jit_traducidos
+			? (double) jit_ns_traducir / 1e6 / (double) jit_traducidos : 0.0);
+
 	/*
 		El censo de lo que corto los bloques, de mayor a menor. **Es lo que
 		dice cual plantilla escribir despues**: sin el, la cobertura degrada en
@@ -6446,9 +6609,13 @@ void jit_iniciar(void)
 
 			{
 				const char * rj = getenv("DCEMU_JIT_SIN_REJILLA");
+				const char * el = getenv("DCEMU_JIT_ENLACE_LINEAL");
 
 				if (rj != NULL && atoi(rj) != 0)
 					jit_rejilla_fina = 0;
+
+				if (el != NULL && atoi(el) != 0)
+					jit_enlace_lineal = 1;
 			}
 
 			jit_sonda_cruces  = (sc != NULL && atoi(sc) != 0);

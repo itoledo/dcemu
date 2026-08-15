@@ -402,6 +402,227 @@ static void linea(const char * que, unsigned long long ns, unsigned long long to
 		total ? 100.0 * (double) ns / (double) total : 0.0);
 }
 
+/* ------------------------------------------------------------------------ */
+/* La sonda de tirones: la distribucion de tiempos de cuadro (ver perf.h)    */
+/* ------------------------------------------------------------------------ */
+
+#define PC_PEORES	12
+
+typedef struct
+{
+	unsigned long long ns;			/* trabajo del cuadro, sin el swap */
+	unsigned long long ns_swap;
+	unsigned long long n;			/* numero de cuadro */
+	unsigned long      tex;			/* texturas decodificadas ese cuadro */
+	unsigned long      blq;			/* bloques traducidos */
+	unsigned long      ep;			/* movimientos de epoca */
+	unsigned long      tiras;
+	unsigned long long ciclos;		/* tiempo EMULADO que avanzo el cuadro */
+	unsigned long long ns_trad;		/* de los cuales, traduciendo */
+} pc_cuadro;
+
+static int			pc_activa = -1;		/* -1: sin leer */
+static unsigned long long pc_ultimo = 0;
+static unsigned long long pc_n = 0;
+static unsigned long long pc_suma = 0;
+static pc_cuadro	pc_peores[PC_PEORES];
+static int			pc_n_peores = 0;
+/* Los ms de cada cuadro, para los percentiles. Un cuadro por entrada y tope
+   de una hora a 60: mas alla se descartan los ultimos, que es mejor que
+   crecer sin limite dentro del bucle de dibujo. */
+#define PC_MAX	216000
+static unsigned *	pc_ms = NULL;
+/* Las marcas previas, para sacar el delta de cada cuadro. */
+static unsigned long long pc_p_tex = 0, pc_p_blq = 0, pc_p_ep = 0, pc_p_tiras = 0;
+static unsigned long long pc_p_ciclos = 0;
+static unsigned long long pc_p_trad = 0;
+
+void perf_cuadro(unsigned long long ns_swap,
+                 unsigned long long jit_traducidos,
+                 unsigned long long jit_epocas,
+                 unsigned long long ns_traducir)
+{
+	unsigned long long ahora, ns;
+	unsigned long long tex = perf_tex_nueva + perf_tex_regenera;
+	pc_cuadro          c;
+	int                i, peor;
+
+	if (pc_activa == -1)
+	{
+		const char * e = getenv("DCEMU_SONDA_CUADROS");
+
+		pc_activa = (e != NULL && atoi(e) != 0);
+
+		if (pc_activa)
+			pc_ms = (unsigned *) calloc(PC_MAX, sizeof(unsigned));
+
+		pc_activa = pc_activa && (pc_ms != NULL);
+
+	}
+
+	if (!pc_activa)
+		return;
+
+	ahora = perf_ahora();
+
+	if (pc_ultimo == 0)		/* el primero no tiene con que compararse */
+	{
+		pc_ultimo = ahora;
+		pc_p_tex = tex; pc_p_blq = jit_traducidos; pc_p_ep = jit_epocas;
+		pc_p_tiras = perf_tiras; pc_p_ciclos = reloj_total;
+		pc_p_trad = ns_traducir;
+		return;
+	}
+
+	ns = ahora - pc_ultimo;
+	pc_ultimo = ahora;
+
+	/* El swap se descuenta: esperar al monitor no es trabajo del emulador, y
+	   mezclarlos hace que un vsync de 60 Hz parezca un tiron del guest. */
+	c.ns      = (ns > ns_swap) ? (ns - ns_swap) : 0;
+	c.ns_swap = ns_swap;
+	c.n       = pc_n;
+	c.tex     = (unsigned long) (tex - pc_p_tex);
+	c.blq     = (unsigned long) (jit_traducidos - pc_p_blq);
+	c.ep      = (unsigned long) (jit_epocas - pc_p_ep);
+	c.tiras   = (unsigned long) (perf_tiras - pc_p_tiras);
+	c.ciclos  = reloj_total - pc_p_ciclos;
+	c.ns_trad = ns_traducir - pc_p_trad;
+
+	pc_p_tex = tex; pc_p_blq = jit_traducidos; pc_p_ep = jit_epocas;
+	pc_p_tiras = perf_tiras; pc_p_ciclos = reloj_total;
+	pc_p_trad = ns_traducir;
+
+	if (pc_n < PC_MAX)
+		pc_ms[pc_n] = (unsigned) (c.ns / 1000);		/* en microsegundos */
+
+	pc_n++;
+	pc_suma += c.ns;
+
+	/* Los peores, por insercion: son doce. */
+	if (pc_n_peores < PC_PEORES)
+	{
+		pc_peores[pc_n_peores++] = c;
+		return;
+	}
+
+	peor = 0;
+
+	for (i = 1; i < PC_PEORES; i++)
+		if (pc_peores[i].ns < pc_peores[peor].ns)
+			peor = i;
+
+	if (c.ns > pc_peores[peor].ns)
+		pc_peores[peor] = c;
+}
+
+static int pc_cmp(const void * a, const void * b)
+{
+	unsigned x = *(const unsigned *) a, y = *(const unsigned *) b;
+
+	return (x < y) ? -1 : (x > y);
+}
+
+void perf_cuadros_resumen(void)
+{
+	unsigned long long n = (pc_n < PC_MAX) ? pc_n : PC_MAX;
+	unsigned *         orden;
+	unsigned long long lentos = 0, muy = 0;
+	unsigned long long k;
+	int                i, j;
+
+	if (!pc_activa || n < 2)
+		return;
+
+	orden = (unsigned *) malloc((size_t) n * sizeof(unsigned));
+
+	if (orden == NULL)
+		return;
+
+	memcpy(orden, pc_ms, (size_t) n * sizeof(unsigned));
+	qsort(orden, (size_t) n, sizeof(unsigned), pc_cmp);
+
+	/* Los dos umbrales que importan a 60 Hz: pasarse del cuadro (16,7 ms) y
+	   pasarse del doble, que es cuando se ve como un tiron y no como una
+	   perdida de fluidez. */
+	for (k = 0; k < n; k++)
+	{
+		if (pc_ms[k] > 16700) lentos++;
+		if (pc_ms[k] > 33400) muy++;
+	}
+
+	fprintf(stderr, "\ncuadros: %llu medidos, trabajo medio %.2f ms;"
+		" p50 %.2f  p90 %.2f  p99 %.2f  max %.2f ms\n",
+		pc_n, (double) pc_suma / 1e6 / (double) pc_n,
+		orden[n / 2] / 1000.0, orden[(n * 9) / 10] / 1000.0,
+		orden[(n * 99) / 100] / 1000.0, orden[n - 1] / 1000.0);
+
+	fprintf(stderr, "cuadros: %llu pasados de 16,7 ms (%.2f %%),"
+		" %llu pasados de 33,4 ms (%.2f %%)\n",
+		lentos, 100.0 * (double) lentos / (double) n,
+		muy, 100.0 * (double) muy / (double) n);
+
+	/*
+		**Lo que no se esta contando se dice, no se imprime como cero.**
+		perf_tex_* y perf_tiras van detras de PERF_CONTAR, o sea de
+		perf_activa; sin --perf esta sonda informaba tex=0 en todos los
+		cuadros, y un cero se lee como «las texturas no fueron» cuando
+		significa «nadie las estaba mirando» -- la conclusion contraria, y
+		justo la que uno trae de casa. Encender perf_activa desde aqui
+		tampoco vale: mueve la emision del JIT y el muestreo por instruccion,
+		o sea que cambiaria los tiempos que la sonda existe para medir.
+	*/
+	fprintf(stderr, "cuadros: los %d peores, con lo que paso dentro"
+		" (blq = bloques traducidos, ep = movimientos de epoca%s):\n",
+		PC_PEORES,
+		perf_activa ? ", tex = texturas decodificadas, tiras"
+					: "; tex y tiras piden --perf y aqui no se cuentan");
+
+	/* De mayor a menor, que es como se leen. */
+	for (i = 0; i < pc_n_peores; i++)
+	{
+		int mayor = i;
+
+		for (j = i + 1; j < pc_n_peores; j++)
+			if (pc_peores[j].ns > pc_peores[mayor].ns)
+				mayor = j;
+
+		if (mayor != i)
+		{
+			pc_cuadro t = pc_peores[i];
+			pc_peores[i] = pc_peores[mayor];
+			pc_peores[mayor] = t;
+		}
+
+		/*
+			**El discriminador que decide de quien es el tiron**: cuanto
+			tiempo EMULADO avanzo ese cuadro. Si avanzo lo normal (~16,7 ms)
+			y costo 60 de pared, el lento es dcemu. Si avanzo 60 emulados, el
+			cuadro largo lo hizo el juego --carga, descompresion-- y en una
+			consola habria tardado lo mismo: no hay nada que arreglar en el
+			emulador. Sin esta columna las dos cosas son el mismo numero.
+		*/
+		fprintf(stderr, "cuadros:   #%-7llu %7.2f ms trabajo (%6.2f emulados,"
+			" %4.2fx) + %5.2f swap  blq=%-5lu (%5.2f ms) ep=%-6lu",
+			pc_peores[i].n, pc_peores[i].ns / 1e6,
+			(double) pc_peores[i].ciclos * 1000.0 / (double) DC_CPU_HZ,
+			pc_peores[i].ns
+				? ((double) pc_peores[i].ciclos * 1e9
+				   / (double) DC_CPU_HZ / (double) pc_peores[i].ns)
+				: 0.0,
+			pc_peores[i].ns_swap / 1e6,
+			pc_peores[i].blq, pc_peores[i].ns_trad / 1e6, pc_peores[i].ep);
+
+		if (perf_activa)
+			fprintf(stderr, "  tex=%-5lu tiras=%lu",
+				pc_peores[i].tex, pc_peores[i].tiras);
+
+		fprintf(stderr, "\n");
+	}
+
+	free(orden);
+}
+
 void perf_resumen(void)
 {
 	unsigned long long real, emulado;

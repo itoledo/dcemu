@@ -299,6 +299,13 @@ int jit_escritura_bloque(const unsigned char * p, size_t tam);
 
 void jit_iniciar(void);
 
+/* Cuantas traducciones lleva la corrida: la sonda de tirones (perf.h) la mira
+   por cuadro para separar «el JIT tradujo de golpe» de los demas culpables. */
+unsigned long long jit_cuenta_traducidos(void);
+
+/* Y cuanto tiempo se fue traduciendo, sin muestrear. */
+extern unsigned long long jit_ns_traducir;
+
 /*
 	El muestreo de candidatos. Se llama desde el bloque periodico de
 	main_loop() --que corre cada RELOJ_GRANO ciclos, o sea unas 130
