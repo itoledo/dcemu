@@ -2594,6 +2594,8 @@ static int env_sin_dibujo = -1;
 	esa demo lo mida y ninguna otra.
 */
 static int env_medio_pixel = -1;
+/* La pareja del anterior, del lado de la textura: ver el cierre de tira. */
+int env_medio_texel = -1;
 
 static double medio_pixel(double guest, double destino)
 {
@@ -3170,12 +3172,29 @@ static void cb_tastart_cuerpo(DWORD addr, void * p, size_t size)
 					for (k = 0; k < TriangleStrip[t].count && k < tope_v; k++)
 					{
 						DWORD ix = TriangleStrip[t].index + k;
+						float q = VertexBuffer[ix].q;
 
+						/*
+							**Las UV van dos veces, y las que importan son las
+							segundas.** El buffer las guarda premultiplicadas
+							por q (la correccion de perspectiva; ver render.h),
+							asi que lo que se imprimia no era lo que el juego
+							pidio -- y sin q al lado no habia forma de
+							recuperarlo. Con tres decimales, ademas, un 0,9 y
+							un 1,0 salian iguales: justo la distincion entre
+							"muestrea dentro de la textura" y "muestrea el
+							borde", que es lo que se le pregunta a un volcado
+							cuando hay costuras. Las crudas van con seis.
+						*/
 						fprintf(stderr, "traza:     v%d=(%.1f,%.1f,%g) uv=(%.3f,%.3f)"
+							" q=%g uvcrudo=(%.6f,%.6f)"
 							" rgba=(%.2f,%.2f,%.2f,%.2f) off=(%.2f,%.2f,%.2f)\n",
 							(int) k,
 							VertexBuffer[ix].x, VertexBuffer[ix].y, VertexBuffer[ix].z,
 							VertexBuffer[ix].t1, VertexBuffer[ix].t2,
+							q,
+							(q != 0.0f) ? VertexBuffer[ix].t1 / q : 0.0f,
+							(q != 0.0f) ? VertexBuffer[ix].t2 / q : 0.0f,
 							VertexBuffer[ix].r, VertexBuffer[ix].g,
 							VertexBuffer[ix].b, VertexBuffer[ix].a,
 							VertexBuffer[ix].ro, VertexBuffer[ix].go,
@@ -6217,14 +6236,56 @@ void taVertexHandler()
 		   vez, con la tira ya completa. */
 		{
 			DWORD kq;
+			float du = 0.0f, dv = 0.0f;
+
+			/*
+				**El medio texel, que es la pareja del medio pixel.**
+
+				Son dos convenciones distintas y hasta ahora se aplicaba una
+				sola. El chip muestrea el pixel en su coordenada ENTERA y GL
+				en el centro: eso lo corrige el desplazamiento del glOrtho
+				(ver medio_pixel()). Pero ademas el chip mapea u=0 al CENTRO
+				del texel 0, mientras que GL lo mapea a su BORDE -- su indice
+				de texel es u*W - 0,5 --, y eso nadie lo compensaba.
+
+				Con la geometria corrida y la textura no, cada superficie
+				muestreaba medio texel afuera: emborrona en todas partes y,
+				en el borde de una textura con REPEAT, trae el texel del lado
+				opuesto. **Es la costura del logo de Crazy Taxi**, cuatro
+				cuadros de 128 px pegados borde con borde con UV 0..1: el
+				primer pixel de cada cuadro daba indice de texel -0,384, o
+				sea un 38 % del texel 127 envuelto.
+
+				Va exactamente medio texel, no "un pelo menos" como el medio
+				pixel: aquel se queda corto a proposito para no caer en el
+				desempate del rasterizador, y esto no rasteriza nada. En la
+				escala 1:1 los dos casi se cancelan --queda 0,016 de texel--
+				y el muestreo cae sobre el centro del texel, que es lo que
+				hace el chip.
+
+				Se aplica ANTES de premultiplicar por q, y eso es exacto y no
+				una aproximacion: GL divide s/q por pixel, y una constante
+				sumada antes sale intacta de la division en perspectiva.
+			*/
+			DWORD tw = TriangleStrip[strip_count].texture.pvr_texture_size_usize;
+			DWORD th = TriangleStrip[strip_count].texture.pvr_texture_size_vsize;
+
+			if (tw && th && !env_interruptor("DCEMU_SIN_MEDIO_TEXEL",
+					&env_medio_texel))
+			{
+				du = 0.5f / (float) tw;
+				dv = 0.5f / (float) th;
+			}
 
 			for (kq = 0; kq < TriangleStrip[strip_count].count; kq++)
 			{
 				vertex * vp = &VertexBuffer[TriangleStrip[strip_count].index + kq];
 
-				vp->t1 *= vp->q;	vp->t2 *= vp->q;
+				vp->t1 = (vp->t1 + du) * vp->q;
+				vp->t2 = (vp->t2 + dv) * vp->q;
 				vp->tr  = 0.0f;		vp->tq  = vp->q;
-				vp->u1 *= vp->q;	vp->v1 *= vp->q;
+				vp->u1 = (vp->u1 + du) * vp->q;
+				vp->v1 = (vp->v1 + dv) * vp->q;
 				vp->ur  = 0.0f;		vp->uq  = vp->q;
 			}
 		}

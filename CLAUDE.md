@@ -214,6 +214,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
+| `DCEMU_SIN_MEDIO_TEXEL=1` | apaga la **pareja** del anterior, del lado de la textura: el chip mapea `u=0` al centro del texel 0 y GL a su borde, así que faltaba medio texel. Con la geometría corrida y la textura no, todo muestreo caía medio texel afuera — de ahí las costuras de un píxel en el logo de Crazy Taxi (envuelve por REPEAT en el borde de cada cuadro) y la imagen entera desplazada un píxel con la primera columna y fila a media intensidad. **También cambia todas las capturas**, y `pvr-fb_tex` sale idéntico con y sin. Ver la regla en «Graphics pipeline» |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -648,6 +649,24 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   way, costing a row. And **dcemu's own full-screen quads must take it back out** (`DibujarFramebuffer()`):
   they are a 1:1 copy filtered `GL_LINEAR`, so half a pixel does not shift them, it blends every pixel
   with its neighbour.
+- **That correction has a companion, and for two years only one of the two was applied.** They are
+  *two* conventions, not one: where a pixel is sampled (above), and **what texel `u = 0` names** — the
+  chip puts it at texel 0's **centre**, GL at its **edge** (its texel index is `u·W − 0.5`). With the
+  geometry shifted and the texture not, every textured surface sampled **half a texel off**. Two
+  symptoms, and the second is the one that matters: at a texture edge with `GL_REPEAT` the filter wraps
+  and brings in the opposite edge — the 1-pixel seams across Crazy Taxi's logo, four 128 px quads laid
+  edge to edge with UV 0..1, where the first pixel of each quad landed on texel index −0.384, i.e. 38 %
+  of texel 127 wrapped around; and **the whole rendered image sat one pixel right and one down**, with
+  the first column and row at half strength. DCDoom measured it: column 0 carried 39 618 of ink against
+  column 1's 78 180, and with the companion applied it is 78 312 with a smooth progression — the old
+  image is exactly the new one displaced by one. So the left column the half-pixel shift was added to
+  restore was only half restored. The fix is **exactly half a texel** (`0.5/W`, `0.5/H`), not "a hair
+  less" — that hair exists to dodge the rasterizer's tie-break and this rasterizes nothing — applied to
+  the UVs **before** the `q` premultiplication, which is exact under perspective rather than an
+  approximation, since a constant added before the divide survives it. At 1:1 the two corrections nearly
+  cancel (0.016 texel left) and sampling lands on the texel centre, which is what the chip does.
+  `DCEMU_SIN_MEDIO_TEXEL=1` isolates it; `pvr-fb_tex` is byte-identical either way, so the demo that
+  validated the half-pixel does not move.
 - **`pvr-fb_tex` is the only thing in the park that can measure that**, because it reads its own front
   buffer as a strided texture at two texels per screen pixel, where half a pixel is a whole texel. Its
   check is self-contained and does not need a reference image: with the convention right, consecutive
