@@ -6202,6 +6202,16 @@ static int jit_verificar(jit_bloque * b)
 
 		`b->epoca` se repone igual, porque es lo que compara el salto
 		encadenado -- ese si se saltea el despachador y necesita la clave.
+
+		**Lo que hace valido saltearse la comparacion de palabras es la ventana
+		de 1 KB de tr_descubrir(), y esto la vuelve portante para la CORRECCION
+		y no solo para el largo**: bajo MMU la traza entera --lo contiguo y lo
+		seguido por flujo, que vive en `extra_dir`-- cae en la ventana de la
+		entrada, asi que un solo puntero de busqueda valida el mapeo de todas
+		sus palabras. Si alguna vez se relaja esa ventana para que el flujo
+		cruce paginas, este camino aceptaria bloques cuya segunda pagina se
+		remapeo, y habria que marcar los que cruzan para que bajen al camino
+		largo. Sin MMU no hay remapeo y la pregunta no existe.
 	*/
 	if (codigo == b->ptr && b->epoca_escr == jit_epoca_escr)
 	{

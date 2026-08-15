@@ -32,13 +32,18 @@ traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
   nombra hoy palabras de datos, `TRAPA` y escritores de SR.
 - **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **93,8 %**
   de cobertura, 48,4 por entrada), Crazy Taxi (**96,2 %**, 20,1) y Sega Rally 2
-  (MMU+FPU, **95,2 %**, 24,8). **Marcas vigentes: tanda del 2026-08-14 con el índice
-  de enlaces, binario `5B9CAAE45A977784`** (`herramientas/enlace-ab.ps1`, tres
-  brazos): DCDoom **26 490 ms, −39,1 %** y **1,32× tiempo real**; CT **103 038 ms,
-  −16,2 %** (1,75×); SR2 **54 941 ms, −25,6 %** y **1,09×** — la primera vez que
-  SR2 pasa el tiempo real. El brazo `lineal` de esa misma tanda reproduce las
-  marcas anteriores (−32,9 / −2,0 / −11,4 %), así que la comparación entre las dos
-  generaciones no depende de la capa de reentrenamiento.
+  (MMU+FPU, **95,2 %**, 24,8). **Marcas vigentes: tanda del 2026-08-15, binario
+  reentrenado `037F3330A41E0FA0`** (`herramientas/flujo-ab.ps1`, tres brazos —
+  el brazo del intérprete viaja con el A/B del flujo para no pagar dos
+  reentrenamientos): DCDoom **26 561 ms, −39,1 %** y **1,32× tiempo real**;
+  CT **103 426 ms, −16,5 %** (1,74×); SR2 **53 533 ms, −27,8 %** y **1,12×**.
+  Contra la tanda anterior (`5B9CAAE45A977784`, índice de enlaces) lo que se
+  movió es **SR2, de −25,6 % a −27,8 %**: es la separación de la clave de
+  verificación, que se había medido sobre el binario entrenado para el escalón
+  previo y aquí entra con su propia capa de PGO. El brazo `lineal` de la tanda
+  anterior reproduce las marcas de antes del índice (−32,9 / −2,0 / −11,4 %),
+  así que la comparación entre las dos generaciones no depende de la capa de
+  reentrenamiento.
   **Ojo con el banco de CT**: el de esta tanda toma otro camino de juego que el de
   las anteriores (20,63 G instrucciones y 13,8 por entrada, contra 21,24 G y 20,1),
   y por eso su marca contra el intérprete no se compara con la de agosto 10 aunque
@@ -130,6 +135,9 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | experimento | veredicto | el porqué, en una línea |
 | --- | --- | --- |
 | El superbloque por flujo (seguir BRA/BSR/RTS) | **neutro** — apagado, `DCEMU_JIT_FLUJO=1` lo revive | entradas −1/−4 % y el tiempo no las siguió: el viaje al despachador no es el costo (otra vez) |
+| Rehacer ese veredicto con el enlazado ya arreglado | **se sostiene, y ahora hay un guest que lo rechaza** | DOOM y CT solapados, **SR2 +0,9 % con rangos disjuntos** (tanda `037F3330A41E0FA0`). CT ahorra **68 millones de entradas al despachador (−4,6 %)** y el tiempo no se mueve: la tercera medición que dice lo mismo |
+| Por qué había que rehacerlo igual | **la sospecha era legítima y quedó descartada con datos** | cuando se archivó, `jit_enlazar()` era cuadrático en la cantidad de bloques y el flujo cambia esa cantidad; además la verificación por entrada dejó de comparar palabra por palabra, que es lo que más caro le salía a una traza no contigua. Dos motivos independientes, ninguno alcanzó |
+| Que el flujo ACORTE los bloques | **el efecto que nadie esperaba** | instrucciones por bloque 22,7→19,8 en DOOM y 26,3→24,0 en SR2: seguir una arista desemboca en código que la traza ya tiene y ahí se corta. En DOOM las entradas SUBEN 3,8 % con el flujo encendido |
 | El par de retorno con la cola dentro | **perdió** (SR2 −6,3 % contra −8,3) | la caminata seguía de largo tras el RTS y anexaba la función siguiente: +27 % de arena, el código frío dispersa lo caliente (la lección del tope de 96) |
 | El par de retorno terminando la traza | **mixto-marginal, quedó encendido** | DOOM −21,9 y CT −15,6/−16,7 (mejor), SR2 −7,5 (−0,8 pt, dentro de su dispersión); cobertura +2,5/+2,8 pt y entradas −9,6/−12,7 % |
 | El lote del censo de la frontera (4 plantillas + pares BRA/JMP/BRAF) | **ganó en los tres, el mayor salto de la serie** | DOOM −25,5 % (1,10×, entradas −50 %), CT −16,7 %, SR2 −9,6 % (92,9 % de cobertura): el censo por peso encontró el residuo interpretado que el flujo no |
