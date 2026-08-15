@@ -32,14 +32,18 @@ traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
   nombra hoy palabras de datos, `TRAPA` y escritores de SR.
 - **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **93,8 %**
   de cobertura, 48,4 por entrada), Crazy Taxi (**96,2 %**, 20,1) y Sega Rally 2
-  (MMU+FPU, **95,2 %**, 24,8). Tanda del 2026-08-14, binario `A15BA7445BC385EF`,
-  con el atajo de P1/P2 puesto: DCDoom **28 866 ms, −32,5 %** y **1,21× tiempo
-  real**; CT **87 069 ms, −21,5 %** (2,07×); SR2 **64 356 ms, −12,0 %** (0,93×).
-  La tanda anterior (2026-08-10, `4BDA443CB17BD1B6`) daba −26,5/−19,3/−8,4 %: lo
-  que se movió en los dos guests con MMU es el atajo, y lo de CT —que no emite
-  traducción alguna— es su capa de reentrenamiento, que vale ±1-2 %. Los pares de
-  llamada solos valen ~1,0/5,5/0,4 %; C6xx es neutra en SR2 (~0,1 %) y queda
-  porque elimina la frontera sin costo.
+  (MMU+FPU, **95,2 %**, 24,8). **Marcas vigentes: tanda del 2026-08-14 con el índice
+  de enlaces, binario `5B9CAAE45A977784`** (`herramientas/enlace-ab.ps1`, tres
+  brazos): DCDoom **26 490 ms, −39,1 %** y **1,32× tiempo real**; CT **103 038 ms,
+  −16,2 %** (1,75×); SR2 **54 941 ms, −25,6 %** y **1,09×** — la primera vez que
+  SR2 pasa el tiempo real. El brazo `lineal` de esa misma tanda reproduce las
+  marcas anteriores (−32,9 / −2,0 / −11,4 %), así que la comparación entre las dos
+  generaciones no depende de la capa de reentrenamiento.
+  **Ojo con el banco de CT**: el de esta tanda toma otro camino de juego que el de
+  las anteriores (20,63 G instrucciones y 13,8 por entrada, contra 21,24 G y 20,1),
+  y por eso su marca contra el intérprete no se compara con la de agosto 10 aunque
+  el guest sea el mismo. Los pares de llamada solos valen ~1,0/5,5/0,4 %; C6xx es
+  neutra en SR2 (~0,1 %) y queda porque elimina la frontera sin costo.
 - El traductor emite **por identidad de manejador** (`OP_HANDLER` de la `oplist` real):
   no existe un segundo decodificador que pueda divergir del primero. Los ciclos de cada
   plantilla se copian leyendo el cuerpo ENTERO del manejador — nunca por cercanía: un
@@ -150,7 +154,8 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | La rejilla de 64 bytes consultada en línea antes de desviar una escritura | **ganó en DCDoom: −1,3 % más**, disjunto del anterior (−2,8 % los dos juntos) | la página dice si hay código en 4 KB, no si lo escrito ES código: **90 616 485 desvíos cada 20 s de DCDoom y ninguno hacía falta** |
 | Medir los dos juntos y no por separado | **casi cuesta el veredicto** | el combinado dio solapado en DOOM y disjunto en SR2; con los tres brazos DOOM separa las dos mitades y SR2 resulta ser el que no distingue |
 | Conectar el gancho de la época moviendo la época por **página** | **no se probó, y menos mal** | habría movido la época 90 millones de veces cada 20 s, desatando todos los enlaces: la página sirve para desviar barato, no para invalidar |
-| El barrido lineal de `jit_enlazar()` | **era cuadrático, y eran los tirones** — `DCEMU_JIT_ENLACE_LINEAL=1` lo revive | avisarle al bloque nuevo quién lo esperaba recorría todos los ya traducidos: 97 % del tiempo de traducir, 12,8 s de 120 s emulados en CT. Índice por PC destino: **12 802 → 259 ms**, cuadros lentos **14,9 % → 1,5 %** |
+| El barrido lineal de `jit_enlazar()` | **era cuadrático, y era la mayor pérdida de la serie** — `DCEMU_JIT_ENLACE_LINEAL=1` lo revive | avisarle al bloque nuevo quién lo esperaba recorría todos los ya traducidos. Índice por PC destino: **DOOM −9,3 %, CT −14,5 %, SR2 −16,0 %**, los tres con rangos disjuntos (tanda reentrenada `5B9CAAE45A977784`), y los cuadros lentos de **14,9 % a 0,65 %** |
+| La firma que lo delata en la propia tabla | **el costo por traducción crece con el banco** | en el brazo lineal: 0,174 ms en DOOM (35 s), 0,365 en SR2 (60 s), 0,490 en CT (180 s); con el índice, 0,008-0,014 en los tres. Un costo por unidad que depende de cuánto lleve corrido la tanda es cuadrático, se mire lo que se mire |
 | La sonda de tirones (`DCEMU_SONDA_CUADROS=1`) | **el instrumento que lo encontró** | una tanda da la media y la media es lo único que un tirón no mueve; la distribución por cuadro con el tiempo **emulado** al lado separa «dcemu se frenó» de «el guest hizo un cuadro largo» |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
 
