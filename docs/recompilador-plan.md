@@ -155,6 +155,9 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | Medir los dos juntos y no por separado | **casi cuesta el veredicto** | el combinado dio solapado en DOOM y disjunto en SR2; con los tres brazos DOOM separa las dos mitades y SR2 resulta ser el que no distingue |
 | Conectar el gancho de la época moviendo la época por **página** | **no se probó, y menos mal** | habría movido la época 90 millones de veces cada 20 s, desatando todos los enlaces: la página sirve para desviar barato, no para invalidar |
 | El barrido lineal de `jit_enlazar()` | **era cuadrático, y era la mayor pérdida de la serie** — `DCEMU_JIT_ENLACE_LINEAL=1` lo revive | avisarle al bloque nuevo quién lo esperaba recorría todos los ya traducidos. Índice por PC destino: **DOOM −9,3 %, CT −14,5 %, SR2 −16,0 %**, los tres con rangos disjuntos (tanda reentrenada `5B9CAAE45A977784`), y los cuadros lentos de **14,9 % a 0,65 %** |
+| La clave de la verificación por entrada, separada de la del encadenado | **ganó en los dos guests con MMU** — `DCEMU_JIT_VERIF_COMPLETA=1` lo revive | el puntero de búsqueda ya identifica página, ASID y modo; pedirle además la clave re-comparaba palabra por palabra bloques intactos (20-22 % de las entradas, y en SR2 el 96,7 % acertaba). **DOOM −1,6 %, SR2 −3,2 %**, disjuntos; CT no distingue |
+| Poner esa palanca dentro de `jit_verificar()` | **midió la palanca, no el cambio** | esa función corre por entrada — 1490 M de veces en CT —, y CT medía **+1,0 % con rangos disjuntos** con los contadores idénticos en los dos brazos. La palanca se mudó a los movimientos de época, que son miles |
+| Reproducir la clave con un contador en vez del propio `jit_validez` | **habría sobreestimado la ganancia** | subir un contador invalida TODOS los bloques en cada cambio de modo; la clave empaquetada sólo invalida los verificados en el otro modo. Con `jit_epoca_escr = jit_validez` la palanca reproduce los números anteriores al dígito |
 | La firma que lo delata en la propia tabla | **el costo por traducción crece con el banco** | en el brazo lineal: 0,174 ms en DOOM (35 s), 0,365 en SR2 (60 s), 0,490 en CT (180 s); con el índice, 0,008-0,014 en los tres. Un costo por unidad que depende de cuánto lleve corrido la tanda es cuadrático, se mire lo que se mire |
 | La sonda de tirones (`DCEMU_SONDA_CUADROS=1`) | **el instrumento que lo encontró** | una tanda da la media y la media es lo único que un tirón no mueve; la distribución por cuadro con el tiempo **emulado** al lado separa «dcemu se frenó» de «el guest hizo un cuadro largo» |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
@@ -282,10 +285,13 @@ P1/P2 el 2026-08-14; lo encendido por omisión son todos los pares de rama, las
    hacer, y ese 1,78 % es su techo medido. Y la guarda de alineación **tampoco
    se dispara jamás** pero no se puede plegar: es la comprobación del error de
    dirección, o sea una función y no una optimización.
-1. **La época por página** (en vez de global): los rechazos de DCDoom quedaron en
-   8,2 M — cada movimiento de mapeo de WinCE invalida TODOS los bloques y la
-   revalidación por palabras falla ~7 % de las entradas. Una generación por página
-   de guest dejaría en pie lo que no se movió.
+1. **La época por página** (en vez de global): **la mitad barata de esto ya se
+   cobró** separando la clave de la verificación por entrada de la del encadenado
+   (arriba), que se llevó el 96 % de las palabras comparadas. Lo que queda son los
+   rechazos de verdad — 8,2 M en DCDoom, donde el bloque SÍ dejó de valer porque su
+   página se remapeó — y para esos una generación por página de guest dejaría en
+   pie lo que no se movió. Medir antes de escribirla: con el camino largo en 0,9 %
+   de las entradas, el techo es mucho menor que cuando se anotó este punto.
 2. **Elisión de recarga en reentradas por despachador**: los no volátiles sobreviven
    el viaje C; falta la marca de «contexto ensuciado». Con las entradas de DOOM a la
    mitad, su techo bajó — medir antes de escribirla.

@@ -185,12 +185,42 @@ extern unsigned			jit_ep_fpu;
 
 extern unsigned char	jit_lin_codigo[0x40000];
 
+/*
+	El contador de escrituras sobre codigo, **aparte de la epoca global**.
+
+	La epoca se mueve por tres motivos --escritura, cambio de mapeo y (por la
+	clave) cambio de modo-- y el salto encadenado los necesita los tres,
+	porque se saltea el despachador. La verificacion por entrada no: calcula
+	el puntero de busqueda y lo compara, y ese puntero ya identifica pagina,
+	ASID y modo. Lo unico que le falta es saber si alguien escribio encima, y
+	eso es este contador. Ver `epoca_escr` en jit_bloque.
+*/
+extern unsigned			jit_epoca_escr;
+
+/* DCEMU_JIT_VERIF_COMPLETA=1: el contador de escrituras se mueve tambien con
+   el mapeo y el modo, o sea que la verificacion por entrada vuelve a ser tan
+   estricta como la clave. Va aqui y no en jit_verificar() porque aquello
+   corre por entrada -- mil quinientos millones de veces en un banco -- y
+   esto miles. */
+extern int				jit_verif_completa;
+
 #define JIT_EPOCA_ESCRITURA()											\
 	do																	\
 	{																	\
 		jit_epoca++;													\
 		jit_validez = (jit_epoca << 1) | jit_md_visto;					\
 		jit_ep_escritura++;												\
+																		\
+		/* Con la palanca puesta el contador ES la clave, asi que la		\
+		   comparacion del camino caliente reproduce la de antes EXACTA:	\
+		   un bloque verificado en un modo y reencontrado en ese mismo	\
+		   modo tras un viaje de ida y vuelta vuelve a casar, igual que	\
+		   con la clave empaquetada. Subir un contador no haria eso: 	\
+		   invalidaria de mas y sobreestimaria la ganancia. */			\
+		if (jit_verif_completa)											\
+			jit_epoca_escr = jit_validez;								\
+		else															\
+			jit_epoca_escr++;											\
 	} while (0)
 
 /*
@@ -262,6 +292,9 @@ int jit_escritura_bloque(const unsigned char * p, size_t tam);
 			jit_epoca++;												\
 			jit_validez = (jit_epoca << 1) | jit_md_visto;				\
 			jit_ep_mapeo++;												\
+																		\
+			if (jit_verif_completa)										\
+				jit_epoca_escr = jit_validez;										\
 		}																\
 	} while (0)
 
@@ -279,6 +312,9 @@ int jit_escritura_bloque(const unsigned char * p, size_t tam);
 			jit_md_visto = (unsigned) (md);								\
 			jit_validez  = (jit_epoca << 1) | jit_md_visto;				\
 			jit_ep_modo++;												\
+																		\
+			if (jit_verif_completa)										\
+				jit_epoca_escr = jit_validez;										\
 		}																\
 	} while (0)
 

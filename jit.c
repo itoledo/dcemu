@@ -86,6 +86,7 @@ unsigned		jit_epoca = 1;
 unsigned		jit_md_visto = 0;
 unsigned		jit_validez = 2;
 unsigned		jit_ep_escritura = 0;
+unsigned		jit_epoca_escr = 1;
 unsigned long long	jit_ep_pag_vista = 0;
 unsigned		jit_ep_mapeo = 0;
 unsigned		jit_ep_modo = 0;
@@ -521,6 +522,24 @@ typedef struct
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
 	unsigned		epoca;		/* la clave de validez con la que se verifico */
+	/*
+		**La epoca de ESCRITURA con la que se verifico, que es otra cosa.**
+
+		`epoca` lleva la clave entera --epoca global y SR.MD-- porque es lo que
+		compara el salto encadenado, que se saltea el despachador y por lo
+		tanto no recomprueba nada mas. La verificacion por entrada SI
+		recomprueba: calcula el puntero de busqueda y lo compara. Y ese
+		puntero ya identifica el mapeo entero --pagina, ASID y modo--, asi que
+		exigirle ademas la clave entera hace re-verificar palabra por palabra
+		bloques que no pueden haber cambiado. Medido: **el 20-22 % de las
+		entradas** de DCDoom y Sega Rally 2 caian al camino largo, y en SR2 el
+		96,7 % de ellas ACERTABA -- veinte palabras comparadas para confirmar
+		lo que el puntero ya decia.
+
+		Lo unico que el puntero no cubre es que alguien haya escrito sobre las
+		palabras, y para eso basta el contador de escrituras.
+	*/
+	unsigned		epoca_escr;
 	const WORD *	ptr;		/* lo que devolvio la busqueda al verificarlo */
 	jit_enlace		enlace[JIT_MAX_ENLACES];
 	int				n_enlaces;
@@ -4893,6 +4912,10 @@ static unsigned long long	jit_traducidos = 0;
    concreto. */
 unsigned long long			jit_ns_traducir = 0;
 
+/* El camino largo de la verificacion por entrada: veces y palabras. */
+static unsigned long long	jit_verif_lento = 0;
+static unsigned long long	jit_verif_palabras = 0;
+
 /* Para la sonda de tirones (perf.h): cuantas traducciones lleva la corrida.
    Un cuadro que traduce cincuenta bloques de golpe --entrar a una zona
    nueva-- se ve como un tiron, y sin este numero al lado no se distingue de
@@ -5630,6 +5653,22 @@ static int				jit_pend_listo = 0;
    del escalon y la reproduccion exacta de la conducta anterior. */
 static int				jit_enlace_lineal = 0;
 
+/*
+	La verificacion por entrada contra la clave entera, como era antes.
+	DCEMU_JIT_VERIF_COMPLETA=1 lo revive -- pero **por el lado de los
+	movimientos de epoca, no por el de la comparacion**.
+
+	La primera version puso la palanca dentro de jit_verificar(), que corre una
+	vez por entrada al despachador: 1490 millones de veces en los 180 s de
+	Crazy Taxi. Ese guest no cambia nada con la palanca --sus contadores de
+	verificacion salen identicos en los dos brazos-- y aun asi medía **+1,0 %
+	con rangos disjuntos**: la rama era el costo, y estaba midiendo la palanca
+	en vez del cambio. Ahora la palanca vive donde la epoca se mueve, que pasa
+	miles de veces y no miles de millones, y el camino caliente queda con
+	exactamente las mismas dos comparaciones que tenia.
+*/
+int						jit_verif_completa = 0;
+
 #define JIT_PEND_H(pc)	(((unsigned) (pc) >> 1) & (JIT_PEND_N - 1))
 
 static void jit_pend_agregar(int bloque, int enlace, DWORD pc)
@@ -5983,7 +6022,12 @@ static jit_bloque * tr_traducir(DWORD pc)
 			}
 	}
 
-	b->epoca = 0;			/* todavia sin verificar */
+	b->epoca      = 0;		/* todavia sin verificar */
+	/* Y la de escritura tambien tiene que nacer invalida: el contador arranca
+	   en 1 y esto en 0, asi que la primera entrada pasa por la comparacion de
+	   palabras y deja el bloque con su puntero puesto. Nacer "al dia" saltaria
+	   esa primera verificacion, que es la que fija b->ptr. */
+	b->epoca_escr = 0;
 	b->ptr   = NULL;
 
 	jit_marcar(b->pc);
@@ -6148,8 +6192,33 @@ static int jit_verificar(jit_bloque * b)
 		pagina con codigo traducido (ver jit.h). Entre las dos: mismas palabras,
 		mismo sitio.
 	*/
-	if (codigo == b->ptr && b->epoca == jit_validez)
+	/*
+		**Dos comparaciones, y la segunda es la de escrituras, no la clave.**
+		El puntero de busqueda ya identifica el mapeo entero (pagina, ASID y
+		modo), asi que lo unico que falta preguntar es si alguien escribio
+		sobre las palabras. Con la clave entera aqui, un cambio de modo o de
+		mapeo mandaba a comparar palabra por palabra bloques intactos: el
+		20-22 % de las entradas, y en SR2 el 96,7 % de ellas acertaba.
+
+		`b->epoca` se repone igual, porque es lo que compara el salto
+		encadenado -- ese si se saltea el despachador y necesita la clave.
+	*/
+	if (codigo == b->ptr && b->epoca_escr == jit_epoca_escr)
+	{
+		b->epoca = jit_validez;
+
 		return 1;
+	}
+
+	/*
+		El camino largo, contado: cuantas veces la comparacion de dos no
+		alcanza y cuantas PALABRAS cuesta cuando no alcanza. Es lo que
+		dimensiona la epoca por pagina antes de escribirla -- DCDoom rechaza
+		el 7,8 % de sus entradas, pero "rechazos" no dice cuanto trabajo se
+		hizo antes de rechazar, y el resto de las veces el bucle corre entero
+		y ACIERTA, que no se contaba en ningun lado.
+	*/
+	jit_verif_lento++;
 
 	/*
 		A mano y no con memcmp: esto corre **una vez por entrada al bloque** --
@@ -6158,16 +6227,21 @@ static int jit_verificar(jit_bloque * b)
 		despacho por tamano, cuesta mas que la comparacion.
 	*/
 	for (i = 0; i < n; i++)
+	{
+		jit_verif_palabras++;
+
 		if (codigo[i] != b->palabras[i])
 			return 0;
+	}
 
 	for (i = 0; i < b->n_extra; i++)
 		if (*(const WORD *) MMU_FETCH_PUNTERO(b->extra_dir[i])
 			!= b->extra_palabra[i])
 			return 0;
 
-	b->epoca = jit_validez;
-	b->ptr   = codigo;
+	b->epoca      = jit_validez;
+	b->epoca_escr = jit_epoca_escr;
+	b->ptr        = codigo;
 
 	return 1;
 }
@@ -6465,6 +6539,16 @@ static void jit_resumen(void)
 	   que traducir se encarece a medida que la corrida avanza. La sonda de
 	   tirones lo destapo -- los cuadros lentos de Crazy Taxi eran traduccion,
 	   y la traduccion era esto. */
+	fprintf(stderr, "jit: verificacion por entrada: %llu veces por el camino"
+		" largo (%.1f %% de las entradas), %llu palabras comparadas"
+		" (%.1f por vez)\n",
+		jit_verif_lento,
+		jit_entradas ? 100.0 * (double) jit_verif_lento / (double) jit_entradas
+					 : 0.0,
+		jit_verif_palabras,
+		jit_verif_lento
+			? (double) jit_verif_palabras / (double) jit_verif_lento : 0.0);
+
 	fprintf(stderr, "jit: traducir %.0f ms, de los cuales enlazar %.0f ms"
 		" (%.0f %%); %.3f ms por traduccion\n",
 		(double) jit_ns_traducir / 1e6, (double) jit_ns_enlazar / 1e6,
@@ -6616,6 +6700,13 @@ void jit_iniciar(void)
 
 				if (el != NULL && atoi(el) != 0)
 					jit_enlace_lineal = 1;
+
+				{
+					const char * vc = getenv("DCEMU_JIT_VERIF_COMPLETA");
+
+					if (vc != NULL && atoi(vc) != 0)
+						jit_verif_completa = 1;
+				}
 			}
 
 			jit_sonda_cruces  = (sc != NULL && atoi(sc) != 0);
