@@ -1799,6 +1799,7 @@ void get_texture(int usize, int vsize, DWORD memorypos, int twiddled, int vq,int
 					}
 				}
 			}
+
 		}
 	}
 
@@ -3200,6 +3201,39 @@ static void cb_tastart_cuerpo(DWORD addr, void * p, size_t size)
 							VertexBuffer[ix].ro, VertexBuffer[ix].go,
 							VertexBuffer[ix].bo);
 					}
+				}
+			}
+
+			/*
+				**Y los volumenes modificadores, que no son tiras y por eso no
+				salian.** El volcado enseñaba lo que se dibuja; un volumen no
+				se dibuja: define donde los poligonos cambian de juego de
+				parametros. Cuando lo que se investiga es una sombra --que ES
+				un volumen-- preguntarle al volcado por las tiras contesta
+				sobre el efecto y nunca sobre la causa.
+
+				Solo con la escena pedida a proposito: son miles de triangulos
+				y no tienen nada que hacer en el vistazo de las dos primeras.
+			*/
+			if (pedida && vol_count)
+			{
+				DWORD v;
+
+				fprintf(stderr, "traza:   %lu triangulos de volumen"
+					" (instruccion: 0 acumula, 1 cierra incluyendo,"
+					" 2 cierra excluyendo)\n", (unsigned long) vol_count);
+
+				for (v = 0; v < vol_count; v++)
+				{
+					const VolTri * vt = &VolumeBuffer[v];
+
+					fprintf(stderr, "traza:     vol %lu: lista=%lu instr=%lu"
+						" a=(%.1f,%.1f,%g) b=(%.1f,%.1f,%g) c=(%.1f,%.1f,%g)\n",
+						(unsigned long) v, (unsigned long) vt->lista,
+						(unsigned long) vt->instruccion,
+						vt->x[0], vt->y[0], vt->z[0],
+						vt->x[1], vt->y[1], vt->z[1],
+						vt->x[2], vt->y[2], vt->z[2]);
 				}
 			}
 
