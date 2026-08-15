@@ -214,7 +214,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
-| `DCEMU_SIN_MEDIO_TEXEL=1` | apaga la **pareja** del anterior, del lado de la textura: el chip mapea `u=0` al centro del texel 0 y GL a su borde, así que faltaba medio texel. Con la geometría corrida y la textura no, todo muestreo caía medio texel afuera — de ahí las costuras de un píxel en el logo de Crazy Taxi (envuelve por REPEAT en el borde de cada cuadro) y la imagen entera desplazada un píxel con la primera columna y fila a media intensidad. **También cambia todas las capturas** — 37 de las 139 demos del parque, medido el 2026-08-15 — y `pvr-fb_tex` sale idéntico con y sin **a 1:1**, que es la condición que faltaba: en el camino de ventana la geometría se corre 0,4 px en vez de 0,5, la cancelación queda incompleta y esa demo también se mueve. Ver la regla en «Graphics pipeline» |
+| `DCEMU_MEDIO_TEXEL=1` | enciende el medio texel del lado de la textura, que estuvo por omisión un solo día (2026-08-14/15) y **está apagado**: la premisa era que el chip mapea `u=0` al centro del texel 0 y GL a su borde, y **el propio guest la desmiente** — las UV crudas de Street Fighter III son `0,5/256`, `16,5/256` y `32,5/256`, o sea que el juego ya direcciona centros de texel. Sumarle otro medio deja el muestreo sobre la frontera: su fondo pasa de **0 a 5012 picos de costura por columna** y de 0 a 2633 por fila, de una imagen limpia a una rejilla; ChuChu sube 20 %. Cambia todas las capturas del árbol (37 de las 139 demos) y `pvr-fb_tex` sale idéntico con y sin **a 1:1** y no en el camino de ventana, donde el corrimiento de la geometría es 0,4 px. Queda porque **la costura del logo de Crazy Taxi sigue abierta**, con hipótesis nueva: UV 0..1 con REPEAT, el filtro envuelve en `u=1,0`. Ver la regla en «Graphics pipeline» |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
 | `--watchpoint-lectura=D[:T]` | lo mismo para las lecturas: una línea por cada PC distinto que mire `D` |
 | `--traza-desde=PC[:N[:K]]` | desensambla las `N` instrucciones que siguen a la llegada a `PC`, saltándose las `K` primeras, con los registros que cambian. Necesita `--traza-mem` |
@@ -666,30 +666,33 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   way, costing a row. And **dcemu's own full-screen quads must take it back out** (`DibujarFramebuffer()`):
   they are a 1:1 copy filtered `GL_LINEAR`, so half a pixel does not shift them, it blends every pixel
   with its neighbour.
-- **That correction has a companion, and for two years only one of the two was applied.** They are
-  *two* conventions, not one: where a pixel is sampled (above), and **what texel `u = 0` names** — the
-  chip puts it at texel 0's **centre**, GL at its **edge** (its texel index is `u·W − 0.5`). With the
-  geometry shifted and the texture not, every textured surface sampled **half a texel off**. Two
-  symptoms, and the second is the one that matters: at a texture edge with `GL_REPEAT` the filter wraps
-  and brings in the opposite edge — the 1-pixel seams across Crazy Taxi's logo, four 128 px quads laid
-  edge to edge with UV 0..1, where the first pixel of each quad landed on texel index −0.384, i.e. 38 %
-  of texel 127 wrapped around; and **the whole rendered image sat one pixel right and one down**, with
-  the first column and row at half strength. DCDoom measured it: column 0 carried 39 618 of ink against
-  column 1's 78 180, and with the companion applied it is 78 312 with a smooth progression — the old
-  image is exactly the new one displaced by one. So the left column the half-pixel shift was added to
-  restore was only half restored. The fix is **exactly half a texel** (`0.5/W`, `0.5/H`), not "a hair
-  less" — that hair exists to dodge the rasterizer's tie-break and this rasterizes nothing — applied to
-  the UVs **before** the `q` premultiplication, which is exact under perspective rather than an
-  approximation, since a constant added before the divide survives it. At 1:1 the two corrections nearly
-  cancel (0.016 texel left) and sampling lands on the texel centre, which is what the chip does.
-  `DCEMU_SIN_MEDIO_TEXEL=1` isolates it; `pvr-fb_tex` is byte-identical either way **at 1:1**
-  (`--render=fbo --escala=1`, hash `99C746FD…` in both arms), so the demo that validated the half-pixel
-  does not move — and that cancellation is exactly what "at 1:1 the two corrections nearly cancel"
-  predicts. **The condition is load-bearing and was missing from this claim until 2026-08-15**: in the
-  default window path the target is 800×600, the geometry shift is 0.4 px instead of 0.5, the two
-  corrections no longer cancel, and `pvr-fb_tex` *does* change (deterministically — two runs of each arm
-  hash the same). The park sweep is what caught it: the demo showed up among the 37 the correction
-  moves, which reads as a contradiction until you notice the sweep runs `--render=ventana`.
+- **That correction was thought to have a companion on the texture side. It does not — the guest says
+  so, and the whole episode is worth keeping.** The idea: `u = 0` names texel 0's **centre** on the chip
+  and its **edge** in GL (index `u·W − 0.5`), so the UVs were missing half a texel. It shipped on
+  2026-08-14 because it removed the 1-pixel seams across Crazy Taxi's logo and moved DCDoom's whole image
+  one pixel (column 0 went from 39 618 of ink against column 1's 78 180, to 78 312 with a smooth
+  progression). **It was off again within a day**, because the commercial-game pass found Street Fighter
+  III's clean gradient background turning into a grid of seams — measured, `0 → 5012` seam peaks per
+  column and `0 → 2633` per row (`herramientas/costuras.ps1`); ChuChu Rocket +20 %. The scene dump names
+  the mechanism beyond argument: **SF3's raw UVs are `0.001953 = 0.5/256`, `0.064453 = 16.5/256`,
+  `0.126953 = 32.5/256` — the game already addresses texel centres.** If the chip put `u = 0` at texel
+  0's centre, asking for `(k+0.5)/W` would land exactly on the boundary between two texels, a 50/50 blend
+  on real hardware and the worst possible choice for a UI atlas. So the chip's convention is GL's, and
+  adding half a texel is what puts sampling on the boundary. `DCEMU_MEDIO_TEXEL=1` still turns it on,
+  because **Crazy Taxi's logo seam is a real symptom and is open again** — with a better hypothesis that
+  explains it without touching anything else: those are quads with UV 0..1 under `GL_REPEAT`, where at
+  `u = 1.0` the filter wraps and mixes texel 127 with texel 0. That is an edge addressing-mode question,
+  not a question of where `u = 0` lands. Two lessons, both paid for: **a fix that explains one symptom is
+  not thereby right** — the seam and the one-pixel displacement had one plausible common cause and it was
+  the wrong one; and **the KOS park cannot arbitrate a texture-sampling change**, since all 37 demos it
+  moved looked fine and the contradiction only appeared in a game.
+- **`pvr-fb_tex` is byte-identical with and without the half texel *at 1:1* — the condition is
+  load-bearing** (`--render=fbo --escala=1`, hash `99C746FD…` in both arms), and it is exactly what "at
+  1:1 the two corrections nearly cancel (0.016 texel)" predicts. In the default window path the target is
+  800×600, the geometry shift is 0.4 px instead of 0.5, the cancellation is incomplete, and the demo
+  *does* change — deterministically. The claim was written without the condition and the park sweep is
+  what caught it: the demo turned up among the 37 the correction moved, which reads as a contradiction
+  until you notice the sweep runs `--render=ventana`.
 - **`pvr-fb_tex` is the only thing in the park that can measure that**, because it reads its own front
   buffer as a strided texture at two texels per screen pixel, where half a pixel is a whole texel. Its
   check is self-contained and does not need a reference image: with the convention right, consecutive

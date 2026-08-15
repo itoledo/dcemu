@@ -131,6 +131,14 @@ Las 37 movidas por la corrección son todas texturadas, que es la clase predicha
 `pvr-texture_render`, `pvr-pvr_rtt_sized`, las dos `pvr-yuv_converter-*`, `tsunami-*`,
 `tunnel`/`kgl-tunnel`, `plasma`, `png`, `2ndmix`.
 
+**Aviso de lectura, escrito el mismo día que el barrido**: la corrección que este barrido
+verificó **se apagó por omisión unas horas después**, cuando la pasada por los juegos
+comerciales encontró que rompe el fondo de Street Fighter III. El barrido no lo podía ver — las
+37 demos que movió se ven todas bien — y esa es su limitación, no un error suyo: **el parque de
+KOS no puede arbitrar un cambio de muestreo de textura**. Ver `CLAUDE.md`, «Graphics pipeline».
+Las cifras de abajo siguen valiendo como lo que son: el aislamiento del cambio y el piso de
+ruido del parque.
+
 **Y una afirmación del árbol que este barrido corrigió**: `pvr-fb_tex` aparecía entre las 37,
 cuando `CLAUDE.md` decía que sale idéntico con y sin la corrección. Las dos cosas son ciertas y
 faltaba la condición: **a 1:1 los dos brazos son byte a byte idénticos** (`--render=fbo

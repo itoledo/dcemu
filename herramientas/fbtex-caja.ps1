@@ -66,8 +66,8 @@ function CajaDeDiferencias($a, $b)
 }
 
 foreach ($brazo in @("sin", "con")) {
-	if ($brazo -eq "sin") { $env:DCEMU_SIN_MEDIO_TEXEL = "1" }
-	else { Remove-Item env:DCEMU_SIN_MEDIO_TEXEL -EA SilentlyContinue }
+	if ($brazo -eq "con") { $env:DCEMU_MEDIO_TEXEL = "1" }
+	else { Remove-Item env:DCEMU_MEDIO_TEXEL -EA SilentlyContinue }
 
 	# El numero va DELANTE del nombre del archivo: "f0007-fbtex-c.bmp".
 	Remove-Item "f*-fbtex-c.bmp" -Force -EA SilentlyContinue
@@ -91,5 +91,5 @@ foreach ($brazo in @("sin", "con")) {
 	Remove-Item "f*-fbtex-c.bmp" -Force -EA SilentlyContinue
 }
 
-Remove-Item env:DCEMU_SIN_MEDIO_TEXEL -EA SilentlyContinue
+Remove-Item env:DCEMU_MEDIO_TEXEL -EA SilentlyContinue
 "=== fin"

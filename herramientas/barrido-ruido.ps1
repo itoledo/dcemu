@@ -17,12 +17,13 @@ $ErrorActionPreference = "Stop"
 
 Set-Location "$PSScriptRoot\..\build\Release"
 
-$env:DCEMU_SIN_MEDIO_TEXEL = "1"
+# La rama `sin` es hoy la de por omision (el medio texel quedo apagado), asi
+# que aqui no se enciende nada. Cuando esto se corrio la palanca era la
+# contraria; el contenido de las capturas no cambia.
+Remove-Item env:DCEMU_MEDIO_TEXEL -EA SilentlyContinue
 
 & "$PSScriptRoot\barrido.ps1" -Salida "barrido-mt-sin2" -Demos "." `
 	-Vmu "vmu-barrido.bin" -Exe ".\dcemu.exe"
-
-Remove-Item env:DCEMU_SIN_MEDIO_TEXEL -EA SilentlyContinue
 
 Write-Output "=== el piso de ruido: la misma rama dos veces"
 & "$PSScriptRoot\comparar.ps1" "barrido-mt-sin" "barrido-mt-sin2"

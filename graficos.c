@@ -6273,29 +6273,48 @@ void taVertexHandler()
 			float du = 0.0f, dv = 0.0f;
 
 			/*
-				**El medio texel, que es la pareja del medio pixel.**
+				**El medio texel: APAGADO desde el 2026-08-15, y el
+				expediente de por que.**
 
-				Son dos convenciones distintas y hasta ahora se aplicaba una
-				sola. El chip muestrea el pixel en su coordenada ENTERA y GL
-				en el centro: eso lo corrige el desplazamiento del glOrtho
-				(ver medio_pixel()). Pero ademas el chip mapea u=0 al CENTRO
-				del texel 0, mientras que GL lo mapea a su BORDE -- su indice
-				de texel es u*W - 0,5 --, y eso nadie lo compensaba.
+				La idea era que el chip mapea u=0 al CENTRO del texel 0
+				mientras GL lo mapea a su BORDE --su indice de texel es
+				u*W - 0,5--, asi que del lado de la textura faltaba medio
+				texel para hacerle pareja al medio pixel del glOrtho (ver
+				medio_pixel()). Se encendio un dia antes porque arreglaba la
+				costura del logo de Crazy Taxi y corria un pixel la imagen de
+				DCDoom.
 
-				Con la geometria corrida y la textura no, cada superficie
-				muestreaba medio texel afuera: emborrona en todas partes y,
-				en el borde de una textura con REPEAT, trae el texel del lado
-				opuesto. **Es la costura del logo de Crazy Taxi**, cuatro
-				cuadros de 128 px pegados borde con borde con UV 0..1: el
-				primer pixel de cada cuadro daba indice de texel -0,384, o
-				sea un 38 % del texel 127 envuelto.
+				**La premisa es falsa, y lo prueba el propio guest.** El
+				volcado de escena de Street Fighter III muestra sus UV crudas
+				en 0,001953 = **0,5/256**, 0,064453 = 16,5/256 y 0,126953 =
+				32,5/256: el juego **ya direcciona centros de texel**, con el
+				medio texel puesto por el. Si el chip mapeara u=0 al centro
+				del texel 0, pedir (k+0,5)/W caeria justo en la FRONTERA entre
+				dos texeles --un 50/50 del filtro en hardware--, que es la
+				peor eleccion posible y nadie la hace a proposito para un
+				atlas de interfaz. La convencion del chip es la de GL, y
+				sumarle medio texel deja el muestreo sobre la frontera.
 
-				Va exactamente medio texel, no "un pelo menos" como el medio
-				pixel: aquel se queda corto a proposito para no caer en el
-				desempate del rasterizador, y esto no rasteriza nada. En la
-				escala 1:1 los dos casi se cancelan --queda 0,016 de texel--
-				y el muestreo cae sobre el centro del texel, que es lo que
-				hace el chip.
+				Y se ve: con esto encendido el fondo de SF3 pasa de **0 a 5012
+				picos de costura por columna** y de 0 a 2633 por fila
+				(herramientas/costuras.ps1) -- de una imagen limpia a una
+				rejilla. ChuChu Rocket sube un 20 %.
+
+				Queda la palanca (`DCEMU_MEDIO_TEXEL=1`) porque el sintoma que
+				la trajo es real y **sigue abierto**: la costura del logo de
+				Crazy Taxi. La hipotesis nueva lo explica sin esto y encaja con
+				la evidencia de arriba -- son cuadros con UV 0..1 y REPEAT,
+				donde en u=1,0 el filtro envuelve y mezcla el texel 127 con el
+				0. Eso es el modo de direccionamiento en el borde, no donde cae
+				u=0, y no toca a nadie mas.
+
+				Cuando se enciende va exactamente medio texel, no "un pelo
+				menos" como el medio pixel: aquel se queda corto a proposito
+				para no caer en el desempate del rasterizador, y esto no
+				rasteriza nada. En la escala 1:1 los dos casi se cancelan
+				--queda 0,016 de texel--, que es por lo que `pvr-fb_tex` sale
+				byte a byte igual con y sin a 1:1 y NO en el camino de
+				ventana, donde el corrimiento de la geometria es 0,4 px.
 
 				Se aplica ANTES de premultiplicar por q, y eso es exacto y no
 				una aproximacion: GL divide s/q por pixel, y una constante
@@ -6304,7 +6323,7 @@ void taVertexHandler()
 			DWORD tw = TriangleStrip[strip_count].texture.pvr_texture_size_usize;
 			DWORD th = TriangleStrip[strip_count].texture.pvr_texture_size_vsize;
 
-			if (tw && th && !env_interruptor("DCEMU_SIN_MEDIO_TEXEL",
+			if (tw && th && env_interruptor("DCEMU_MEDIO_TEXEL",
 					&env_medio_texel))
 			{
 				du = 0.5f / (float) tw;
