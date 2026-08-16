@@ -214,6 +214,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
+| `DCEMU_MEDIO_PIXEL_MIL=N` | fija el corrimiento del `glOrtho` en `N` milésimos de píxel de destino en vez del valor del árbol (484). Es la sonda que mostró que **las dos evidencias del medio píxel piden valores opuestos**: el punto de muestreo queda en `s = 0,5 − N/1000`, el logo de Crazy Taxi sólo es correcto en `s = 0,5` (612 colores contra 5721) y `pvr-fb_tex` falla exactamente ahí. Ver la regla en «Graphics pipeline» |
 | `DCEMU_SIN_CLAMP_BORDE=1` | vuelve a `GL_REPEAT` en las tiras cuyas UV no salen de [0,1], que es la conducta anterior. Encendido por omisión: **es el arreglo de la costura del logo de Crazy Taxi**. Esa pantalla son cuadros de 16×16 pegados borde con borde con UV **exactamente 0..1** y REPEAT — a 1:1 no hay mezcla, pero la ventana estira 640→800 y en el borde de cada cuadro GL envuelve y trae el texel opuesto: una línea cada 20 píxeles. Si el rango de UV cabe en [0,1] la tira **nunca repite**, así que REPEAT y CLAMP_TO_EDGE solo difieren en el filtro del borde. Seguro por construcción, y la medida lo confirma: de los 15 juegos **11 salen byte a byte iguales** (SF3 entre ellos) y de las 139 demos cambian 13 fuera del piso de ruido, todas de textura a pantalla completa, sin un solo cambio de veredicto. En DCDoom y 4x4 EVO lo que cambia son **2796 píxeles exactos** — el perímetro de 800×600 al píxel |
 | `DCEMU_MEDIO_TEXEL=1` | enciende el medio texel del lado de la textura, que estuvo por omisión un solo día (2026-08-14/15) y **está apagado**: la premisa era que el chip mapea `u=0` al centro del texel 0 y GL a su borde, y **el propio guest la desmiente** — las UV crudas de Street Fighter III son `0,5/256`, `16,5/256` y `32,5/256`, o sea que el juego ya direcciona centros de texel. Sumarle otro medio deja el muestreo sobre la frontera: su fondo pasa de **0 a 5012 picos de costura por columna** y de 0 a 2633 por fila, de una imagen limpia a una rejilla; ChuChu sube 20 %. Cambia todas las capturas del árbol (37 de las 139 demos) y `pvr-fb_tex` sale idéntico con y sin **a 1:1** y no en el camino de ventana, donde el corrimiento de la geometría es 0,4 px. Queda porque **la costura del logo de Crazy Taxi sigue abierta**, con hipótesis nueva: UV 0..1 con REPEAT, el filtro envuelve en `u=1,0`. Ver la regla en «Graphics pipeline» |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
@@ -679,14 +680,38 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   and the measurement matches that shape: **11 of the 15 games come out byte-identical** (SF3 among
   them), the other four change where they should (DCDoom and 4x4 EVO change **2796 pixels exactly**, the
   perimeter of 800×600), and 13 of 139 demos change with zero verdict changes. `DCEMU_SIN_CLAMP_BORDE=1`.
-- **The half-pixel `glOrtho` shift moves texture sampling too, not just coverage — and that is the open
-  thread.** Prediction before measuring: at 1:1 the clamp should be a no-op, because sampling lands on
-  texel centres and never reaches the edge. It is not. With `--render=fbo --escala=1` the clamp changes
-  the image, and with `DCEMU_SIN_MEDIO_PIXEL=1` it stops changing it — so the ortho shift is what puts
-  the sample on the texel **edge** instead of its centre. That is why the half-texel patch below looked
-  right: it was compensating this side effect, globally, which is exactly why it broke a game that
-  already addressed texel centres. The half-pixel shift rests on DCDoom's column-0 measurement; that it
-  also displaces texture sampling is a consequence nobody measured, and it is the next thing to pull on.
+- **The half-pixel `glOrtho` shift moves texture sampling too, not just coverage. Its two witnesses
+  demand opposite values, so the one-parameter model is provably wrong — and this is open.** Prediction
+  before measuring: at 1:1 the edge clamp should be a no-op, because sampling would land on texel centres
+  and never reach the edge. It is not: with `--render=fbo --escala=1` the clamp changes the image, and
+  with `DCEMU_SIN_MEDIO_PIXEL=1` it stops changing it. So the ortho shift is what puts the sample on the
+  texel **edge**. Write `s` for where inside the pixel GL ends up sampling (`s = 0.5` is the pixel
+  centre, i.e. no shift; the tree ships `s ≈ 0.016`). `DCEMU_MEDIO_PIXEL_MIL=N` sweeps it, `s = 0.5 −
+  N/1000`. What the sweep says, at 1:1:
+
+  | | `s = 0.5` | 0.375 | 0.25 | 0.125 | 0.016 (hoy) |
+  | --- | --- | --- | --- | --- | --- |
+  | Crazy Taxi's logo screen, distinct colours | **612** | 5128 | 5811 | 6182 | 5721 |
+  | `pvr-fb_tex` | **falla** | pasa | pasa | pasa | pasa |
+
+  The colour count is a sharpness oracle **only for 1:1 content** — a screen made of texels has a
+  discrete colour set and sampling between texels invents intermediates. That screen qualifies: it is
+  16×16 quads with UV 0..1 on 16×16 textures, one texel per pixel. So the shift costs it a half-texel
+  blur, 9.3× the colours. And `pvr-fb_tex` fails at exactly the value that fixes it.
+  **And it is not one screen: the 15 games at 1:1, `s = 0.5` against today.** Crazy Taxi **−89.3 %**
+  (5721 → 612), Crazy Taxi 2 **−86.9 %** (4426 → 579), Capcom vs. SNK **−83.6 %** (213 → 35); ChuChu
+  −11.3 %, Mat Hoffman −10.8 %, Quake III −4.6 %, Dave Mirra −4.4 %; SR2, both Virtua Tennis, DOA2, SF3
+  and Tennis 2K2 unchanged. The two that rise are the two whose captured screen is magnified, where the
+  oracle does not apply: 4x4 EVO +5.3 % and DCDoom +88 %.
+  **The arithmetic says `s = 0.5` should satisfy both.** fb_tex's strip is 640 texels across 320 pixels,
+  so at `s = 0.5` its filter centre lands on `2i + 0.5` — precisely the correct 2:1 box. It should pass
+  and it does not. Therefore the defect is *inside* fb_tex's path, not in the convention: that strip is a
+  **strided texture** (declared 1024×1024, `stride 640`) and the demo reads a 32-bit framebuffer as
+  16-bit texels, two per real pixel. The half-pixel shift has been masking a one-texel error there since
+  2026-08-06. **Do not flip the default before that is understood** — one witness still stands against
+  it, and the tree's own rule is that a fix explaining one symptom is not thereby right. DCDoom is not a
+  third witness either way: it draws 320×240 texels over 640×480 pixels, so its colour count measures
+  magnification phase, not the convention.
 - **That correction was thought to have a companion on the texture side. It does not — the guest says
   so, and the whole episode is worth keeping.** The idea: `u = 0` names texel 0's **centre** on the chip
   and its **edge** in GL (index `u·W − 0.5`), so the UVs were missing half a texel. It shipped on

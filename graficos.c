@@ -2600,13 +2600,37 @@ int env_medio_texel = -1;
 /* El clamp de borde para las tiras que no se repiten: ver el cierre de tira. */
 static int env_clamp_borde = -1;
 
+/*
+	La sonda del corrimiento: `DCEMU_MEDIO_PIXEL_MIL=N` lo fija en N milesimos
+	de pixel de DESTINO en vez del valor de arriba.
+
+	Existe porque las dos evidencias del corrimiento piden valores distintos, y
+	eso solo se ve barriendolo. Llamando `s` al punto de muestreo dentro del
+	pixel --s = 0,5 - N/1000--, la tira de 16x16 con UV 0..1 del logo de Crazy
+	Taxi (1 texel por pixel) queda exacta con s = 0,5, o sea N = 0; y la tira
+	de pvr-fb_tex, que son 640 texeles sobre 320 pixeles (2 por pixel, y por
+	eso medio pixel vale ahi un texel ENTERO), queda exacta con s = 0,25, o sea
+	N = 250 -- no con el N = 484 de hoy.
+*/
 static double medio_pixel(double guest, double destino)
 {
+	static int mil = -1;
+
 	if (env_interruptor("DCEMU_SIN_MEDIO_PIXEL", &env_medio_pixel))
 		return 0.0;
 
+	if (mil == -1)
+	{
+		const char * e = getenv("DCEMU_MEDIO_PIXEL_MIL");
+
+		mil = (e != NULL) ? atoi(e) : -2;
+	}
+
 	if (destino <= 0.0)
 		destino = guest;
+
+	if (mil != -2)
+		return (mil / 1000.0) * guest / destino;
 
 	return (0.5 - 1.0 / 64.0) * guest / destino;
 }
