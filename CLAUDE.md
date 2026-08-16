@@ -214,7 +214,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
 | `DCEMU_SIN_MEDIO_PIXEL=1` | vuelve al punto de muestreo de antes del 2026-08-06: GL en el centro del píxel en vez del entero, que es donde muestrea el chip. **Cambia todas las capturas del árbol**, así que es el interruptor que reproduce cualquier línea base anterior byte a byte |
-| `DCEMU_MEDIO_PIXEL_MIL=N` | fija el corrimiento del `glOrtho` en `N` milésimos de píxel de destino en vez del valor del árbol (484). Es la sonda que mostró que **las dos evidencias del medio píxel piden valores opuestos**: el punto de muestreo queda en `s = 0,5 − N/1000`, el logo de Crazy Taxi sólo es correcto en `s = 0,5` (612 colores contra 5721) y `pvr-fb_tex` falla exactamente ahí. Ver la regla en «Graphics pipeline» |
+| `DCEMU_MEDIO_PIXEL_MIL=N` | fija el corrimiento del `glOrtho` en `N` milésimos de píxel de destino en vez del valor del árbol (484). El punto de muestreo queda en `s = 0,5 − N/1000`, y es la sonda que **cerró la pregunta del medio píxel**: `pvr-fb_tex` es un medidor directo de la convención, con una ventana de dos lados —pasa si y sólo si `0 ≤ s < 0,5`, medido en `herramientas/fbtex-ventana.ps1`— y el árbol cae en el medio. El conteo de colores del logo de Crazy Taxi no era un segundo testigo: mide dónde puso el guest su geometría (una grilla en `x,9`), no dónde muestrea dcemu. Ver la regla en «Graphics pipeline» |
 | `DCEMU_SIN_CLAMP_BORDE=1` | vuelve a `GL_REPEAT` en las tiras cuyas UV no salen de [0,1], que es la conducta anterior. Encendido por omisión: **es el arreglo de la costura del logo de Crazy Taxi**. Esa pantalla son cuadros de 16×16 pegados borde con borde con UV **exactamente 0..1** y REPEAT — a 1:1 no hay mezcla, pero la ventana estira 640→800 y en el borde de cada cuadro GL envuelve y trae el texel opuesto: una línea cada 20 píxeles. Si el rango de UV cabe en [0,1] la tira **nunca repite**, así que REPEAT y CLAMP_TO_EDGE solo difieren en el filtro del borde. Seguro por construcción, y la medida lo confirma: de los 15 juegos **11 salen byte a byte iguales** (SF3 entre ellos) y de las 139 demos cambian 13 fuera del piso de ruido, todas de textura a pantalla completa, sin un solo cambio de veredicto. En DCDoom y 4x4 EVO lo que cambia son **2796 píxeles exactos** — el perímetro de 800×600 al píxel |
 | `DCEMU_MEDIO_TEXEL=1` | enciende el medio texel del lado de la textura, que estuvo por omisión un solo día (2026-08-14/15) y **está apagado**: la premisa era que el chip mapea `u=0` al centro del texel 0 y GL a su borde, y **el propio guest la desmiente** — las UV crudas de Street Fighter III son `0,5/256`, `16,5/256` y `32,5/256`, o sea que el juego ya direcciona centros de texel. Sumarle otro medio deja el muestreo sobre la frontera: su fondo pasa de **0 a 5012 picos de costura por columna** y de 0 a 2633 por fila, de una imagen limpia a una rejilla; ChuChu sube 20 %. Cambia todas las capturas del árbol (37 de las 139 demos) y `pvr-fb_tex` sale idéntico con y sin **a 1:1** y no en el camino de ventana, donde el corrimiento de la geometría es 0,4 px. Queda porque **la costura del logo de Crazy Taxi sigue abierta**, con hipótesis nueva: UV 0..1 con REPEAT, el filtro envuelve en `u=1,0`. Ver la regla en «Graphics pipeline» |
 | `--watchpoint=D[:T]` | informa cada escritura que toque `D` (hex), de `T` bytes, con el PC y el PR |
@@ -336,6 +336,17 @@ how to believe a measurement of it.
   sent a whole session down the wrong path and got written into the notes as a fact. With the probe
   fixed, every pixel had two layers. Before trusting a probe on the first question you ask it, make
   it report something you already know the answer to.
+- **A metric that moves with the lever is not thereby measuring the lever, and "sharper" is never by
+  itself "more correct".** The distinct-colour count moves hard with the half-pixel shift — Crazy Taxi
+  −89 % — and it is a real effect, but what it measures is bilinear blending against *the guest's*
+  sub-pixel geometry placement, not dcemu's sampling convention. Sharpening it meant cancelling the
+  game's own 0.1-texel offset. It read as a witness for a whole session, against a demo built on purpose
+  to answer the question. **Prefer the thing whose author was testing the same question you are**, and
+  before letting a metric arbitrate, write down what it would read if the answer were the other way.
+- **A test's tolerance window is part of what it says.** `pvr-fb_tex` decides the sampling point to
+  within half a pixel and is decisive about it; the same arithmetic says it can be off by a whole texel
+  on the *texture* side without noticing, which is why it is silent on the half texel. "The demo passes"
+  is worth nothing until you know how wrong the emulator would have to be for it to fail.
 - **When a capture says blank, check the strip counts at exit before believing it.**
   `--traza-mem` prints how many scenes rendered and the strip count of the last twelve — that
   is what separates "the demo stopped submitting" from "the capture is wrong".
@@ -680,38 +691,44 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   and the measurement matches that shape: **11 of the 15 games come out byte-identical** (SF3 among
   them), the other four change where they should (DCDoom and 4x4 EVO change **2796 pixels exactly**, the
   perimeter of 800×600), and 13 of 139 demos change with zero verdict changes. `DCEMU_SIN_CLAMP_BORDE=1`.
-- **The half-pixel `glOrtho` shift moves texture sampling too, not just coverage. Its two witnesses
-  demand opposite values, so the one-parameter model is provably wrong — and this is open.** Prediction
-  before measuring: at 1:1 the edge clamp should be a no-op, because sampling would land on texel centres
-  and never reach the edge. It is not: with `--render=fbo --escala=1` the clamp changes the image, and
-  with `DCEMU_SIN_MEDIO_PIXEL=1` it stops changing it. So the ortho shift is what puts the sample on the
-  texel **edge**. Write `s` for where inside the pixel GL ends up sampling (`s = 0.5` is the pixel
-  centre, i.e. no shift; the tree ships `s ≈ 0.016`). `DCEMU_MEDIO_PIXEL_MIL=N` sweeps it, `s = 0.5 −
-  N/1000`. What the sweep says, at 1:1:
+- **The half-pixel `glOrtho` shift moves texture sampling too, not just coverage — and `pvr-fb_tex`
+  measures it directly, with a two-sided window the tree sits inside. Closed.** Write `s` for where
+  inside the pixel GL ends up sampling (`s = 0.5` is the pixel centre, i.e. no shift; the tree ships
+  `s ≈ 0.016`); `DCEMU_MEDIO_PIXEL_MIL=N` sweeps it, `s = 0.5 − N/1000`.
+  **Read fb_tex's source before believing anything about it** (KOS `examples/dreamcast/pvr/fb_tex`, Paul
+  Cercueil): it is not a sharpness test and not an odd corner of the strided path, it is a *ruler for the
+  sampling point*. The front buffer lives in 32-bit video RAM and textures are read through the 64-bit
+  window, which interleaves the banks every 4 bytes — two good pixels then two of garbage. So the demo
+  declares the buffer as a 1024×1024 texture with **stride 640** and **`PVR_FILTER_NEAREST`**, and draws
+  the screen as two 320-wide halves with `u` from 0 to 640/1024: **two texels per screen pixel**. A mask
+  of alternating columns (alpha 1 on the even ones, 0 on the odd) plus two passes with U offsets of 0 and
+  −1 texel rebuild the row — pass A wants texel `2p` at even pixel `p`, pass B texel `2p−1` at the odd
+  one. So the texture coordinate at pixel `p` is `2(p+s)` and the chosen texel is `floor(2p+2s)`, which
+  equals `2p` **if and only if `0 ≤ s < 0.5`**. That is a prediction with two sides, and it holds
+  (`herramientas/fbtex-ventana.ps1`, mean difference between the screen's two halves; the failure mode is
+  literally two half-width copies):
 
-  | | `s = 0.5` | 0.375 | 0.25 | 0.125 | 0.016 (hoy) |
-  | --- | --- | --- | --- | --- | --- |
-  | Crazy Taxi's logo screen, distinct colours | **612** | 5128 | 5811 | 6182 | 5721 |
-  | `pvr-fb_tex` | **falla** | pasa | pasa | pasa | pasa |
+  | N | 0 | 125 | 250 | 375 | 484 (hoy) | 499 | 500 | 501 | 600 | 750 | 999 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `s` | 0.500 | 0.375 | 0.250 | 0.125 | 0.016 | 0.001 | 0.000 | −0.001 | −0.100 | −0.250 | −0.499 |
+  | halves | **1.92** | 52.75 | 52.75 | 52.75 | 52.75 | 52.70 | 52.70 | 52.70 | **6.37** | **6.37** | **6.37** |
 
-  The colour count is a sharpness oracle **only for 1:1 content** — a screen made of texels has a
-  discrete colour set and sampling between texels invents intermediates. That screen qualifies: it is
-  16×16 quads with UV 0..1 on 16×16 textures, one texel per pixel. So the shift costs it a half-texel
-  blur, 9.3× the colours. And `pvr-fb_tex` fails at exactly the value that fixes it.
-  **And it is not one screen: the 15 games at 1:1, `s = 0.5` against today.** Crazy Taxi **−89.3 %**
-  (5721 → 612), Crazy Taxi 2 **−86.9 %** (4426 → 579), Capcom vs. SNK **−83.6 %** (213 → 35); ChuChu
-  −11.3 %, Mat Hoffman −10.8 %, Quake III −4.6 %, Dave Mirra −4.4 %; SR2, both Virtua Tennis, DOA2, SF3
-  and Tennis 2K2 unchanged. The two that rise are the two whose captured screen is magnified, where the
-  oracle does not apply: 4x4 EVO +5.3 % and DCDoom +88 %.
-  **The arithmetic says `s = 0.5` should satisfy both.** fb_tex's strip is 640 texels across 320 pixels,
-  so at `s = 0.5` its filter centre lands on `2i + 0.5` — precisely the correct 2:1 box. It should pass
-  and it does not. Therefore the defect is *inside* fb_tex's path, not in the convention: that strip is a
-  **strided texture** (declared 1024×1024, `stride 640`) and the demo reads a 32-bit framebuffer as
-  16-bit texels, two per real pixel. The half-pixel shift has been masking a one-texel error there since
-  2026-08-06. **Do not flip the default before that is understood** — one witness still stands against
-  it, and the tree's own rule is that a fix explaining one symptom is not thereby right. DCDoom is not a
-  third witness either way: it draws 320×240 texels over 640×480 pixels, so its colour count measures
-  magnification phase, not the convention.
+  Half a pixel wide, both edges where the arithmetic puts them, and the shift the tree ships lands in the
+  middle of it. **The unshifted GL convention (`s = 0.5`) is outside.** So the shift is right and this
+  is settled.
+  **The colour count is not a second witness — it never measured the convention.** It counts distinct
+  colours, which for 1:1 texel content rises when bilinear blends neighbours; at `s = 0.5` Crazy Taxi's
+  logo screen drops from 5721 colours to 612, and across the 15 games at 1:1 CT −89.3 %, CT2 −86.9 %,
+  Capcom vs. SNK −83.6 %, ChuChu −11.3 %, Mat Hoffman −10.8 %, Quake III −4.6 %, Dave Mirra −4.4 %, six
+  unchanged, and the two magnified screens rise (4x4 EVO +5.3 %, DCDoom +88 %). What that measures is
+  **where the guest put its geometry**, not where dcemu samples: the scene dump shows Crazy Taxi's logo
+  laid out as 16-pixel tiles on a grid whose origin is at **x.9**, with UV exactly 0..1 on 16×16 textures
+  and bilinear filtering (`tsp=208824c9`, filter 2). Sampling at the integer coordinate — the chip — puts
+  the sample 0.1 texel into the tile, a 60/40 blend with the neighbour, so the screen is *softened on
+  hardware too* and 5721 is the faithful answer. Moving `s` to 0.5 lands it at 0.6, near a texel centre,
+  and the image sharpens — by cancelling the guest's own offset, which is not a fix. The lesson is the
+  general one: **an oracle that answers "sharper" is not thereby answering "more correct"**, and a metric
+  has to be shown to depend on the thing under test before it can arbitrate it.
 - **That correction was thought to have a companion on the texture side. It does not — the guest says
   so, and the whole episode is worth keeping.** The idea: `u = 0` names texel 0's **centre** on the chip
   and its **edge** in GL (index `u·W − 0.5`), so the UVs were missing half a texel. It shipped on
@@ -724,27 +741,29 @@ Rules of the chip that the code has to respect, each of which was a bug at some 
   `0.126953 = 32.5/256` — the game already addresses texel centres.** If the chip put `u = 0` at texel
   0's centre, asking for `(k+0.5)/W` would land exactly on the boundary between two texels, a 50/50 blend
   on real hardware and the worst possible choice for a UI atlas. So the chip's convention is GL's, and
-  adding half a texel is what puts sampling on the boundary. `DCEMU_MEDIO_TEXEL=1` still turns it on,
-  because **Crazy Taxi's logo seam is a real symptom and is open again** — with a better hypothesis that
-  explains it without touching anything else: those are quads with UV 0..1 under `GL_REPEAT`, where at
-  `u = 1.0` the filter wraps and mixes texel 127 with texel 0. That is an edge addressing-mode question,
-  not a question of where `u = 0` lands. Two lessons, both paid for: **a fix that explains one symptom is
-  not thereby right** — the seam and the one-pixel displacement had one plausible common cause and it was
-  the wrong one; and **the KOS park cannot arbitrate a texture-sampling change**, since all 37 demos it
-  moved looked fine and the contradiction only appeared in a game.
-- **`pvr-fb_tex` is byte-identical with and without the half texel *at 1:1* — the condition is
-  load-bearing** (`--render=fbo --escala=1`, hash `99C746FD…` in both arms), and it is exactly what "at
-  1:1 the two corrections nearly cancel (0.016 texel)" predicts. In the default window path the target is
-  800×600, the geometry shift is 0.4 px instead of 0.5, the cancellation is incomplete, and the demo
-  *does* change — deterministically. The claim was written without the condition and the park sweep is
-  what caught it: the demo turned up among the 37 the correction moved, which reads as a contradiction
-  until you notice the sweep runs `--render=ventana`.
-- **`pvr-fb_tex` is the only thing in the park that can measure that**, because it reads its own front
-  buffer as a strided texture at two texels per screen pixel, where half a pixel is a whole texel. Its
-  check is self-contained and does not need a reference image: with the convention right, consecutive
-  frames differ **only inside the 64×64 box of the new cube**, and the screen shows one continuous
-  rainbow trail instead of two half-width copies. One residue: the copy drops column 0 and row 0, which
-  is the demo's own `-1/1024` U offset reading outside the texture at the left edge.
+  adding half a texel is what puts sampling on the boundary. The symptom that had motivated it — Crazy
+  Taxi's logo seam — turned out to have the better hypothesis stated at the time, and that one shipped
+  instead: UV 0..1 under `GL_REPEAT`, where the filter wraps at the edge. That is an edge addressing-mode
+  question, not a question of where `u = 0` lands (see the edge-clamp bullet above), and with it the
+  seam is closed. `DCEMU_MEDIO_TEXEL=1` stays as the lever and the previous baseline. Two lessons, both
+  paid for: **a fix that explains one symptom is not thereby right** — the seam and the one-pixel
+  displacement had one plausible common cause and it was the wrong one; and **the KOS park cannot
+  arbitrate a texture-sampling change**, since all 37 demos it moved looked fine and the contradiction
+  only appeared in a game. The one piece of evidence that points the other way is weak and is only worth
+  knowing so it does not get re-discovered as news: Crazy Taxi's logo grid sits at `x.9`, which under the
+  centre convention would sample 0.1 past texel 0's centre (nearly crisp) and under GL's samples 0.1 past
+  its edge (a 60/40 blend). Like SF3's, that is the *game author's* belief about the chip, not the chip.
+- **`pvr-fb_tex` cannot arbitrate the half texel, and the reason is the same arithmetic that makes it
+  arbitrate the half pixel.** Its window is one whole texel wide (two texels per screen pixel), so a
+  half-texel offset on the texture side only slides the window by a quarter of a pixel and `s ≈ 0.016`
+  stays inside it either way. That is why it comes out **byte-identical with and without the half texel
+  at 1:1** (`--render=fbo --escala=1`, hash `99C746FD…` in both arms) — not because the two corrections
+  cancel. *At 1:1* is load-bearing: in the default window path the target is 800×600, the geometry shift
+  is 0.4 px instead of 0.5, and the demo *does* change, deterministically. The claim was first written
+  without the condition and the park sweep is what caught it: the demo turned up among the 37 the
+  correction moved, which reads as a contradiction until you notice the sweep runs `--render=ventana`.
+  One residue of the demo itself: the copy drops column 0 and row 0, which is its own `-1/1024` U offset
+  reading outside the texture at the left edge.
 - **Mipmapped textures store their levels from 1×1 up**, so the big level is not at the
   texture address.
 - **`glTexParameteri` applies to whatever texture is bound** — set the filters after

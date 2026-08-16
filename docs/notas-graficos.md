@@ -1170,6 +1170,36 @@ el índice de texel trunca a `2X`/`2Y`; GL, muestreando en el centro, obtenía `
 `hi_chip` —con desplazamientos de U de +2 y +1 texeles, donde 2 texeles son 4 bytes, o sea
 exactamente el bit del banco— sale bien con la misma regla, y eso es lo que la fija.
 
+**La ventana, medida (2026-08-16).** Esa aritmética predice más que un signo: escribiendo `s` para
+el punto de muestreo dentro del píxel (`s = 0,5` es el centro, o sea sin corrección), la coordenada
+de textura en el píxel `p` es `2(p+s)` y el texel elegido es `floor(2p+2s)`, que da `2p` **si y sólo
+si `0 ≤ s < 0,5`**. O sea que la demo no dice «hay que corregir», dice «el punto de muestreo está en
+esta ventana de medio píxel», y tiene dos bordes. `DCEMU_MEDIO_PIXEL_MIL=N` la barre (`s = 0,5 −
+N/1000`) y `herramientas/fbtex-ventana.ps1` la mide sin imagen de referencia por el modo de falla
+—la pantalla sale como dos copias de media anchura, así que basta la diferencia media entre las dos
+mitades—:
+
+| N | 0 | 125 | 250 | 375 | 484 (árbol) | 499 | 500 | 501 | 600 | 750 | 999 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `s` | 0,500 | 0,375 | 0,250 | 0,125 | 0,016 | 0,001 | 0,000 | −0,001 | −0,100 | −0,250 | −0,499 |
+| mitades | **1,92** | 52,75 | 52,75 | 52,75 | 52,75 | 52,70 | 52,70 | 52,70 | **6,37** | **6,37** | **6,37** |
+
+Los dos bordes caen donde la aritmética los pone y el árbol queda en el medio. Vale la pena saber
+también **qué NO puede decir**: su ventana es de un texel entero, así que medio texel de corrimiento
+del lado de la textura sólo la corre un cuarto de píxel y `s ≈ 0,016` sigue adentro. Por eso sale
+byte a byte igual con y sin `DCEMU_MEDIO_TEXEL` a 1:1 — no porque las dos correcciones se cancelen.
+
+**Y qué no es un segundo testigo.** El conteo de colores distintos de una pantalla 2D se derrumba
+al mover `s` a 0,5 (el logo de Crazy Taxi, de 5721 colores a 612; Crazy Taxi 2 −86,9 %; Capcom vs.
+SNK −83,6 %), y eso durante una sesión entera se leyó como evidencia en contra de la corrección. No
+lo es: el volcado de escena muestra esa pantalla como baldosas de 16 píxeles sobre una grilla cuyo
+origen está en `x,9`, con UV exactamente 0..1 sobre texturas de 16×16 y filtro bilineal
+(`tsp=208824c9`). Muestrear en la coordenada entera —el chip— deja la muestra 0,1 texel adentro de
+la baldosa, o sea una mezcla 60/40 con el vecino: **la pantalla también sale suave en consola**, y
+5721 es la respuesta fiel. Poner `s = 0,5` la afila porque cancela el corrimiento del propio juego,
+que no es un arreglo. La regla general está en `CLAUDE.md`: una métrica que se mueve con la palanca
+no está por eso midiendo la palanca.
+
 **Residuo conocido**: la copia pierde la columna 0 y la fila 0. Es el propio desplazamiento de
 `-1/1024` de la demo leyendo fuera de la textura en el borde izquierdo; dcemu no pierde la fila
 superior en general —cinco demos de pantalla completa siguen pintando sus 640 píxeles de la fila 0—.

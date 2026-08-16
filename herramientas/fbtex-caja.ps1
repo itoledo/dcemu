@@ -14,7 +14,13 @@
 # sobre los cuadros 3..6 da cajas de 483x85 en LOS DOS brazos, asi que no
 # separa nada. La explicacion es que en esos cuadros la estela todavia crece y
 # el cuadro entero se corre; el criterio del arbol describe un estado ya
-# asentado. La pregunta la contesto otra medida --los dos brazos a 1:1
+# asentado.
+#
+# **El criterio que si funciona esta en fbtex-ventana.ps1**: la falla se ve
+# como dos copias de media anchura, asi que alcanza con la diferencia media
+# entre las dos mitades de UNA captura y no hacen falta cuadros consecutivos.
+#
+# La pregunta la contesto otra medida --los dos brazos a 1:1
 # (`--render=fbo --escala=1`) salen byte a byte identicos, y la diferencia del
 # barrido es del camino de ventana, donde el corrimiento es 0,4 px--, y este
 # archivo queda para no volver a derivar el callejon.
