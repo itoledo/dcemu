@@ -306,6 +306,42 @@ calculada de un volcado tiene que descartar las absurdas antes de creerle.
 
 ---
 
+## Las palancas del muestreo, y con qué se juzgan
+
+Tres interruptores y cuatro guiones cubren la convención de muestreo. Todos exigen
+`--render=fbo --escala=1`: el camino de ventana estira 640 sobre 800 y ahí no hay muestreo 1:1 que
+juzgar, así que una medida hecha en ventana no contesta la pregunta (y a la inversa, un barrido del
+parque corre en ventana, que es por qué una demo puede aparecer «movida» ahí y salir idéntica a
+1:1 — pasó con `pvr-fb_tex`).
+
+| palanca | qué mueve |
+| --- | --- |
+| `DCEMU_SIN_MEDIO_PIXEL=1` | quita el corrimiento del `glOrtho` entero. Reproduce cualquier línea base anterior al 2026-08-06 byte a byte |
+| `DCEMU_MEDIO_PIXEL_MIL=N` | lo fija en `N` milésimos en vez del valor del árbol (484). El punto de muestreo queda en `s = 0,5 − N/1000` |
+| `DCEMU_MEDIO_TEXEL=1` | suma medio texel del lado de la textura. Apagado; línea base del 2026-08-14/15 |
+| `DCEMU_SIN_CLAMP_BORDE=1` | las tiras cuyas UV no salen de [0,1] vuelven a `GL_REPEAT`. Línea base anterior al recorte de borde |
+
+- **`herramientas/fbtex-ventana.ps1`** barre `DCEMU_MEDIO_PIXEL_MIL` contra `pvr-fb_tex` y es lo que
+  cierra la pregunta del medio píxel. El demo mide el punto de muestreo con una ventana de dos lados
+  —pasa si y sólo si `0 ≤ s < 0,5`— y el criterio no necesita imagen de referencia porque el modo de
+  falla es literalmente **dos copias de media anchura**: alcanza con la diferencia media entre las
+  dos mitades de una captura (52,7 cuando pasa contra 1,9 o 6,4 cuando falla). El detalle del
+  mecanismo está en `notas-graficos.md`.
+- **`herramientas/fbtex-caja.ps1`** intentó el otro criterio —«dos cuadros consecutivos sólo difieren
+  dentro de la caja de 64×64 del cubo nuevo»— y **no reproduce**: sobre los cuadros 3..6 da cajas de
+  483×85 en los dos brazos, porque ahí la estela todavía crece. Queda con el aviso para no volver a
+  derivar el callejón.
+- **`herramientas/costuras.ps1`** cuenta picos de costura por columna y por fila. Es lo que detectó
+  que el medio texel convertía el fondo de Street Fighter III en una rejilla (`0 → 5012` por columna).
+- **`herramientas/colores.ps1`** cuenta colores distintos, y **no es un oráculo de la convención**.
+  Mide cuánta mezcla bilineal hay, que depende de dónde puso el guest su geometría: el logo de Crazy
+  Taxi cae de 5721 colores a 612 al mover `s` a 0,5, y lo que eso cancela es el corrimiento de `x,9`
+  del propio juego. Sirve para comparar dos brazos de una tira que uno ya sabe que es 1:1 y alineada,
+  y para nada más. Ojo también con la trampa de PowerShell que trae anotada: `-shl` sobre un `[byte]`
+  no promueve y el método viejo contaba mal.
+
+---
+
 ## Teclas y título de la ventana
 
 F1 pantalla completa, F2 ventana de log, **F5 volcar el framebuffer**, **F6 volcar el buffer

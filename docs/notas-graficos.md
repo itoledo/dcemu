@@ -447,6 +447,36 @@ mosaicado cuatro veces sin espejar. Ninguna demo de KOS del conjunto de control 
 dos bits (las diez quedan byte a byte idénticas), así que un juego es otra vez la única prueba de
 regresión.
 
+#### Una tira cuyas UV no salen de [0,1] no está pidiendo repetición
+
+**Es el arreglo de la costura del logo de Crazy Taxi**, y todo el mecanismo está en lo que manda el
+guest. Esa pantalla —la primera, donde aparece el aviso de la VMU— son cuadros de 16×16 pegados
+borde con borde (`x = 639,9 / 655,9 / 671,9 …`), cada uno con su textura de 16×16 y UV **exactamente
+0..1**, `tsp=208824c9`: sin Clamp y sin Flip, o sea `GL_REPEAT`, bilineal. A 1:1 eso es exacto —16
+texeles sobre 16 píxeles, sin mezcla—, pero el camino de ventana estira 640 sobre 800, cada cuadro
+pasa a medir 20 píxeles y **en el borde de cada cuadro GL envuelve y trae el texel opuesto**: una
+línea cada 20 píxeles. Eso es lo que se veía como huecos entre las baldosas del logo.
+
+La regla que se aplica no toca ninguna UV —el intento anterior sí lo hacía y rompió Street Fighter
+III—: al cerrar la tira se mide el rango de U y de V, y **si cabe en [0,1] la tira no puede repetir
+nunca**, así que `GL_REPEAT` y `GL_CLAMP_TO_EDGE` sólo pueden diferir en el filtro del borde mismo.
+Es seguro por construcción: una tira con UV 0..4 conserva REPEAT, y una de atlas con 0,2..0,8 no
+llega al borde. Se aplica sólo donde el TSP no dijo nada (`wrap == 0`), así que no pisa un Clamp ni
+un Flip declarados.
+
+La medida tiene la forma que esa regla predice: de los 15 juegos **11 salen byte a byte iguales**
+(SF3 entre ellos), los otros cuatro cambian donde deben —DCDoom y 4x4 EVO cambian **2796 píxeles
+exactos**, que es el perímetro de 800×600 al píxel—, y de las 139 demos cambian 13 fuera del piso
+de ruido, todas de textura a pantalla completa, sin un solo cambio de veredicto en `serial.txt`.
+`DCEMU_SIN_CLAMP_BORDE=1` vuelve a la conducta anterior byte a byte.
+
+**Un aviso sobre el 1:1.** La predicción antes de medir era que a `--render=fbo --escala=1` el
+recorte fuera un no-op, porque ahí el muestreo caería en centros de texel y nunca llegaría al borde.
+No es así: a 1:1 el recorte cambia la imagen, y con `DCEMU_SIN_MEDIO_PIXEL=1` deja de cambiarla. O
+sea que el corrimiento del `glOrtho` es lo que pone la muestra sobre el borde del texel — la primera
+señal de que el medio píxel mueve el muestreo de textura y no sólo la cobertura. Ver la sección del
+medio píxel más abajo.
+
 **Stride** (bit 25) significa que las filas en memoria miden `TEXT_CONTROL & 0x1F` × 32 texels de
 ancho en vez del `usize` declarado — es como se guarda una textura que no es potencia de dos, y el
 tamaño declarado se redondea hacia arriba (640×480 se envía como 1024×512). `get_texture()` copia
@@ -1203,6 +1233,41 @@ no está por eso midiendo la palanca.
 **Residuo conocido**: la copia pierde la columna 0 y la fila 0. Es el propio desplazamiento de
 `-1/1024` de la demo leyendo fuera de la textura en el borde izquierdo; dcemu no pierde la fila
 superior en general —cinco demos de pantalla completa siguen pintando sus 640 píxeles de la fila 0—.
+
+### El medio texel del lado de la textura: se despachó y se retiró en un día
+
+La corrección de arriba parecía tener una compañera, y no la tiene. La idea era que `u = 0` nombra
+el **centro** del texel 0 en el chip y su **borde** en GL (índice `u·W − 0,5`), o sea que a las UV
+les faltaba medio texel. Se despachó el 2026-08-14 porque quitaba las costuras de un píxel del logo
+de Crazy Taxi y movía la imagen entera de DCDoom un píxel —la columna 0 pasaba de 39 618 de tinta
+contra los 78 180 de la columna 1, a 78 312 con progresión suave—.
+
+**Estuvo apagada de nuevo al día siguiente**, porque la pasada por los juegos comerciales encontró
+el fondo en degradado limpio de Street Fighter III convertido en una rejilla de costuras: medido,
+`0 → 5012` picos de costura por columna y `0 → 2633` por fila (`herramientas/costuras.ps1`), y
+ChuChu Rocket +20 %. El volcado de escena nombra el mecanismo sin lugar a discusión: **las UV crudas
+de SF3 son `0,001953 = 0,5/256`, `0,064453 = 16,5/256` y `0,126953 = 32,5/256` — el juego ya
+direcciona centros de texel**. Si el chip pusiera `u = 0` en el centro del texel 0, pedir `(k+0,5)/W`
+caería justo sobre la frontera entre dos texeles: una mezcla 50/50 en consola, la peor elección
+posible para un atlas de interfaz. Así que la convención del chip es la de GL, y sumar medio texel
+es lo que pone el muestreo sobre la frontera.
+
+El síntoma que la había motivado —la costura del logo de Crazy Taxi— resultó tener la hipótesis
+mejor que ya estaba escrita entonces, y ésa es la que se despachó: UV 0..1 bajo `GL_REPEAT`, donde
+el filtro envuelve en el borde. Es una pregunta de modo de direccionamiento del borde y no de dónde
+cae `u = 0`; ver «Una tira cuyas UV no salen de [0,1]» más arriba. `DCEMU_MEDIO_TEXEL=1` queda como
+palanca y como línea base anterior.
+
+**Dos lecciones, las dos pagadas.** Un arreglo que explica un síntoma no es por eso correcto: la
+costura y el corrimiento de un píxel tenían una causa común plausible y era la equivocada. Y **el
+parque de KOS no puede arbitrar un cambio de muestreo de textura**: las 37 demos que la corrección
+movió se veían todas bien, y la contradicción sólo apareció en un juego.
+
+La única evidencia que apunta al otro lado es débil, y se anota nada más para que no se
+redescubra como novedad: la grilla del logo de Crazy Taxi está en `x,9`, que bajo la convención de
+centro muestrearía 0,1 pasado el centro del texel 0 (casi nítido) y bajo la de GL muestrea 0,1
+pasado su borde (mezcla 60/40). Igual que las de SF3, ésa es la creencia *del autor del juego*
+sobre el chip, no el chip.
 
 ---
 

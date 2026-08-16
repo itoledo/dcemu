@@ -36,6 +36,9 @@ Actualizado el 7 de agosto de 2026.
 | Rendimiento | Crazy Taxi 1,59×, DCDoom 31 fps (`docs/rendimiento-plan.md`, fase 6). El perfil con contadores de hardware **está tomado** (2026-08-07): IPC 3,4-3,9, despacho predicho, LLC sin fallar — el intérprete va limitado por volumen; ver `docs/interprete-plan.md`, «0.1, por fin» |
 | Sombras de Virtua Tenis 2 | los trapecios opacos **resueltos** (A.12); la sombra en sí **sigue sin dibujarse**, pipeline agotado (A.13), bloqueada en el momento del usuario |
 | Rectángulo de DOA2 sobre la sombra | cuatro mecanismos descartados; bloqueado en el momento del usuario (memoria `bugs-visuales-sin-candidato`) |
+| Costuras del logo de Crazy Taxi | **resuelta** (2026-08-15): UV 0..1 bajo `GL_REPEAT` envolviendo en el borde con la ventana estirando 640→800; una tira cuyas UV no salen de [0,1] no pide repetición y va a `GL_CLAMP_TO_EDGE`. `DCEMU_SIN_CLAMP_BORDE=1`, ver `notas-graficos.md` |
+| Tirones al jugar | **resuelta** (2026-08-15): `jit_enlazar()` era un barrido lineal sobre todos los bloques traducidos, o sea cuadrático — 12,8 s de una corrida de 120 s de Crazy Taxi. Con el índice por PC destino los cuadros pasados de 16,7 ms caen de 14,9 % a 0,65 %. `DCEMU_JIT_ENLACE_LINEAL=1` |
+| Sombra del taxi en Crazy Taxi | **abierta**: al saltar el auto la sombra se ve proyectada desde el auto hacia el suelo en vez de quedar sólo en el suelo (se ve en el attract). Reproducida y caracterizada, **sin candidato**; hace falta una captura de consola real como árbitro, igual que las otras dos de esta lista |
 
 Ya no falla nada del PVR, del núcleo SH-4 ni del AICA. Lo que queda del plan original es el
 hito F (C.5 y C.9) y la vía E; lo nuevo que abrió el parque de juegos vive en sus notas.
