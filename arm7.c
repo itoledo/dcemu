@@ -118,13 +118,27 @@ static DWORD onda_leer16(DWORD a)
 
 /*
 	1 cuando el ultimo acceso de datos cayo en el archivo de registros del
-	AICA. Es la salida lateral de los bloques (ver abajo): ahi el estado de la
-	FIQ pudo cambiar, asi que el bloque termina en esa frontera -- que es
-	exactamente donde el interprete habria mirado. Lo ponen los dos caminos
-	frios de arm7_leer()/arm7_escribir(); lo limpia el bloque al entrar.
-	Exportado: la salida lateral emitida lo mira por direccion absoluta.
+	AICA de una forma que pudo mover la FIQ. Es la salida lateral de los
+	bloques (ver abajo): el bloque termina en esa frontera -- que es
+	exactamente donde el interprete habria mirado. Lo pone el camino frio de
+	arm7_escribir(); lo limpia el bloque al entrar. Exportado: la salida
+	lateral emitida lo mira por direccion absoluta.
+
+	La LECTURA del archivo ya no lo pone (2026-08-19, el teorema 4 refinado):
+	dentro de un lote la FIQ pendiente solo cambia por escrituras del ARM --
+	aica_tick() y el SH-4 corren entre lotes, y leer_registro() no toca ni
+	int_nivel ni los pendientes (su unico efecto de lado, el dio_la_vuelta
+	del monitor EG, es un bit de monitoreo). Con eso los lazos de sondeo --
+	el 35 % de los pasos de CT, que la memoizacion no puede reponer porque lo
+	leido cambia por muestra -- caben enteros en un bloque con cola y dan la
+	vuelta en el lugar. DCEMU_SIN_SONDEO_ARM=1 es la conducta anterior:
+	la lectura vuelve a cortar.
 */
 int arm7_toco_reg = 0;
+
+/* Lo que la lectura del archivo escribe en arm7_toco_reg: 0 por omision
+   (no corta), 1 con DCEMU_SIN_SONDEO_ARM (la conducta anterior). */
+static int arm7_lectura_corta = 0;
 
 DWORD arm7_leer(DWORD direccion, int tam)
 {
@@ -139,7 +153,7 @@ DWORD arm7_leer(DWORD direccion, int tam)
 			perf_onda_arm_reg_lect++;
 
 		arm7_memo_abortar_por(ARM7_MEMO_REGISTRO);
-		arm7_toco_reg = 1;
+		arm7_toco_reg = arm7_lectura_corta;
 
 		return aica_arm_leer(direccion & (AICA_REG_SIZE - 1), tam);
 	}
@@ -161,6 +175,28 @@ DWORD arm7_leer(DWORD direccion, int tam)
 		}
 	}
 }
+
+/*
+	La verificacion por generacion de onda: el memcmp que valida las palabras
+	de un bloque vale mientras nadie haya escrito sus paginas, y quien dice
+	"nadie escribio" es onda_gen[] -- el contador por pagina de 1 KB que TODO
+	escritor de la RAM de onda mantiene por contrato (aica.h: el ARM, el SH-4
+	y el G2-DMA por mem.c, el DMA interno del AICA, y el DSP), el mismo del
+	que ya depende la memoizacion de barridos. Un bloque cubre a lo sumo dos
+	paginas; el sello guarda sus dos generaciones y la verificacion es dos
+	comparaciones en vez de un memcmp de hasta 52 bytes. Como las paginas con
+	codigo casi nunca se escriben, el sello sobrevive a los lotes -- la misma
+	separacion codigo/datos que la rejilla fina le dio al jit del SH-4.
+
+	El limite heredado del contrato: una escritura a sound_mem que no marque
+	(la suite lo hace) no invalida -- igual que con la memoizacion, y con la
+	misma baranda (las suites y el .wav). Y el mismo agujero teorico de todo
+	contador que envuelve: 2^32 escrituras exactas de una pagina entre dos
+	visitas al bloque. DCEMU_SIN_VERIF_ONDA=1 vuelve al memcmp en cada salto.
+*/
+static int					arm7_verif_onda = 1;
+static unsigned long long	arm7_verif_memcmp   = 0;	/* perfil */
+static unsigned long long	arm7_verif_elididas = 0;	/* perfil */
 
 void arm7_escribir(DWORD direccion, int tam, DWORD valor)
 {
@@ -1147,11 +1183,21 @@ static int arm7_memo_reponer(DWORD cabecera)
 	return 1;
 }
 
+/* La contabilidad de "el salto arranco una grabacion", para la cola emitida:
+   el epilogo del lazo en C hace memo_ciclos += ciclos_op; memo_instr++; y el
+   codigo emitido no alcanza estos estaticos. */
+void arm7_memo_cola_contabilizar(int ciclos)
+{
+	memo_ciclos += ciclos;
+	memo_instr++;
+}
+
 /*
 	El salto hacia atras: donde se decide todo. Devuelve 1 si repuso un barrido
-	entero, y entonces op_salto() no tiene nada mas que hacer.
+	entero, y entonces op_salto() no tiene nada mas que hacer. No estatico
+	desde el encadenado emitido: la cola emitida lo llama igual que d_salto.
 */
-static int arm7_memo_borde(DWORD destino, DWORD pc_salto)
+int arm7_memo_borde(DWORD destino, DWORD pc_salto)
 {
 	unsigned c;
 	int      i;
@@ -1424,12 +1470,58 @@ static arm7_deco	arm7_deco_tabla[AICA_ONDA_SIZE / 4];
 static int			arm7_predeco = 0;
 static unsigned long long arm7_deco_decodificadas = 0;
 
+/* Las formas anchas (LDR/STR-R, ALU-Rs, MUL/MLA) y su admision en bloques.
+   Dos palancas porque son dos efectos: DCEMU_SIN_FORMAS_ARM=1 las deja en
+   d_generico (el interprete anterior); DCEMU_SIN_CABE_ARM=1 las decodifica
+   pero los bloques no las admiten -- ni a ellas ni al STM con PC en la
+   lista --, que es el brazo del medio del A/B. */
+static int			arm7_formas_anchas = 0;
+static int			arm7_cabe_ancho = 0;
+
 /* Los bloques sobre la predecodificacion (la seccion vive mas abajo, tras el
    perfil). Necesitan la tabla de arriba: sin predecodificacion, sin bloques.
    Los contadores viven aca porque el resumen del perfil los imprime. */
 static int			arm7_bloques = 0;
+static int			arm7_blq_rama = 0;		/* la cola de salto (ver abajo) */
+static int			arm7_blq_retorno = 0;	/* la cola generalizada: LDM al
+											   PC como terminal, y la terminal
+											   sola (ver abajo) */
+static int			arm7_blq_cadena = 0;	/* el encadenado emitido: la cola
+											   B/BL y el salto al sucesor en
+											   x64 (DCEMU_SIN_CADENA_ARM) */
 static unsigned long long	arm7_blq_corridos = 0;
 static unsigned long long	arm7_blq_pasos    = 0;
+static unsigned long long	arm7_blq_vueltas  = 0;	/* vueltas en el lugar */
+
+/* El censo del giro puro (la pregunta de la fase C, nunca medida): cuando el
+   encadenado cierra un ciclo -- vuelve a la base por la que correr() entro --,
+   ¿los registros quedaron identicos a la vuelta anterior? Si la mayoria de
+   las vueltas es pura, el saldo se podria consumir de un golpe; si los ciclos
+   calientes mutan estado (el barrido de canales avanza su indice), la fase C
+   no tiene material. Solo bajo perfil, como todo censo. */
+static unsigned long long	arm7_giro_puras    = 0;
+static unsigned long long	arm7_giro_impuras  = 0;
+static unsigned long long	arm7_giro_pasos_puros = 0;
+static unsigned long long	arm7_blq_encadenados = 0;	/* saltos bloque a bloque */
+
+/* El censo de rechazos de arm7_blq_intentar(), solo bajo DCEMU_PERFIL_ARM:
+   cada rechazo es un paso que corre interpretado, y el censo dice por que --
+   la pregunta que quedo abierta cuando la cobertura se planto en 34,5 %. */
+static unsigned long long	arm7_blq_rechazo[5];
+static const char * const	arm7_blq_rechazo_nombre[5] =
+	{ "ventana de registros", "fiq pendiente", "grabando",
+	  "marca negativa", "presupuesto" };
+static unsigned long long	arm7_blq_descubrimientos = 0;
+
+/* La sonda de la marca negativa por PC: una cuenta por ranura, solo bajo
+   perfil -- la ranura guarda su base, asi que el resumen puede decir DONDE
+   se rechaza, que es la pregunta que el censo de arriba deja abierta. El
+   informe (definido junto a los bloques, que necesita ver) imprime con
+   prefijo "arm7 neg:" a proposito: las compuertas comparan las lineas
+   `^arm7:` entre brazos y una sonda de mecanismo no entra en esa cuenta. */
+#define ARM7_BLQ_RANURAS	4096			/* directa, potencia de dos */
+static unsigned int			arm7_blq_neg[ARM7_BLQ_RANURAS];
+static void					arm7_blq_neg_resumen(void);
 
 /* Todo lo que no tiene manejador especializado: despacha por la tabla de
    siempre. Frio a proposito. */
@@ -1623,6 +1715,115 @@ static void d_str_imm(const arm7_deco * e)
 	ciclos_op += 1;
 }
 
+/*
+	Las formas anchas (2026-08-20): la transferencia con desplazamiento por
+	registro, la ALU con desplazamiento por registro (Rs) y MUL/MLA, que
+	vivian en d_generico. Salieron del censo de marcas negativas por PC: el
+	lazo caliente que los bloques no podian cruzar era exactamente un LDR-R,
+	un MUL y seis STM. Transcripciones de op_transferencia, op_datos y
+	op_multiplicar con los campos leidos de la entrada, como todas las d_*.
+	DCEMU_SIN_FORMAS_ARM=1 las devuelve a d_generico en el mismo binario.
+*/
+
+/* Transferencia con desplazamiento por registro: rm, tipo y cantidad
+   empacados en imm con el layout de d_alu_reg. El acarreo del desplazador
+   se descarta, igual que en op_transferencia. */
+static void d_ldr_reg(const arm7_deco * e)
+{
+	DWORD c    = (arm7.cpsr & ARM7_C) ? 1 : 0;
+	DWORD desp = desplazar(LEER_R((int) (e->imm & 0xF)),
+	                       (int) ((e->imm >> 8) & 3), (e->imm >> 16) & 0x1F,
+	                       0, &c);
+	DWORD base = LEER_R(e->b1);
+	DWORD dir  = (e->b0 & 1) ? ((e->b0 & 2) ? base + desp : base - desp)
+	                         : base;
+	DWORD v    = arm7_leer(dir, (e->b0 & 4) ? 1 : 4);
+
+	if (!(e->b0 & 4) && (dir & 3))
+	{
+		DWORD rot = (dir & 3) * 8;
+
+		v = (v >> rot) | (v << (32 - rot));
+	}
+
+	if (!(e->b0 & 1) || (e->b0 & 8))
+	{
+		DWORD nueva = (e->b0 & 1) ? dir
+		            : ((e->b0 & 2) ? base + desp : base - desp);
+
+		if (e->b1 != e->b2)
+			poner_r(e->b1, nueva);
+	}
+
+	poner_r(e->b2, v);
+	ciclos_op += 2;
+}
+
+static void d_str_reg(const arm7_deco * e)
+{
+	DWORD c    = (arm7.cpsr & ARM7_C) ? 1 : 0;
+	DWORD desp = desplazar(LEER_R((int) (e->imm & 0xF)),
+	                       (int) ((e->imm >> 8) & 3), (e->imm >> 16) & 0x1F,
+	                       0, &c);
+	DWORD base = LEER_R(e->b1);
+	DWORD dir  = (e->b0 & 1) ? ((e->b0 & 2) ? base + desp : base - desp)
+	                         : base;
+
+	arm7_escribir(dir, (e->b0 & 4) ? 1 : 4, LEER_R_12(e->b2));
+
+	if (!(e->b0 & 1) || (e->b0 & 8))
+		poner_r(e->b1, (e->b0 & 1) ? dir
+		             : ((e->b0 & 2) ? base + desp : base - desp));
+
+	ciclos_op += 1;
+}
+
+/* ALU con desplazamiento por registro (Rs): rm y tipo como d_alu_reg, rs en
+   los bits 16-19 de imm. R15 se lee como PC+12 en rn y rm -- hay un ciclo
+   mas antes del uso, y es el que se cobra aqui --, pero rs se lee normal,
+   la misma asimetria de op_datos. */
+static void d_alu_rr_s0(const arm7_deco * e)
+{
+	DWORD c    = (arm7.cpsr & ARM7_C) ? 1 : 0;
+	DWORD cant = LEER_R((int) ((e->imm >> 16) & 0xF));
+	DWORD b    = desplazar(LEER_R_12((int) (e->imm & 0xF)),
+	                       (int) ((e->imm >> 8) & 3), cant, 1, &c);
+
+	ciclos_op++;
+	alu_nucleo(e->b0 & 0xF, 0, LEER_R_12(e->b1), b, c, e->b2);
+}
+
+static void d_alu_rr_s1(const arm7_deco * e)
+{
+	DWORD c    = (arm7.cpsr & ARM7_C) ? 1 : 0;
+	DWORD cant = LEER_R((int) ((e->imm >> 16) & 0xF));
+	DWORD b    = desplazar(LEER_R_12((int) (e->imm & 0xF)),
+	                       (int) ((e->imm >> 8) & 3), cant, 1, &c);
+
+	ciclos_op++;
+	alu_nucleo(e->b0 & 0xF, 1, LEER_R_12(e->b1), b, c, e->b2);
+}
+
+/* MUL y MLA: rm, rs y rn empacados en imm; rd en b2, A y S en b0. El
+   acarreo queda como estaba, igual que en op_multiplicar. */
+static void d_mul(const arm7_deco * e)
+{
+	DWORD r = LEER_R((int) (e->imm & 0xF)) * LEER_R((int) ((e->imm >> 8) & 0xF));
+
+	if (e->b0 & 1)								/* A: acumula */
+	{
+		r += LEER_R((int) ((e->imm >> 16) & 0xF));
+		ciclos_op++;
+	}
+
+	poner_r(e->b2, r);
+
+	if (e->b0 & 2)								/* S */
+		poner_nz(r);
+
+	ciclos_op += 3;
+}
+
 /* op_bloque con la lista ya contada (n en imm[20:16]) y las tres decisiones
    estaticas resueltas en b2: bit 0 banco de usuario, bit 1 escribir la base
    al final, bit 2 CPSR = SPSR al final. En b0: pre, suma, carga. */
@@ -1765,22 +1966,41 @@ static void arm7_decodificar(arm7_deco * e, DWORD op)
 			       | (((op >> 7) & 0x1F) << 16);	/* cantidad */
 			e->fn  = s ? d_alu_reg_s1 : d_alu_reg_s0;
 		}
-		/* el desplazamiento por registro queda en d_generico */
+		else
+		if (arm7_formas_anchas)					/* desplazamiento por registro */
+		{
+			e->b0  = (unsigned char) codigo;
+			e->imm = (op & 0xF)					/* rm */
+			       | (((op >> 5) & 3) << 8)		/* tipo */
+			       | (((op >> 8) & 0xF) << 16);	/* rs */
+			e->fn  = s ? d_alu_rr_s1 : d_alu_rr_s0;
+		}
 	}
 	else
 	if (m == op_transferencia)
 	{
-		if (!(op & 0x02000000))					/* solo la forma inmediata */
+		e->b0 = (unsigned char) ((((op) >> 24) & 1)				/* pre */
+		      | ((((op) >> 23) & 1) << 1)						/* suma */
+		      | ((((op) >> 22) & 1) << 2)						/* byte */
+		      | ((((op) >> 21) & 1) << 3));						/* writeback */
+		e->b1 = (unsigned char) ((op >> 16) & 0xF);				/* rn */
+		e->b2 = (unsigned char) ((op >> 12) & 0xF);				/* rd */
+
+		if (!(op & 0x02000000))					/* forma inmediata */
 		{
-			e->b0 = (unsigned char) ((((op) >> 24) & 1)			/* pre */
-			      | ((((op) >> 23) & 1) << 1)					/* suma */
-			      | ((((op) >> 22) & 1) << 2)					/* byte */
-			      | ((((op) >> 21) & 1) << 3));					/* writeback */
-			e->b1 = (unsigned char) ((op >> 16) & 0xF);			/* rn */
-			e->b2 = (unsigned char) ((op >> 12) & 0xF);			/* rd */
 			e->imm = op & 0xFFF;
 			e->fn  = (op & 0x00100000) ? d_ldr_imm : d_str_imm;
 		}
+		else
+		if (arm7_formas_anchas)					/* desplazamiento por registro */
+		{
+			e->imm = (op & 0xF)					/* rm */
+			       | (((op >> 5) & 3) << 8)		/* tipo */
+			       | (((op >> 7) & 0x1F) << 16);	/* cantidad */
+			e->fn  = (op & 0x00100000) ? d_ldr_reg : d_str_reg;
+		}
+		else
+			e->b0 = e->b1 = e->b2 = 0;			/* d_generico: entrada limpia */
 	}
 	else
 	if (m == op_bloque)
@@ -1846,7 +2066,18 @@ static void arm7_decodificar(arm7_deco * e, DWORD op)
 
 		e->fn = d_msr;
 	}
-	/* MUL/MLA, SWP, SWI e indefinidas quedan en d_generico. */
+	else
+	if (m == op_multiplicar && arm7_formas_anchas)
+	{
+		e->b0 = (unsigned char) ((((op >> 21) & 1))				/* A */
+		      | (((op >> 20) & 1) << 1));						/* S */
+		e->b2 = (unsigned char) ((op >> 16) & 0xF);				/* rd */
+		e->imm = (op & 0xF)					/* rm */
+		       | (((op >> 8) & 0xF) << 8)	/* rs */
+		       | (((op >> 12) & 0xF) << 16);	/* rn */
+		e->fn = d_mul;
+	}
+	/* SWP, SWI e indefinidas quedan en d_generico. */
 }
 
 /* La forma de una entrada, para el traductor -- que no puede comparar los
@@ -1861,7 +2092,11 @@ int arm7_deco_forma(const arm7_deco * e)
 	if (e->fn == d_str_imm)		return ARM7_DF_STR_IMM;
 	if (e->fn == d_bloque)		return ARM7_DF_BLOQUE;
 	if (e->fn == d_mrs)			return ARM7_DF_MRS;
+	if (e->fn == d_ldr_reg)		return ARM7_DF_LDR_REG;
+	if (e->fn == d_str_reg)		return ARM7_DF_STR_REG;
 
+	/* d_alu_rr y d_mul no tocan memoria: ARM7_DF_OTRA les da la llamada
+	   generica, que es exactamente lo que necesitan. */
 	return ARM7_DF_OTRA;
 }
 
@@ -1913,6 +2148,53 @@ void arm7_init(void)
 		/* Los bloques ejecutan por las entradas predecodificadas: apagar la
 		   predecodificacion los apaga tambien. */
 		arm7_bloques = arm7_predeco && !(b != NULL && atoi(b) != 0);
+
+		{
+			const char * r = getenv("DCEMU_SIN_RAMA_ARM");
+			const char * s = getenv("DCEMU_SIN_SONDEO_ARM");
+			const char * f = getenv("DCEMU_SIN_FORMAS_ARM");
+			const char * a = getenv("DCEMU_SIN_CABE_ARM");
+
+			/* La cola de salto de los bloques; sin bloques, sin cola. */
+			arm7_blq_rama = arm7_bloques && !(r != NULL && atoi(r) != 0);
+
+			/* La lectura del archivo vuelve a cortar el bloque: la conducta
+			   anterior del teorema 4, y el brazo del A/B. */
+			arm7_lectura_corta = (s != NULL && atoi(s) != 0);
+
+			/* Las formas anchas; sin predecodificacion, sin formas. Y la
+			   admision ancha en bloques encima de ellas: sin formas (o sin
+			   bloques), la admision anterior entera. */
+			arm7_formas_anchas = arm7_predeco && !(f != NULL && atoi(f) != 0);
+			arm7_cabe_ancho = arm7_formas_anchas && arm7_bloques
+			               && !(a != NULL && atoi(a) != 0);
+
+			{
+				const char * t = getenv("DCEMU_SIN_RETORNO_ARM");
+
+				/* La cola generalizada vive sobre la cola: sin rama, sin
+				   retorno. No depende de las formas anchas -- es admision,
+				   no decodificacion. */
+				arm7_blq_retorno = arm7_blq_rama && !(t != NULL && atoi(t) != 0);
+			}
+
+			{
+				const char * v = getenv("DCEMU_SIN_VERIF_ONDA");
+
+				/* La verificacion por generacion de onda: solo pesa con
+				   bloques; sin ellos nadie consulta los sellos. */
+				arm7_verif_onda = !(v != NULL && atoi(v) != 0);
+			}
+
+			{
+				const char * c = getenv("DCEMU_SIN_CADENA_ARM");
+
+				/* El encadenado emitido vive sobre la cola de salto (y sobre
+				   el emisor, que puede no estar instalado): sin rama, sin
+				   cadena. */
+				arm7_blq_cadena = arm7_blq_rama && !(c != NULL && atoi(c) != 0);
+			}
+		}
 
 		if (arm7_predeco)
 		{
@@ -1978,11 +2260,47 @@ void arm7_perfil_resumen(void)
 			"pasos reuso una entrada)\n", arm7_deco_decodificadas);
 
 	if (arm7_bloques && arm7_blq_corridos)
+	{
 		fprintf(stderr, "arm7: %llu bloques corridos, %llu pasos en bloque "
-			"(%.1f %% de los pasos, %.1f por bloque)\n",
+			"(%.1f %% de los pasos, %.1f por corrida), %llu vueltas en el "
+			"lugar, %llu encadenados\n",
 			arm7_blq_corridos, arm7_blq_pasos,
 			100.0 * (double) arm7_blq_pasos / (double) arm7_perfil_pasos,
-			(double) arm7_blq_pasos / (double) arm7_blq_corridos);
+			(double) arm7_blq_pasos / (double) arm7_blq_corridos,
+			arm7_blq_vueltas, arm7_blq_encadenados);
+
+		/* Cada rechazo de intentar() es un paso interpretado: el censo de
+		   por que. Solo se cuenta bajo el perfil, como todo lo de aca. */
+		for (i = 0; i < 5; i++)
+			if (arm7_blq_rechazo[i])
+				fprintf(stderr, "arm7:   rechazo por %-21s %12llu (%.1f %% de los pasos)\n",
+					arm7_blq_rechazo_nombre[i], arm7_blq_rechazo[i],
+					100.0 * (double) arm7_blq_rechazo[i] / (double) arm7_perfil_pasos);
+
+		fprintf(stderr, "arm7:   %llu descubrimientos de bloque\n",
+			arm7_blq_descubrimientos);
+
+		/* Prefijo propio, como "arm7 neg:": es un contador del mecanismo y
+		   las compuertas que comparan los histogramas ^arm7: no deben verlo. */
+		if (arm7_verif_memcmp || arm7_verif_elididas)
+			fprintf(stderr, "arm7 verif: %llu memcmp, %llu elididas por lote "
+				"(%.1f %%)\n",
+				arm7_verif_memcmp, arm7_verif_elididas,
+				100.0 * (double) arm7_verif_elididas
+					/ (double) (arm7_verif_memcmp + arm7_verif_elididas));
+
+		/* El censo del giro puro (fase C): mismo trato de prefijo. */
+		if (arm7_giro_puras || arm7_giro_impuras)
+			fprintf(stderr, "arm7 giro: %llu vueltas puras (%llu pasos, "
+				"%.1f %% de los pasos), %llu impuras\n",
+				arm7_giro_puras, arm7_giro_pasos_puros,
+				100.0 * (double) arm7_giro_pasos_puros
+					/ (double) arm7_perfil_pasos,
+				arm7_giro_impuras);
+
+		if (arm7_blq_rechazo[3])
+			arm7_blq_neg_resumen();
+	}
 
 	fprintf(stderr, "arm7: por fila de la tabla de despacho\n");
 
@@ -2080,18 +2398,34 @@ void arm7_perfil_resumen(void)
 	     registros: arm7_toco_reg deja la marca y el bloque sale por el
 	     costado en esa frontera, que es donde el interprete habria mirado.
 
-	DCEMU_SIN_BLOQUES_ARM=1 los apaga en el mismo binario, que es el A/B.
+	La cola de salto (2026-08-19, fase E de docs/jit-sota-plan.md): si lo que
+	corto el tramo es un B/BL, entra como ultima entrada y corre dentro del
+	bloque -- el analogo de los pares del SH-4. El censo de CT dijo por que:
+	B/BL es el 25,1 % del despacho y solo el 36,8 % de los pasos corria en
+	bloques (2,9 por bloque). La cola ejecuta por d_salto, asi que el borde
+	de la memoizacion corre identico por construccion; si arranca una
+	grabacion, el bloque sale y la contabilidad del barrido queda como la del
+	interprete. Y si el salto vuelve a la propia cabecera, el bloque da la
+	vuelta en el lugar sin pasar por intentar(): la FIQ no pudo cambiar
+	(teorema 1: las rectas no tocaron el archivo ni el CPSR de control), y el
+	presupuesto (teorema 2) y las palabras se re-verifican adentro igual que
+	en intentar().
+
+	DCEMU_SIN_BLOQUES_ARM=1 los apaga en el mismo binario, que es el A/B;
+	DCEMU_SIN_RAMA_ARM=1 apaga solo la cola de salto.
 */
 
-#define ARM7_BLQ_RANURAS	4096			/* directa, potencia de dos */
+/* ARM7_BLQ_RANURAS vive junto a los contadores del perfil, que lo usan. */
 #define ARM7_BLQ_MAX		12				/* instrucciones por bloque */
 #define ARM7_BLQ_MIN		2				/* mas corto que esto no paga */
 
 typedef struct
 {
 	DWORD			base;					/* direccion de bus de la palabra 0 */
-	unsigned char	n;						/* 0: marca negativa (aca no conviene) */
-	unsigned char	relleno[3];
+	unsigned char	n;						/* entradas, cola incluida;
+											   0: marca negativa (aca no conviene) */
+	unsigned char	salto;					/* 1: la ultima entrada es un B/BL */
+	unsigned char	relleno[2];
 	int				ciclos_max;
 	DWORD			palabras[ARM7_BLQ_MAX];
 
@@ -2100,19 +2434,95 @@ typedef struct
 	   paso ajeno puede redecodificar. Inmutables entre emision y corrida. */
 	arm7_deco		entradas[ARM7_BLQ_MAX];
 	void *			codigo;					/* emitido, o NULL: el lazo en C */
+
+	/* El sello de la verificacion por generacion de onda: las palabras estan
+	   verificadas mientras las generaciones de sus (a lo sumo dos) paginas
+	   coincidan con onda_gen[]. */
+	unsigned long	verif_gen[2];
+
+	/* Los punteros a onda_gen de esas paginas, fijados en descubrir: el
+	   sello se compara contra *pgen[i], y son lo que el encadenado emitido
+	   carga sin recomputar paginas. */
+	unsigned long *	pgen[2];
+
+	/* El encadenado emitido: la entrada interna post-prologo (adonde saltan
+	   los encadenados de otros bloques), y si el epilogo de la cola quedo
+	   emitido -- entonces codigo() lo hace todo y el lazo en C solo corta. */
+	void *			cadena;
+	unsigned char	cola_emitida;
 } arm7_blq;
 
+/* Las dos paginas de onda que cubren las palabras del bloque, por los
+   punteros que descubrir dejo fijados (pgen es valido siempre que n > 0,
+   que es lo que todo llamador ya comprobo). Con una sola pagina, pgen[1]
+   apunta a la misma y las dos comparaciones son la misma. */
+static int arm7_blq_verificado(const arm7_blq * b, DWORD dir)
+{
+	(void) dir;
+
+	return b->verif_gen[0] == *b->pgen[0]
+	    && b->verif_gen[1] == *b->pgen[1];
+}
+
+static void arm7_blq_sellar(arm7_blq * b, DWORD dir)
+{
+	(void) dir;
+
+	b->verif_gen[0] = *b->pgen[0];
+	b->verif_gen[1] = *b->pgen[1];
+}
+
 static arm7_blq	arm7_blqs[ARM7_BLQ_RANURAS];
+
+/* El informe de la sonda de marcas negativas (declarada con los contadores
+   del perfil): las doce ranuras mas golpeadas, con su base, su cabecera y la
+   fila -- lo que dice QUE instruccion conviene admitir en arm7_blq_cabe(). */
+static void arm7_blq_neg_resumen(void)
+{
+	int i, j;
+
+	for (j = 0; j < 12; j++)
+	{
+		unsigned int	mejor = 0;
+		int				donde = -1;
+
+		for (i = 0; i < ARM7_BLQ_RANURAS; i++)
+			if (arm7_blq_neg[i] > mejor)
+			{
+				mejor = arm7_blq_neg[i];
+				donde = i;
+			}
+
+		if (donde < 0)
+			break;
+
+		{
+			const arm7_blq * b  = &arm7_blqs[donde];
+			DWORD			 op = b->palabras[0];
+			int				 f  = arm7_opfila[ARM7_INDICE(op)];
+
+			fprintf(stderr, "arm7 neg:   %06lx  %10u  %08lx  %s%s\n",
+				(unsigned long) b->base, mejor, (unsigned long) op,
+				(f >= 0) ? filas[f].nombre : "?",
+				(b->n != 0) ? "  (la ranura ya no es negativa)" : "");
+		}
+
+		arm7_blq_neg[donde] = 0;
+	}
+}
 
 int				arm7_blq_ult_pasos;			/* del ultimo bloque corrido; lo
 											   escribe tambien el emitido */
 
 /* El traductor instalado, o NULL: todo por el lazo en C. */
 static void * (* arm7_blq_emitir)(const arm7_deco * entradas, int n,
-                                  DWORD dir) = NULL;
+                                  DWORD dir, const arm7_cola_emitir * cola,
+                                  void ** cadena) = NULL;
 
 void arm7_blq_instalar_emisor(void * (* emitir)(const arm7_deco * entradas,
-                                                int n, DWORD dir))
+                                                int n, DWORD dir,
+                                                const arm7_cola_emitir * cola,
+                                                void ** cadena))
 {
 	arm7_blq_emitir = emitir;
 
@@ -2163,7 +2573,11 @@ static int arm7_blq_cabe(const arm7_deco * e)
 
 	if (e->fn == d_bloque)
 	{
-		if (e->imm & 0x8000)				/* PC en la lista */
+		/* PC en la lista: CARGARLO es un salto y no entra; guardarlo no --
+		   un STM escribe PC+12 y el bloque sigue derecho. La relajacion es
+		   del cabe ancho: salio del censo (seis de las doce ranuras mas
+		   golpeadas eran STMFD sp!,{pc}). */
+		if ((e->imm & 0x8000) && ((e->b0 & 4) || !arm7_cabe_ancho))
 			return -1;
 
 		if (e->b1 == 15 && (e->b2 & 2))		/* fin escrito sobre R15 */
@@ -2174,6 +2588,43 @@ static int arm7_blq_cabe(const arm7_deco * e)
 
 	if (e->fn == d_mrs)
 		return (e->b1 == 15) ? -1 : 1;
+
+	/* Las formas anchas, solo con la admision ancha encendida. Las guardas
+	   son las de sus parientes: destino o writeback sobre R15, afuera. */
+	if (arm7_cabe_ancho)
+	{
+		if (e->fn == d_alu_rr_s0 || e->fn == d_alu_rr_s1)
+		{
+			int codigo = e->b0 & 0xF;
+
+			if (e->b2 == 15 && !(codigo >= 0x8 && codigo <= 0xB))
+				return -1;
+
+			return 2;						/* 1 + el ciclo del desplazador */
+		}
+
+		if (e->fn == d_mul)
+			return (e->b2 == 15) ? -1 : (4 + (e->b0 & 1));
+
+		if (e->fn == d_ldr_reg)
+		{
+			if (e->b2 == 15)				/* carga al PC */
+				return -1;
+
+			if (e->b1 == 15 && (!(e->b0 & 1) || (e->b0 & 8)))
+				return -1;
+
+			return 3;
+		}
+
+		if (e->fn == d_str_reg)
+		{
+			if (e->b1 == 15 && (!(e->b0 & 1) || (e->b0 & 8)))
+				return -1;
+
+			return 2;
+		}
+	}
 
 	return -1;
 }
@@ -2186,7 +2637,12 @@ static int arm7_blq_cabe(const arm7_deco * e)
 static void arm7_blq_descubrir(arm7_blq * b, DWORD dir)
 {
 	int n = 0;
+	int salto = 0;
 	int ciclos = 0;
+
+	/* Frio por diseno: si este contador sale caliente, dos bloques vivos
+	   comparten ranura y se desalojan mutuamente. */
+	arm7_blq_descubrimientos++;
 
 	b->base = dir;
 
@@ -2215,104 +2671,440 @@ static void arm7_blq_descubrir(arm7_blq * b, DWORD dir)
 		n++;
 	}
 
-	if (n < ARM7_BLQ_MIN)
+	/* La cola: si lo que corto el tramo es una TERMINAL, entra al bloque
+	   como ultima entrada y corre aca adentro (el analogo de los pares del
+	   SH-4). Dos terminales: el B/BL -- d_salto, con cualquier condicion;
+	   ejecuta por su propio manejador, asi que el borde de la memoizacion
+	   corre identico por construccion -- y, con el retorno encendido, el
+	   LDM que carga el PC sin el bit S (con S escribe CPSR y cambia de
+	   modo: ese no encadena). Con el retorno la terminal puede ademas
+	   estar SOLA: las tres ranuras LDM del censo eran destinos de salto
+	   directos, y una cola sola vale por el encadenado que sigue -- lo que
+	   antes decia "un B a secas no gana nada" dejo de ser cierto cuando
+	   aparecio el encadenado. Las mismas dos cotas del lazo de arriba. */
+	if (arm7_blq_rama && (n >= 1 || arm7_blq_retorno) && n < ARM7_BLQ_MAX
+	 && dir + (DWORD) n * 4 < 0x00800000u
+	 && (dir & (AICA_ONDA_SIZE - 1)) + (DWORD) (n + 1) * 4 <= AICA_ONDA_SIZE)
+	{
+		DWORD fis = (dir + (DWORD) n * 4) & (AICA_ONDA_SIZE - 1);
+		DWORD op  = onda_leer32(fis);
+		arm7_deco * e = &arm7_deco_tabla[fis >> 2];
+
+		if (e->palabra != op)
+			arm7_decodificar(e, op);
+
+		if (e->fn == d_salto)
+		{
+			b->palabras[n] = op;
+			b->entradas[n] = *e;
+			ciclos += 3;					/* 1 + 2 del salto tomado */
+			n++;
+			salto = 1;
+		}
+		else
+		if (arm7_blq_retorno && e->fn == d_bloque
+		 && (e->b0 & 4) && (e->imm & 0x8000)	/* carga que incluye al PC */
+		 && !(e->b2 & 4)						/* sin CPSR = SPSR al final */
+		 && !(e->b1 == 15 && (e->b2 & 2)))		/* sin fin sobre R15 */
+		{
+			b->palabras[n] = op;
+			b->entradas[n] = *e;
+			ciclos += 2 + (int) (e->imm >> 16);	/* 1 + n + 1 de la carga */
+			n++;
+			salto = 1;
+		}
+	}
+
+	if (n < ARM7_BLQ_MIN && !salto)
 	{
 		/* La marca negativa guarda la palabra de cabecera: si alguien la
 		   reescribe, la marca se invalida sola por la misma comparacion. */
 		b->palabras[0] = onda_leer32(dir & (AICA_ONDA_SIZE - 1));
 		b->n      = 0;
+		b->salto  = 0;
 		b->codigo = NULL;
 		return;
 	}
 
-	b->n = (unsigned char) n;
+	b->n     = (unsigned char) n;
+	b->salto = (unsigned char) salto;
 	b->ciclos_max = ciclos;
 
-	/* Con traductor instalado, el bloque sale emitido; NULL deja el lazo en
-	   C, que es tambien el destino de todo bloque si el arena se llena. */
-	b->codigo = (arm7_blq_emitir != NULL)
-	          ? arm7_blq_emitir(b->entradas, n, dir)
-	          : NULL;
+	{
+		DWORD a = dir & (AICA_ONDA_SIZE - 1);
+
+		b->pgen[0] = &onda_gen[a >> ONDA_PAG_BITS];
+		b->pgen[1] = &onda_gen[(a + (DWORD) n * 4 - 1) >> ONDA_PAG_BITS];
+	}
+
+	b->cadena       = NULL;
+	b->cola_emitida = 0;
+
+	/* Con traductor instalado, el bloque sale emitido -- las rectas, y si la
+	   cola es un B/BL (d_salto) tambien el epilogo del encadenado: la cola y
+	   el salto directo al sucesor, sin volver al lazo en C por cada salto.
+	   El retorno (LDM al PC) y demas terminales siguen saliendo al C -- toda
+	   salida al C cae en una frontera de instruccion con el estado entero
+	   consistente, y el despachador sigue solo. NULL deja el lazo en C, que
+	   es tambien el destino de todo bloque si el arena se llena. Una
+	   terminal sola no tiene rectas y no emite nada. */
+	if (arm7_blq_emitir != NULL && n - salto > 0)
+	{
+		arm7_cola_emitir		 ce;
+		const arm7_cola_emitir * pce = NULL;
+		const arm7_deco *		 e   = &b->entradas[n - 1];
+
+		if (arm7_blq_cadena && salto && e->fn == d_salto)
+		{
+			DWORD pc_cola = dir + 4u * (unsigned) (n - 1);
+			DWORD destino = (pc_cola + e->imm) & ARM7_BUS;
+			DWORD caida   = (pc_cola + 4) & ARM7_BUS;
+
+			ce.off_base       = (int) offsetof(arm7_blq, base);
+			ce.off_n          = (int) offsetof(arm7_blq, n);
+			ce.off_ciclos_max = (int) offsetof(arm7_blq, ciclos_max);
+			ce.off_verif0     = (int) offsetof(arm7_blq, verif_gen[0]);
+			ce.off_verif1     = (int) offsetof(arm7_blq, verif_gen[1]);
+			ce.off_pgen0      = (int) offsetof(arm7_blq, pgen[0]);
+			ce.off_pgen1      = (int) offsetof(arm7_blq, pgen[1]);
+			ce.off_cadena     = (int) offsetof(arm7_blq, cadena);
+
+			ce.pc_cola = pc_cola;
+			ce.cond    = e->palabra >> 28;
+			ce.bl      = (e->b0 != 0);
+			ce.atras   = (destino < pc_cola && !ce.bl);
+			ce.destino = destino;
+
+			ce.salto.slot = &arm7_blqs[(destino >> 2) & (ARM7_BLQ_RANURAS - 1)];
+			ce.salto.base = destino;
+			ce.caida.slot = &arm7_blqs[(caida >> 2) & (ARM7_BLQ_RANURAS - 1)];
+			ce.caida.base = caida;
+
+			pce = &ce;
+		}
+
+		b->codigo = arm7_blq_emitir(b->entradas, n - salto, dir, pce,
+			&b->cadena);
+		b->cola_emitida = (unsigned char) (b->codigo != NULL && pce != NULL);
+
+		if (b->codigo == NULL)
+			b->cadena = NULL;
+	}
+	else
+		b->codigo = NULL;
 }
 
-/* Corre el bloque entero (o hasta la salida lateral). Devuelve los ciclos
-   consumidos y deja en arm7_blq_ult_pasos las instrucciones ejecutadas. */
+/* Corre el bloque entero (o hasta la salida lateral), la cola de salto si la
+   hay, y si esa cola volvio a la propia cabecera, da la vuelta sin pasar por
+   arm7_blq_intentar(). Devuelve los ciclos consumidos y deja en
+   arm7_blq_ult_pasos las instrucciones ejecutadas. */
 static int arm7_blq_correr(const arm7_blq * b)
 {
 	DWORD base    = b->base;
+	int   rectas  = (int) b->n - (int) b->salto;
 	int   gastado = 0;
-	int   i;
+	int   pasos   = 0;
+
+	DWORD giro_base = b->base;			/* censo del giro puro (solo perfil) */
+	DWORD giro_regs[15];
+	DWORD giro_cpsr = 0;
+	int   giro_marca = 0;
+
+	if (arm7_perfil)
+	{
+		memcpy(giro_regs, arm7.r, sizeof(giro_regs));
+		giro_cpsr = arm7.cpsr;
+	}
 
 	/*
-		El camino emitido. Tres condiciones ademas de tener codigo: el PC tiene
-		que ser EXACTAMENTE la base (el emitido bakea PC+8 como constante, y
-		tras el tope del bus r15 puede traer bits altos de mas), y los dos
-		instrumentos por paso -- el perfil y el censo de la suite -- corren por
-		el lazo en C, que es el que lleva sus ganchos.
+		El camino emitido cubre las rectas. Tres condiciones ademas de tener
+		codigo: el PC tiene que ser EXACTAMENTE la base (el emitido bakea PC+8
+		como constante, y tras el tope del bus r15 puede traer bits altos de
+		mas), y los dos instrumentos por paso -- el perfil y el censo de la
+		suite -- corren por el lazo en C, que es el que lleva sus ganchos.
 	*/
-	if (b->codigo != NULL && arm7.r[15] == base
-	 && !arm7_perfil && !arm7_cobertura)
-		return ((int (*)(void)) b->codigo)();
+	int instrumentos = (arm7_perfil || arm7_cobertura);
 
-	arm7_toco_reg = 0;
-
-	for (i = 0; i < (int) b->n; i++)
+	for (;;)
 	{
-		DWORD op = b->palabras[i];
-		arm7_deco * e =
-			&arm7_deco_tabla[((base + (DWORD) i * 4) & (AICA_ONDA_SIZE - 1)) >> 2];
+		int i;
 
-		ciclos_op = 1;
-		arm7.instrucciones++;
-
-		if (arm7_perfil)
+		if (!instrumentos && b->codigo != NULL && arm7.r[15] == base)
 		{
-			arm7_perfil_pc[((arm7.r[15] & ARM7_BUS) >> 2) % ARM7_PERFIL_PCS]++;
-			arm7_perfil_pasos++;
+			gastado += ((int (*)(void)) b->codigo)();
+			i = arm7_blq_ult_pasos;
 
+			/*
+				El encadenado emitido: codigo() ya corrio la cola y siguio por
+				los sucesores hasta donde pudo -- toda salida cae en una
+				frontera de instruccion con el estado consistente, i es el
+				total acumulado de todos los tramos y gastado lo NO
+				comprometido. Aca solo se corta; el despachador sigue solo (y
+				su chequeo de FIQ ve lo mismo que veria el lazo: los replays
+				son de solo lectura y las escrituras salen por el costado).
+			*/
+			if (b->cola_emitida)
 			{
-				int f = arm7_opfila[ARM7_INDICE(op)];
+				pasos += i;
+				break;
+			}
+		}
+		else
+		{
+			arm7_toco_reg = 0;
 
-				if (f >= 0)
-					arm7_perfil_fila[f]++;
+			for (i = 0; i < rectas; i++)
+			{
+				DWORD op = b->palabras[i];
+				arm7_deco * e =
+					&arm7_deco_tabla[((base + (DWORD) i * 4) & (AICA_ONDA_SIZE - 1)) >> 2];
+
+				ciclos_op = 1;
+				arm7.instrucciones++;
+
+				if (arm7_perfil)
+				{
+					arm7_perfil_pc[((arm7.r[15] & ARM7_BUS) >> 2) % ARM7_PERFIL_PCS]++;
+					arm7_perfil_pasos++;
+
+					{
+						int f = arm7_opfila[ARM7_INDICE(op)];
+
+						if (f >= 0)
+							arm7_perfil_fila[f]++;
+					}
+				}
+
+				if ((op >> 28) == 0xE || condicion(op))
+				{
+					if (arm7_cobertura)
+					{
+						int f = arm7_opfila[ARM7_INDICE(op)];
+
+						if (f >= 0)
+							arm7_usada[f] = 1;
+					}
+
+					/* La entrada pudo quedar decodificada de otra palabra (se
+					   comparte con el paso a paso): la palabra del bloque ya esta
+					   verificada contra la memoria, asi que manda ella. */
+					if (e->palabra != op)
+						arm7_decodificar(e, op);
+
+					e->fn(e);
+				}
+
+				arm7.r[15] += 4;
+				gastado    += ciclos_op;
+
+				/* Teorema 4: el acceso cayo en el archivo de registros y la FIQ pudo
+				   cambiar. Se sale en esta frontera, que es donde el interprete
+				   habria mirado. */
+				if (arm7_toco_reg)
+				{
+					i++;
+					break;
+				}
 			}
 		}
 
-		if ((op >> 28) == 0xE || condicion(op))
-		{
-			if (arm7_cobertura)
-			{
-				int f = arm7_opfila[ARM7_INDICE(op)];
+		pasos += i;
 
-				if (f >= 0)
-					arm7_usada[f] = 1;
-			}
-
-			/* La entrada pudo quedar decodificada de otra palabra (se
-			   comparte con el paso a paso): la palabra del bloque ya esta
-			   verificada contra la memoria, asi que manda ella. */
-			if (e->palabra != op)
-				arm7_decodificar(e, op);
-
-			e->fn(e);
-		}
-
-		arm7.r[15] += 4;
-		gastado    += ciclos_op;
-
-		/* Teorema 4: el acceso cayo en el archivo de registros y la FIQ pudo
-		   cambiar. Se sale en esta frontera, que es donde el interprete
-		   habria mirado. */
-		if (arm7_toco_reg)
-		{
-			i++;
+		/*
+			Con rectas incompletas el bloque termina aca. La salida lateral
+			manda incluso con las rectas completas -- el acceso de la ultima
+			pudo caer en el archivo --: la FIQ pudo cambiar, y lo que siga
+			correria sin el chequeo que el interprete hace en el limite de
+			cada instruccion.
+		*/
+		if (i < rectas || arm7_toco_reg)
 			break;
+
+		if (b->salto)
+		{
+			/*
+				Antes de la cola se comprometen los ciclos ya gastados, y la
+				funcion devuelve solo lo no comprometido. La reposicion del borde
+				compara el costo del barrido contra arm7.ciclos (sus "dos
+				condiciones de tiempo"), y el interprete llega al salto con el
+				cuerpo ya cobrado: sin esto la cola le mostraba el saldo de la
+				ENTRADA del bloque -- mas grande -- y aceptaba reposiciones que el
+				paso a paso rechaza. El histograma de la compuerta lo cazo:
+				177 004 pasos menos ejecutados en 30 s de CT, con la captura y el
+				.wav intactos -- esta vez.
+			*/
+			arm7.ciclos -= gastado;
+			gastado = 0;
+
+			/*
+				La cola de salto: la ultima entrada es un B/BL y corre aca
+				adentro, con la semantica del limite de instruccion del
+				interprete. Sin chequeo de FIQ: por el teorema 1 no pudo cambiar
+				desde el que hizo intentar() -- las rectas no tocaron el archivo
+				(recien verificado, y una lectura no mueve la FIQ) ni el CPSR de
+				control (d_msr no entra en bloques, y la ALU con S solo escribe
+				NZCV).
+			*/
+			{
+				const arm7_deco * e = &b->entradas[rectas];
+				DWORD op = b->palabras[rectas];
+
+				ciclos_op = 1;
+				pc_cambio = 0;
+				arm7.instrucciones++;
+
+				if (arm7_perfil)
+				{
+					arm7_perfil_pc[((arm7.r[15] & ARM7_BUS) >> 2) % ARM7_PERFIL_PCS]++;
+					arm7_perfil_pasos++;
+
+					{
+						int f = arm7_opfila[ARM7_INDICE(op)];
+
+						if (f >= 0)
+							arm7_perfil_fila[f]++;
+					}
+				}
+
+				if ((op >> 28) == 0xE || condicion(op))
+				{
+					if (arm7_cobertura)
+					{
+						int f = arm7_opfila[ARM7_INDICE(op)];
+
+						if (f >= 0)
+							arm7_usada[f] = 1;
+					}
+
+					/* La entrada privada, como el emisor: inmutable y decodificada
+					   de esta palabra, que el memcmp de la entrada verifico. */
+					e->fn(e);
+				}
+
+				pasos   += 1;
+				gastado += ciclos_op;
+
+				if (!pc_cambio)
+				{
+					/*
+						Condicion no cumplida: cae a la siguiente, como el
+						interprete. El `terminar` del borde no puede tocar aca:
+						arm7_memo_fin era ~0 al entrar (teorema 3) y lo unico de
+						aca adentro que lo arma es esta misma cola -- que entonces
+						deja pc_cambio en 1.
+					*/
+					arm7.r[15] += 4;
+				}
+				else
+				if (arm7_memo_fin != ~0u)
+				{
+					/* El salto arranco una grabacion: la contabilidad del
+					   barrido es la del interprete -- y grabando no se corre
+					   bloque. */
+					memo_ciclos += ciclos_op;
+					memo_instr++;
+					break;
+				}
+			}
+
+			/* La cola de retorno lee memoria (la pila) y pudo caer en el
+			   archivo de registros: la salida lateral manda tambien aca,
+			   antes de encadenar. Un B/BL no puede armarla, asi que para
+			   la cola clasica el chequeo es un no-op predecible. */
+			if (arm7_toco_reg)
+				break;
+		}
+
+		/*
+			El encadenado en el lugar: el PC quedo en una direccion que puede
+			tener bloque ya descubierto -- la propia cabecera (la vuelta del
+			lazo), la de otro bloque (el lazo caliente de sondeo de CT es un
+			ciclo de DOS bloques, porque su salida de en medio lo parte), o
+			la caida de una cola no tomada o de un tramo sin cola. Se sigue
+			corriendo sin pasar por intentar(): la FIQ sigue cubierta por el
+			teorema 1 por induccion -- una escritura al archivo corta por el
+			costado antes de llegar aca, y la grabacion corta arriba --, y el
+			presupuesto (teorema 2) y las palabras del proximo bloque se
+			re-verifican igual que alla. Solo se encadena a bloques ya
+			descubiertos: el descubrimiento queda en intentar(), detras de su
+			chequeo de FIQ.
+		*/
+		{
+			DWORD dir = arm7.r[15] & ARM7_BUS;
+			arm7_blq * b2;
+
+			/* La palanca de la cola manda sobre el encadenado entero: el
+			   brazo viejo del A/B es la conducta anterior exacta. */
+			if (!arm7_blq_rama)
+				break;
+
+			if (dir & 0x00800000)
+				break;
+
+			b2 = &arm7_blqs[(dir >> 2) & (ARM7_BLQ_RANURAS - 1)];
+
+			if (b2->base != dir || b2->n == 0)
+				break;
+
+			if ((long) (gastado + b2->ciclos_max) > arm7.ciclos)
+				break;
+
+			/* La verificacion por generacion de onda: el memcmp corre solo si
+			   alguna pagina del bloque se escribio desde el ultimo sello (ver
+			   el comentario junto a arm7_verif_onda). Con la palanca apagada
+			   se compara siempre, la conducta anterior. */
+			if (!arm7_verif_onda || !arm7_blq_verificado(b2, dir))
+			{
+				if (arm7_perfil)
+					arm7_verif_memcmp++;
+
+				if (memcmp(b2->palabras, sound_mem + (dir & (AICA_ONDA_SIZE - 1)),
+				           (size_t) b2->n * 4) != 0)
+					break;
+
+				arm7_blq_sellar(b2, dir);
+			}
+			else if (arm7_perfil)
+				arm7_verif_elididas++;
+
+			if (b2 == b)
+				arm7_blq_vueltas++;
+			else
+				arm7_blq_encadenados++;
+
+			/* El censo del giro puro: el ciclo se cierra al volver a la base
+			   de entrada; pura = registros y CPSR identicos a la vuelta
+			   anterior (r15 es la base en las dos). Tras una impura se toma
+			   la instantanea nueva: un lazo con preambulo cierra impuro una
+			   vez y puro las demas. */
+			if (arm7_perfil && dir == giro_base)
+			{
+				if (memcmp(giro_regs, arm7.r, sizeof(giro_regs)) == 0
+					&& giro_cpsr == arm7.cpsr)
+				{
+					arm7_giro_puras++;
+					arm7_giro_pasos_puros +=
+						(unsigned long long) (pasos - giro_marca);
+				}
+				else
+				{
+					arm7_giro_impuras++;
+					memcpy(giro_regs, arm7.r, sizeof(giro_regs));
+					giro_cpsr = arm7.cpsr;
+				}
+
+				giro_marca = pasos;
+			}
+
+			b      = b2;
+			base   = dir;
+			rectas = (int) b->n - (int) b->salto;
 		}
 	}
 
-	arm7_blq_ult_pasos = i;
+	arm7_blq_ult_pasos = pasos;
 	arm7_blq_corridos++;
-	arm7_blq_pasos += (unsigned long long) i;
+	arm7_blq_pasos += (unsigned long long) pasos;
 
 	return gastado;
 }
@@ -2328,16 +3120,28 @@ static int arm7_blq_intentar(void)
 	arm7_blq * b;
 
 	if (dir & 0x00800000)
+	{
+		if (arm7_perfil)
+			arm7_blq_rechazo[0]++;
 		return 0;
+	}
 
 	/* Teorema 1: la FIQ del limite de instruccion se mira una vez aca; si
 	   esta por entregarse, que la entregue arm7_paso(). */
 	if (!(arm7.cpsr & ARM7_F) && aica_fiq_pendiente())
+	{
+		if (arm7_perfil)
+			arm7_blq_rechazo[1]++;
 		return 0;
+	}
 
 	/* Teorema 3: mientras se graba un barrido, todo va por el interprete. */
 	if (arm7_memo_fin != ~0u)
+	{
+		if (arm7_perfil)
+			arm7_blq_rechazo[2]++;
 		return 0;
+	}
 
 	b = &arm7_blqs[(dir >> 2) & (ARM7_BLQ_RANURAS - 1)];
 
@@ -2348,21 +3152,51 @@ static int arm7_blq_intentar(void)
 	{
 		/* Marca negativa vigente mientras la cabecera no cambie. */
 		if (b->palabras[0] == onda_leer32(dir & (AICA_ONDA_SIZE - 1)))
+		{
+			if (arm7_perfil)
+			{
+				arm7_blq_rechazo[3]++;
+				arm7_blq_neg[b - arm7_blqs]++;
+			}
 			return 0;
+		}
 
 		arm7_blq_descubrir(b, dir);
 	}
 	else
-	if (memcmp(b->palabras, sound_mem + (dir & (AICA_ONDA_SIZE - 1)),
-	           (size_t) b->n * 4) != 0)
-		arm7_blq_descubrir(b, dir);
+	if (!arm7_verif_onda || !arm7_blq_verificado(b, dir))
+	{
+		if (arm7_perfil)
+			arm7_verif_memcmp++;
+
+		if (memcmp(b->palabras, sound_mem + (dir & (AICA_ONDA_SIZE - 1)),
+		           (size_t) b->n * 4) != 0)
+			arm7_blq_descubrir(b, dir);
+	}
+	else if (arm7_perfil)
+		arm7_verif_elididas++;
 
 	if (b->n == 0)
+	{
+		if (arm7_perfil)
+		{
+			arm7_blq_rechazo[3]++;
+			arm7_blq_neg[b - arm7_blqs]++;
+		}
 		return 0;
+	}
+
+	/* Verificado -- o recien descubierto, que copia las palabras de la propia
+	   memoria --: el sello guarda las generaciones vigentes de sus paginas. */
+	arm7_blq_sellar(b, dir);
 
 	/* Teorema 2: el bloque entero tiene que caber en el saldo. */
 	if ((long) b->ciclos_max > arm7.ciclos)
+	{
+		if (arm7_perfil)
+			arm7_blq_rechazo[4]++;
 		return 0;
+	}
 
 	return arm7_blq_correr(b);
 }
@@ -2386,9 +3220,25 @@ void arm7_reset(void)
 	arm7_memo_reset();
 
 	/* Una vez al arrancar y nunca en el camino caliente, como el resto de las
-	   sondas del arbol. */
+	   sondas del arbol.
+
+	   Bajo los bloques con cola y encadenado la memoizacion pierde, y el
+	   censo de rechazos dijo por que: el 44,7 % de los pasos de CT se
+	   rechazaba por "grabando" -- el memo graba el barrido de canales que la
+	   muestra siguiente invalida (repone solo 7,6 %), y mientras graba los
+	   bloques estan apagados. El A/B sobre un solo binario (memo-ab.ps1,
+	   2026-08-20): CT -1,7 % con rangos disjuntos, SR2 no distingue, DOOM no
+	   elide nada. Apagada por omision cuando esos bloques corren;
+	   DCEMU_MEMO_ARM=1 la fuerza (el brazo de vuelta del A/B) y
+	   DCEMU_SIN_MEMO_ARM=1 la apaga tambien sin bloques. */
 	e = getenv("DCEMU_SIN_MEMO_ARM");
 	arm7_memo_apagada = (e != NULL && atoi(e) != 0);
+
+	if (arm7_bloques && arm7_blq_rama && !arm7_memo_apagada)
+	{
+		e = getenv("DCEMU_MEMO_ARM");
+		arm7_memo_apagada = !(e != NULL && atoi(e) != 0);
+	}
 }
 
 int arm7_paso(void)
@@ -2548,7 +3398,10 @@ void arm7_ejecutar(long ciclos)
 				{
 					arm7.ciclos    -= c;
 					perf_arm_pasos += (unsigned long long) arm7_blq_ult_pasos;
-					continue;			/* un bloque nunca deja el PC quieto */
+					/* Los bloques no cuentan ociosos por diseno: un bloque
+					   que vuelve a su cabecera (la cola de salto) esta
+					   sondeando, no esperando. */
+					continue;
 				}
 			}
 

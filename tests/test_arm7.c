@@ -190,6 +190,68 @@ static void multiplicar(void)
 	ESPERAR_U32(arm7.r[4], 44);
 }
 
+static void el_desplazamiento_por_registro_en_sus_esquinas(void)
+{
+	/* Las dos esquinas de la forma Rs, distintas de la forma inmediata a
+	   proposito: cantidad 0 deja el valor Y el acarreo como estan (no es
+	   LSR #32), y cantidad 33 vacia el registro con acarreo 0. */
+	static const DWORD p[] =
+	{
+		0xE3A00005,		/* mov  r0, #5               */
+		0xE3A01000,		/* mov  r1, #0               */
+		0xE3B02102,		/* movs r2, #0x80000000      -- deja C=1 */
+		0xE1B03130,		/* movs r3, r0, lsr r1       -- 0: ni valor ni C */
+		0xE2A14000,		/* adc  r4, r1, #0           -- lee C */
+		0xE3A05021,		/* mov  r5, #33              */
+		0xE1B06510,		/* movs r6, r0, lsl r5       -- 33: cero y C=0 */
+		0xE2A17000,		/* adc  r7, r1, #0           */
+	};
+
+	cargar(p, 8);
+	correr(8);
+
+	ESPERAR_U32(arm7.r[3], 5);
+	ESPERAR_U32(arm7.r[4], 1);
+	ESPERAR_U32(arm7.r[6], 0);
+	ESPERAR_U32(arm7.r[7], 0);
+}
+
+static void la_transferencia_con_desplazamiento_por_registro(void)
+{
+	static const DWORD p[] =
+	{
+		0xE3A00A01,		/* mov  r0, #0x1000          */
+		0xE3A01012,		/* mov  r1, #0x12            */
+		0xE7A01101,		/* str  r1, [r0, r1, lsl #2]!  -- 0x1048, r0 queda ahi */
+		0xE6102001,		/* ldr  r2, [r0], -r1        -- lee y resta */
+	};
+
+	cargar(p, 4);
+	correr(4);
+
+	ESPERAR_U32(arm7.r[2], 0x12);
+	ESPERAR_U32(arm7.r[0], 0x1048 - 0x12);
+}
+
+static void guardar_el_pc_con_stm_da_pc_mas_12(void)
+{
+	/* La forma de los seis STMFD sp!,{pc} del firmware: guardar el PC no
+	   salta -- escribe PC+12 y sigue derecho. Es la que el cabe ancho
+	   admite en bloques. */
+	static const DWORD p[] =
+	{
+		0xE3A00A02,		/* mov   r0, #0x2000        */
+		0xE9208000,		/* stmdb r0!, {pc}          -- en la direccion 4 */
+		0xE5901000,		/* ldr   r1, [r0]           */
+	};
+
+	cargar(p, 3);
+	correr(3);
+
+	ESPERAR_U32(arm7.r[0], 0x2000 - 4);
+	ESPERAR_U32(arm7.r[1], 4 + 12);
+}
+
 static void cargar_y_guardar(void)
 {
 	static const DWORD p[] =
@@ -677,6 +739,9 @@ static const dc_caso casos[] =
 	CASO(las_banderas_y_la_condicion),
 	CASO(el_desplazador),
 	CASO(el_desplazamiento_por_registro),
+	CASO(el_desplazamiento_por_registro_en_sus_esquinas),
+	CASO(la_transferencia_con_desplazamiento_por_registro),
+	CASO(guardar_el_pc_con_stm_da_pc_mas_12),
 	CASO(r15_se_lee_ocho_mas_adelante),
 	CASO(multiplicar),
 	CASO(cargar_y_guardar),

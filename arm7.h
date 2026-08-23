@@ -206,7 +206,12 @@ enum
 	ARM7_DF_ALU_IMM_S0, ARM7_DF_ALU_IMM_S1,
 	ARM7_DF_ALU_REG_S0, ARM7_DF_ALU_REG_S1,
 	ARM7_DF_LDR_IMM, ARM7_DF_STR_IMM,
-	ARM7_DF_BLOQUE, ARM7_DF_MRS
+	ARM7_DF_BLOQUE, ARM7_DF_MRS,
+
+	/* Las dos formas anchas que tocan memoria: el emisor las llama por el
+	   manejador, pero necesita saber que pueden caer en el archivo de
+	   registros -- el mismo trato que ARM7_DF_BLOQUE. */
+	ARM7_DF_LDR_REG, ARM7_DF_STR_REG
 };
 
 int arm7_deco_forma(const arm7_deco * e);
@@ -222,15 +227,62 @@ extern int arm7_toco_reg;
 extern int arm7_blq_ult_pasos;
 
 /*
+	El encadenado emitido: lo que el emisor necesita para emitir la cola B/BL
+	de un bloque y el salto directo al sucesor, sin volver al lazo en C por
+	cada salto (el corredor cruzaba al C cada 3,4 pasos). El slot destino es
+	opaco -- arm7_blq es privado de arm7.c -- asi que viajan su direccion y
+	los desplazamientos de los campos que la cadena consulta.
+*/
+typedef struct
+{
+	void *	slot;			/* &arm7_blqs[indice del destino] */
+	DWORD	base;			/* la base que ese slot debe tener */
+} arm7_enlace;
+
+typedef struct
+{
+	/* Desplazamientos dentro de arm7_blq (comunes a los dos enlaces). */
+	int		off_base, off_n, off_ciclos_max;
+	int		off_verif0, off_verif1;
+	int		off_pgen0, off_pgen1;
+	int		off_cadena;
+
+	/* La cola, ya decodificada. */
+	DWORD	pc_cola;		/* direccion de bus de la palabra del salto */
+	unsigned cond;			/* palabra >> 28 (0xE = siempre, 0xF = nunca) */
+	int		bl;				/* 1: escribe r14 = pc_cola + 4 */
+	int		atras;			/* 1: B hacia atras sin BL -> pasa por memo_borde */
+	DWORD	destino;		/* (pc_cola + imm) & ARM7_BUS, constante */
+
+	arm7_enlace	salto;		/* el slot del destino */
+	arm7_enlace	caida;		/* el slot de pc_cola + 4 (condicion no cumplida) */
+} arm7_cola_emitir;
+
+/* El borde de la memoizacion y la contabilidad de "el salto arranco una
+   grabacion": los llama tambien el codigo emitido (la cola emitida reproduce
+   d_salto y el epilogo del lazo en C paso por paso). */
+int  arm7_memo_borde(DWORD destino, DWORD pc_salto);
+void arm7_memo_cola_contabilizar(int ciclos);
+
+/*
 	Instala el traductor de bloques: `emitir` recibe las entradas ya
 	decodificadas de un bloque recto (sin PC ni modo, ver arm7_blq_cabe) y
 	devuelve un puntero a codigo `int fn(void)` que lo ejecuta entero --
-	devuelve los ciclos consumidos y deja en arm7_blq_ult_pasos los pasos --
-	o NULL para dejarle ese bloque al lazo en C. `dir` es la direccion de bus
-	de la primera palabra, con la garantia arm7.r[15] == dir a la entrada.
+	devuelve los ciclos NO comprometidos y ACUMULA en arm7_blq_ult_pasos los
+	pasos (el que llama lo pone en cero; la semantica es += porque el
+	encadenado emitido corre varios bloques por llamada) -- o NULL para
+	dejarle ese bloque al lazo en C. `dir` es la direccion de bus de la
+	primera palabra, con la garantia arm7.r[15] == dir a la entrada.
+
+	`cola` no nulo pide ademas el epilogo del encadenado (compromiso de
+	ciclos, la cola B/BL y el salto directo al sucesor); `cadena` devuelve la
+	entrada interna post-prologo, que es a la que saltan los encadenados de
+	otros bloques.
 */
 void arm7_blq_instalar_emisor(void * (* emitir)(const arm7_deco * entradas,
-                                                int n, DWORD dir));
+                                                int n, DWORD dir,
+                                                const arm7_cola_emitir * cola,
+                                                void ** cadena));
 
 /* Cuantas filas de la tabla existen, y cuantas se ejercitaron. Es lo que mira
    la suite de cobertura. */

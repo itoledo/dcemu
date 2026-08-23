@@ -60,6 +60,7 @@
 #define AJ_CPSR			((int) offsetof(struct arm7_estado, cpsr))
 #define AJ_SPSR			((int) offsetof(struct arm7_estado, spsr))
 #define AJ_INSTR		((int) offsetof(struct arm7_estado, instrucciones))
+#define AJ_CICLOS		((int) offsetof(struct arm7_estado, ciclos))
 
 #define ARM7_N_BIT		0x80000000u
 #define ARM7_Z_BIT		0x40000000u
@@ -112,7 +113,20 @@ static void aj_acarreo_entrada(x64_emisor * e)
 	jit_x64_shift_ri(e, X64_SHL, X64_RCX, 3);
 }
 
-/* La salida comun: las tres constantes de la frontera y el marco afuera. */
+/* El marco afuera y el retorno: RBX (los ciclos no comprometidos) a EAX. */
+static void aj_marco_fuera(x64_emisor * e)
+{
+	jit_x64_mov_rr(e, X64_RAX, X64_RBX);
+	jit_x64_add64_ri(e, X64_RSP, 32);
+	jit_x64_pop(e, X64_RDI);
+	jit_x64_pop(e, X64_RSI);
+	jit_x64_pop(e, X64_RBX);
+	jit_x64_ret(e);
+}
+
+/* La salida comun: las constantes de la frontera y el marco afuera. Los
+   pasos SUMAN sobre arm7_blq_ult_pasos -- el prologo lo puso en cero, y con
+   el encadenado emitido una llamada corre varios tramos que se acumulan. */
 static void aj_salir(x64_emisor * e, DWORD dir, int pasos)
 {
 	jit_x64_mov_mi(e, X64_RSI, AJ_R(15), dir + 4u * (unsigned) pasos);
@@ -120,14 +134,9 @@ static void aj_salir(x64_emisor * e, DWORD dir, int pasos)
 
 	jit_x64_mov64_ri(e, X64_RCX,
 		(unsigned long long) (size_t) &arm7_blq_ult_pasos);
-	jit_x64_mov_mi(e, X64_RCX, 0, (unsigned) pasos);
+	jit_x64_alu_mi(e, X64_ADD, X64_RCX, 0, pasos);
 
-	jit_x64_mov_rr(e, X64_RAX, X64_RBX);
-	jit_x64_add64_ri(e, X64_RSP, 32);
-	jit_x64_pop(e, X64_RDI);
-	jit_x64_pop(e, X64_RSI);
-	jit_x64_pop(e, X64_RBX);
-	jit_x64_ret(e);
+	aj_marco_fuera(e);
 }
 
 /* La comprobacion del teorema 4 tras un acceso a memoria: si el acceso cayo
@@ -741,16 +750,165 @@ static void aj_str_imm(x64_emisor * e, const arm7_deco * d, DWORD pc8,
 }
 
 /* ------------------------------------------------------------------------ */
+/* El epilogo del encadenado (la cola B/BL y el salto directo al sucesor)   */
+/* ------------------------------------------------------------------------ */
+
+/*
+	La cadena hacia un slot: las mismas cinco comprobaciones del lazo en C
+	(base, n, presupuesto con lo no comprometido, y el sello de onda por sus
+	dos paginas), y el salto a la ENTRADA INTERNA del sucesor -- post-prologo,
+	con RSI/RBX vivos y arm7_blq_ult_pasos acumulando -- o al talon crudo, que
+	sale al C con el estado en una frontera de instruccion. r15 ya viene
+	puesto por el camino que llega aca.
+*/
+static void aj_cadena(x64_emisor * e, const arm7_enlace * enl,
+	const arm7_cola_emitir * c, x64_parche * crudo, int * nc)
+{
+	jit_x64_mov64_ri(e, X64_RCX, (unsigned long long) (size_t) enl->slot);
+
+	jit_x64_cmp_mi(e, X64_RCX, c->off_base, (int) enl->base);
+	crudo[(*nc)++] = jit_x64_jcc(e, X64_NE);
+
+	jit_x64_test_mi8(e, X64_RCX, c->off_n, -1);
+	crudo[(*nc)++] = jit_x64_jcc(e, X64_E);
+
+	/* Teorema 2: (no comprometido + ciclos_max) > arm7.ciclos rechaza. */
+	jit_x64_mov_rm(e, X64_RAX, X64_RCX, c->off_ciclos_max);
+	jit_x64_add_rr(e, X64_RAX, X64_RBX);
+	jit_x64_cmp_rm(e, X64_RAX, X64_RSI, AJ_CICLOS);
+	crudo[(*nc)++] = jit_x64_jcc(e, X64_G);
+
+	/* El sello de onda: verif_gen[i] == *pgen[i]. */
+	jit_x64_mov64_rm(e, X64_RDX, X64_RCX, c->off_pgen0);
+	jit_x64_mov_rm(e, X64_RAX, X64_RDX, 0);
+	jit_x64_cmp_rm(e, X64_RAX, X64_RCX, c->off_verif0);
+	crudo[(*nc)++] = jit_x64_jcc(e, X64_NE);
+
+	jit_x64_mov64_rm(e, X64_RDX, X64_RCX, c->off_pgen1);
+	jit_x64_mov_rm(e, X64_RAX, X64_RDX, 0);
+	jit_x64_cmp_rm(e, X64_RAX, X64_RCX, c->off_verif1);
+	crudo[(*nc)++] = jit_x64_jcc(e, X64_NE);
+
+	jit_x64_mov64_rm(e, X64_RAX, X64_RCX, c->off_cadena);
+	jit_x64_test64_rr(e, X64_RAX, X64_RAX);
+	crudo[(*nc)++] = jit_x64_jcc(e, X64_E);
+
+	jit_x64_jmp_r(e, X64_RAX);
+}
+
+/*
+	La cola B/BL emitida, paso por paso el epilogo del lazo en C:
+
+	1. el compromiso del cuerpo ANTES de la cola (arm7.ciclos -= RBX) -- la
+	   regla del borde del memo, que compara contra arm7.ciclos;
+	2. la contabilidad del tramo entero, cola incluida (el interprete la
+	   cuenta aunque la condicion falle);
+	3. la cola: condicion, r14 si BL, y en el B hacia atras el borde de la
+	   memoizacion con sus tres desenlaces -- repuesto (PC y ciclos ya
+	   estan: al C, el destino del replay es dinamico), grabacion armada
+	   (contabilidad del memo y al C: grabando no se corre bloque), o el
+	   salto normal;
+	4. la cadena al sucesor que toque (destino o caida).
+
+	El talon crudo comparte salida: r15, instrucciones y ult_pasos ya estan
+	al dia en todo camino que llega, y RBX es lo no comprometido.
+*/
+static void aj_cola(x64_emisor * e, int rectas, const arm7_cola_emitir * c)
+{
+	x64_parche	crudo[16];
+	int			nc = 0;
+	aj_cond		cond = { { { NULL, 0 }, { NULL, 0 } }, 0 };
+	x64_parche	nv   = { NULL, 0 };
+	int			i;
+
+	jit_x64_alu_mr(e, X64_SUB, X64_RSI, AJ_CICLOS, X64_RBX);
+	aj_cero(e, X64_RBX);
+
+	jit_x64_add64_mi(e, X64_RSI, AJ_INSTR, rectas + 1);
+	jit_x64_mov64_ri(e, X64_RCX,
+		(unsigned long long) (size_t) &arm7_blq_ult_pasos);
+	jit_x64_alu_mi(e, X64_ADD, X64_RCX, 0, rectas + 1);
+
+	if (c->cond == 0xF)
+		nv = jit_x64_jmp(e);
+	else if (c->cond != 0xE)
+		cond = aj_condicion(e, c->cond);
+
+	/* --- tomada --------------------------------------------------------- */
+	if (c->cond != 0xF)
+	{
+		jit_x64_add_ri(e, X64_RBX, 1);			/* ciclos_op arranca en 1 */
+
+		if (c->bl)
+			jit_x64_mov_mi(e, X64_RSI, AJ_R(14), c->pc_cola + 4);
+
+		if (c->atras)
+		{
+			jit_x64_mov_ri(e, X64_RCX, c->destino);
+			jit_x64_mov_ri(e, X64_RDX, c->pc_cola);
+			aj_llamar(e, (const void *) arm7_memo_borde);
+			jit_x64_test_rr(e, X64_RAX, X64_RAX);
+			crudo[nc++] = jit_x64_jcc(e, X64_NE);	/* repuesto */
+		}
+
+		jit_x64_add_ri(e, X64_RBX, 2);			/* el salto tomado: +2 */
+		jit_x64_mov_mi(e, X64_RSI, AJ_R(15), c->destino);
+
+		if (c->atras)
+		{
+			x64_parche sigue;
+
+			jit_x64_mov64_ri(e, X64_RCX,
+				(unsigned long long) (size_t) &arm7_memo_fin);
+			jit_x64_cmp_mi(e, X64_RCX, 0, -1);
+			sigue = jit_x64_jcc(e, X64_E);
+
+			jit_x64_mov_ri(e, X64_RCX, 3);
+			aj_llamar(e, (const void *) arm7_memo_cola_contabilizar);
+			crudo[nc++] = jit_x64_jmp(e);
+
+			jit_x64_fijar(e, sigue);
+		}
+
+		aj_cadena(e, &c->salto, c, crudo, &nc);
+	}
+
+	/* --- no tomada ------------------------------------------------------ */
+	if (c->cond != 0xE)
+	{
+		for (i = 0; i < cond.np; i++)
+			jit_x64_fijar(e, cond.p[i]);
+
+		if (c->cond == 0xF)
+			jit_x64_fijar(e, nv);
+
+		jit_x64_add_ri(e, X64_RBX, 1);
+		jit_x64_mov_mi(e, X64_RSI, AJ_R(15), c->pc_cola + 4);
+
+		aj_cadena(e, &c->caida, c, crudo, &nc);
+	}
+
+	for (i = 0; i < nc; i++)
+		jit_x64_fijar(e, crudo[i]);
+
+	aj_marco_fuera(e);
+}
+
+/* ------------------------------------------------------------------------ */
 /* El bloque                                                                */
 /* ------------------------------------------------------------------------ */
 
-static void * aj_emitir(const arm7_deco * ent, int n, DWORD dir)
+static void * aj_emitir(const arm7_deco * ent, int n, DWORD dir,
+	const arm7_cola_emitir * cola, void ** cadena)
 {
 	x64_emisor		e;
 	unsigned char *	inicio;
 	aj_salida		sal[16];
 	int				ns = 0;
 	int				i;
+
+	if (cadena != NULL)
+		*cadena = NULL;
 
 	if (aj_arena == NULL || aj_usado + AJ_MARGEN > AJ_ARENA_TAM)
 	{
@@ -772,6 +930,16 @@ static void * aj_emitir(const arm7_deco * ent, int n, DWORD dir)
 	jit_x64_mov64_ri(&e, X64_RCX,
 		(unsigned long long) (size_t) &arm7_toco_reg);
 	jit_x64_mov_mi(&e, X64_RCX, 0, 0);
+
+	/* El acumulador de pasos arranca en cero SOLO en la entrada desde C: la
+	   entrada interna (adonde saltan los encadenados) va despues, con RSI y
+	   RBX vivos del que salta y los pasos previos acumulados. */
+	jit_x64_mov64_ri(&e, X64_RCX,
+		(unsigned long long) (size_t) &arm7_blq_ult_pasos);
+	jit_x64_mov_mi(&e, X64_RCX, 0, 0);
+
+	if (cadena != NULL)
+		*cadena = jit_x64_aqui(&e);
 
 	for (i = 0; i < n; i++)
 	{
@@ -828,6 +996,14 @@ static void * aj_emitir(const arm7_deco * ent, int n, DWORD dir)
 			aj_toco(&e, sal, &ns, i + 1);
 			break;
 
+		case ARM7_DF_LDR_REG:
+		case ARM7_DF_STR_REG:
+			/* Tocan memoria: mismo trato que BLOQUE -- el acceso pudo caer
+			   en el archivo de registros y el bloque sale por el costado. */
+			aj_fallback(&e, d, pc8 - 8);
+			aj_toco(&e, sal, &ns, i + 1);
+			break;
+
 		default:
 			/* ALU_REG_S1 y lo que quede: por el manejador. Ninguno toca
 			   memoria (los que si, tienen forma propia o son BLOQUE). */
@@ -847,7 +1023,10 @@ static void * aj_emitir(const arm7_deco * ent, int n, DWORD dir)
 		}
 	}
 
-	aj_salir(&e, dir, n);
+	if (cola != NULL)
+		aj_cola(&e, n, cola);
+	else
+		aj_salir(&e, dir, n);
 
 	/* Los talones de las salidas laterales, con las constantes de su
 	   frontera. */
@@ -860,6 +1039,10 @@ static void * aj_emitir(const arm7_deco * ent, int n, DWORD dir)
 	if (e.desborde)
 	{
 		aj_declinados++;
+
+		if (cadena != NULL)
+			*cadena = NULL;
+
 		return NULL;
 	}
 
