@@ -10,12 +10,14 @@ archivo guarda las conclusiones que hacen falta para trabajar, no el camino.
 `build-pgo/dcemu-jit.pgd` — ver la sección de PGO de CLAUDE.md). `DCEMU_JIT=2` es el
 traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
 
-- **122 plantillas**, seleccionadas por censo de qué corta bloques (no por completar
-  `opcodes[]`) — las últimas cinco las pidió **el censo de la frontera por peso**
-  (abajo): las dos `MOV.W` que picaban el lazo de columnas de DOOM en ocho bloques de
-  2-10 instrucciones corridos 9,4 M de veces cada uno, `NEGC` (por manejador) y
-  `LDC Rm,GBR`, más `MOV.L @(disp,GBR),R0` (C6xx). Lo que corta hoy: palabras de
-  datos (deben cortar), escritores de SR, `TRAPA` y lo que la clave FPU gobierna.
+- **134 plantillas**, seleccionadas por censo de qué corta bloques (no por completar
+  `opcodes[]`) — las últimas doce las pidió **el censo ponderado por veces**
+  (2026-08-18, `docs/jit-sota-plan.md` fase B.2): PREF (el flush de store queue, el
+  cortador más pesado de CT), la geometría FPU (FTRV/FIPR/FMAC/FSCA/FSRRA, por el
+  envoltorio ligero), los movedores de FPUL/PR (emisión directa) y XTRCT/ADDC (por
+  manejador). Lo que corta hoy, por peso: los escritores de SR y de bancos (DOOM
+  ~62 % de las cortadas), la fila FPU en ranura de retardo (CT 35,4 % de las
+  entradas), FSCHG/FRCHG, LDTLB, TRAPA y las palabras de datos (deben cortar).
 - **Los pares de rama** (`rts`/`bra`/`jmp`/`braf`/`jsr`/`bsr`/`bsrf` + ranura con
   memoria) ya no cortan: la emisión sincroniza con el PC
   de la RAMA antes de tocar nada (la falta reejecuta desde la rama, como la
@@ -30,13 +32,15 @@ traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
   bloque, ponderado por las veces que se corrió. Es lo que separa «hay muchos sitios»
   de «por ahí pasa la ejecución», y lo que eligió el lote de arriba. El residuo que
   nombra hoy palabras de datos, `TRAPA` y escritores de SR.
-- **Exacto al dígito con capturas byte a byte en tres guests**: DCDoom (MMU, **93,8 %**
-  de cobertura, 48,4 por entrada), Crazy Taxi (**96,2 %**, 20,1) y Sega Rally 2
-  (MMU+FPU, **95,2 %**, 24,8). **Marcas vigentes: tanda del 2026-08-15, binario
-  reentrenado `037F3330A41E0FA0`** (`herramientas/flujo-ab.ps1`, tres brazos —
-  el brazo del intérprete viaja con el A/B del flujo para no pagar dos
-  reentrenamientos): DCDoom **26 561 ms, −39,1 %** y **1,32× tiempo real**;
-  CT **103 426 ms, −16,5 %** (1,74×); SR2 **53 533 ms, −27,8 %** y **1,12×**.
+- **Exacto al dígito con capturas byte a byte en tres guests** (y en el trío CHD —
+  18 Wheeler, THPS2, CvS2 — desde la fase A de `jit-sota-plan.md`). **Marcas
+  vigentes: tanda del 2026-08-19, binario reentrenado `14D6AFDA3C7BF7BE`**, tras
+  los lotes B.2 (censo ponderado) y B.2b (filas terminales + FPU en ranura):
+  DCDoom **25 520-25 529 ms, −41,5 %, 1,37×**; CT **80 984-82 048 ms, −27,6 %,
+  2,21×** (venía de −16,5 % y 1,74× antes de B.2; el banco cambió de camino:
+  21,93 G instrucciones — el A/B interno es el veredicto); SR2 **51 745-52 335 ms,
+  −29,7 %, 1,16×**. Entradas al despachador: DOOM 56,1 por entrada, CT 34,4,
+  SR2 35,2; en SR2 la fila terminal absorbe el 13,4 % de las entradas.
   Contra la tanda anterior (`5B9CAAE45A977784`, índice de enlaces) lo que se
   movió es **SR2, de −25,6 % a −27,8 %**: es la separación de la clave de
   verificación, que se había medido sobre el binario entrenado para el escalón

@@ -1,6 +1,9 @@
 # El plan del estado del arte
 
-Estado: **en curso**. Escrito el 2026-08-09 sobre la rama `rendimiento-hilos`. La meta,
+Estado: **en curso**. Escrito el 2026-08-09 sobre la rama `rendimiento-hilos`.
+**La segunda vuelta — fases 7 y 8 heredadas con techos frescos, la FPU emitida y
+el material CHD — vive en `jit-sota-plan.md` (2026-08-18)**; este archivo queda
+como el registro de las fases 0-6. La meta,
 acordada: **implementar las tecnologías del estado del arte en emulación** — las que
 usan flycast y sus pares — adaptadas a la disciplina de este árbol, buscando
 rendimiento comparable, **sin carrera directa de cifras contra flycast** (no se lo
