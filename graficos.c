@@ -12,11 +12,16 @@
 #include "vram.h"			/* las dos ventanas de la RAM de video */
 #include "glmoderno.h"		/* el destino de render propio (--render=fbo) */
 #include <math.h>			/* log2f, profundidad_ta() */
+#include "tmu.h"			/* reloj_ms(), para fechar los mensajes */
 //#include "glops.h"
 #include "render.h"
 
 
 #define TEXTURE_CACHING
+
+/* Definidas mas abajo, usadas desde antes. */
+static int shader_activo(void);
+static int volumen_px(void);
 
 
 SDL_Surface *screen;

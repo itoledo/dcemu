@@ -70,6 +70,9 @@
 #include "shift.h"
 #include "branch.h"
 #include "floatsimple.h"
+#include "floatcontrol.h"	/* lds214, sts218 */
+#include "floatgraph.h"		/* fipr, ftrv, fsrra */
+#include "dcopcodes.h"		/* fsca */
 #include "syscontrol.h"
 
 /* El emisor produce x86-64 y el contexto se direcciona por desplazamiento, asi
@@ -189,6 +192,44 @@ static jit_estado_t jit_estado;
 /* Solo desde C: el despachador las lleva, el codigo emitido no las toca. */
 static unsigned long long jit_entradas  = 0;
 static unsigned long long jit_rechazos  = 0;
+
+/*
+	El desglose de los rechazos, porque el total mezcla tres causas que piden
+	correcciones distintas: el modo MMU de la emision, el modo FPU
+	(PR/SZ/Enable) y las palabras (jit_verificar). Camino frio -- decenas o
+	cientos de miles por segundo, no millones -- asi que el censo por PC cabe:
+	64 ranuras por hash abierto alcanzan para nombrar a los reincidentes.
+*/
+static unsigned long long jit_rechazos_modo     = 0;
+static unsigned long long jit_rechazos_fpu      = 0;
+static unsigned long long jit_rechazos_palabras = 0;
+
+typedef struct
+{
+	DWORD				pc;
+	unsigned long long	veces[3];		/* modo, fpu, palabras */
+} jit_rechazo_sitio;
+
+static jit_rechazo_sitio jit_rechazo_sitios[64];
+
+static void jit_rechazo_censar(DWORD pc, int causa)
+{
+	unsigned i = (pc >> 1) & 63;
+	unsigned k;
+
+	for (k = 0; k < 8; k++, i = (i + 1) & 63)
+	{
+		jit_rechazo_sitio * s = &jit_rechazo_sitios[i];
+
+		if (s->pc == pc || s->pc == 0)
+		{
+			s->pc = pc;
+			s->veces[causa]++;
+			return;
+		}
+	}
+	/* Tabla llena en ese vecindario: el total ya lo cuenta. */
+}
 
 
 /* ------------------------------------------------------------------------ */
@@ -518,6 +559,11 @@ typedef struct
 	   ponderado por veces en el resumen. Es lo que dice DONDE esta el costo
 	   de frontera de verdad, por peso de ejecucion y no por sitios. */
 	unsigned char	fin;
+	/* La palabra que corto el descubrimiento (0 si el fin no tiene palabra).
+	   Con `veces` da el censo de la frontera POR PALABRA ponderado por
+	   ejecucion: la lista sin ponderar de jit_censar() cuenta sitios de
+	   traduccion, y un solo sitio caliente vale millones de entradas. */
+	WORD			corte;
 	unsigned long long veces;
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
@@ -632,6 +678,13 @@ static int					jit_par_rts = 1;
 static int					jit_par_llamadas = 1;
 static unsigned long long	jit_pares_rts = 0;
 
+/* Las dos mitades del lote B.2b (jit-sota-plan.md), cada una con su palanca:
+   DCEMU_JIT_SIN_TERMINALES=1 apaga las filas terminales (vuelven a cortar como
+   si no tuvieran plantilla) y DCEMU_JIT_SIN_RANURA_FPU=1 les devuelve a las
+   filas FPU directas la prohibicion de ranura. */
+static int					jit_terminales = 1;
+static int					jit_ranura_fpu = 1;
+
 /* En que termino el descubrimiento de una traza: el censo de la frontera. */
 #define JIT_FIN_PLANTILLA	0	/* palabra sin plantilla (el censo la nombra) */
 #define JIT_FIN_TOPE		1	/* JIT_MAX_INSTR */
@@ -641,13 +694,14 @@ static unsigned long long	jit_pares_rts = 0;
 #define JIT_FIN_PAR			5	/* par de rama */
 #define JIT_FIN_LAZO		6	/* el destino ya estaba en la traza */
 #define JIT_FIN_FPU			7	/* la compuerta o FD */
-#define JIT_FIN_N			8
+#define JIT_FIN_TERMINAL	8	/* fila terminal: el bloque termina en ella */
+#define JIT_FIN_N			9
 
 static const char * const jit_fin_nombre[JIT_FIN_N] =
 {
 	"sin plantilla", "tope de 64", "ventana de 1 KB", "rama/FPU en ranura",
 	"ranura con memoria (sin par)", "par de rama", "lazo cerrado",
-	"compuerta FPU"
+	"compuerta FPU", "fila terminal"
 };
 
 /*
@@ -771,6 +825,13 @@ static void jit_unwind_armar(unsigned char * ui, const jit_marco * m,
 
 #endif /* _WIN32 */
 
+/* DCEMU_JIT_SIN_VARIANTES_FPU=1: la busqueda vuelve a ser ciega al modo (la
+   conducta anterior, donde el modo equivocado era un rechazo que mandaba el
+   tramo al interprete). */
+static int jit_variantes_fpu = 1;
+
+static unsigned long long jit_fpu_variantes = 0;	/* traducciones hermanas */
+
 static jit_bloque * jit_buscar(DWORD pc)
 {
 	unsigned h = jit_hash_de(pc);
@@ -784,7 +845,24 @@ static jit_bloque * jit_buscar(DWORD pc)
 			return NULL;
 
 		if (jit_bloques[b].pc == pc)
-			return &jit_bloques[b];
+		{
+			/*
+				La variante por modo FPU: un bloque con filas FPU solo vale
+				bajo el modo con el que se emitio (b->fpu), asi que el modo
+				equivocado se SALTEA y el sondeo sigue -- el miss traduce la
+				variante de este modo y las dos conviven en el hash abierto.
+				Antes esto era un rechazo del despachador que mandaba el
+				tramo al interprete: el desglose midio 3,9 M por minuto en
+				SR2 (dos sitios con el 94 %) y 5,8 M en 35 s de DOOM. La
+				premisa del comentario del rechazo --"el flip encierra la
+				secuencia"-- vale para los sitios fmov de un bloque, no para
+				un bloque cuya ENTRADA se visita bajo los dos modos.
+			*/
+			if (!jit_variantes_fpu
+				|| jit_bloques[b].fpu < 0
+				|| (unsigned) jit_bloques[b].fpu == jit_fpu_visto)
+				return &jit_bloques[b];
+		}
 	}
 
 	return NULL;
@@ -2394,6 +2472,11 @@ struct jit_traduccion
 	   no coincide. Se limpia por fila al anexar. */
 	DWORD					sigue_en[JIT_MAX_INSTR];
 	int						fin;			/* JIT_FIN_*: en que termino */
+	/* La palabra que corto el descubrimiento (0 si el fin no tiene palabra:
+	   tope, ventana, lazo, par). En un corte de ranura es la palabra de la
+	   RANURA -- la fila FPU o el acceso sin par que no pudo entrar --, que es
+	   la que nombra que plantilla o regla falta. */
+	WORD					corte;
 
 	unsigned char *			etiqueta[JIT_MAX_INSTR];
 	x64_parche				adelante[JIT_MAX_INSTR];
@@ -2452,6 +2535,21 @@ struct jit_plantilla
 	   volver, comprometerlo tarde es indistinguible. Los condicionales
 	   (BF/S, BT/S) quedan para cuando el censo los pida. */
 	unsigned char	par;
+	/* La emision es directa y no toca PC ni llama manejador: admisible en una
+	   ranura de retardo aunque sea fila FPU. La prohibicion general existia
+	   por el PC += 2 de los manejadores sobre el contexto -- que en una
+	   ranura pisa el destino capturado --, y una fila que se emite con puros
+	   movs no lo carga. El censo ponderado la pidio: FSTS/FMOV/FLDI en
+	   ranura eran el 35 % de las entradas de Crazy Taxi. */
+	unsigned char	sin_pc;
+	/* Fila TERMINAL: se traduce por manejador con sync completa y el bloque
+	   TERMINA en ella, sin enlace de salida -- el despachador re-evalua la
+	   clave entera y el PC sale del contexto, porque el manejador es su
+	   dueno (TRAPA no deja pc+2). Es lo que permite traducir escritores de
+	   SR/FPSCR y LDTLB sin violar la lista blanca de tr_manejador, que es
+	   para filas EN MEDIO del bloque. Nunca entra en una ranura ni forma
+	   par. */
+	unsigned char	terminal;
 };
 
 #define TN(w)	(((w) >> 8) & 0x0F)
@@ -4276,6 +4374,144 @@ static void pl_negc68(jit_gen * g, jit_traduccion * t, int i)
 	tr_manejador(g, t, i, (const void *) negc68);
 }
 
+/* ADDC y XTRCT, por el manejador y por el mismo motivo que NEGC: la formula
+   exacta de T en uno, y no depender del tamano de operando de los shifts en
+   el otro. Ninguno puede faltar; el accede=1 es la sincronizacion. */
+static void pl_addc41(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) addc41);
+}
+
+static void pl_xtrct38(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) xtrct38);
+}
+
+/*
+	PREF @Rn: el flush de store queue -- la via por la que Crazy Taxi manda su
+	geometria al TA, y su cortador mas pesado (15,8 % de las entradas cortadas
+	del censo ponderado). Pasa la lista blanca de tr_manejador porque su unica
+	falta posible (mmu_traducir_sq, que no vuelve) va ANTES de toda mutacion:
+	addr y src son locales, y memwrite_fisico/TA/PC/ciclos vienen despues. La
+	fila lleva escribe=1: el volcado puede caer en RAM (memcpy por SQ), y en
+	bloques MMU detras de cada escritura va el corte de epoca.
+*/
+static void pl_pref142(jit_gen * g, jit_traduccion * t, int i)
+{
+	tr_manejador(g, t, i, (const void *) pref142);
+}
+
+/*
+	Las filas TERMINALES del lote B.2b: escritores de SR/FPSCR, LDTLB y TRAPA.
+	La emision es tr_manejador tal cual -- su gen_corte ya se saltea en la
+	ultima fila, que es la unica posicion en que una terminal puede estar --,
+	y el bloque sale por gen_salir_terminal (PC del contexto, sin enlace).
+	Tras la llamada tr_manejador recarga los slots del contexto, asi que un
+	cambio de banco (LDC SR, TRAPA, FRCHG) llega entero al volcado de salida.
+*/
+static void pl_ldc116(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) ldc116); }
+static void pl_ldtlb136(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) ldtlb136); }
+static void pl_trapa169(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) trapa169); }
+static void pl_fschg233(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) fschg233); }
+static void pl_frchg232(jit_gen * g, jit_traduccion * t, int i) { tr_manejador(g, t, i, (const void *) frchg232); }
+
+/* Y los lectores/escritores de sistema que NO necesitan ser terminales: no
+   tocan SR.MD/RB ni FPSCR ni los registros activos (LDC Rm,Rn_BANK escribe
+   el banco INACTIVO), asi que entran a la lista blanca comun. */
+static void pl_ldc119(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) ldc119); }
+static void pl_ldc120(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) ldc120); }
+static void pl_ldc123(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) ldc123); }
+static void pl_stc152(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) stc152); }
+static void pl_stc153(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) stc153); }
+
+/*
+	El sub-lote B.2c del censo post-B.2b.
+
+	RTE es la fila terminal perfecta: su manejador es autocontenido -- busca la
+	ranura ANTES de escribir SR (la regla del manual), la ejecuta por dentro
+	con core.execute y deja PC en SPC --, asi que el mecanismo terminal lo
+	traduce sin maquinaria nueva y su contrato de falta es el del interprete:
+	la sync previa hace reejecutable al RTE, y una falta en la ranura reejecuta
+	el RTE entero, igual que la instantanea. La ranura ejecutada por dentro
+	cuenta sus ciclos e instrucciones en el manejador, identico por
+	construccion. LDS Rm,FPSCR es el otro escritor de FPSCR con peso (SR2):
+	terminal como FSCHG, con fpu=1 por el 0x800 de FD.
+
+	Los tres por manejador comun pasan la lista blanca con las lecturas antes
+	de las mutaciones: LDS.L @Rm+,MACH (el 27,9 % de las cortadas de DOOM),
+	MOV.W @(d,Rm),R0 y MULS.W.
+*/
+static void pl_rte143(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) rte143); }
+static void pl_lds213(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) lds213); }
+static void pl_ldsl133(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) ldsl133); }
+static void pl_movw20(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador(g, t, i, (const void *) movw20); }
+static void pl_mulsw65(jit_gen * g, jit_traduccion * t, int i)  { tr_manejador(g, t, i, (const void *) mulsw65); }
+
+/* Aca vivio un dia el lote B.3 (LDC.L @Rm+,GBR, 2026-08-21) y se revirtio
+   MEDIDO: era la fila mas pesada del censo ponderado (53,3 % de las entradas
+   cortadas de DOOM) y la tanda salio neutra con direccion leve en contra --
+   los cortes "sin plantilla" ya estaban enlazados, asi que la fila solo
+   ahorraba un salto encadenado barato y sumaba una entrada al barrido lineal
+   de plantillas. La leccion completa en docs/jit-sota-plan.md: la frontera
+   por peso ya no predice tiempo, y la serie B queda cerrada por medicion. */
+
+/* Los movedores de FPUL y PR: emision directa, solo movs (el molde es
+   pl_sts164). El registro entero vive en su slot o en el contexto -- por eso
+   NO pueden ir por el envoltorio ligero, que no sincroniza los slots. Las
+   filas de FPUL llevan fpu=1: son instrucciones FPU (0x800 con FD puesto) y
+   la clave del bloque las cubre. Ciclos en la fila, del cuerpo entero de cada
+   manejador: lds214 1, sts218 3, lds132 3, sts165 2. */
+static void pl_lds214(jit_gen * g, jit_traduccion * t, int i)	/* LDS Rm,FPUL */
+{
+	tr_cargar(g, t, X64_RAX, TN(t->palabra[i]));
+	jit_x64_mov_mr(&g->e, CTX, O_FPUL, X64_RAX);
+}
+
+static void pl_sts218(jit_gen * g, jit_traduccion * t, int i)	/* STS FPUL,Rn */
+{
+	int n  = TN(t->palabra[i]);
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_mov_rm(&g->e, (x64_reg) hn, CTX, O_FPUL);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_FPUL);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+static void pl_lds132(jit_gen * g, jit_traduccion * t, int i)	/* LDS Rm,PR */
+{
+	tr_cargar(g, t, X64_RAX, TN(t->palabra[i]));
+	jit_x64_mov_mr(&g->e, CTX, O_PR, X64_RAX);
+}
+
+static void pl_sts165(jit_gen * g, jit_traduccion * t, int i)	/* STS PR,Rn */
+{
+	int n  = TN(t->palabra[i]);
+	int hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_mov_rm(&g->e, (x64_reg) hn, CTX, O_PR);
+	else
+	{
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_PR);
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RAX);
+	}
+}
+
+/* La geometria de floatgraph.c por el envoltorio ligero, como FADD: puras
+   sobre FR/XF/FPUL, sin registro entero y sin falta con Enables=0. Cada
+   manejador suma sus propios ciclos -- FIPR/FTRV/FSRRA 4, FMAC 3 y FSCA
+   NINGUNO, leido del cuerpo entero: el envoltorio reproduce lo que el
+   interprete haga, sume o no. */
+static void pl_ftrv(jit_gen * g, jit_traduccion * t, int i)    { tr_manejador_fpu(g, t, i, (const void *) ftrv); }
+static void pl_fipr(jit_gen * g, jit_traduccion * t, int i)    { tr_manejador_fpu(g, t, i, (const void *) fipr); }
+static void pl_fmac194(jit_gen * g, jit_traduccion * t, int i) { tr_manejador_fpu(g, t, i, (const void *) fmac194); }
+static void pl_fsca(jit_gen * g, jit_traduccion * t, int i)    { tr_manejador_fpu(g, t, i, (const void *) fsca); }
+static void pl_fsrra(jit_gen * g, jit_traduccion * t, int i)   { tr_manejador_fpu(g, t, i, (const void *) fsrra); }
+
 static void pl_or77(jit_gen * g, jit_traduccion * t, int i)		/* OR #imm,R0 */
 {
 	int imm = (int) (t->palabra[i] & 0xFF);
@@ -4419,7 +4655,9 @@ static jit_plantilla jit_plantillas[] =
 	   que busca "cycles +=" por cercania le robo el 2 del manejador
 	   siguiente, que costo 633 millones de instrucciones de divergencia. La
 	   aritmetica va por el manejador real y lleva 0 aqui. */
-	{ NULL, "FMOV FRm,FRn",        0, 0, 0, 0, pl_fmov172,  1 },
+	/* sin_pc (campo 8vo tras emitir): emision directa sin PC ni manejador --
+	   admisible en ranura de retardo. Solo las filas FPU sin memoria. */
+	{ NULL, "FMOV FRm,FRn",        0, 0, 0, 0, pl_fmov172,  1, 0, 0, 0, 0, 0, 0, 1 },
 	{ NULL, "FMOV.S @Rm,FRn",      2, 1, 0, 0, pl_fmovs173, 1 },
 	{ NULL, "FMOV.S @(R0,Rm),FRn", 1, 1, 0, 0, pl_fmovs174, 1 },
 	{ NULL, "FMOV.S @Rm+,FRn",     2, 1, 0, 0, pl_fmovs175, 1 },
@@ -4437,13 +4675,13 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "FNEG FRn",            0, 0, 0, 0, pl_fneg196,  1 },
 	{ NULL, "FABS FRn",            0, 0, 0, 0, pl_fabs188,  1 },
 	{ NULL, "FSQRT FRn",           0, 0, 0, 0, pl_fsqrt197, 1, 1 },
-	{ NULL, "FLDS FRm,FPUL",       0, 0, 0, 0, pl_flds186,  1 },
-	{ NULL, "FSTS FPUL,FRn",       0, 0, 0, 0, pl_fsts187,  1 },
-	{ NULL, "FLDI0 FRn",           0, 0, 0, 0, pl_fldi0170, 1 },
-	{ NULL, "FLDI1 FRn",           0, 0, 0, 0, pl_fldi1171, 1 },
+	{ NULL, "FLDS FRm,FPUL",       0, 0, 0, 0, pl_flds186,  1, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "FSTS FPUL,FRn",       0, 0, 0, 0, pl_fsts187,  1, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "FLDI0 FRn",           0, 0, 0, 0, pl_fldi0170, 1, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "FLDI1 FRn",           0, 0, 0, 0, pl_fldi1171, 1, 0, 0, 0, 0, 0, 0, 1 },
 	/* Los pares de sz1: un acceso de 8 bytes, como en los manejadores. El 0
 	   de FMOV DRm,DRn es del manejador. */
-	{ NULL, "FMOV DRm,DRn",        0, 0, 0, 0, pl_fmov179,  1 },
+	{ NULL, "FMOV DRm,DRn",        0, 0, 0, 0, pl_fmov179,  1, 0, 0, 0, 0, 0, 0, 1 },
 	{ NULL, "FMOV @Rm,DRn",        2, 1, 0, 0, pl_fmov180,  1 },
 	{ NULL, "FMOV @(R0,Rm),DRn",   2, 1, 0, 0, pl_fmov181,  1 },
 	{ NULL, "FMOV @Rm+,DRn",       2, 1, 0, 0, pl_fmov182,  1 },
@@ -4471,6 +4709,48 @@ static jit_plantilla jit_plantillas[] =
 	{ NULL, "NEGC Rm,Rn",          0, 1, 0, 0, pl_negc68 },
 	{ NULL, "LDC Rm,GBR",          3, 0, 0, 0, pl_ldc117 },
 	{ NULL, "MOV.L @(d,GBR),R0",   2, 1, 0, 0, pl_movl33 },
+	/* El lote del censo ponderado (2026-08-18, fase B.2 de jit-sota-plan.md):
+	   los cortadores por peso de verdad, que la lista sin ponderar escondia.
+	   PREF con escribe=1 (el volcado de SQ puede caer en RAM) y ciclos 0 (el
+	   manejador suma el suyo); la geometria FPU por el envoltorio ligero, con
+	   los ciclos del manejador (FSCA no suma ninguno); los movedores directos
+	   con los ciclos en la fila, leidos del cuerpo entero; LDS Rm,PR con
+	   escribe_pr=1 -- invalida el rastreo del punto de retorno, como hacia
+	   gratis cuando cortaba. */
+	{ NULL, "PREF @Rn",            0, 1, 0, 0, pl_pref142, 0, 0, 1 },
+	{ NULL, "FTRV XMTRX,FVn",      0, 0, 0, 0, pl_ftrv,    1, 1 },
+	{ NULL, "FIPR FVm,FVn",        0, 0, 0, 0, pl_fipr,    1, 1 },
+	{ NULL, "FMAC FR0,FRm,FRn",    0, 0, 0, 0, pl_fmac194, 1, 1 },
+	{ NULL, "FSCA FPUL,DRn",       0, 0, 0, 0, pl_fsca,    1, 1 },
+	{ NULL, "FSRRA FRn",           0, 0, 0, 0, pl_fsrra,   1, 1 },
+	{ NULL, "LDS Rm,FPUL",         1, 0, 0, 0, pl_lds214,  1, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "STS FPUL,Rn",         3, 0, 0, 0, pl_sts218,  1, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "LDS Rm,PR",           3, 0, 0, 0, pl_lds132,  0, 0, 0, 0, 1 },
+	{ NULL, "STS PR,Rn",           2, 0, 0, 0, pl_sts165 },
+	{ NULL, "XTRCT Rm,Rn",         0, 1, 0, 0, pl_xtrct38 },
+	{ NULL, "ADDC Rm,Rn",          0, 1, 0, 0, pl_addc41 },
+	/* El lote B.2b (2026-08-18). Campos tras `par`: sin_pc, terminal. Las
+	   cinco terminales (accede=1 por la sync; el manejador suma sus ciclos y
+	   es dueno del PC); los lectores/escritores de sistema que entran a la
+	   lista blanca comun; y nada mas -- las marcas sin_pc van sobre las
+	   filas FPU directas existentes, arriba. */
+	{ NULL, "LDC Rm,SR",           0, 1, 0, 0, pl_ldc116,   0, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "LDTLB",               0, 1, 0, 0, pl_ldtlb136, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "TRAPA #imm",          0, 1, 0, 0, pl_trapa169, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "FSCHG",               0, 1, 0, 0, pl_fschg233, 1, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "FRCHG",               0, 1, 0, 0, pl_frchg232, 1, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "LDC Rm,SSR",          0, 1, 0, 0, pl_ldc119 },
+	{ NULL, "LDC Rm,SPC",          0, 1, 0, 0, pl_ldc120 },
+	{ NULL, "LDC Rm,Rn_BANK",      0, 1, 0, 0, pl_ldc123 },
+	{ NULL, "STC SSR,Rn",          0, 1, 0, 0, pl_stc152 },
+	{ NULL, "STC SPC,Rn",          0, 1, 0, 0, pl_stc153 },
+	/* El sub-lote B.2c (censo post-B.2b): RTE y LDS Rm,FPSCR terminales, y
+	   tres por manejador comun. */
+	{ NULL, "RTE",                 0, 1, 0, 0, pl_rte143, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "LDS Rm,FPSCR",        0, 1, 0, 0, pl_lds213, 1, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ NULL, "LDS.L @Rm+,MACH",     0, 1, 0, 0, pl_ldsl133 },
+	{ NULL, "MOV.W @(d,Rm),R0",    0, 1, 0, 0, pl_movw20 },
+	{ NULL, "MULS.W Rm,Rn",        0, 1, 0, 0, pl_mulsw65 },
 };
 
 #define JIT_N_PLANTILLAS \
@@ -4499,6 +4779,11 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
 	clrt115, sett145,
 	movw26, movw17, negc68, ldc117,
 	movl33,
+	pref142, ftrv, fipr, fmac194, fsca, fsrra,
+	lds214, sts218, lds132, sts165, xtrct38, addc41,
+	ldc116, ldtlb136, trapa169, fschg233, frchg232,
+	ldc119, ldc120, ldc123, stc152, stc153,
+	rte143, lds213, ldsl133, movw20, mulsw65,
 };
 
 /* Cuantas filas de la tabla estan en juego. DCEMU_JIT_PLANTILLAS=N la recorta
@@ -4704,6 +4989,20 @@ static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k)
 	jit_x64_mov_mi(&g->e, CTX, O_PC, pc_k);
 	jit_x64_inc_r(&g->e, N);
 	gen_volcar_cuenta(g);
+}
+
+/*
+	La salida de un bloque que termina en fila TERMINAL: sin escribir PC -- el
+	manejador es su dueno y ya dejo el verdadero en el contexto (TRAPA deja el
+	vector, no pc+2) -- y sin enlace: el despachador re-evalua la clave entera,
+	que es lo que hace sano traducir escritores de SR/FPSCR y LDTLB. Los slots
+	se vuelcan frescos: tr_manejador ya los recargo del contexto despues de la
+	llamada, asi que un cambio de banco del manejador llega entero.
+*/
+static void gen_salir_terminal(jit_gen * g, jit_traduccion * t)
+{
+	tr_volcar_regs(g, t);
+	jit_x64_jmp_a(&g->e, jit_tramp_salir);
 }
 
 /*
@@ -4965,6 +5264,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	t->modo       = mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO;
 	t->fpu        = -1;
 	t->fin        = JIT_FIN_TOPE;	/* si nada corta antes, corto el tope */
+	t->corte      = 0;
 
 	while (t->n < JIT_MAX_INSTR)
 	{
@@ -5006,7 +5306,8 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		if (p == NULL)
 		{
 			jit_censar(instr);
-			t->fin = JIT_FIN_PLANTILLA;
+			t->fin   = JIT_FIN_PLANTILLA;
+			t->corte = instr;
 			break;
 		}
 
@@ -5037,7 +5338,8 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			if (fpu_deshabilitada)
 			{
 				jit_censar(instr);
-				t->fin = JIT_FIN_FPU;
+				t->fin   = JIT_FIN_FPU;
+				t->corte = instr;
 				break;
 			}
 
@@ -5048,11 +5350,35 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 			if (t->modo == JIT_ACC_MMU && !jit_fpu_mmu)
 			{
 				jit_censar(instr);
-				t->fin = JIT_FIN_FPU;
+				t->fin   = JIT_FIN_FPU;
+				t->corte = instr;
 				break;
 			}
 
 			t->fpu = (int) jit_fpu_visto;
+		}
+
+		/* La fila terminal: se anexa y el bloque TERMINA en ella. Con la
+		   palanca apagada corta como si no tuviera plantilla, que es la
+		   conducta anterior. Va despues del bloque FPU de arriba para que
+		   FSCHG/FRCHG lleguen aca ya atados a la clave y con FD cubierto. */
+		if (p->terminal)
+		{
+			if (!jit_terminales)
+			{
+				jit_censar(instr);
+				t->fin   = JIT_FIN_PLANTILLA;
+				t->corte = instr;
+				break;
+			}
+
+			t->pc[t->n]       = pc;
+			t->palabra[t->n]  = instr;
+			t->pl[t->n]       = p;
+			t->sigue_en[t->n] = 0;
+			t->n++;
+			t->fin = JIT_FIN_TERMINAL;
+			break;
 		}
 
 		t->pc[t->n]       = pc;
@@ -5099,7 +5425,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				jit_plantilla_de(OP_HANDLER(oplist, rinstr));
 
 			if (rp != NULL && rp->accede && !rp->rama && !rp->fpu
-				&& !rp->propia
+				&& !rp->propia && !rp->terminal
 				&& (!tr_es_llamada(p)
 					|| (jit_par_llamadas
 						&& !rp->escribe_pr && !rp->apila_pr)))
@@ -5135,7 +5461,8 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 					&& ((pc + 2) & ~(DWORD) (JIT_LIMITE_PAG - 1)) != ventana))
 			{
 				t->n--;
-				t->fin = JIT_FIN_RANURA;
+				t->fin   = JIT_FIN_RANURA;
+				t->corte = instr;
 				break;
 			}
 
@@ -5149,6 +5476,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				   la traza termina ahi, como en el camino sin flujo. */
 				if (p->par && jit_par_rts && rp != NULL
 					&& rp->accede && !rp->rama && !rp->fpu && !rp->propia
+					&& !rp->terminal
 					&& (!tr_es_llamada(p)
 						|| (jit_par_llamadas
 							&& !rp->escribe_pr && !rp->apila_pr)))
@@ -5163,8 +5491,9 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 				}
 
 				t->n--;
-				t->fin = (rp != NULL && rp->accede) ? JIT_FIN_RANURA_MEM
-													: JIT_FIN_RANURA;
+				t->fin   = (rp != NULL && rp->accede) ? JIT_FIN_RANURA_MEM
+													  : JIT_FIN_RANURA;
+				t->corte = rinstr;
 				break;
 			}
 
@@ -5277,7 +5606,12 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		if (!t->pl[i]->ranura)
 			continue;
 
-		if (r != NULL && !r->rama && !r->fpu
+		/* La fila FPU de emision directa (sin_pc) es admisible en la ranura:
+		   su clave ya quedo atada cuando el lazo principal la anexo. Las
+		   terminales jamas: son escritores de SR/FPSCR con sync, y en una
+		   ranura romperian los bancos bajo los slots. */
+		if (r != NULL && !r->rama && !r->terminal
+			&& (!r->fpu || (r->sin_pc && jit_ranura_fpu))
 			&& (!r->accede
 				|| (jit_par_rts && t->pl[i]->par && !r->propia
 					&& (!tr_es_llamada(t->pl[i])
@@ -5288,6 +5622,7 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 		t->n   = i;
 		t->fin = (r != NULL && r->accede && !r->rama && !r->fpu)
 			? JIT_FIN_RANURA_MEM : JIT_FIN_RANURA;
+		t->corte = (r != NULL) ? t->palabra[i + 1] : t->palabra[i];
 		break;
 	}
 
@@ -5384,7 +5719,12 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		(void) fin;
 	}
 
-	gen_salir_enlazable(g, t, t->pc[t->n - 1] + 2);
+	/* El bloque terminal sale por el PC del contexto y sin enlace; cualquier
+	   otro, por la salida enlazable de siempre con pc+2 constante. */
+	if (t->fin == JIT_FIN_TERMINAL)
+		gen_salir_terminal(g, t);
+	else
+		gen_salir_enlazable(g, t, t->pc[t->n - 1] + 2);
 	tr_epilogo(g, t);
 }
 
@@ -5954,6 +6294,29 @@ static jit_bloque * tr_traducir(DWORD pc)
 	b->mmu        = t.modo;
 	b->fpu        = t.fpu;
 	b->fin        = (unsigned char) t.fin;
+	b->corte      = t.corte;
+
+	/* El censo de variantes: cuantas traducciones son la hermana de otro
+	   bloque del mismo PC bajo otro modo FPU. Camino de traduccion, frio. */
+	if (jit_variantes_fpu && b->fpu >= 0)
+	{
+		unsigned vh = jit_hash_de(b->pc);
+		int vi;
+
+		for (vi = 0; vi < JIT_HASH_SONDEO; vi++)
+		{
+			short vb = jit_hash[(vh + (unsigned) vi) & (JIT_HASH_N - 1)];
+
+			if (vb < 0)
+				break;
+
+			if (jit_bloques[vb].pc == b->pc && &jit_bloques[vb] != b)
+			{
+				jit_fpu_variantes++;
+				break;
+			}
+		}
+	}
 
 	/* El prefijo contiguo lo verifica el puntero de busqueda, como siempre;
 	   lo seguido por flujo va como palabras sueltas, que jit_verificar ya
@@ -6329,6 +6692,8 @@ int jit_despachar(DWORD pc)
 			&& b->mmu != (mmu_activa ? JIT_ACC_MMU : JIT_ACC_PLANO))
 		{
 			jit_rechazos++;
+			jit_rechazos_modo++;
+			jit_rechazo_censar(b->pc, 0);
 			break;
 		}
 
@@ -6339,12 +6704,16 @@ int jit_despachar(DWORD pc)
 		if (b->fpu >= 0 && (unsigned) b->fpu != jit_fpu_visto)
 		{
 			jit_rechazos++;
+			jit_rechazos_fpu++;
+			jit_rechazo_censar(b->pc, 1);
 			break;
 		}
 
 		if (!jit_verificar(b))
 		{
 			jit_rechazos++;
+			jit_rechazos_palabras++;
+			jit_rechazo_censar(b->pc, 2);
 			break;
 		}
 
@@ -6406,6 +6775,47 @@ static void jit_resumen(void)
 		jit_estado.instr, jit_entradas,
 		jit_entradas ? (double) jit_estado.instr / (double) jit_entradas : 0.0,
 		jit_rechazos);
+
+	/* El desglose por causa y los reincidentes: tres causas con correccion
+	   distinta viajaban en un solo numero. */
+	if (jit_rechazos || jit_fpu_variantes)
+	{
+		fprintf(stderr, "jit: de esos rechazos: %llu modo MMU, %llu modo FPU,"
+			" %llu palabras; %llu variantes FPU traducidas\n",
+			jit_rechazos_modo, jit_rechazos_fpu, jit_rechazos_palabras,
+			jit_fpu_variantes);
+
+		for (i = 0; i < 8; i++)
+		{
+			int mayor = -1;
+			unsigned long long total_mayor = 0;
+
+			for (j = 0; j < 64; j++)
+			{
+				jit_rechazo_sitio * s = &jit_rechazo_sitios[j];
+				unsigned long long t = s->veces[0] + s->veces[1] + s->veces[2];
+
+				if (s->pc != 0 && t > total_mayor)
+				{
+					total_mayor = t;
+					mayor = j;
+				}
+			}
+
+			if (mayor < 0 || total_mayor == 0)
+				break;
+
+			{
+				jit_rechazo_sitio * s = &jit_rechazo_sitios[mayor];
+
+				fprintf(stderr, "jit:   rechazado %8llu veces %08lx"
+					" (modo %llu, fpu %llu, palabras %llu)\n",
+					total_mayor, (unsigned long) s->pc,
+					s->veces[0], s->veces[1], s->veces[2]);
+				s->pc = 0;		/* fuera de la proxima vuelta */
+			}
+		}
+	}
 
 	if (jit_bloques_corridos)
 		fprintf(stderr, "jit: %llu bloques corridos, %llu cruces de enlace"
@@ -6598,6 +7008,62 @@ static void jit_resumen(void)
 		}
 	}
 
+	/*
+		El mismo censo PONDERADO POR VECES: la lista de arriba cuenta sitios de
+		traduccion y un solo sitio caliente vale millones de entradas. Este
+		agrega `veces` de cada bloque sobre su palabra de corte, que es la que
+		dice cual plantilla o regla de ranura pagaria de verdad. El acumulador
+		`otros` existe para que la tabla llena no trunque en silencio.
+	*/
+	{
+		/* Indexado por la palabra entera: sin tope y sin truncar. Estaticos
+		   porque son 832 KB que solo se tocan aca, al salir. */
+		static unsigned long long	corte_veces[0x10000];
+		static int					corte_bloques[0x10000];
+		unsigned long long			total = 0;
+		int							k;
+
+		for (j = 0; j < jit_n_bloques; j++)
+		{
+			const jit_bloque * b = &jit_bloques[j];
+
+			if (b->mmu == -1 || b->corte == 0 || b->veces == 0)
+				continue;
+
+			corte_veces[b->corte] += b->veces;
+			corte_bloques[b->corte]++;
+			total += b->veces;
+		}
+
+		if (total != 0)
+		{
+			fprintf(stderr, "jit: lo que mas corto, ponderado por veces"
+				" (palabra, %% de las entradas cortadas, bloques,"
+				" mnemonico):\n");
+
+			for (i = 0; i < 16; i++)
+			{
+				int mejor = -1;
+
+				for (k = 0; k < 0x10000; k++)
+					if (corte_veces[k] != 0
+						&& (mejor < 0 || corte_veces[k] > corte_veces[mejor]))
+						mejor = k;
+
+				if (mejor < 0)
+					break;
+
+				fprintf(stderr, "jit:   %04X  %5.1f %%  %6d  %s\n",
+					mejor,
+					100.0 * (double) corte_veces[mejor] / (double) total,
+					corte_bloques[mejor],
+					opcodes_mnemonico((WORD) mejor));
+
+				corte_veces[mejor] = 0;
+			}
+		}
+	}
+
 	/* Y los bloques mas ejecutados, para saber si el muestreo encontro lo que
 	   habia que encontrar. */
 	fprintf(stderr, "jit: bloques mas ejecutados:\n");
@@ -6649,10 +7115,19 @@ void jit_iniciar(void)
 	unsigned	 desplazamiento;
 	int			 i;
 
-	if (v == NULL || atoi(v) == 0)
+	/*
+		La adopcion (fase F.2, 2026-08-20): SIN variable corre el traductor,
+		que es el binario que se entrega, y DCEMU_JIT=0 es la palanca de
+		aislamiento que deja al interprete solo. 1 y 2 conservan su sentido
+		de siempre (bloques a mano / traductor), asi que toda receta vieja
+		con DCEMU_JIT=2 sigue significando lo mismo -- y todo guion cuyo
+		brazo de control BORRABA la variable tiene que poner el 0 explicito,
+		que es el cambio que esta regla le cobra a los guiones del arbol.
+	*/
+	if (v != NULL && atoi(v) == 0)
 		return;
 
-	jit_traductor = (atoi(v) >= 2);
+	jit_traductor = (v == NULL || atoi(v) >= 2);
 
 	{
 		const char * si = getenv("DCEMU_JIT_SIN_INDIRECTOS");
@@ -6664,6 +7139,13 @@ void jit_iniciar(void)
 		const char * sp = getenv("DCEMU_JIT_SIN_PUENTES");
 
 		jit_sin_puentes = (sp != NULL && atoi(sp) != 0);
+	}
+
+	{
+		const char * sv = getenv("DCEMU_JIT_SIN_VARIANTES_FPU");
+
+		if (sv != NULL && atoi(sv) != 0)
+			jit_variantes_fpu = 0;
 	}
 
 	{
@@ -6735,6 +7217,17 @@ void jit_iniciar(void)
 
 			if (pl != NULL && atoi(pl) != 0)
 				jit_par_llamadas = 0;
+
+			{
+				const char * st = getenv("DCEMU_JIT_SIN_TERMINALES");
+				const char * sr = getenv("DCEMU_JIT_SIN_RANURA_FPU");
+
+				if (st != NULL && atoi(st) != 0)
+					jit_terminales = 0;
+
+				if (sr != NULL && atoi(sr) != 0)
+					jit_ranura_fpu = 0;
+			}
 		}
 	}
 
@@ -6796,6 +7289,25 @@ void jit_iniciar(void)
 	for (i = 0; i < JIT_N_PLANTILLAS; i++)
 		jit_plantillas[i].f = jit_manejadores[i];
 
+	/*
+		La clasificacion de arriba compara PUNTEROS de manejador, y el plegado
+		de funciones identicas del enlazador (/OPT:ICF) puede darle una misma
+		direccion a dos manejadores distintos -- el riesgo que la documentacion
+		de ICF advierte por su nombre. Paso: lld-link plego nop con NOIMP y
+		shal91 con shll94 (MSVC no pliega ninguno), y el traductor paso a
+		clasificar palabras que no son instrucciones como NOP -- exacto de
+		casualidad, porque solo se pliega codigo identico, pero las trazas
+		cambiaron de forma y los conteos dejaron de ser invariantes entre
+		compiladores. El enlace clang va con /OPT:NOICF desde entonces; esta
+		guarda lo NOMBRA si vuelve, porque el sintoma (conteos distintos con
+		captura exacta) no se parece en nada a la causa. 0x0000 no es
+		instruccion (NOIMP); 0x4020 es SHAL R0 y 0x4000 SHLL R0, dos funciones
+		distintas en el fuente.
+	*/
+	if (jit_plantilla_de(OP_HANDLER(oplist, 0x0000)) != NULL
+		|| OP_HANDLER(oplist, 0x4020) == OP_HANDLER(oplist, 0x4000))
+		fprintf(stderr, "jit: el enlazador plego manejadores (ICF): la"
+			" clasificacion por puntero esta contaminada\n");
 
 	if (!jit_emitir_trampolin())
 	{

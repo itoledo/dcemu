@@ -21,6 +21,7 @@
 #include "aicadsp.h"			/* los cuadros que el anillo de salida tuvo que tirar */
 #include "opciones.h"
 #include "mem.h"
+#include "graficos.h"			/* traza_ta_resumen() */
 
 int traza_activa = 0;
 

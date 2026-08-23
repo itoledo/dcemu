@@ -75,9 +75,11 @@ void traza_trapa(DWORD pc, DWORD numero)
 unsigned long	watchpoint_dir = 0;
 size_t			watchpoint_tam = 4;
 
-void watchpoint_escritura(unsigned long direccion, size_t tam)
+void watchpoint_escritura(unsigned long direccion, const void * valor,
+						  size_t tam)
 {
 	(void) direccion;
+	(void) valor;
 	(void) tam;
 }
 
