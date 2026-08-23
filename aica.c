@@ -6,6 +6,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>			/* getenv, la palanca de la mascara de canales */
+
+#if !defined(__clang__) && !defined(__GNUC__)
+#include <intrin.h>			/* _BitScanForward64, canal_mas_bajo() */
+#endif
 
 #include "main.h"			/* solo por los tipos; no se enlaza nada de SDL */
 #include "aica.h"
@@ -255,8 +260,14 @@ static void dma_interno_ejecutar(void)
 			else
 				memcpy(&aica_reg[regs + i], &sound_mem[onda + i], 4);
 
-			/* La subida de un microprograma por DMA tambien cuenta. */
-			if (regs + i >= 0x2800 && regs + i < 0x3C00)
+			/* La subida de un microprograma por DMA tambien cuenta. Solo lo
+			   que el DSP relee al reconstruir: RBP/RBL y COEF/MADRS/MPRO --
+			   el resto del bloque comun (timers, INTC) lo golpea el driver
+			   del ARM miles de veces por segundo, y con la ventana entera
+			   cada toque era una reconstruccion (12 000 por segundo en
+			   Crazy Taxi). */
+			if ((regs + i >= 0x3000 && regs + i < 0x3C00)
+			||  (regs + i >= 0x2804 && regs + i < 0x2808))
 				aicadsp_tocar();
 		}
 	}
@@ -272,6 +283,31 @@ static void dma_interno_ejecutar(void)
 /* ------------------------------------------------------------------------ */
 
 struct aica_canal	aica_canales[AICA_CANALES];
+
+/*
+	La mascara de canales activos: un bit por canal con `activo == 1`,
+	mantenida en los TRES unicos sitios que escriben `activo` (el key-on, el
+	silencio de release en eg_avanzar, el fin por LEA en canal_muestrear) y en
+	el reset. El mezclador la recorre en vez de llamar 64 veces por muestra a
+	canales apagados: el censo de --perf dio 2,4 activos de 64 en Crazy Taxi.
+	El orden se conserva -- el bit mas bajo primero es el canal mas bajo
+	primero, el del lazo de siempre. La suite solo LEE `activo`, nunca lo
+	escribe directo. DCEMU_SIN_MASCARA_CANALES=1 vuelve al lazo de 64.
+*/
+static unsigned long long	canales_activos = 0;
+static int					canales_mascara = -1;	/* -1: ambiente sin leer */
+
+static int canal_mas_bajo(unsigned long long m)
+{
+#if defined(__clang__) || defined(__GNUC__)
+	return __builtin_ctzll(m);
+#else
+	unsigned long i;
+
+	_BitScanForward64(&i, m);
+	return (int) i;
+#endif
+}
 
 short				aica_salida[AICA_SALIDA_CUADROS * 2];
 volatile unsigned	aica_salida_cabeza;
@@ -556,7 +592,10 @@ static void eg_avanzar(int canal, struct aica_canal * c)
 	/* Llegar al silencio en release apaga el canal de verdad. */
 	if (c->eg_estado == AICA_EG_RELEASE
 	&&  (c->eg_nivel >> 16) >= AICA_ATT_MAX)
+	{
 		c->activo = 0;
+		canales_activos &= ~(1ull << canal);
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -922,6 +961,7 @@ static void canal_encender(int canal)
 	}
 
 	c->activo    = 1;
+	canales_activos |= 1ull << canal;
 	c->formato   = (int) ((r0 >> 7) & 3);
 	c->pos       = 0;
 	c->frac      = 0;
@@ -1235,6 +1275,7 @@ static int canal_muestrear(int canal, int * izq, int * der)
 			   ya se leyo arriba y es valida: el canal termina **despues** de
 			   entregarla, no en vez de entregarla. */
 			c->activo = 0;
+			canales_activos &= ~(1ull << canal);
 
 			/*
 				Y al terminar, el canal **se desregistra solo**: KYONB se
@@ -1281,15 +1322,56 @@ static void mezclar_una_muestra(void)
 	   tropiezo". */
 	static int perdiendo = 0;
 
-	for (i = 0; i < AICA_CANALES; i++)
 	{
-		int l, r;
+		/* El sub-reparto de la mezcla (muestreado: esto corre 44 100 veces
+		   por segundo emulado y dos QPC por muestra serian el instrumento
+		   comiendose lo medido). El censo de activos decide si el lazo de 64
+		   paga una lista de activos o si el costo vive en otra parte. */
+		PERF_MARCA_MUESTRA(tc, perf_n_canales);
+		int activos = 0;
 
-		if (canal_muestrear(i, &l, &r))
+		if (canales_mascara < 0)
 		{
-			izq += l;
-			der += r;
+			const char * e = getenv("DCEMU_SIN_MASCARA_CANALES");
+
+			canales_mascara = !(e != NULL && atoi(e) != 0);
 		}
+
+		if (canales_mascara)
+		{
+			unsigned long long m = canales_activos;
+
+			while (m)
+			{
+				int l, r;
+
+				i = canal_mas_bajo(m);
+				m &= m - 1;
+
+				if (canal_muestrear(i, &l, &r))
+				{
+					izq += l;
+					der += r;
+					activos++;
+				}
+			}
+		}
+		else
+		for (i = 0; i < AICA_CANALES; i++)
+		{
+			int l, r;
+
+			if (canal_muestrear(i, &l, &r))
+			{
+				izq += l;
+				der += r;
+				activos++;
+			}
+		}
+
+		PERF_SUMAR_MUESTRA(tc, perf_ns_canales);
+		PERF_SUMAR_A(perf_canales_activos, (unsigned long long) activos);
+		PERF_CONTAR(perf_muestras_censadas);
 	}
 
 	/*
@@ -1304,6 +1386,7 @@ static void mezclar_una_muestra(void)
 	*/
 	{
 		int j;
+		PERF_MARCA_MUESTRA(td, perf_n_dsp);
 
 		hubo_cd = cdda_muestra(&cd_izq, &cd_der);
 
@@ -1364,6 +1447,8 @@ static void mezclar_una_muestra(void)
 				}
 			}
 		}
+
+		PERF_SUMAR_MUESTRA(td, perf_ns_dsp);
 	}
 
 	if (r2800 & 0x8000)						/* MONO */
@@ -1558,9 +1643,15 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 	default:
 		poner16(off, valor);
 
-		/* El DSP relee su microprograma solo cuando alguien lo toco; el
+		/* El DSP relee su microprograma solo cuando alguien lo toco -- y lo
+		   que relee es RBP/RBL (0x2804) y COEF/MADRS/MPRO (0x3000-0x3BFF),
+		   nada mas: el resto del bloque comun son los timers y el INTC, que
+		   el driver del ARM golpea miles de veces por segundo (12 000/s en
+		   Crazy Taxi), y con la ventana entera cada toque era una
+		   reconstruccion -- y con el programa emitido, una reemision. El
 		   estado de trabajo (0x4000-0x45BF) no lo relee, y por eso avisa. */
-		if (off >= 0x2800 && off < 0x3C00)
+		if ((off >= 0x3000 && off < 0x3C00)
+		||  (off >= 0x2804 && off < 0x2808))
 			aicadsp_tocar();
 		else
 		if (off >= 0x4000 && off < 0x45C0)
@@ -1926,6 +2017,7 @@ void aica_reset(void)
 	memset(timer_cuenta, 0, sizeof(timer_cuenta));
 	memset(timer_resto, 0, sizeof(timer_resto));
 	memset(aica_canales, 0, sizeof(aica_canales));
+	canales_activos = 0;
 
 	aica_salida_cabeza = 0;
 	aica_salida_cola   = 0;

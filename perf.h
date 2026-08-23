@@ -33,6 +33,10 @@ unsigned long long perf_ahora(void);
 
 /* Acumuladores de tiempo real, en nanosegundos. */
 extern unsigned long long perf_ns_aica;			/* mezclar_una_muestra() */
+extern unsigned long long perf_ns_canales;		/* el lazo de 64 canales, subconjunto */
+extern unsigned long long perf_ns_dsp;			/* DSP + composicion EFREG, subconjunto */
+extern unsigned long long perf_canales_activos;	/* suma de activos por muestra */
+extern unsigned long long perf_muestras_censadas;
 extern unsigned long long perf_ns_arm;			/* arm7_ejecutar() */
 extern unsigned long long perf_ns_escena;		/* dibujar_escena() entera */
 extern unsigned long long perf_ns_textura;		/* get_texture(), subconjunto de la anterior */

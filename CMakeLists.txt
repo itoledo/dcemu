@@ -78,14 +78,19 @@ option(DCEMU_INLINE "Despachar en linea los manejadores mas frecuentes" OFF)
 # enciende DCEMU_FUSION=1, asi el A/B corre sobre una sola imagen.
 option(DCEMU_FUSION "Compilar el prototipo de bloques fusionados (sonda)" OFF)
 
-# El recompilador dinamico (docs/recompilador-plan.md). En la fase 0 son el
-# emisor x64, el arena y los dos bloques de fusion.c emitidos a mano por el
-# JIT; la vara de aceptacion es reproducir los A/B de esas sondas. Detras de
-# una opcion y encendido con DCEMU_JIT=1 por la misma razon que la fusion: el
-# A/B corre sobre una sola imagen y la disposicion del binario no entra como
-# variable. Compilar con DCEMU_FUSION=ON y DCEMU_JIT=ON a la vez da la
-# comparacion de tres --interprete, C fusionado, JIT-- en un solo binario.
-option(DCEMU_JIT "Compilar el recompilador dinamico (fase 0)" OFF)
+# El recompilador dinamico (docs/recompilador-plan.md). Detras de una opcion
+# por la misma razon que la fusion: el A/B corre sobre una sola imagen y la
+# disposicion del binario no entra como variable. Compilar con DCEMU_FUSION=ON
+# y DCEMU_JIT=ON a la vez da la comparacion de tres --interprete, C fusionado,
+# JIT-- en un solo binario.
+#
+# Viene en ON desde la adopcion (fase F.2 de jit-sota-plan.md, 2026-08-20):
+# el binario que se entrega lleva el traductor adentro y encendido por
+# omision -- DCEMU_JIT=0 en el ambiente es la palanca que deja al interprete
+# solo. La F.1 lo avala entera: 131/131 demos con piso 0 y senal 0, y 46/48
+# juegos exactos (los dos restantes, nombrados en el plan). OFF sigue
+# existiendo para el binario de control sin recompilador.
+option(DCEMU_JIT "Compilar el recompilador dinamico" ON)
 
 # La sonda de conservacion de avances de URC (el expediente de la compuerta
 # MMU+FPU): un contador en el unico cuerpo C del avance, otro emitido junto al
@@ -151,6 +156,33 @@ set_property(CACHE DCEMU_ARCH PROPERTY STRINGS OFF SSE2 AVX AVX2)
 if(MSVC AND NOT DCEMU_ARCH STREQUAL "OFF")
 	add_compile_options(/arch:${DCEMU_ARCH})
 	message(STATUS "dcemu: /arch:${DCEMU_ARCH}")
+endif()
+
+# clang-cl (fase G de docs/jit-sota-plan.md): mismo frontend de banderas que
+# MSVC -- CMake deja MSVC en TRUE tambien con clang-cl -- asi que la
+# distincion va por el ID del compilador. LTO y PGO tienen su rama propia mas
+# abajo; el resto de las banderas /X las entiende igual.
+if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+	set(DCEMU_CLANG TRUE)
+else()
+	set(DCEMU_CLANG FALSE)
+endif()
+
+# La contraccion a FMA (fusionar a*b+c) puede mover el interprete FPU al bit,
+# y la conformidad del nucleo se compara bit a bit contra SingleStepTests. El
+# /fp:precise de MSVC no contrae; el de clang SI contrae dentro de una
+# sentencia, asi que se apaga explicitamente. Aca arriba y no en el target por
+# lo mismo que /arch: tests/ compara coma flotante contra el binario que se
+# mide, y tiene que compilar con la misma semantica.
+if(DCEMU_CLANG)
+	add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/clang:-ffp-contract=off>)
+
+	# Ambos makefiles compilan con -fno-strict-aliasing y el comentario de mas
+	# abajo ya nombra el riesgo: el type-punning de mem.c y floatsimple.c. MSVC
+	# no hace analisis de aliasing agresivo asi que alli la pregunta no existe;
+	# clang si lo hace, y aca se apaga explicito en vez de confiar en el default
+	# de clang-cl.
+	add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/clang:-fno-strict-aliasing>)
 endif()
 
 # Optimizacion guiada por perfil. Tres estados, y el orden importa:
@@ -345,7 +377,7 @@ endif()
 
 if(DCEMU_JIT)
 	target_compile_definitions(dcemu PRIVATE DCEMU_JIT)
-	target_sources(dcemu PRIVATE jit.c jit_x64.c arm7jit.c)
+	target_sources(dcemu PRIVATE jit.c jit_x64.c arm7jit.c aicadspjit.c)
 endif()
 
 if(DCEMU_SONDA_URC)
@@ -361,11 +393,81 @@ endif()
 # /OPT:ICF, que Release trae puestos, asi que se reponen: el binario perfilado
 # tiene que ser el mismo que se mide.
 target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/Zi>)
-target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+
+# /OPT:ICF pliega funciones byte-identicas en una sola direccion, y este arbol
+# **depende de que los manejadores de opcodes tengan direcciones distintas**:
+# jit_plantilla_de() clasifica cada palabra comparando su puntero de manejador
+# (el riesgo que la propia documentacion de /OPT:ICF advierte). El ICF de
+# lld-link pliega nop con NOIMP y shal91 con shll94 -- ninguno de los cuales
+# pliega MSVC -- y con eso el traductor clasificaba palabras que no son
+# instrucciones como NOP: exacto de casualidad (solo se pliega codigo
+# identico), pero las trazas cambiaban de forma y los conteos dejaban de ser
+# invariantes entre compiladores. Medido: 30,2 contra 26,4 instrucciones por
+# bloque en Crazy Taxi con el mismo guest exacto. La rama clang enlaza con
+# /OPT:NOICF; MSVC conserva su configuracion canonica, que hoy no pliega
+# ningun manejador con plantilla. La guarda de jit_iniciar() lo nombra si
+# algun dia vuelve.
+if(DCEMU_CLANG)
+	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:NOICF>)
+else()
+	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+endif()
+
+# Sanitizers (fase G de jit-sota-plan.md, la mitad barata): una corrida de
+# las compuertas de exactitud bajo ASan o UBSan como red de correccion para
+# jit.c y el manejo del arena -- nunca cronometro. Solo en la rama clang, que
+# es la que trae los runtimes. Compilar con DCEMU_LTCG=OFF y DCEMU_PGO=OFF:
+# este binario no se mide, se escucha.
+set(DCEMU_SAN "OFF" CACHE STRING "Sanitizer: OFF, ASAN o UBSAN (solo clang-cl)")
+set_property(CACHE DCEMU_SAN PROPERTY STRINGS OFF ASAN UBSAN)
+
+if(NOT DCEMU_SAN STREQUAL "OFF")
+	if(NOT DCEMU_CLANG)
+		message(FATAL_ERROR "DCEMU_SAN necesita clang-cl (los runtimes son de LLVM)")
+	endif()
+
+	get_filename_component(_llvm_bin_san "${CMAKE_C_COMPILER}" DIRECTORY)
+	file(GLOB _clang_rt_san "${_llvm_bin_san}/../lib/clang/*/lib/windows")
+	if(NOT _clang_rt_san)
+		message(FATAL_ERROR "no encuentro lib/clang/*/lib/windows junto a ${CMAKE_C_COMPILER}")
+	endif()
+	target_link_directories(dcemu PRIVATE ${_clang_rt_san})
+
+	if(DCEMU_SAN STREQUAL "ASAN")
+		target_compile_options(dcemu PRIVATE -fsanitize=address)
+		# Enlazando con lld-link directo (sin el driver) el runtime se nombra a
+		# mano; la DLL tiene que quedar junto al ejecutable (post-build abajo).
+		target_link_libraries(dcemu PRIVATE clang_rt.asan_dynamic-x86_64.lib
+			clang_rt.asan_dynamic_runtime_thunk-x86_64.lib)
+		add_custom_command(TARGET dcemu POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different
+				"${_clang_rt_san}/clang_rt.asan_dynamic-x86_64.dll"
+				"$<TARGET_FILE_DIR:dcemu>/"
+			VERBATIM)
+	elseif(DCEMU_SAN STREQUAL "UBSAN")
+		target_compile_options(dcemu PRIVATE -fsanitize=undefined)
+		target_link_libraries(dcemu PRIVATE clang_rt.ubsan_standalone-x86_64.lib
+			clang_rt.ubsan_standalone_cxx-x86_64.lib)
+	else()
+		message(FATAL_ERROR "DCEMU_SAN tiene que ser OFF, ASAN o UBSAN")
+	endif()
+	message(STATUS "dcemu: sanitizer ${DCEMU_SAN}")
+endif()
 
 if(DCEMU_LTCG)
-	target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/GL>)
-	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/LTCG>)
+	if(DCEMU_CLANG)
+		# El equivalente LLVM de /GL+/LTCG es ThinLTO. Exige enlazar con
+		# lld-link: link.exe no lee bitcode, y el sintoma seria un error de
+		# "invalid or corrupt file" sobre cada objeto, no algo que lo nombre.
+		if(NOT CMAKE_LINKER MATCHES "lld")
+			message(FATAL_ERROR
+				"DCEMU_LTCG con clang-cl necesita lld-link: configura con -DCMAKE_LINKER=lld-link")
+		endif()
+		target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+	else()
+		target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/GL>)
+		target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/LTCG>)
+	endif()
 endif()
 
 # PGO. Exige /GL, que es lo que hace LTCG: sin el, el enlazador no tiene el
@@ -374,6 +476,55 @@ if(NOT DCEMU_PGO STREQUAL "OFF")
 	if(NOT DCEMU_LTCG)
 		message(FATAL_ERROR "DCEMU_PGO necesita DCEMU_LTCG=ON (/GL)")
 	endif()
+
+	# La rama clang: el esquema de LLVM es -fprofile-generate (deja un .profraw
+	# por corrida), llvm-profdata merge con los mismos pesos que pgomgr
+	# (herramientas\pgo.ps1 -Clang), y -fprofile-use al compilar. El perfil es
+	# propio -- ni el .pgd de MSVC ni el .profdata de clang se leen entre si --
+	# y va aparte por binario, como los .pgd y por lo mismo.
+	if(DCEMU_CLANG)
+		if(DCEMU_JIT)
+			set(DCEMU_PROFDATA "${CMAKE_SOURCE_DIR}/build-pgo/dcemu-jit-clang.profdata")
+			set(DCEMU_PROFRAW "${CMAKE_SOURCE_DIR}/build-pgo/clang-jit-raw")
+		else()
+			set(DCEMU_PROFDATA "${CMAKE_SOURCE_DIR}/build-pgo/dcemu-clang.profdata")
+			set(DCEMU_PROFRAW "${CMAKE_SOURCE_DIR}/build-pgo/clang-raw")
+		endif()
+		file(MAKE_DIRECTORY "${DCEMU_PROFRAW}")
+
+		if(DCEMU_PGO STREQUAL "GEN")
+			# clang-cl deja en cada objeto la marca /DEFAULTLIB del runtime del
+			# perfil, pero enlazando con lld-link directo (sin el driver) nadie
+			# le da la ruta: se agrega el directorio del compiler-rt a mano.
+			get_filename_component(_llvm_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+			file(GLOB _clang_rt_dir "${_llvm_bin}/../lib/clang/*/lib/windows")
+			if(NOT _clang_rt_dir)
+				message(FATAL_ERROR "no encuentro lib/clang/*/lib/windows junto a ${CMAKE_C_COMPILER}")
+			endif()
+
+			target_compile_options(dcemu PRIVATE
+				$<$<CONFIG:Release>:-fprofile-generate=${DCEMU_PROFRAW}>)
+			target_link_directories(dcemu PRIVATE ${_clang_rt_dir})
+			target_link_libraries(dcemu PRIVATE clang_rt.profile-x86_64.lib)
+			message(STATUS "dcemu: PGO clang instrumentado, .profraw a ${DCEMU_PROFRAW}")
+		elseif(DCEMU_PGO STREQUAL "USE")
+			if(NOT EXISTS "${DCEMU_PROFDATA}")
+				message(FATAL_ERROR
+					"DCEMU_PGO=USE pero no existe ${DCEMU_PROFDATA}: falta entrenar (pgo.ps1 -Clang)")
+			endif()
+
+			# Los dos -Wno: sin ellos cada funcion que el banco no piso es una
+			# advertencia, y el enlace ThinLTO repite el aviso por modulo.
+			target_compile_options(dcemu PRIVATE
+				$<$<CONFIG:Release>:-fprofile-use=${DCEMU_PROFDATA}>
+				$<$<CONFIG:Release>:/clang:-Wno-profile-instr-unprofiled>
+				$<$<CONFIG:Release>:/clang:-Wno-profile-instr-out-of-date>)
+			message(STATUS "dcemu: PGO clang aplicado desde ${DCEMU_PROFDATA}")
+		else()
+			message(FATAL_ERROR "DCEMU_PGO tiene que ser OFF, GEN o USE")
+		endif()
+
+	else()
 
 	# El .pgd vive fuera del directorio de build a proposito: sobrevive a un
 	# borrado de build/ y a cambiar de GEN a USE, que es todo el punto de
@@ -407,6 +558,8 @@ if(NOT DCEMU_PGO STREQUAL "OFF")
 	else()
 		message(FATAL_ERROR "DCEMU_PGO tiene que ser OFF, GEN o USE")
 	endif()
+
+	endif()	# DCEMU_CLANG / MSVC
 endif()
 
 # glu32 y winmm estan en los makefiles pero no se usan: la unica llamada a GLU

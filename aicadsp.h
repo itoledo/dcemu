@@ -75,6 +75,64 @@ long aicadsp_desempacar(unsigned short v);
    (0x4000-0x45BF), que el DSP emulado no relee. */
 void aicadsp_estado_escrito(unsigned long off, unsigned int valor);
 
+/* ------------------------------------------------------------------------ */
+/* Lo que comparte con el emisor (aicadspjit.c)                             */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Los campos de las 4 palabras de un paso, extraidos una vez al reconstruir
+	(la regla de dsp_sucio). `coef` ya viene corrido y con signo; `madrs` es
+	la palabra de MADRS[masa] resuelta -- vive en el rango que ensucia, asi
+	que hornearla al reconstruir es exacto por la misma regla que RBP/RBL.
+*/
+typedef struct
+{
+	unsigned char	tra, twt, twa;
+	unsigned char	xsel, ysel, ira, iwt, iwa;
+	unsigned char	table, mwt, mrd, ewt, ewa;
+	unsigned char	adrl, frcl, shift, yrl, negb, zero, bsel;
+	unsigned char	nofl, masa, adreb, nxadr;
+	long			coef;
+	long			madrs;
+} aicadsp_paso_dec;
+
+/*
+	El estado de trabajo, en un solo bloque para que el codigo emitido lo
+	direccione entero desde un registro base. Los ultimos cuatro campos son
+	del mecanismo: dos derramaderos para las llamadas a los ayudantes, y
+	RBP/mascara horneados al reconstruir (leerlos por muestra y por paso era
+	releer un registro que solo cambia cuando dsp_sucio ya se levanto).
+*/
+struct aicadsp_est
+{
+	long			temp[128];		/* 24 bits: la memoria de retardo */
+	long			mems[32];		/* 24 bits: lo que trajo la memoria */
+	long			mixs[16];		/* 20 bits: lo que acumulan los canales */
+	long			exts[2];		/* 16 bits: el CD-DA */
+	long			efreg[16];		/* las salidas, 16 bits */
+	long			memval[4];		/* el anillo del retardo de MRD */
+	long			frc;
+	long			y;
+	unsigned long	adrs;
+	unsigned long	dec;
+	long			entrada;		/* derramadero: entrada viva tras una llamada */
+	unsigned long	dir;			/* derramadero: la direccion del anillo */
+	unsigned long	rbp;			/* horneado: origen del anillo, en palabras */
+	unsigned long	mascara;		/* horneado: rbl_palabras - 1 */
+};
+
+extern struct aicadsp_est aicadsp_est;
+
+/*
+	La instalacion del emisor, como arm7_blq_instalar_emisor(): aicadsp.c no
+	sabe de x64. El emisor recibe la tabla y el ultimo paso con efecto, y
+	devuelve el programa emitido (NULL si declino); se lo llama en cada
+	reconstruccion. NULL desinstala.
+*/
+typedef void (* aicadsp_fn)(void);
+void aicadsp_instalar_emisor(aicadsp_fn (* emisor)(const aicadsp_paso_dec * tabla,
+	int ultimo));
+
 /* El censo, para traza_resumen(): pasos con programa, muestras corridas con
    programa, envios a MIXS, y los EFSDL vistos. */
 void aicadsp_resumen(void);

@@ -40,33 +40,61 @@ static DWORD palabra(unsigned long off)
 /* El estado de trabajo                                                     */
 /* ------------------------------------------------------------------------ */
 
-static long		dsp_temp[128];		/* 24 bits: la memoria de retardo */
-static long		dsp_mems[32];		/* 24 bits: lo que trajo la memoria */
-static long		dsp_mixs[16];		/* 20 bits: lo que acumulan los canales */
-static long		dsp_exts[2];		/* 16 bits: el CD-DA */
-static long		dsp_efreg[16];		/* las salidas, 16 bits */
-
-/* Los registros internos que sobreviven de un paso al otro. */
-static long		dsp_frc;			/* 13 bits */
-static long		dsp_y;				/* 24 bits */
-static unsigned long dsp_adrs;		/* 12 bits */
-static unsigned long dsp_dec;		/* el decremento del anillo, 1 por muestra */
-
 /*
-	Lo que trajo una lectura de memoria, con su retardo: el dato de un MRD en
-	el paso n lo entrega el IWT del paso n+2, que es como el ensamblador de
-	Sega genera los programas. Cuatro posiciones alcanzan porque el retardo es
-	fijo.
+	Todo el estado vive en un solo bloque (aicadsp.h) para que el programa
+	emitido lo direccione desde un registro base; los nombres de siempre
+	siguen valiendo por estos alias, asi el cuerpo C no cambio de forma.
+	dsp_memval es el retardo de MRD: el dato de un MRD en el paso n lo
+	entrega el IWT del paso n+2, que es como el ensamblador de Sega genera
+	los programas -- cuatro posiciones alcanzan porque el retardo es fijo.
 */
-static long		dsp_memval[4];
+struct aicadsp_est	aicadsp_est;
+
+#define dsp_temp	(aicadsp_est.temp)
+#define dsp_mems	(aicadsp_est.mems)
+#define dsp_mixs	(aicadsp_est.mixs)
+#define dsp_exts	(aicadsp_est.exts)
+#define dsp_efreg	(aicadsp_est.efreg)
+#define dsp_memval	(aicadsp_est.memval)
+#define dsp_frc		(aicadsp_est.frc)
+#define dsp_y		(aicadsp_est.y)
+#define dsp_adrs	(aicadsp_est.adrs)
+#define dsp_dec		(aicadsp_est.dec)
+
+/* El emisor instalado (aicadspjit.c) y el programa emitido vigente. */
+static aicadsp_fn	(* dsp_emisor)(const aicadsp_paso_dec *, int) = NULL;
+static aicadsp_fn	dsp_fn = NULL;
 
 /* El microprograma, reescaneado solo cuando alguien lo toco. */
 static int		dsp_sucio = 1;
 static int		dsp_pasos = 0;		/* pasos con alguna palabra != 0 */
 
+/* El corte del programa: el lazo corre hasta el ultimo paso con algun efecto
+   observable, no hasta 128 -- ver el calculo en aicadsp_activo(). Crazy Taxi
+   programa 78 pasos: los 50 de cola eran 39 % del costo del DSP corriendo
+   para nadie. DCEMU_SIN_DSP_CORTE=1 vuelve a los 128 (el brazo del A/B). */
+static int		dsp_ultimo = 127;
+static int		dsp_corte  = -1;	/* -1: el ambiente no se leyo todavia */
+static int		dsp_rapidos = 0;	/* censo: pasos "MAC simple" hasta el corte */
+
+/*
+	La predecodificacion del microprograma: los campos de las 4 palabras de
+	cada paso, extraidos UNA vez y validos mientras dsp_sucio no se levante --
+	la misma regla y el mismo gancho que el rescaneo de dsp_pasos: todo
+	escritor de 0x2800-0x3BFF pasa por aicadsp_tocar() (el registro comun y el
+	DMA interno de aica.c) y el reset arranca sucio. Antes cada muestra releia
+	y redecodificaba las 4 palabras de los 128 pasos: en el banco de Crazy
+	Taxi, 1016 millones de extracciones por corrida. `coef` guarda el
+	coeficiente del paso ya corrido (el caso ysel==1); el recorte final
+	(y << 19) >> 19 del cuerpo queda donde estaba, para que la aritmetica sea
+	identica bit a bit.
+*/
+static aicadsp_paso_dec	dsp_tabla[128];
+
 /* El censo para el resumen. */
 static unsigned long long	censo_muestras_con_programa = 0;
 static unsigned long long	censo_envios_mixs = 0;
+static unsigned long long	censo_reconstrucciones = 0;
 static int					censo_aviso_estado = 0;
 
 void aicadsp_reiniciar(void)
@@ -81,11 +109,23 @@ void aicadsp_reiniciar(void)
 	dsp_frc = dsp_y = 0;
 	dsp_adrs = 0;
 	dsp_dec = 0;
+	dsp_fn = NULL;			/* la reconstruccion que dispara dsp_sucio lo rehace */
 	dsp_sucio = 1;
 }
 
 void aicadsp_tocar(void)
 {
+	dsp_sucio = 1;
+}
+
+/* El emisor, como arm7_blq_instalar_emisor(): este archivo no sabe de x64.
+   Instalar (o desinstalar, con NULL) ensucia, asi el proximo paso rehace el
+   programa emitido junto con la tabla. */
+void aicadsp_instalar_emisor(aicadsp_fn (* emisor)(const aicadsp_paso_dec * tabla,
+	int ultimo))
+{
+	dsp_emisor = emisor;
+	dsp_fn = NULL;
 	dsp_sucio = 1;
 }
 
@@ -113,7 +153,9 @@ int aicadsp_activo(void)
 	if (dsp_sucio)
 	{
 		unsigned long off;
+		int paso;
 
+		censo_reconstrucciones++;
 		dsp_pasos = 0;
 
 		for (off = DSP_MPRO; off < DSP_MPRO_FIN; off += 4)
@@ -122,6 +164,117 @@ int aicadsp_activo(void)
 				dsp_pasos++;
 				off |= 0xC;			/* con una alcanza: al proximo paso */
 			}
+
+		/* La tabla de predecodificacion, con los mismos campos y los mismos
+		   corrimientos que tenia el cuerpo del paso. */
+		for (paso = 0; paso < 128; paso++)
+		{
+			unsigned long	base = DSP_MPRO + (unsigned long) paso * 16;
+			DWORD			w0 = palabra(base);
+			DWORD			w1 = palabra(base + 4);
+			DWORD			w2 = palabra(base + 8);
+			DWORD			w3 = palabra(base + 12);
+			aicadsp_paso_dec *	d  = &dsp_tabla[paso];
+
+			d->tra   = (unsigned char) ((w0 >> 9) & 0x7F);
+			d->twt   = (unsigned char) ((w0 >> 8) & 1);
+			d->twa   = (unsigned char) ((w0 >> 1) & 0x7F);
+
+			d->xsel  = (unsigned char) ((w1 >> 15) & 1);
+			d->ysel  = (unsigned char) ((w1 >> 13) & 3);
+			d->ira   = (unsigned char) ((w1 >> 7) & 0x3F);
+			d->iwt   = (unsigned char) ((w1 >> 6) & 1);
+			d->iwa   = (unsigned char) ((w1 >> 1) & 0x1F);
+
+			d->table = (unsigned char) ((w2 >> 15) & 1);
+			d->mwt   = (unsigned char) ((w2 >> 14) & 1);
+			d->mrd   = (unsigned char) ((w2 >> 13) & 1);
+			d->ewt   = (unsigned char) ((w2 >> 12) & 1);
+			d->ewa   = (unsigned char) ((w2 >> 8) & 0xF);
+			d->adrl  = (unsigned char) ((w2 >> 7) & 1);
+			d->frcl  = (unsigned char) ((w2 >> 6) & 1);
+			d->shift = (unsigned char) ((w2 >> 4) & 3);
+			d->yrl   = (unsigned char) ((w2 >> 3) & 1);
+			d->negb  = (unsigned char) ((w2 >> 2) & 1);
+			d->zero  = (unsigned char) ((w2 >> 1) & 1);
+			d->bsel  = (unsigned char) (w2 & 1);
+
+			d->nofl  = (unsigned char) ((w3 >> 15) & 1);
+			d->masa  = (unsigned char) ((w3 >> 9) & 0x3F);
+			d->adreb = (unsigned char) ((w3 >> 8) & 1);
+			d->nxadr = (unsigned char) ((w3 >> 7) & 1);
+
+			d->coef  = (long) ((short) palabra(DSP_COEF
+						+ (unsigned long) paso * 4)) >> 3;
+
+			/* MADRS[masa] resuelta: vive en el rango que ensucia, asi que
+			   se hornea aca por la misma regla que el resto de la tabla. */
+			d->madrs = (long) palabra(DSP_MADRS + (unsigned long) d->masa * 4);
+		}
+
+		/*
+			El corte: el ultimo paso con algun efecto que sobreviva al lazo.
+			twt/iwt escriben TEMP y MEMS; mwt escribe memoria; mrd cuenta
+			porque dsp_memval es un anillo de 4 que CRUZA muestras (el iwt del
+			paso 1 de la muestra siguiente consume lo que el mrd del paso 127
+			trajo); ewt alimenta EFREG; frcl/yrl/adrl escriben registros
+			persistentes. Lo que sigue al ultimo de esos solo mueve acc y
+			shifted, que mueren con la muestra: correrlo es trabajo que nadie
+			observa. La suite del dsp y el .wav son las barandas.
+		*/
+		if (dsp_corte < 0)
+		{
+			const char * e = getenv("DCEMU_SIN_DSP_CORTE");
+
+			dsp_corte = !(e != NULL && atoi(e) != 0);
+		}
+
+		dsp_ultimo = 127;
+
+		if (dsp_corte)
+		{
+			for (dsp_ultimo = 127; dsp_ultimo >= 0; dsp_ultimo--)
+			{
+				const aicadsp_paso_dec * d = &dsp_tabla[dsp_ultimo];
+
+				if (d->twt || d->iwt || d->mwt || d->mrd || d->ewt
+					|| d->frcl || d->yrl || d->adrl)
+					break;
+			}
+		}
+
+		/* El censo del "MAC simple", para el resumen: fue la sonda del cuerpo
+		   rapido por clase de paso, que se midio NEUTRO y se revirtio (ver el
+		   comentario en el lazo de paso). Queda porque describe la forma del
+		   programa y ya contesto una pregunta que alguien puede rehacer. */
+		dsp_rapidos = 0;
+
+		for (paso = 0; paso <= dsp_ultimo; paso++)
+		{
+			const aicadsp_paso_dec * d = &dsp_tabla[paso];
+
+			if (!d->iwt && !d->mrd && !d->mwt && !d->ewt
+				&& !d->adrl && !d->frcl && !d->yrl)
+				dsp_rapidos++;
+		}
+
+		/* RBP/RBL, horneados: viven en 0x2804, dentro del rango que ensucia,
+		   asi que releerlos por muestra era releer un registro que solo cambia
+		   cuando dsp_sucio ya se levanto. */
+		{
+			DWORD r = palabra(DSP_RBP_RBL);
+
+			aicadsp_est.rbp     = (unsigned long) (r & 0xFFF) << 10;
+			aicadsp_est.mascara = (8192ul << ((r >> 13) & 3)) - 1;
+		}
+
+		/* El programa emitido, si hay emisor: se rehace en cada
+		   reconstruccion, sobre la tabla que acaba de salir. NULL (declino o
+		   sin emisor) deja el cuerpo C de siempre. */
+		dsp_fn = NULL;
+
+		if (dsp_emisor != NULL && dsp_pasos != 0)
+			dsp_fn = dsp_emisor(dsp_tabla, dsp_ultimo);
 
 		dsp_sucio = 0;
 	}
@@ -217,7 +370,6 @@ static long signo24(long v)
 void aicadsp_paso(void)
 {
 	long			acc = 0, shifted = 0, x, y, b, entrada = 0;
-	unsigned long	rbp, rbl_palabras;
 	int				paso;
 
 	memset(dsp_efreg, 0, sizeof(dsp_efreg));
@@ -231,48 +383,58 @@ void aicadsp_paso(void)
 
 	censo_muestras_con_programa++;
 
+	/* El programa emitido es el lazo entero de esta muestra; el cuerpo C de
+	   abajo es el mismo paso a paso, y el brazo del A/B (DCEMU_SIN_JIT_DSP
+	   deja el emisor sin instalar). */
+	if (dsp_fn != NULL)
 	{
-		DWORD r = palabra(DSP_RBP_RBL);
+		dsp_fn();
 
-		rbp = (unsigned long) (r & 0xFFF) << 10;		/* en palabras: x2 KB */
-		rbl_palabras = 8192ul << ((r >> 13) & 3);
+		dsp_dec--;
+		memset(dsp_mixs, 0, sizeof(dsp_mixs));
+		return;
 	}
 
-	for (paso = 0; paso < 128; paso++)
+	for (paso = 0; paso <= dsp_ultimo; paso++)
 	{
-		unsigned long	base = DSP_MPRO + (unsigned long) paso * 16;
-		DWORD			w0 = palabra(base);
-		DWORD			w1 = palabra(base + 4);
-		DWORD			w2 = palabra(base + 8);
-		DWORD			w3 = palabra(base + 12);
+		/* Los campos vienen de la tabla de predecodificacion (ver arriba):
+		   mismos nombres, mismos valores, cero relecturas por muestra. */
+		const aicadsp_paso_dec * d = &dsp_tabla[paso];
 
-		int tra   = (int) ((w0 >> 9) & 0x7F);
-		int twt   = (int) ((w0 >> 8) & 1);
-		int twa   = (int) ((w0 >> 1) & 0x7F);
+		/* Aca vivio unas horas el cuerpo rapido por clase de paso (2026-08-21)
+		   y se revirtio MEDIDO: 63 de los 86 pasos de Crazy Taxi califican
+		   como "MAC simple" y un cuerpo de la mitad del tamano salio NEUTRO
+		   al milisegundo en la tanda -- el patron de ramas por paso es fijo
+		   entre muestras, el predictor se aprende la secuencia entera, y el
+		   costo real es la cadena MAC con sus cargas, que el cuerpo corto
+		   conserva. El censo queda en el resumen de traza; la leccion, en
+		   docs/jit-sota-plan.md. */
+		int tra   = d->tra;
+		int twt   = d->twt;
+		int twa   = d->twa;
 
-		int xsel  = (int) ((w1 >> 15) & 1);
-		int ysel  = (int) ((w1 >> 13) & 3);
-		int ira   = (int) ((w1 >> 7) & 0x3F);
-		int iwt   = (int) ((w1 >> 6) & 1);
-		int iwa   = (int) ((w1 >> 1) & 0x1F);
+		int xsel  = d->xsel;
+		int ysel  = d->ysel;
+		int ira   = d->ira;
+		int iwt   = d->iwt;
+		int iwa   = d->iwa;
 
-		int table = (int) ((w2 >> 15) & 1);
-		int mwt   = (int) ((w2 >> 14) & 1);
-		int mrd   = (int) ((w2 >> 13) & 1);
-		int ewt   = (int) ((w2 >> 12) & 1);
-		int ewa   = (int) ((w2 >> 8) & 0xF);
-		int adrl  = (int) ((w2 >> 7) & 1);
-		int frcl  = (int) ((w2 >> 6) & 1);
-		int shift = (int) ((w2 >> 4) & 3);
-		int yrl   = (int) ((w2 >> 3) & 1);
-		int negb  = (int) ((w2 >> 2) & 1);
-		int zero  = (int) ((w2 >> 1) & 1);
-		int bsel  = (int) (w2 & 1);
+		int table = d->table;
+		int mwt   = d->mwt;
+		int mrd   = d->mrd;
+		int ewt   = d->ewt;
+		int ewa   = d->ewa;
+		int adrl  = d->adrl;
+		int frcl  = d->frcl;
+		int shift = d->shift;
+		int yrl   = d->yrl;
+		int negb  = d->negb;
+		int zero  = d->zero;
+		int bsel  = d->bsel;
 
-		int nofl  = (int) ((w3 >> 15) & 1);
-		int masa  = (int) ((w3 >> 9) & 0x3F);
-		int adreb = (int) ((w3 >> 8) & 1);
-		int nxadr = (int) ((w3 >> 7) & 1);
+		int nofl  = d->nofl;
+		int adreb = d->adreb;
+		int nxadr = d->nxadr;
 
 		/* La entrada del paso. MIXS es de 20 bits y EXTS de 16; los dos suben
 		   a los 24 de la ALU. */
@@ -313,9 +475,9 @@ void aicadsp_paso(void)
 		{
 			case 0:  y = dsp_frc; break;
 			/* El coeficiente del PASO: el AICA lleva uno por paso, no un
-			   campo de seleccion como el SCSP. 13 bits con signo en 15:3. */
-			case 1:  y = (long) ((short) palabra(DSP_COEF
-						+ (unsigned long) paso * 4)) >> 3; break;
+			   campo de seleccion como el SCSP. 13 bits con signo en 15:3,
+			   ya corrido en la tabla. */
+			case 1:  y = d->coef; break;
 			case 2:  y = (dsp_y >> 11) & 0x1FFF; break;
 			default: y = (dsp_y >> 4) & 0x0FFF; break;
 		}
@@ -345,8 +507,7 @@ void aicadsp_paso(void)
 
 		if (mrd || mwt)
 		{
-			unsigned long dir = palabra(DSP_MADRS
-				+ (unsigned long) masa * 4);
+			unsigned long dir = (unsigned long) d->madrs;
 
 			if (!table)
 				dir += dsp_dec;
@@ -357,8 +518,8 @@ void aicadsp_paso(void)
 
 			/* Dentro del anillo la direccion envuelve por RBL; con TABLE la
 			   tabla es plana de 64 K palabras. RBP corre el origen. */
-			dir &= table ? 0xFFFFul : (rbl_palabras - 1);
-			dir = ((dir + rbp) * 2) & (AICA_ONDA_SIZE - 1);
+			dir &= table ? 0xFFFFul : aicadsp_est.mascara;
+			dir = ((dir + aicadsp_est.rbp) * 2) & (AICA_ONDA_SIZE - 1);
 
 			if (mrd)
 			{
@@ -433,8 +594,14 @@ void aicadsp_resumen(void)
 		if ((palabra(0x2000 + (unsigned long) i * 4) >> 8) & 0xF)
 			envios++;
 
-	fprintf(stderr, "traza: AICA DSP: %d pasos con programa, %llu muestras"
-		" corridas, %llu envios de canal a MIXS, %d ranuras EFSDL != 0\n",
-		aicadsp_activo() ? dsp_pasos : 0,
-		censo_muestras_con_programa, censo_envios_mixs, envios);
+	/* "emitido"/"cuerpo C" dice que corre de verdad: un A/B con el emisor
+	   caido (arena, desborde, la palanca) mediria C contra C en silencio. */
+	fprintf(stderr, "traza: AICA DSP: %d pasos con programa, corte en el paso"
+		" %d (%d MAC simple), %llu muestras corridas (%s), %llu"
+		" reconstrucciones, %llu envios de canal a MIXS, %d ranuras"
+		" EFSDL != 0\n",
+		aicadsp_activo() ? dsp_pasos : 0, dsp_ultimo, dsp_rapidos,
+		censo_muestras_con_programa,
+		dsp_fn != NULL ? "programa emitido" : "cuerpo C",
+		censo_reconstrucciones, censo_envios_mixs, envios);
 }

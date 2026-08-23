@@ -561,6 +561,24 @@ void jit_x64_imul_rm(x64_emisor * e, x64_reg dst, x64_reg base, int disp)
 	modrm_m(e, dst, base, disp);
 }
 
+/* De 64 bits: el multiplica-acumula del DSP es 24x13 bits, o sea 37 de
+   producto, y el corrimiento de 12 va sobre ese ancho. */
+void jit_x64_imul64_rr(x64_emisor * e, x64_reg dst, x64_reg src)
+{
+	rex(e, 1, dst, src, 0);
+	b1(e, 0x0F);
+	b1(e, 0xAF);
+	modrm_rr(e, dst, src);
+}
+
+/* MOVSXD r64, r/m32: la extension de signo que alimenta ese producto. */
+void jit_x64_movsxd_rr(x64_emisor * e, x64_reg dst, x64_reg src)
+{
+	rex(e, 1, dst, src, 0);
+	b1(e, 0x63);
+	modrm_rr(e, dst, src);
+}
+
 void jit_x64_cmp_rm_idx(x64_emisor * e, x64_reg a, x64_reg base,
 	x64_reg indice, int escala, int disp)
 {

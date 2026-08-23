@@ -26,6 +26,7 @@
 
 #include "aica.h"
 #include "aicadsp.h"
+#include "aicadspjit.h"
 
 #define G2(off)		(AICA_REG_BASE + (off))
 
@@ -303,6 +304,129 @@ static void el_flotante_de_16_va_y_vuelve(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* El A/B del emisor (aicadspjit.c)                                         */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El mismo estandar que test_arm7jit: cada programa corre dos veces -- una
+	con el emisor desinstalado (el cuerpo C, que las suites de arriba ya
+	prueban contra el papel) y otra con el programa emitido -- alimentado con
+	MIXS/EXTS deterministas, y el estado ENTERO tiene que salir identico:
+	TEMP, MEMS, MIXS, EXTS, EFREG, el anillo de memval, frc/y/adrs/dec, la
+	RAM de onda completa y las generaciones de pagina que el mwt marca.
+*/
+
+static struct aicadsp_est	dsp_est_a, dsp_est_b;
+static unsigned char		dsp_onda_a[AICA_ONDA_SIZE], dsp_onda_b[AICA_ONDA_SIZE];
+static unsigned long		dsp_gen_a[ONDA_PAGS], dsp_gen_b[ONDA_PAGS];
+
+static unsigned				dsp_azar_semilla;
+
+static unsigned dsp_azar(unsigned * s)
+{
+	*s = *s * 1103515245u + 12345u;
+	return (*s >> 8) & 0xFFFF;
+}
+
+/* Un brazo: reset, armar el programa, sembrar la RAM de onda y correr
+   `muestras` con la misma alimentacion. */
+static void dsp_correr_brazo(void (* armar)(void), int muestras,
+	struct aicadsp_est * est, unsigned char * onda, unsigned long * gen)
+{
+	unsigned	s;
+	int			m, i;
+
+	reiniciar();
+	armar();
+
+	s = 0x5EED0000u ^ dsp_azar_semilla;
+
+	for (i = 0; i < (int) AICA_ONDA_SIZE; i += 2)
+	{
+		unsigned v = dsp_azar(&s);
+
+		sound_mem[i]     = (unsigned char) v;
+		sound_mem[i + 1] = (unsigned char) (v >> 8);
+	}
+
+	memset(onda_gen, 0, sizeof(unsigned long) * ONDA_PAGS);
+
+	for (m = 0; m < muestras; m++)
+	{
+		for (i = 0; i < 16; i++)
+			aicadsp_mixs(i, (int) (short) dsp_azar(&s));
+
+		aicadsp_exts(0, (int) (short) dsp_azar(&s));
+		aicadsp_exts(1, (int) (short) dsp_azar(&s));
+
+		aicadsp_paso();
+	}
+
+	*est = aicadsp_est;
+	memcpy(onda, sound_mem, AICA_ONDA_SIZE);
+	memcpy(gen, onda_gen, sizeof(unsigned long) * ONDA_PAGS);
+}
+
+static void dsp_comparar(void (* armar)(void), int muestras)
+{
+	aicadsp_instalar_emisor(NULL);
+	dsp_correr_brazo(armar, muestras, &dsp_est_a, dsp_onda_a, dsp_gen_a);
+
+	aicadspjit_iniciar();
+	dsp_correr_brazo(armar, muestras, &dsp_est_b, dsp_onda_b, dsp_gen_b);
+
+	aicadsp_instalar_emisor(NULL);
+
+	/* Los dos derramaderos son del mecanismo emitido: el cuerpo C no los
+	   toca, asi que no son parte del estado que se compara. */
+	dsp_est_a.entrada = dsp_est_b.entrada = 0;
+	dsp_est_a.dir     = dsp_est_b.dir     = 0;
+
+	ESPERAR_I32(memcmp(&dsp_est_a, &dsp_est_b, sizeof(dsp_est_a)) == 0, 1);
+	ESPERAR_I32(memcmp(dsp_onda_a, dsp_onda_b, AICA_ONDA_SIZE) == 0, 1);
+	ESPERAR_I32(memcmp(dsp_gen_a, dsp_gen_b,
+		sizeof(unsigned long) * ONDA_PAGS) == 0, 1);
+}
+
+/* Programas al azar: las cuatro palabras crudas, el coeficiente, MADRS y
+   RBP/RBL salen de la semilla, asi que cada campo y cada combinacion de
+   caminos (los cuatro ysel, los cuatro shift, iwt sobre la propia entrada,
+   el anillo en crudo y en flotante, adreb/nxadr, la tabla plana) se
+   ejercitan sin que nadie tenga que acordarse de enumerarlas. */
+static void dsp_armar_al_azar(void)
+{
+	unsigned	s = dsp_azar_semilla;
+	int			paso, i;
+
+	for (paso = 0; paso < 28; paso++)
+	{
+		unsigned long base = 0x3400ul + (unsigned long) paso * 16;
+
+		escribir_g2(base,      dsp_azar(&s));
+		escribir_g2(base + 4,  dsp_azar(&s));
+		escribir_g2(base + 8,  dsp_azar(&s));
+		escribir_g2(base + 12, dsp_azar(&s));
+		escribir_g2(0x3000ul + (unsigned long) paso * 4, dsp_azar(&s));
+	}
+
+	for (i = 0; i < 64; i++)
+		escribir_g2(0x3200ul + (unsigned long) i * 4, dsp_azar(&s));
+
+	escribir_g2(0x2804, dsp_azar(&s) & 0x7FFF);
+}
+
+static void el_emitido_iguala_al_lazo_en_programas_al_azar(void)
+{
+	int k;
+
+	for (k = 0; k < 12; k++)
+	{
+		dsp_azar_semilla = 0xC0FFEEu + (unsigned) k * 0x9E3779B9u;
+		dsp_comparar(dsp_armar_al_azar, 10);
+	}
+}
+
+/* ------------------------------------------------------------------------ */
 
 static const dc_caso casos[] = {
 	CASO(sin_programa_no_hace_nada),
@@ -312,6 +436,7 @@ static const dc_caso casos[] = {
 	CASO(mwt_escribe_la_ram_de_onda),
 	CASO(mrd_lee_con_dos_pasos_de_retardo),
 	CASO(el_flotante_de_16_va_y_vuelve),
+	CASO(el_emitido_iguala_al_lazo_en_programas_al_azar),
 };
 
 const dc_suite suite_dsp = DEFINIR_SUITE("dsp", casos);

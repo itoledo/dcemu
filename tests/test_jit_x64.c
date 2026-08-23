@@ -530,6 +530,26 @@ static void la_familia_alu_completa(void)
 	jit_x64_imul_rm(&e, X64_RAX, X64_RBX, 0x40);		/* imul eax, [rbx+40h] */
 	ESPERAR_EMITIDO(0x0F, 0xAF, 0x43, 0x40);
 
+	arrancar();
+	jit_x64_imul64_rr(&e, X64_RDX, X64_RCX);			/* imul rdx, rcx */
+	ESPERAR_EMITIDO(0x48, 0x0F, 0xAF, 0xD1);
+
+	arrancar();
+	jit_x64_imul64_rr(&e, X64_R10, X64_RBX);			/* imul r10, rbx */
+	ESPERAR_EMITIDO(0x4C, 0x0F, 0xAF, 0xD3);
+
+	arrancar();
+	jit_x64_movsxd_rr(&e, X64_RDX, X64_RCX);			/* movsxd rdx, ecx */
+	ESPERAR_EMITIDO(0x48, 0x63, 0xD1);
+
+	arrancar();
+	jit_x64_movsxd_rr(&e, X64_R12, X64_RAX);			/* movsxd r12, eax */
+	ESPERAR_EMITIDO(0x4C, 0x63, 0xE0);
+
+	arrancar();
+	jit_x64_movsxd_rr(&e, X64_RAX, X64_R9);				/* movsxd rax, r9d */
+	ESPERAR_EMITIDO(0x49, 0x63, 0xC1);
+
 	arrancar();									/* add qword [rbx+1000h], 1 */
 	jit_x64_add64_mi(&e, X64_RBX, 0x1000, 1);
 	ESPERAR_EMITIDO(0x48, 0x83, 0x83, 0x00, 0x10, 0x00, 0x00, 0x01);

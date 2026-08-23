@@ -176,6 +176,8 @@ void jit_x64_shl_ri  (x64_emisor * e, x64_reg dst, int cuenta);
 void jit_x64_imul_rri(x64_emisor * e, x64_reg dst, x64_reg src, int imm);
 void jit_x64_imul_rr (x64_emisor * e, x64_reg dst, x64_reg src);
 void jit_x64_imul_rm (x64_emisor * e, x64_reg dst, x64_reg base, int disp);
+void jit_x64_imul64_rr(x64_emisor * e, x64_reg dst, x64_reg src);
+void jit_x64_movsxd_rr(x64_emisor * e, x64_reg dst, x64_reg src);
 void jit_x64_xor_rr  (x64_emisor * e, x64_reg dst, x64_reg src);
 
 /* Las mismas, con indice escalado: el arreglo de la cache de traducciones de

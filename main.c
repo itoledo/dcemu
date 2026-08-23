@@ -44,6 +44,7 @@
 #ifdef DCEMU_JIT
 #include "jit.h"
 #include "arm7jit.h"
+#include "aicadspjit.h"
 #endif
 #include "hilo_aica.h"
 #include "ubc.h"
@@ -2196,6 +2197,10 @@ int main(int argc, char *argv[])
 	// El traductor de bloques del ARM7 a x64 (DCEMU_SIN_JIT_ARM=1 lo deja
 	// sin instalar). Vive en el binario del JIT por lo mismo que jit.c.
 	arm7jit_iniciar();
+
+	// El microprograma del DSP emitido (DCEMU_SIN_JIT_DSP=1 lo deja sin
+	// instalar): el tercer emisor, por la misma puerta.
+	aicadspjit_iniciar();
 #endif
 
 	// La salida de sonido: la tarjeta y/o el .wav de --captura-audio.

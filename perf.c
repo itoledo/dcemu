@@ -27,6 +27,10 @@
 int perf_activa = 0;
 
 unsigned long long perf_ns_aica		= 0;
+unsigned long long perf_ns_canales	= 0;
+unsigned long long perf_ns_dsp		= 0;
+unsigned long long perf_canales_activos   = 0;
+unsigned long long perf_muestras_censadas = 0;
 unsigned long long perf_ns_arm		= 0;
 unsigned long long perf_ns_escena	= 0;
 unsigned long long perf_ns_textura	= 0;
@@ -666,11 +670,17 @@ void perf_resumen(void)
 			100.0 * (double) perf_inline_si
 				/ (double) (perf_inline_si + perf_inline_no));
 
+	if (perf_muestras_censadas)
+		fprintf(stderr, "perf: canales activos por muestra: %.1f de 64\n",
+			(double) perf_canales_activos / (double) perf_muestras_censadas);
+
 	fprintf(stderr, "perf: reparto del tiempo real\n");
 
 	aica_total = perf_ns_aica + perf_ns_arm;
 
 	linea("AICA (mezcla)",		perf_ns_aica,		real);
+	linea("  de eso canales",	perf_ns_canales,	real);
+	linea("  de eso DSP+EF",	perf_ns_dsp,		real);
 	linea("AICA (ARM7)",		perf_ns_arm,		real);
 	linea("  AICA total",		aica_total,			real);
 	linea("cuadro (cb_tastart)",perf_ns_cuadro,		real);

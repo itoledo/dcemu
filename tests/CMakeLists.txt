@@ -23,6 +23,7 @@ set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/cdda.c
 	${CMAKE_SOURCE_DIR}/arm7.c
 	${CMAKE_SOURCE_DIR}/arm7jit.c
+	${CMAKE_SOURCE_DIR}/aicadspjit.c
 	${CMAKE_SOURCE_DIR}/g2dma.c
 	${CMAKE_SOURCE_DIR}/gdrom.c
 	${CMAKE_SOURCE_DIR}/log.c
