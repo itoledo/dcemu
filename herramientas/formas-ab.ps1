@@ -1,10 +1,10 @@
-# La tanda de la cola de salto y del sondeo en bloque del ARM7 (fase E de
-# jit-sota-plan.md): TRES brazos por guest sobre el mismo binario -- todo
-# (por omision), solo-cola (DCEMU_SIN_SONDEO_ARM=1) y viejo (ademas
-# DCEMU_SIN_RAMA_ARM=1) --, bajo DCEMU_JIT=2 que es la forma que la adopcion
-# mide. Tres brazos porque dos palancas medidas juntas se leen al reves (la
-# leccion de la rejilla). Calentamiento POR GUEST descartado, orden rotado
-# entre rondas.
+# La tanda de las formas anchas del ARM7 (fase E de jit-sota-plan.md): TRES
+# brazos por guest sobre el mismo binario -- todo (por omision), solo-formas
+# (DCEMU_SIN_CABE_ARM=1: el interprete ancho, los bloques como antes) y viejo
+# (DCEMU_SIN_FORMAS_ARM=1) --, bajo DCEMU_JIT=2 que es la forma que la
+# adopcion mide. Tres brazos porque dos efectos medidos por una palanca se
+# leen al reves (la leccion de la rejilla). Calentamiento POR GUEST
+# descartado, orden rotado entre rondas.
 #
 # ciclo-jit.ps1 primero: arm7.c cambio, el perfil tiene que corresponder al
 # codigo o la tanda mide la disposicion del binario.
@@ -24,9 +24,9 @@ function Correr($brazo, $img, $segundos, $teclas)
 	}
 
 	$env:DCEMU_JIT = "2"
-	Remove-Item env:DCEMU_SIN_RAMA_ARM,env:DCEMU_SIN_SONDEO_ARM -EA SilentlyContinue
-	if ($brazo -in "solo-cola", "viejo") { $env:DCEMU_SIN_SONDEO_ARM = "1" }
-	if ($brazo -eq "viejo") { $env:DCEMU_SIN_RAMA_ARM = "1" }
+	Remove-Item env:DCEMU_SIN_FORMAS_ARM,env:DCEMU_SIN_CABE_ARM -EA SilentlyContinue
+	if ($brazo -eq "solo-formas") { $env:DCEMU_SIN_CABE_ARM = "1" }
+	if ($brazo -eq "viejo") { $env:DCEMU_SIN_FORMAS_ARM = "1" }
 
 	$reloj = [System.Diagnostics.Stopwatch]::StartNew()
 	& $exe "--salir-tras=$segundos" --sin-vmu $img | Out-Null
@@ -35,7 +35,7 @@ function Correr($brazo, $img, $segundos, $teclas)
 	$resumen = (Select-String -Path $err -Pattern "^jit: \d+ instrucciones" -EA SilentlyContinue |
 		ForEach-Object { $_.Line }) -join " | "
 
-	"{0,-9} {1,8} ms   {2}" -f $brazo, $reloj.ElapsedMilliseconds, $resumen
+	"{0,-12} {1,8} ms   {2}" -f $brazo, $reloj.ElapsedMilliseconds, $resumen
 }
 
 $bancos = @(
@@ -45,9 +45,9 @@ $bancos = @(
 )
 
 $ordenes = @(
-	@("todo", "solo-cola", "viejo"),
-	@("viejo", "solo-cola", "todo"),
-	@("solo-cola", "viejo", "todo")
+	@("todo", "solo-formas", "viejo"),
+	@("viejo", "solo-formas", "todo"),
+	@("solo-formas", "viejo", "todo")
 )
 
 foreach ($b in $bancos) {
@@ -59,5 +59,5 @@ foreach ($b in $bancos) {
 	}
 }
 
-Remove-Item env:DCEMU_JIT,env:DCEMU_SIN_RAMA_ARM,env:DCEMU_SIN_SONDEO_ARM,env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA SilentlyContinue
+Remove-Item env:DCEMU_JIT,env:DCEMU_SIN_FORMAS_ARM,env:DCEMU_SIN_CABE_ARM,env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA SilentlyContinue
 Write-Output "=== fin"

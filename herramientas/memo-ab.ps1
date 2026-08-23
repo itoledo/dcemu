@@ -1,13 +1,9 @@
-# La tanda de la cola de salto y del sondeo en bloque del ARM7 (fase E de
-# jit-sota-plan.md): TRES brazos por guest sobre el mismo binario -- todo
-# (por omision), solo-cola (DCEMU_SIN_SONDEO_ARM=1) y viejo (ademas
-# DCEMU_SIN_RAMA_ARM=1) --, bajo DCEMU_JIT=2 que es la forma que la adopcion
-# mide. Tres brazos porque dos palancas medidas juntas se leen al reves (la
-# leccion de la rejilla). Calentamiento POR GUEST descartado, orden rotado
-# entre rondas.
-#
-# ciclo-jit.ps1 primero: arm7.c cambio, el perfil tiene que corresponder al
-# codigo o la tanda mide la disposicion del binario.
+# El A/B de la memoizacion del ARM7 BAJO los bloques con cola/encadenado
+# (2026-08-20): el censo de rechazos mostro que el 44,7 % de los pasos de CT
+# se rechaza por "grabando" -- el memo graba el barrido de canales que la
+# muestra siguiente invalida, y mientras graba los bloques estan apagados.
+# Dos brazos sobre el mismo binario: memo encendida (por omision) y
+# DCEMU_SIN_MEMO_ARM=1. CT y SR2 (DOOM no elide nada, documentado).
 $ErrorActionPreference = "Stop"
 $exe = "build-jit\Release\dcemu.exe"
 $err = "build-jit\Release\stderr.txt"
@@ -24,9 +20,8 @@ function Correr($brazo, $img, $segundos, $teclas)
 	}
 
 	$env:DCEMU_JIT = "2"
-	Remove-Item env:DCEMU_SIN_RAMA_ARM,env:DCEMU_SIN_SONDEO_ARM -EA SilentlyContinue
-	if ($brazo -in "solo-cola", "viejo") { $env:DCEMU_SIN_SONDEO_ARM = "1" }
-	if ($brazo -eq "viejo") { $env:DCEMU_SIN_RAMA_ARM = "1" }
+	if ($brazo -eq "sin-memo") { $env:DCEMU_SIN_MEMO_ARM = "1" }
+	else { Remove-Item env:DCEMU_SIN_MEMO_ARM -EA SilentlyContinue }
 
 	$reloj = [System.Diagnostics.Stopwatch]::StartNew()
 	& $exe "--salir-tras=$segundos" --sin-vmu $img | Out-Null
@@ -39,25 +34,24 @@ function Correr($brazo, $img, $segundos, $teclas)
 }
 
 $bancos = @(
-	@{ n = "DCDoom"; img = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi"; s = 35; teclas = $false },
 	@{ n = "Crazy Taxi"; img = "roms\Crazy Taxi (USA).cdi"; s = 180; teclas = $true },
 	@{ n = "Sega Rally 2"; img = "roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"; s = 60; teclas = $false }
 )
 
 $ordenes = @(
-	@("todo", "solo-cola", "viejo"),
-	@("viejo", "solo-cola", "todo"),
-	@("solo-cola", "viejo", "todo")
+	@("con-memo", "sin-memo"),
+	@("sin-memo", "con-memo"),
+	@("con-memo", "sin-memo")
 )
 
 foreach ($b in $bancos) {
 	Write-Output "=== $($b.n), $($b.s) s emulados (calentamiento descartado)"
-	Correr "todo" $b.img $b.s $b.teclas | Out-Null
+	Correr "con-memo" $b.img $b.s $b.teclas | Out-Null
 	foreach ($orden in $ordenes) {
 		foreach ($m in $orden) { Correr $m $b.img $b.s $b.teclas }
 		Write-Output "---"
 	}
 }
 
-Remove-Item env:DCEMU_JIT,env:DCEMU_SIN_RAMA_ARM,env:DCEMU_SIN_SONDEO_ARM,env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA SilentlyContinue
+Remove-Item env:DCEMU_JIT,env:DCEMU_SIN_MEMO_ARM,env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A -EA SilentlyContinue
 Write-Output "=== fin"

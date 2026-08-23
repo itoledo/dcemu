@@ -34,9 +34,15 @@
 # verificado del traductor y su capa de reentrenamiento era la mayor del parque
 # (3-6 % entre ciclos) justamente porque no entrenaba. El binario normal no lo
 # corre: su banco y su linea base quedan como estaban.
+# **-Clang entrena el binario de clang-cl** (build-clang/, fase G de
+# jit-sota-plan.md): mismo banco que -Jit --ese binario tambien compila con
+# DCEMU_JIT=ON, y el banco es una sola fuente de verdad a proposito-- pero el
+# esquema de recoleccion es el de LLVM: LLVM_PROFILE_FILE nombra el .profraw
+# de cada corrida y llvm-profdata funde con los mismos pesos que pgomgr.
 param(
 	[string] $Exe = "",
 	[switch] $Jit,
+	[switch] $Clang,
 	[int]    $SegundosKatana = 90,
 	[int]    $SegundosCE     = 20,
 	[int]    $SegundosRally  = 60
@@ -44,54 +50,74 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($Clang) { $Jit = $true }
+
 if ($Exe -eq "") {
-	$Exe = if ($Jit) { "build-jit\Release\dcemu.exe" } else { "build\Release\dcemu.exe" }
+	$Exe = if ($Clang) { "build-clang\dcemu.exe" }
+		elseif ($Jit)  { "build-jit\Release\dcemu.exe" }
+		else           { "build\Release\dcemu.exe" }
 }
 
 if (-not (Test-Path $Exe)) { throw "falta ${Exe}: compila primero con -DDCEMU_PGO=GEN" }
 
-$pgd = if ($Jit) { "build-pgo\dcemu-jit.pgd" } else { "build-pgo\dcemu.pgd" }
-if (-not (Test-Path $pgd)) { throw "falta ${pgd}: el binario no se enlazo con /GENPROFILE" }
+if ($Clang) {
+	$profraw  = "build-pgo\clang-jit-raw"
+	$profdata = "build-pgo\dcemu-jit-clang.profdata"
+	$llvmProfdata = "E:\llvm\22.1.8\bin\llvm-profdata.exe"
+	if (-not (Test-Path $llvmProfdata)) { throw "no hay llvm-profdata en $llvmProfdata" }
+	New-Item -ItemType Directory -Force $profraw | Out-Null
+
+	# Los .profraw de una tanda anterior contaminarian el perfil, igual que
+	# los .pgc de abajo y por lo mismo: se borran antes, no despues.
+	Get-ChildItem $profraw -Filter "*.profraw" -EA SilentlyContinue | Remove-Item
+} else {
+	$pgd = if ($Jit) { "build-pgo\dcemu-jit.pgd" } else { "build-pgo\dcemu.pgd" }
+	if (-not (Test-Path $pgd)) { throw "falta ${pgd}: el binario no se enlazo con /GENPROFILE" }
+}
 
 # Los .pgc heredan el nombre base del .pgd, no el del ejecutable: con
 # dcemu-jit.pgd las corridas dejan dcemu-jit!N.pgc. Filtrar por "dcemu!*" aqui
 # perdia todas las corridas del binario del JIT.
-$filtroPgc = "$([IO.Path]::GetFileNameWithoutExtension($pgd))!*.pgc"
-
-# Las herramientas de PGO son las del **toolset x64**, no las que estan en el
-# PATH: en esta maquina `link.exe` resuelve al de HostX86\x86 y su pgomgr no
-# entiende un .pgd de 64 bits.
 $dirExe = Split-Path (Resolve-Path $Exe)
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$msvc = $null
 
-if (Test-Path $vswhere) {
-	$vs = & $vswhere -latest -property installationPath
-	if ($vs) {
-		$msvc = Get-ChildItem "$vs\VC\Tools\MSVC" -Directory -EA SilentlyContinue |
-			Sort-Object Name -Descending |
-			ForEach-Object { Join-Path $_.FullName "bin\Hostx64\x64" } |
-			Where-Object { Test-Path (Join-Path $_ "pgomgr.exe") } |
-			Select-Object -First 1
+if (-not $Clang) {
+	$filtroPgc = "$([IO.Path]::GetFileNameWithoutExtension($pgd))!*.pgc"
+
+	# Las herramientas de PGO son las del **toolset x64**, no las que estan en el
+	# PATH: en esta maquina `link.exe` resuelve al de HostX86\x86 y su pgomgr no
+	# entiende un .pgd de 64 bits.
+	$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+	$msvc = $null
+
+	if (Test-Path $vswhere) {
+		$vs = & $vswhere -latest -property installationPath
+		if ($vs) {
+			$msvc = Get-ChildItem "$vs\VC\Tools\MSVC" -Directory -EA SilentlyContinue |
+				Sort-Object Name -Descending |
+				ForEach-Object { Join-Path $_.FullName "bin\Hostx64\x64" } |
+				Where-Object { Test-Path (Join-Path $_ "pgomgr.exe") } |
+				Select-Object -First 1
+		}
 	}
+
+	if (-not $msvc) { throw "no encuentro las herramientas x64 de MSVC (pgomgr)" }
+
+	# El binario instrumentado carga pgort140.dll en tiempo de ejecucion. Sin ella
+	# no arranca --0xC000007B, que no dice nada util-- y la corrida se ve como una
+	# salida limpia si nadie mira el codigo de retorno. Por eso se copia y por eso
+	# el script mira el codigo de retorno de cada corrida. (El de clang no la
+	# necesita: su runtime de perfil va enlazado estatico.)
+	if (-not (Test-Path (Join-Path $dirExe "pgort140.dll"))) {
+		Copy-Item (Join-Path $msvc "pgort140.dll") $dirExe -Force
+		Write-Host "copiado pgort140.dll junto al ejecutable"
+	}
+
+	# Los .pgc de una tanda anterior contaminarian el perfil con codigo que ya no
+	# existe. Se borran antes, no despues: si algo falla a mitad, lo que queda es
+	# un perfil incompleto y no uno mezclado. Caen junto al EJECUTABLE, no junto
+	# al .pgd.
+	Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue | Remove-Item
 }
-
-if (-not $msvc) { throw "no encuentro las herramientas x64 de MSVC (pgomgr)" }
-
-# El binario instrumentado carga pgort140.dll en tiempo de ejecucion. Sin ella
-# no arranca --0xC000007B, que no dice nada util-- y la corrida se ve como una
-# salida limpia si nadie mira el codigo de retorno. Por eso se copia y por eso
-# el script mira el codigo de retorno de cada corrida.
-if (-not (Test-Path (Join-Path $dirExe "pgort140.dll"))) {
-	Copy-Item (Join-Path $msvc "pgort140.dll") $dirExe -Force
-	Write-Host "copiado pgort140.dll junto al ejecutable"
-}
-
-# Los .pgc de una tanda anterior contaminarian el perfil con codigo que ya no
-# existe. Se borran antes, no despues: si algo falla a mitad, lo que queda es
-# un perfil incompleto y no uno mezclado. Caen junto al EJECUTABLE, no junto
-# al .pgd.
-Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue | Remove-Item
 
 # El peso con el que entra cada banco al perfil, y por que no es 1 para todos.
 #
@@ -158,17 +184,35 @@ foreach ($b in $corridas) {
 
 	Write-Host "entrenando con $($b.n) ($($b.s) s emulados, peso $($b.peso))..." -NoNewline
 
-	$antes = @(Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue |
-				Select-Object -ExpandProperty Name)
-	& $Exe "--salir-tras=$($b.s)" $b.img | Out-Null
-	$despues = @(Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue |
-				Select-Object -ExpandProperty Name)
+	if ($Clang) {
+		# Un .profraw con nombre propio por corrida: es a la vez la prueba de
+		# que corrio (la misma regla que el .pgc) y la unidad que se pondera.
+		$b.profraw = Join-Path $profraw "$($b.n).profraw"
+		$env:LLVM_PROFILE_FILE = $b.profraw
+	}
 
-	# Que la corrida haya dejado su .pgc es la unica prueba de que corrio: un
+	$antes = @()
+	if (-not $Clang) {
+		$antes = @(Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue |
+					Select-Object -ExpandProperty Name)
+	}
+
+	& $Exe "--salir-tras=$($b.s)" $b.img | Out-Null
+
+	# Que la corrida haya dejado su perfil es la unica prueba de que corrio: un
 	# binario instrumentado al que le falta pgort140.dll sale enseguida y en
 	# silencio, y el entrenamiento entero se completa "bien" sin datos.
-	$nuevo = @($despues | Where-Object { $antes -notcontains $_ })
-	if ($nuevo.Count -eq 0) { throw "$($b.n) no dejo perfil" }
+	if ($Clang) {
+		if (-not (Test-Path $b.profraw) -or (Get-Item $b.profraw).Length -eq 0) {
+			throw "$($b.n) no dejo perfil (.profraw)"
+		}
+	} else {
+		$despues = @(Get-ChildItem $dirExe -Filter $filtroPgc -EA SilentlyContinue |
+					Select-Object -ExpandProperty Name)
+		$nuevo = @($despues | Where-Object { $antes -notcontains $_ })
+		if ($nuevo.Count -eq 0) { throw "$($b.n) no dejo perfil" }
+		$b.pgc = $nuevo[0]
+	}
 
 	# Y que la corrida del traductor haya traducido: sin este control, un JIT que
 	# no se enganche deja un perfil que describe al interprete dos veces.
@@ -178,11 +222,26 @@ foreach ($b in $corridas) {
 		}
 	}
 
-	$b.pgc = $nuevo[0]
-	Write-Host " ok ($($b.pgc))"
+	Write-Host " ok"
 }
 
+Remove-Item env:LLVM_PROFILE_FILE -EA SilentlyContinue
+
 Remove-Item env:DCEMU_PULSAR_START,env:DCEMU_PULSAR_A,env:DCEMU_SOLO_A,env:DCEMU_JIT,env:DCEMU_FUSION -EA SilentlyContinue
+
+if ($Clang) {
+	# llvm-profdata pondera con -weighted-input=N,archivo -- el equivalente de
+	# pgomgr /merge:N -- y escribe el .profdata entero de una vez, asi que el
+	# problema del "/clear" de abajo no existe: no hay acumulacion.
+	$entradas = @($corridas | ForEach-Object { "-weighted-input=$($_.peso),$($_.profraw)" })
+	& $llvmProfdata merge @entradas -o $profdata
+	if ($LASTEXITCODE -ne 0) { throw "llvm-profdata fallo con $LASTEXITCODE" }
+
+	Write-Host "perfil listo en $profdata. Ahora:"
+	Write-Host "  cmake -S . -B build-clang -DDCEMU_PGO=USE"
+	Write-Host "  cmake --build build-clang --target dcemu"
+	return
+}
 
 # Cada corrida deja su propio .pgc; pgomgr los funde en el .pgd. Viene con
 # MSVC, pero solo esta en el PATH de un shell de Visual Studio: si no aparece,
