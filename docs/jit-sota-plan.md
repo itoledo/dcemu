@@ -1609,6 +1609,34 @@ N fallos seguidos, o variantes por ASID — con su propio censo primero. El
 control MSVC quedó reconstruido y reentrenado del mismo fuente:
 `C772294E1EC4A72F`.
 
+**La retraducción por fallo de palabras (2026-08-23/24): ADENTRO — SR2
+−2,3 % con rangos disjuntos y 4/4, y la lección vino del guest que NO era
+el objetivo.** El mecanismo: cuando `jit_verificar` dice que la memoria ya
+no es la traducida, el bloque viejo recibe una **lápida en el pc** y el
+`continue` cae en el camino normal del lazo (buscar → miss → traducir el
+contenido vigente); la herencia del contador viaja por un derramadero
+porque la traducción puede no ocurrir en esa visita ni empezar en ese pc,
+y el tope por PC (16) acota el ping-pong si dos contenidos alternan — el
+censo dice que **nadie alterna**: DOOM 2 531 592 → **117** rechazos por
+palabras con 117 retraducciones y CERO al tope (cada sitio remapeado por
+WinCE cambió una vez y una retraducción lo arregló para siempre), SR2
+228 293 → 309. Palanca `DCEMU_JIT_SIN_RETRADUCIR=1`; suites 23/23;
+compuerta verde dos veces (`2C0069DD6FC57D7C` y el reentrenado
+`3FB976C6AE4C55CE`). La tanda (ambiente limpio de vuelta): **SR2 −2,3 %
+disjunto 4/4** (56 958-58 360 contra 58 795-59 625 ms), **DOOM neutro**
+(2/4 — sus 2,5 M de viajes al despachador eran baratos), CT inerte. Y la
+sorpresa que la contabilidad delató antes que el cronómetro: la cobertura
+del JIT en SR2 **bajó** 365 M de instrucciones (más entradas largas: 36,0
+→ 37,2 por entrada, 17,5 M de entradas menos) y el tiempo MEJORÓ — los
+sitios calientes cuyo contenido cambió durante la corrida (los mismos
+bimodales del expediente FPU: tras el remapeo el código nuevo ya no lleva
+filas FPU) quedan retraducidos a su forma vigente en vez de rebotar entre
+variantes y verificaciones. **SR2 cruza el tiempo real por primera vez:
+~1,04×** — era el único guest del banco por debajo. El residuo de
+rechazos queda en ~1 200 por guest (modo MMU del arranque) — extinto como
+categoría. El control MSVC quedó reconstruido y reentrenado del mismo
+fuente: `BAFD8519BADC3DD0`.
+
 **El reconocimiento de cierre (2026-08-23, madrugada): el SH-4 traducido
 es lo único grande que queda, en los tres guests.** Repartos frescos sobre
 el canónico `4E25653D7EE69A7A`: SR2 **85,2 %** de resto (intérprete),

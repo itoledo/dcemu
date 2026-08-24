@@ -204,6 +204,26 @@ static unsigned long long jit_rechazos_modo     = 0;
 static unsigned long long jit_rechazos_fpu      = 0;
 static unsigned long long jit_rechazos_palabras = 0;
 
+/*
+	La retraduccion por fallo de palabras: cuando jit_verificar dice que la
+	memoria ya no es la traducida (los remapeos de WinCE: DOOM dejaba 2,5 M
+	de entradas por 35 s corriendo interpretadas PARA SIEMPRE), el bloque
+	viejo recibe una lapida en el pc y el lazo del despachador traduce el
+	contenido vigente como a cualquier miss. El tope por PC (heredado de
+	bloque en bloque) acota el ping-pong si dos contenidos alternan: el
+	contador de retraducciones es el censo que decide si hace falta algo
+	mejor (variantes por ASID). DCEMU_JIT_SIN_RETRADUCIR=1 vuelve a la
+	conducta anterior.
+*/
+#define JIT_MAX_RETRAD	16
+
+static int jit_retraducir = 1;
+
+static unsigned long long	jit_retraducciones = 0;
+static unsigned long long	jit_retrad_topes   = 0;	/* rechazos ya al tope */
+static DWORD				jit_retrad_pc = 0;		/* la herencia pendiente */
+static unsigned char		jit_retrad_n  = 0;
+
 typedef struct
 {
 	DWORD				pc;
@@ -564,6 +584,10 @@ typedef struct
 	   ejecucion: la lista sin ponderar de jit_censar() cuenta sitios de
 	   traduccion, y un solo sitio caliente vale millones de entradas. */
 	WORD			corte;
+	/* Cuantas veces este PC ya se retradujo por fallo de palabras: la
+	   herencia que acota el ping-pong de dos contenidos alternando (ver la
+	   retraduccion en jit_despachar). Cabe en el relleno de alineacion. */
+	unsigned char	retraducido;
 	unsigned long long veces;
 	/* La epoca con la que se verifico entero. Mientras la global no se mueva,
 	   sus palabras son las mismas y su pagina sigue donde estaba. */
@@ -6296,6 +6320,14 @@ static jit_bloque * tr_traducir(DWORD pc)
 	b->fin        = (unsigned char) t.fin;
 	b->corte      = t.corte;
 
+	/* La herencia de la retraduccion: si este nacimiento reemplaza a un
+	   bloque con lapida, carga con su cuenta (el tope por PC). */
+	if (jit_retrad_pc != 0 && t.pc0 == jit_retrad_pc)
+	{
+		b->retraducido = jit_retrad_n;
+		jit_retrad_pc  = 0;
+	}
+
 	/* El censo de variantes: cuantas traducciones son la hermana de otro
 	   bloque del mismo PC bajo otro modo FPU. Camino de traduccion, frio. */
 	if (jit_variantes_fpu && b->fpu >= 0)
@@ -6714,6 +6746,23 @@ int jit_despachar(DWORD pc)
 			jit_rechazos++;
 			jit_rechazos_palabras++;
 			jit_rechazo_censar(b->pc, 2);
+
+			/* La memoria ya no es la traducida: lapida y a traducir el
+			   contenido vigente por el camino normal del lazo (el continue
+			   cae en buscar -> NULL -> tr_traducir). La herencia viaja por
+			   jit_retrad_pc porque la traduccion puede no ocurrir en esta
+			   visita (corridos > 0) ni empezar en este pc (crecimiento
+			   hacia atras); solo la consume el bloque que nazca aqui. */
+			if (jit_retraducir && b->retraducido < JIT_MAX_RETRAD)
+			{
+				jit_retrad_pc = pc;
+				jit_retrad_n  = (unsigned char) (b->retraducido + 1);
+				b->pc = 1;
+				jit_retraducciones++;
+				continue;
+			}
+
+			jit_retrad_topes++;
 			break;
 		}
 
@@ -6781,9 +6830,10 @@ static void jit_resumen(void)
 	if (jit_rechazos || jit_fpu_variantes)
 	{
 		fprintf(stderr, "jit: de esos rechazos: %llu modo MMU, %llu modo FPU,"
-			" %llu palabras; %llu variantes FPU traducidas\n",
+			" %llu palabras; %llu variantes FPU traducidas;"
+			" %llu retraducciones por palabras, %llu rechazos con el tope\n",
 			jit_rechazos_modo, jit_rechazos_fpu, jit_rechazos_palabras,
-			jit_fpu_variantes);
+			jit_fpu_variantes, jit_retraducciones, jit_retrad_topes);
 
 		for (i = 0; i < 8; i++)
 		{
@@ -7143,9 +7193,12 @@ void jit_iniciar(void)
 
 	{
 		const char * sv = getenv("DCEMU_JIT_SIN_VARIANTES_FPU");
+		const char * sr = getenv("DCEMU_JIT_SIN_RETRADUCIR");
 
 		if (sv != NULL && atoi(sv) != 0)
 			jit_variantes_fpu = 0;
+		if (sr != NULL && atoi(sr) != 0)
+			jit_retraducir = 0;
 	}
 
 	{
