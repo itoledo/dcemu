@@ -23,8 +23,12 @@ dcemu --sin-vmu --sin-audio --render=shader --captura-gl=exc.bmp \
 `inc.bmp` tiene que salir con un cuadrado rojo de 320×240 en x 160..479, y 120..359 sobre fondo azul,
 y `exc.bmp` exactamente al revés: **307 200 de 307 200 píxeles complementarios, cero fallas**.
 
-Con `--render=fbo` —el camino de plantilla, que no implementa la instrucción— el sabor «excluir» da
-38 640 píxeles rojos en vez de 230 400. Esa es la aproximación, medida.
+El camino de plantilla (`--render=fbo` / ventana) también la implementa desde la paridad por
+grupo (2026-08-25): el pliegue de la exclusión es de pantalla entera sobre el bit de paridad, y
+el sabor «excluir» sale complementario igual que por píxel. Antes era una aproximación
+(`GL_ZERO` sobre lo que las caras cubren) que daba 38 640 píxeles rojos en vez de 230 400 — la
+reproduce `DCEMU_SIN_VOL_PARIDAD=1`, y de paso muestra la firma del devanado: de los dos
+triángulos del quad sobrevivía uno.
 
 ## Compilar
 

@@ -2155,30 +2155,58 @@ int compare(const void *  f,const void * s)
 	entre los dos juegos de parametros del poligono. En OpenGL de funcion fija
 	eso es el buffer de plantilla.
 
-	**La cuenta es por caras contra la profundidad de la escena, como en el
-	chip.** Un pixel esta dentro del volumen si entre el ojo y su superficie
-	las caras del volumen que miran hacia aca y las que miran hacia alla no se
-	compensan: las que pasan la prueba de profundidad (GL_GREATER: mas cerca
-	que la superficie) suman en un sentido y restan en el otro, y dentro =
-	cuenta != 0. Probar contra != 0 vuelve ademas irrelevante cual de los dos
-	sentidos de giro es "la cara delantera": en un volumen cerrado los cruces
-	se cancelan de a pares y en uno abierto -- el cuadrado plano de las demos
-	de KOS -- queda +-1.
+	**La marca es la del chip: paridad por grupo contra la profundidad,
+	plegada con booleanas** (DevBox 3.4.5.1: un bit de area por pixel, cada
+	modelo de volumen entrega "1 dentro / 0 fuera", inclusion hace OR y
+	exclusion el pliegue del complemento). Dentro de un grupo --los triangulos
+	hasta su cierre, instruccion 1 o 2-- un pixel esta dentro si el numero de
+	caras que pasan la prueba de profundidad (GL_GREATER: mas cerca que la
+	superficie) es IMPAR, sin mirar el sentido de giro, que el hardware ignora.
 
-	La version anterior era una union de triangulos en pantalla, sin mirar la
-	profundidad: alcanzaba para ese cuadrado plano, pero la sombra extruida del
-	taxi de Crazy Taxi marcaba todo lo que sus caras cubrieran -- el techo del
-	propio taxi oscurecido por su sombra y un manto sobre media pantalla.
+	La version anterior a la paridad contaba con signo por sentido de giro
+	(INCR las delanteras, DECR las traseras, dentro = cuenta != 0), con el
+	argumento de que en un volumen cerrado los cruces se cancelan de a pares.
+	Se cancelan solo si el devanado del volumen es consistente, y el del
+	guest no tiene por que serlo -- el chip no lo mira. La sombra extruida del
+	taxi de Crazy Taxi trae triangulos en los dos sentidos dentro del mismo
+	volumen, y donde los pares no compensaban las PAREDES marcaban: al saltar
+	el taxi, la sombra salia proyectada del auto al suelo como una cortina en
+	vez de quedar en el suelo. La paridad es ciega al devanado y ademas
+	rescata el argumento original: +1 y -1 coinciden modulo 2, asi que donde
+	la cuenta con signo era correcta la paridad da lo mismo.
+
+	Y **por grupo, no todo junto**: dos volumenes que se solapan (dos autos
+	con la sombra encima) son "dentro" para el chip -- OR de los dos bits --
+	mientras que la paridad de la suma de ambos daria fuera. El cierre de
+	cada modelo (instruccion 1) delimita el grupo; un resto sin cerrar se
+	pliega como inclusion, que es lo que hacia el camino anterior con todo.
+
+	La version de antes de contar contra la profundidad era una union de
+	triangulos en pantalla: alcanzaba para el cuadrado plano de las demos de
+	KOS, pero marcaba todo lo que las caras cubrieran -- el techo del propio
+	taxi oscurecido por su sombra y un manto sobre media pantalla.
 
 	Contar contra la profundidad obliga a marcar DESPUES de resolverla, no
 	antes de dibujar: ver el orden en dibujar_escena(). La plantilla entera es
 	de una sola lista de volumen a la vez -- se marca la 1 para la tanda opaca
-	y se re-marca la 3 para la translucida -- asi la cuenta tiene los 8 bits.
+	y se re-marca la 3 para la translucida.
 
-	La instruccion 2 ("cerrar excluyendo") sigue siendo la aproximacion de
-	antes -- pone en cero lo que cubre, ahora tambien solo delante de la
-	superficie -- porque ninguna demo nuestra la ejercita.
+	La instruccion 2 ("cerrar excluyendo") conserva la semantica que valida
+	demos/volumen-excluir --el complemento del volumen se pliega con OR--, en
+	los dos caminos. El DevBox dice AND a secas (un volumen de exclusion solo
+	RECORTA area 1 ya creada); ningun contenido real la ejercita y decidir
+	entre las dos lecturas necesita el arbitro de consola. Queda nombrado.
+
+	DCEMU_SIN_VOL_PARIDAD=1 reproduce la cuenta con signo anterior byte a
+	byte, plantilla incluida: es la palanca de aislamiento y la linea base.
 */
+
+static int env_sin_vol_paridad = -1;
+
+static int vol_paridad(void)
+{
+	return !env_interruptor("DCEMU_SIN_VOL_PARIDAD", &env_sin_vol_paridad);
+}
 
 /* Los WRAP son de GL 1.4 y el gl.h de MSVC es 1.1; todo driver los trae. Sin
    wrap la cuenta se arruina cuando una cara trasera rasteriza antes que su
@@ -2280,12 +2308,17 @@ static int hay_exclusion_de(DWORD lista)
 */
 static void marcar_volumenes_px(DWORD lista)
 {
-	int		por_grupo = hay_exclusion_de(lista);
+	/* Con paridad SIEMPRE por grupo: el pliegue OR de cada cierre es lo que
+	   hace bien a los volumenes solapados. Con la palanca puesta, la conducta
+	   anterior: por grupo solo si hay exclusion. */
+	int		por_grupo = vol_paridad() ? 1 : hay_exclusion_de(lista);
+	int		abierto = 0;
 	DWORD	v, desde;
 
 	gl_estado_olvidar();
 
 	glmoderno_vol_empezar(escena_ancho(), escena_alto(), por_grupo);
+	glmoderno_vol_paridad(vol_paridad());
 
 	/* Ni color ni profundidad: la cuenta va a la imagen. La prueba de
 	   profundidad SI, y adelantada -- ver fuente_fs_vol en glmoderno.c. */
@@ -2329,8 +2362,9 @@ static void marcar_volumenes_px(DWORD lista)
 		for (k = 0; k < 3; k++)
 			glVertex3f(t->x[k], t->y[k], t->z[k]);
 
-		/* Un cierre termina el grupo; con exclusion cada uno se dobla aca
-		   mismo, con su polaridad. Sin ella se dobla todo junto al final. */
+		abierto = 1;
+
+		/* Un cierre termina el grupo y se dobla aca mismo, con su polaridad. */
 		if (por_grupo && (t->instruccion == 1 || t->instruccion == 2))
 		{
 			glEnd();
@@ -2338,6 +2372,7 @@ static void marcar_volumenes_px(DWORD lista)
 
 			glmoderno_vol_plegar(t->instruccion == 2);
 			glmoderno_vol_acumular(1, 1);
+			abierto = 0;
 		}
 	}
 
@@ -2346,13 +2381,151 @@ static void marcar_volumenes_px(DWORD lista)
 
 	glmoderno_vol_acumular(0, por_grupo);
 
-	if (!por_grupo)
+	/* Sin grupos, el unico pliegue; con grupos, el resto sin cerrar se
+	   pliega como inclusion -- antes de la paridad ese resto quedaba
+	   sumado en la mascara de todos modos. Bajo la palanca, la conducta
+	   anterior exacta: el resto de un camino con exclusion se descartaba. */
+	if (!por_grupo || (abierto && vol_paridad()))
 		glmoderno_vol_plegar(0);
 
 	glmoderno_vol_listo();
 
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	gl_estado_olvidar();
+}
+
+/* Dibuja los triangulos de volumen [desde, hasta] de la lista, inclusive. */
+static void vol_dibujar_tramo(DWORD lista, DWORD desde, DWORD hasta)
+{
+	DWORD v;
+	int k;
+
+	glBegin(GL_TRIANGLES);
+
+	for (v = desde; v <= hasta; v++)
+	{
+		const VolTri * t = &VolumeBuffer[v];
+
+		if (t->lista != lista)
+			continue;
+
+		for (k = 0; k < 3; k++)
+			glVertex3f(t->x[k], t->y[k], t->z[k]);
+	}
+
+	glEnd();
+}
+
+/* Un quad que toca todos los pixeles. Identidad en el MODELVIEW -- que es
+   donde screeninit() deja el glOrtho, con PROJECTION identidad -- asi las
+   coordenadas son de recorte y no dependen del tamano del destino. */
+static void vol_quad_pantalla(void)
+{
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+	glLoadIdentity();
+
+	glBegin(GL_QUADS);
+	glVertex3f(-1.0f, -1.0f, 0.0f);
+	glVertex3f( 1.0f, -1.0f, 0.0f);
+	glVertex3f( 1.0f,  1.0f, 0.0f);
+	glVertex3f(-1.0f,  1.0f, 0.0f);
+	glEnd();
+
+	glPopMatrix();
+}
+
+/*
+	Un grupo (un modelo de volumen) en la plantilla, con la regla del chip:
+	bit 1 = paridad de las caras del grupo delante de la superficie, y el
+	pliegue al bit 0 -- OR si cierra incluyendo, el complemento si excluye.
+	El bit 1 queda en cero al salir, listo para el grupo que sigue; la
+	prueba de las tiras mira solo el bit 0.
+*/
+static void vol_grupo_paridad(DWORD lista, DWORD desde, DWORD hasta, int excluir)
+{
+	/* (a) La paridad al bit 1: INVERT enmascarado, solo las caras delante
+	   de la superficie (GL_GREATER sigue puesto). El sentido de giro no
+	   participa, que es el punto. */
+	glEnable(GL_DEPTH_TEST);
+	glStencilMask(0x2);
+	glStencilFunc(GL_ALWAYS, 0, 0xFF);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+	vol_dibujar_tramo(lista, desde, hasta);
+
+	/* (b) El pliegue, ya sin profundidad: la paridad la decidio (a). */
+	glDisable(GL_DEPTH_TEST);
+
+	if (!excluir)
+	{
+		/* Inclusion: OR. Un pixel con paridad esta cubierto por algun
+		   triangulo del grupo, asi que redibujarlos los alcanza a todos.
+		   REPLACE escribe el ref (3) recortado al bit 0 por la mascara de
+		   escritura; el ref lleva el bit 1 porque tambien es el de la
+		   prueba. */
+		glStencilMask(0x1);
+		glStencilFunc(GL_EQUAL, 0x3, 0x2);
+		glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+		vol_dibujar_tramo(lista, desde, hasta);
+
+		/* Y el bit de paridad a cero. El primer triangulo que cubre el
+		   pixel lo apaga y los siguientes fallan la prueba: idempotente. */
+		glStencilMask(0x2);
+		glStencilFunc(GL_EQUAL, 0x2, 0x2);
+		glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
+		vol_dibujar_tramo(lista, desde, hasta);
+	}
+	else
+	{
+		/* Exclusion: el complemento del grupo se pliega con OR -- la
+		   semantica que valida demos/volumen-excluir, la misma del camino
+		   por pixel. El complemento vive tambien donde el grupo no llego,
+		   asi que el pliegue es de pantalla entera. */
+		glStencilMask(0x1);
+		glStencilFunc(GL_EQUAL, 0x1, 0x2);
+		glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+		vol_quad_pantalla();
+
+		glStencilMask(0x2);
+		glStencilFunc(GL_EQUAL, 0x2, 0x2);
+		glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
+		vol_quad_pantalla();
+	}
+
+	glEnable(GL_DEPTH_TEST);
+}
+
+static void marcar_volumenes_paridad(DWORD lista)
+{
+	DWORD v, desde = 0;
+	int hay = 0;
+
+	glDisable(GL_CULL_FACE);
+
+	for (v = 0; v < vol_count; v++)
+	{
+		const VolTri * t = &VolumeBuffer[v];
+
+		if (t->lista != lista)
+			continue;
+
+		if (!hay)
+		{
+			desde = v;
+			hay = 1;
+		}
+
+		if (t->instruccion != 1 && t->instruccion != 2)
+			continue;
+
+		vol_grupo_paridad(lista, desde, v, t->instruccion == 2);
+		hay = 0;
+	}
+
+	/* El resto sin cerrar, como inclusion: las demos que no marcan el
+	   ultimo poligono. */
+	if (hay)
+		vol_grupo_paridad(lista, desde, vol_count - 1, 0);
 }
 
 static void marcar_volumenes(DWORD lista)
@@ -2396,6 +2569,18 @@ static void marcar_volumenes(DWORD lista)
 	glDisable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
 	glStencilFunc(GL_ALWAYS, 0, 0xFF);
+
+	if (vol_paridad())
+	{
+		marcar_volumenes_paridad(lista);
+
+		glStencilMask(0xFF);
+		glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+		glmoderno_shader_usar(shader_activo());
+		return;
+	}
 
 	glEnable(GL_CULL_FACE);
 	glFrontFace(GL_CCW);
@@ -2471,7 +2656,13 @@ static void plantilla_para(int i, int dentro, int hay_volumen)
 	}
 
 	gl_estencil(1);
-	glStencilFunc(dentro ? GL_NOTEQUAL : GL_EQUAL, 0, 0xFF);
+
+	/* Con paridad el area vive en el bit 0 (el 1 es el de trabajo de los
+	   grupos); con la palanca puesta, la cuenta entera de antes. */
+	if (vol_paridad())
+		glStencilFunc(GL_EQUAL, dentro ? 0x1 : 0, 0x1);
+	else
+		glStencilFunc(dentro ? GL_NOTEQUAL : GL_EQUAL, 0, 0xFF);
 }
 
 /*
@@ -4344,7 +4535,12 @@ static void dibujar_escena(void)
 												  : GL_EQUAL);
 			gl_depth_mask(0);
 			gl_estencil(1);
-			glStencilFunc(GL_NOTEQUAL, 0, 0xFF);
+
+			if (vol_paridad())
+				glStencilFunc(GL_EQUAL, 0x1, 0x1);
+			else
+				glStencilFunc(GL_NOTEQUAL, 0, 0xFF);
+
 			juego_de_parametros(1);
 
 			glDrawArrays(GL_TRIANGLE_STRIP, TriangleStrip[i].index,

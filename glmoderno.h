@@ -234,6 +234,10 @@ void glmoderno_vol_acumular(int on, int por_grupo);
    `excluir` es la instruccion 2. */
 void glmoderno_vol_plegar(int excluir);
 
+/* Con 1, el plegado prueba cuenta IMPAR --la regla del chip, ciega al sentido
+   de giro-- en vez de cuenta != 0. Lo fija graficos.c segun la palanca. */
+void glmoderno_vol_paridad(int on);
+
 /* Barrera: la mascara ya se puede leer desde el shader de escena. */
 void glmoderno_vol_listo(void);
 

@@ -451,6 +451,8 @@ static GLuint	vol_prog = 0;		/* acumula caras en la mascara */
 static GLuint	vol_prog_plegar = 0;/* dobla un grupo en la mascara */
 static int		vol_w = 0, vol_h = 0;
 static GLint	u_vol_excluir = -1;
+static GLint	u_vol_paridad = -1;
+static int		vol_paridad_on = 0;	/* 1: dentro = cuenta impar (la regla del chip) */
 
 static int vol_armar(void);
 
@@ -854,10 +856,19 @@ static const char * fuente_fs_vol_plegar =
 	"layout(binding = 1, r32i) uniform coherent iimage2D destino;\n"
 	"layout(binding = 2, r32i) uniform coherent iimage2D cuenta;\n"
 	"uniform int excluir;\n"
+	/*
+		Con `paridad`, dentro = cuenta IMPAR, que es la regla del chip: el bit
+		de area se decide por la paridad de los planos del volumen delante de
+		la superficie, sin mirar el sentido de giro (DevBox 3.4.5.1). La suma
+		con signo sirve igual de contador porque +1 y -1 coinciden modulo 2.
+		Sin `paridad`, la cuenta != 0 anterior (DCEMU_SIN_VOL_PARIDAD=1).
+	*/
+	"uniform int paridad;\n"
 	"void main()\n"
 	"{\n"
 	"	ivec2 p = ivec2(gl_FragCoord.xy);\n"
-	"	bool dentro = imageLoad(cuenta, p).r != 0;\n"
+	"	int c = imageLoad(cuenta, p).r;\n"
+	"	bool dentro = (paridad != 0) ? ((c & 1) != 0) : (c != 0);\n"
 	"\n"
 	"	if (excluir != 0) dentro = !dentro;\n"
 	"	if (dentro) imageStore(destino, p, ivec4(1));\n"
@@ -1810,6 +1821,7 @@ static int vol_armar(void)
 		return 0;
 
 	u_vol_excluir = p_glGetUniformLocation(vol_prog_plegar, "excluir");
+	u_vol_paridad = p_glGetUniformLocation(vol_prog_plegar, "paridad");
 
 	/* Las unidades de imagen van en el fuente (`layout(binding=)`): 1 la
 	   mascara y 2 el contador del grupo. No hay uniformes que poner. */
@@ -1967,6 +1979,14 @@ void glmoderno_vol_acumular(int on, int por_grupo)
 	p_glUseProgram(on ? vol_prog : (shader_puesto ? prog_actual() : 0));
 }
 
+/* La decision dentro = impar / != 0 la toma graficos.c, que es quien sabe si
+   la paridad esta apagada por DCEMU_SIN_VOL_PARIDAD. Se fija una vez por
+   escena, antes de plegar. */
+void glmoderno_vol_paridad(int on)
+{
+	vol_paridad_on = (on != 0);
+}
+
 void glmoderno_vol_plegar(int excluir)
 {
 	GLint cero = 0;
@@ -1979,6 +1999,9 @@ void glmoderno_vol_plegar(int excluir)
 
 	if (u_vol_excluir >= 0)
 		p_glUniform1i(u_vol_excluir, excluir ? 1 : 0);
+
+	if (u_vol_paridad >= 0)
+		p_glUniform1i(u_vol_paridad, vol_paridad_on);
 
 	/* El quad tiene que tocar TODOS los pixeles: la prueba de profundidad la
 	   rechazaria contra la escena que ya esta dibujada, y el complemento de un
