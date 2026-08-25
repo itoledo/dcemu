@@ -18,7 +18,12 @@
 #ifndef _CDI_H_
 #define _CDI_H_
 
-#define CDI_PISTAS_MAX	32
+/* 99 es el tope del formato (numeros de pista de CD). El valor viejo, 32,
+   dejaba caer EN SILENCIO las pistas 33+ de un CHD: Mortal Kombat Gold trae
+   33 (26 de audio mas las dos de datos del area alta), su 1ST_READ.BIN vive
+   en la pista final, y el guest arrancaba sobre ceros y se colgaba -- se
+   archivo como incompatibilidad cuando era este tope. */
+#define CDI_PISTAS_MAX	99
 
 struct cdi_pista_t
 {

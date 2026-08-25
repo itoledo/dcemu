@@ -465,3 +465,36 @@ trae el ejecutable en claro como un `.gdi`, uno de MIL-CD lo traería cifrado co
   están en el archivo; ninguna imagen que circule lo trae y el lector lo rechaza con aviso en
   vez de inventar la resta.
 - El tag `CHGT` viejo (audio sin invertir) está contemplado y sin material que lo pruebe.
+
+## El tope de pistas era el "colgado" de Mortal Kombat Gold (2026-08-24)
+
+`CDI_PISTAS_MAX` era 32 y el lazo de metadatos de `chd_abrir()` paraba ahi **sin
+decir palabra**. El CHD de Mortal Kombat Gold trae **53 pistas** (una tanda de
+audio por personaje mas las dos de datos del area alta), y la que se caia era
+justamente la ultima de datos — donde vive su `1ST_READ.BIN`, en el LSN 545 928.
+La cadena completa de la falla, que se archivo meses como incompatibilidad:
+
+1. El stat del ISO9660 encontraba el archivo (el volumen esta en la pista 3,
+   que si entraba), asi que la carga arrancaba con LSN y tamano validos.
+2. Cada lectura caia fuera de toda pista (`chd: el sector %u no cae...`, una
+   linea por sector) y la carga **seguia igual**: el binario quedaba en ceros.
+3. El guest arrancaba sobre memoria sin inicializar, el PC se deslizaba en
+   NOIMP desde `ACFFFFAE` hasta el espejo `AD00006C`, unos bytes decodificaban
+   como `TRAPA`, y la tormenta contra el manejador Katana (`VBR=8C00F400`)
+   parecia un cuelgue del juego. Igual en interprete y traductor — lo que
+   correctamente se leyo como "no es el JIT", pero no era compatibilidad: era
+   el lector.
+
+El arreglo y sus dos guardas (la regla del arbol: decirlo):
+
+- `CDI_PISTAS_MAX` = **99**, el tope del formato. Lo comparten `.cdi`, `.gdi`
+  y `.chd` (una tabla de pistas para los tres).
+- Llegar al tope ahora avisa (`chd_abrir`), porque un disco de verdad con 99
+  seria sospechoso de por si.
+- Una lectura fallida del binario de arranque ahora avisa (`iso.c`): "el guest
+  va a arrancar sobre memoria sin inicializar" es exactamente lo que pasa.
+
+Con el tope subido MKG llega **a la pelea** (Cyrax contra Tanya con el banco
+ciego de botones, 534 tiras por escena) y sale **exacto int contra traductor**
+(capturas identicas y 40 000 puntos al digito). El material queda 47/48 — solo
+MvC2, el expediente entendido al ciclo.

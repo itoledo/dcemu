@@ -270,6 +270,14 @@ int chd_abrir(const char * ruta, struct cdi_t * dest, int * cual, int * es_gd)
 		return 1;
 	}
 
+	/* Llegar al tope es sospechoso de por si: el tope viejo (32) dejo caer
+	   la pista final de datos de Mortal Kombat Gold sin decir palabra, y el
+	   guest arranco sobre ceros. Si un disco de verdad trae 99, que al menos
+	   quede dicho. */
+	if (chd_n_pistas == CDI_PISTAS_MAX)
+		fprintf(stderr, "chd_abrir: la imagen llego al tope de %d pistas del "
+			"lector; si el CHD trae mas, quedaron FUERA\n", CDI_PISTAS_MAX);
+
 	/* En un CD multisesion chdman guardo las pistas pegadas: la ultima se
 	   anuncia (y se lee) detras del hueco entre sesiones. En un GD-ROM no hay
 	   nada que mover: el relleno ya dejo cada pista en su LBA. */

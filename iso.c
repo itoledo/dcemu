@@ -945,6 +945,13 @@ int cargar_archivo_iso(char * fname, bool scrambled, unsigned char * mempos)
 			case FORMATO_CDI:
 				if (min_iso_seek_read(iso, mempos, lsn, secsize) > 0)
 					fprintf(stderr, "archivo leido exitosamente.\n");
+				else
+					/* La otra mitad de la falla de MKG: con el tope de pistas
+					   viejo la lectura fallaba y la carga SEGUIA, y el guest
+					   arrancaba sobre memoria sin inicializar y se colgaba en
+					   una tormenta de TRAPA que parecia incompatibilidad. */
+					fprintf(stderr, "iso: la lectura de %s FALLO; el guest va "
+						"a arrancar sobre memoria sin inicializar\n", fname);
 				break;
 
 			default: break;
