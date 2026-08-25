@@ -1239,7 +1239,10 @@ static void gen_censar(jit_gen * g, const x64_parche * p,
 
 static x64_parche gen_guarda(jit_gen * g, jit_acceso * a, x64_cond cc)
 {
-	return a->corto ? jit_x64_jcc_corto(&g->e, cc) : jit_x64_jcc(&g->e, cc);
+	/* a == NULL: la emision compartida (la rutina de traduccion), donde las
+	   guardas siempre son largas y aterrizan en la cola de fallo local. */
+	return (a != NULL && a->corto)
+		? jit_x64_jcc_corto(&g->e, cc) : jit_x64_jcc(&g->e, cc);
 }
 
 /* Las dos salidas al camino lento, anotando por que. Con la sonda apagada la
@@ -1298,15 +1301,44 @@ static void gen_lento_fis(jit_gen * g, jit_acceso * a, x64_cond cc, int razon)
 	La direccion virtual queda intacta en ECX --el camino lento la necesita-- y
 	la fisica sale en R11D.
 */
+/*
+	El atajo de P1/P2, factorizado porque lo emiten dos sitios y tienen que
+	ser el mismo byte a byte: la traduccion en linea (el brazo del A/B) y el
+	sitio que llama a la rutina compartida. Devuelve el salto del acierto,
+	que el llamador fija donde la fisica ya esta en R11D.
+*/
+static x64_parche gen_atajo_p1p2(jit_gen * g)
+{
+	x64_parche traducir, p1p2;
+
+	/* bits 31:30 == 10b es P1/P2 */
+	jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
+	jit_x64_shr_ri(&g->e, X64_RAX, 30);
+	jit_x64_cmp_ri(&g->e, X64_RAX, 2);
+	traducir = jit_x64_jcc(&g->e, X64_NE);
+
+	jit_x64_mov_rr(&g->e, X64_R11, X64_RCX);
+
+	if (perf_activa)
+		jit_x64_add64_mi(&g->e, CTX, D_PERF_TRADUCE, 1);
+
+	if (jit_sonda_accesos)
+		jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_p1p2), 1);
+
+	p1p2 = jit_x64_jmp(&g->e);
+	jit_x64_fijar(&g->e, traducir);
+	return p1p2;
+}
+
 static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 {
 	x64_parche    sin_urb;
 	x64_parche    p1p2;
-	x64_parche    traducir;
-	x64_parche    fallo[4];
-	unsigned char fallo_rz[4];
+	x64_parche    fallo[5];
+	unsigned char fallo_rz[5];
 	int           nf = 0;
 	const int     DAT = D_MMU_DATOS;
+	const int     compartido = (a == NULL);
 
 	/*
 		P1 y P2 **no se traducen nunca**, y por eso no son clientela de la
@@ -1339,29 +1371,15 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	*/
 	p1p2.sitio = NULL;
 
-	if (jit_atajo_p1p2 && jit_md_visto)
-	{
-		/* bits 31:30 == 10b es P1/P2 */
-		jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
-		jit_x64_shr_ri(&g->e, X64_RAX, 30);
-		jit_x64_cmp_ri(&g->e, X64_RAX, 2);
-		traducir = jit_x64_jcc(&g->e, X64_NE);
-
-		jit_x64_mov_rr(&g->e, X64_R11, X64_RCX);
-
-		if (perf_activa)
-			jit_x64_add64_mi(&g->e, CTX, D_PERF_TRADUCE, 1);
-
-		if (jit_sonda_accesos)
-			jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_p1p2), 1);
-
-		p1p2 = jit_x64_jmp(&g->e);
-		jit_x64_fijar(&g->e, traducir);
-	}
+	if (!compartido && jit_atajo_p1p2 && jit_md_visto)
+		p1p2 = gen_atajo_p1p2(g);
 
 	/* if (!mmu_macro_probar) -> mmu_traducir() */
 	jit_x64_cmp_mi(&g->e, CTX, D_MACRO_PROBAR, 0);
-	gen_lento(g, a, X64_E, JIT_RZ_TR_PROBAR);
+	if (compartido)
+		gen_trad_fallo(g, a, X64_E, JIT_RZ_TR_PROBAR, fallo, fallo_rz, &nf);
+	else
+		gen_lento(g, a, X64_E, JIT_RZ_TR_PROBAR);
 
 	/* r9 = MMU_DATOS_INDICE(dir) * sizeof(mmu_datos_t), en bytes: el elemento
 	   no mide una potencia de dos, asi que el indice viaja ya multiplicado y
@@ -1458,6 +1476,24 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_or_rm_idx(&g->e, X64_R11, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, base));
 
+	/* La forma compartida (la rutina): acierto -> EAX=1 con la fisica en
+	   R11D; cualquier guarda -> EAX=0, y el SITIO decide el camino lento.
+	   ECX (la virtual) se conserva en los dos desenlaces, como en linea. */
+	if (compartido)
+	{
+		int i;
+
+		jit_x64_mov_ri(&g->e, X64_RAX, 1);
+		jit_x64_ret(&g->e);
+
+		for (i = 0; i < nf; i++)
+			jit_x64_fijar(&g->e, fallo[i]);
+
+		jit_x64_xor_rr(&g->e, X64_RAX, X64_RAX);
+		jit_x64_ret(&g->e);
+		return;
+	}
+
 	/* El talon del fallo: aca llegan las cuatro guardas de la cache. Si la
 	   direccion es de P1/P2 y el modo es privilegiado, la fisica es ella
 	   misma y el acceso sigue por el camino rapido; si no, al ayudante. */
@@ -1473,6 +1509,64 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	/* Y aca se juntan los dos: el atajo dejo la fisica en R11D. Con el
 	   atajo apagado no hay sitio que fijar y fijar() lo ignora. */
 	jit_x64_fijar(&g->e, p1p2);
+}
+
+/*
+	Las rutinas compartidas de la traduccion (lectura y escritura), emitidas
+	UNA vez al frente del arena y llamadas por rel32 desde cada sitio de
+	acceso MMU. El censo de bytes (DCEMU_JIT_SONDA_BYTES) midio el porque:
+	la traduccion en linea costaba +260/+300 bytes por acceso (un MOV.L a
+	320-390 bytes contra los 62 del modo plano) y las plantillas de acceso
+	eran ~60 % de los 170-200 MB del arena de los guests MMU -- presion de
+	icache pura, el sospechoso del costo por instruccion 2x de SR2. El sitio
+	conserva el atajo P1/P2 en linea (el caso dominante de DOOM) y decide su
+	propio camino lento con el EAX que la rutina devuelve; ECX (la virtual)
+	sobrevive en los dos desenlaces, como en linea. La sonda de accesos
+	fuerza la forma en linea, porque sus razones son por sitio. Se emiten al
+	frente de tr_traducir -- nunca en medio de un bloque, que comparte el
+	arena. DCEMU_JIT_TRAD_EN_LINEA=1 vuelve a la emision en linea entera: el
+	brazo del A/B y la linea base anterior.
+*/
+static const unsigned char *	jit_rut_trad[2] = { NULL, NULL };
+static int						jit_trad_en_linea = 0;
+static unsigned long long		jit_arena_lleno = 0;	/* propuestas sin arena */
+
+static void jit_rut_trad_emitir(void)
+{
+	jit_gen g;
+	int     k;
+
+	if (jit_rut_trad[0] != NULL || jit_trad_en_linea || jit_sonda_accesos
+		|| jit_codigo == NULL)
+		return;
+
+	jit_codigo_us = (jit_codigo_us + 15u) & ~15u;
+
+	if (jit_codigo_us + 4096 > jit_codigo_tam)
+	{
+		jit_trad_en_linea = 1;
+		return;
+	}
+
+	memset(&g, 0, sizeof(g));
+	jit_x64_iniciar(&g.e, jit_codigo + jit_codigo_us,
+		jit_codigo_tam - jit_codigo_us);
+
+	for (k = 0; k < 2; k++)
+	{
+		jit_rut_trad[k] = jit_x64_aqui(&g.e);
+		gen_traducir_mmu(&g, NULL, k ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER);
+	}
+
+	if (g.e.desborde)
+	{
+		jit_rut_trad[0] = jit_rut_trad[1] = NULL;
+		jit_trad_en_linea = 1;
+		return;
+	}
+
+	jit_codigo_us += jit_x64_largo(&g.e);
+	jit_codigo_us  = (jit_codigo_us + 15u) & ~15u;
 }
 
 /*
@@ -1558,8 +1652,34 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 	}
 
 	if (modo == JIT_ACC_MMU)
-		gen_traducir_mmu(g, a,
-			(disp_tabla == D_BASE_ESC) ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER);
+	{
+		const int ke = (disp_tabla == D_BASE_ESC);
+
+		if (jit_rut_trad[ke] == NULL)
+			gen_traducir_mmu(g, a,
+				ke ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER);
+		else
+		{
+			/* La forma compartida: el atajo P1/P2 en linea (los mismos bytes
+			   que en gen_traducir_mmu), la rutina por rel32, y el fallo al
+			   camino lento del sitio. JIT_RZ_NADA porque la razon fina vive
+			   en la rutina y la sonda de accesos corre en linea. */
+			x64_parche p1p2;
+
+			p1p2.sitio = NULL;
+
+			if (jit_atajo_p1p2 && jit_md_visto)
+				p1p2 = gen_atajo_p1p2(g);
+
+			if (!jit_x64_call_directo(&g->e, jit_rut_trad[ke]))
+				g->e.desborde = 1;
+
+			jit_x64_test_rr(&g->e, X64_RAX, X64_RAX);
+			gen_lento(g, a, X64_E, JIT_RZ_NADA);
+
+			jit_x64_fijar(&g->e, p1p2);
+		}
+	}
 
 	/* rax = la base de la zona; r8 = el desplazamiento dentro de ella. */
 	jit_x64_mov_rr(&g->e, X64_RAX, a->fis);
@@ -5658,6 +5778,24 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	mano: la sincronizacion previa si toca memoria, sus ciclos, su cuenta y su
 	corte del bloque periodico en la frontera siguiente.
 */
+/*
+	El censo de bytes emitidos: de que se compone el bloque, por plantilla y
+	por rubro del conductor (prologo+verificacion, sync por acceso, cortes y
+	contadores, salidas). Existe porque el reparto por guest dio 254 bytes por
+	instruccion en los guests MMU contra 94 en CT, y ese factor 2,7 es el
+	sospechoso de icache de los 7,4 ns de SR2 -- pero "donde estan los bytes"
+	no se puede corregir sin medirse. Acumula al traducir (frio); imprime con
+	DCEMU_JIT_SONDA_BYTES=1.
+*/
+static unsigned long long	jit_bytes_prologo = 0;
+static unsigned long long	jit_bytes_sync    = 0;
+static unsigned long long	jit_bytes_resto   = 0;
+static unsigned long long	jit_bytes_salidas = 0;
+static unsigned long long	jit_bytes_pl[sizeof(jit_plantillas) / sizeof(jit_plantillas[0])];
+static unsigned long long	jit_instr_pl[sizeof(jit_plantillas) / sizeof(jit_plantillas[0])];
+
+static int jit_sonda_bytes = 0;
+
 static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 {
 	int i;
@@ -5668,25 +5806,37 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		jit_x64_add64_mi(&g->e, CTX, D(&jit_bloques_corridos), 1);
 
 	t->desp_cuerpo = jit_x64_largo(&g->e);
+	jit_bytes_prologo += t->desp_cuerpo;
 
 	for (i = 0; i < t->n; i++)
 	{
 		const jit_plantilla * p = t->pl[i];
 		DWORD pc_i   = t->pc[i];
 		DWORD pc_sig = pc_i + 2;
+		int   idx    = (int) (p - jit_plantillas);
+		unsigned a0  = jit_x64_largo(&g->e), a1, a2;
 
 		t->etiqueta[i] = jit_x64_aqui(&g->e);
 
 		if (p->rama)
 		{
 			p->emitir(g, t, i);
+			jit_bytes_pl[idx] += jit_x64_largo(&g->e) - a0;
+			jit_instr_pl[idx]++;
 			continue;
 		}
 
 		if (p->accede)
 			tr_sync(g, t, pc_i);
 
+		a1 = jit_x64_largo(&g->e);
+		jit_bytes_sync += a1 - a0;
+
 		p->emitir(g, t, i);
+
+		a2 = jit_x64_largo(&g->e);
+		jit_bytes_pl[idx] += a2 - a1;
+		jit_instr_pl[idx]++;
 
 		if (p->ciclos)
 			jit_x64_add_ri(&g->e, CYC, p->ciclos);
@@ -5712,7 +5862,11 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 		if (p->escribe && t->modo == JIT_ACC_MMU && i + 1 < t->n
 			&& jit_corte_epoca)
 			gen_corte_epoca(g, pc_sig);
+
+		jit_bytes_resto += jit_x64_largo(&g->e) - a2;
 	}
+
+	jit_bytes_salidas -= jit_x64_largo(&g->e);	/* se completa tras las salidas */
 
 	/* Los saltos internos hacia adelante, ahora que estan todas las etiquetas. */
 	for (i = 0; i < t->n_adelante; i++)
@@ -5750,6 +5904,8 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 	else
 		gen_salir_enlazable(g, t, t->pc[t->n - 1] + 2);
 	tr_epilogo(g, t);
+
+	jit_bytes_salidas += jit_x64_largo(&g->e);	/* la otra mitad de la resta */
 }
 
 /*
@@ -6290,10 +6446,21 @@ static jit_bloque * tr_traducir(DWORD pc)
 	for (i = 0; i < JIT_MAX_INSTR; i++)
 		t.etiqueta[i] = NULL;
 
+	/* Las rutinas compartidas de traduccion, antes del primer bloque: nunca
+	   en medio de uno, que comparte el arena. */
+	jit_rut_trad_emitir();
+
 	jit_codigo_us = (jit_codigo_us + 15u) & ~15u;
 
+	/* El arena lleno era un desmarcar SILENCIOSO: SR2 chocaba los 192 MB con
+	   la emision en linea y dejaba de traducir sin que ningun contador lo
+	   dijera -- lo destapo el censo de bytes, no este contador, que existe
+	   para la proxima vez. */
 	if (jit_codigo_us >= jit_codigo_tam)
+	{
+		jit_arena_lleno++;
 		return NULL;
+	}
 
 	disponible = jit_codigo_tam - jit_codigo_us;
 
@@ -6874,6 +7041,64 @@ static void jit_resumen(void)
 			100.0 * (double) (jit_bloques_corridos - jit_entradas)
 				  / (double) jit_bloques_corridos);
 
+	/* El censo de bytes emitidos, con DCEMU_JIT_SONDA_BYTES=1. */
+	if (jit_sonda_bytes)
+	{
+		enum { NPL = (int) (sizeof(jit_bytes_pl) / sizeof(jit_bytes_pl[0])) };
+		unsigned long long total = jit_bytes_prologo + jit_bytes_sync
+			+ jit_bytes_resto + jit_bytes_salidas;
+		unsigned long long instrs = 0;
+		int k;
+
+		for (k = 0; k < NPL; k++)
+		{
+			total  += jit_bytes_pl[k];
+			instrs += jit_instr_pl[k];
+		}
+
+		if (total)
+		{
+			fprintf(stderr, "jit: bytes emitidos por rubro (total %llu, %.1f"
+				" por instruccion emitida):\n"
+				"jit:   prologo+verificacion %10llu  %5.1f %%\n"
+				"jit:   sync por acceso      %10llu  %5.1f %%\n"
+				"jit:   cortes y contadores  %10llu  %5.1f %%\n"
+				"jit:   salidas y epilogo    %10llu  %5.1f %%\n",
+				total, instrs ? (double) total / (double) instrs : 0.0,
+				jit_bytes_prologo, 100.0 * (double) jit_bytes_prologo / (double) total,
+				jit_bytes_sync,    100.0 * (double) jit_bytes_sync    / (double) total,
+				jit_bytes_resto,   100.0 * (double) jit_bytes_resto   / (double) total,
+				jit_bytes_salidas, 100.0 * (double) jit_bytes_salidas / (double) total);
+
+			fprintf(stderr, "jit: por plantilla (bytes, %% del total,"
+				" emisiones, bytes por emision):\n");
+
+			for (k = 0; k < 16; k++)
+			{
+				int mayor = -1;
+				unsigned long long m = 0;
+
+				for (i = 0; i < NPL; i++)
+					if (jit_bytes_pl[i] > m)
+					{
+						m = jit_bytes_pl[i];
+						mayor = i;
+					}
+
+				if (mayor < 0 || m == 0)
+					break;
+
+				fprintf(stderr, "jit:   %-14s %10llu  %5.1f %%  %9llu  %6.1f\n",
+					jit_plantillas[mayor].nombre, m,
+					100.0 * (double) m / (double) total,
+					jit_instr_pl[mayor],
+					jit_instr_pl[mayor]
+						? (double) m / (double) jit_instr_pl[mayor] : 0.0);
+				jit_bytes_pl[mayor] = 0;
+			}
+		}
+	}
+
 	/* El censo de uso de ranuras, ponderado por veces: con que registros del
 	   guest conviene quedarse si los hogares pasan a ser canonicos. Camina la
 	   tabla al salir; cero costo en caliente. */
@@ -6991,6 +7216,7 @@ static void jit_resumen(void)
 
 	fprintf(stderr, "jit: %llu bloques traducidos (%.1f instrucciones cada"
 		" uno), %u bytes, %llu emisiones fallidas, %llu sin lugar en la tabla,"
+		" %llu sin arena,"
 		" %llu enlaces atados (%llu por puente), %llu indirectos aprendidos,"
 		" %llu salidas con los enlaces agotados,"
 		" %u movimientos de epoca (%u escritura de %llu sobre pagina con"
@@ -6999,7 +7225,8 @@ static void jit_resumen(void)
 		jit_traducidos,
 		jit_traducidos ? (double) jit_instr_bloque / (double) jit_traducidos
 					   : 0.0,
-		jit_codigo_us, jit_fallidos, jit_colisiones, jit_enlaces_atados,
+		jit_codigo_us, jit_fallidos, jit_colisiones, jit_arena_lleno,
+		jit_enlaces_atados,
 		jit_puentes_atados, jit_enlaces_dinamicos, jit_enlaces_agotados,
 		jit_epoca - 1, jit_ep_escritura, jit_ep_pag_vista, jit_ep_mapeo,
 		jit_ep_modo, jit_ep_fpu);
@@ -7194,11 +7421,17 @@ void jit_iniciar(void)
 	{
 		const char * sv = getenv("DCEMU_JIT_SIN_VARIANTES_FPU");
 		const char * sr = getenv("DCEMU_JIT_SIN_RETRADUCIR");
+		const char * sb = getenv("DCEMU_JIT_SONDA_BYTES");
+		const char * tl = getenv("DCEMU_JIT_TRAD_EN_LINEA");
 
 		if (sv != NULL && atoi(sv) != 0)
 			jit_variantes_fpu = 0;
 		if (sr != NULL && atoi(sr) != 0)
 			jit_retraducir = 0;
+		if (tl != NULL && atoi(tl) != 0)
+			jit_trad_en_linea = 1;
+
+		jit_sonda_bytes = (sb != NULL && atoi(sb) != 0);
 	}
 
 	{
