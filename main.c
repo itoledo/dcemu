@@ -1346,6 +1346,30 @@ void main_loop(void)
 				unsigned reloj_toques_entrada = reloj_toques;
 
 				PERF_MARCA_MUESTRA(t_serv, n_serv);
+
+				/* El censo de la causa: cuantos servicios corren por un
+				   vencimiento real y cuantos solo porque el reintento de
+				   entrega quedo armado (UpdateSR lo arma, y WinCE escribe SR
+				   cientos de miles de veces por segundo). Aqui vivio unas
+				   horas el SERVICIO PARTIDO (2026-08-25): el camino de
+				   solo-reintento salteaba ticks/AICA/DMA -- exacto por las
+				   premisas del reloj por eventos -- y la tanda salio NEUTRA
+				   en los tres guests aun con DOOM corriendo 703 000 de esos
+				   servicios por segundo (86,8 %; SR2 60,6 %). La leccion es
+				   la de B.3 y el cuerpo rapido del DSP: lo salteado eran
+				   cargas y comparaciones predecibles e independientes, que el
+				   desorden del procesador ya ejecutaba en la sombra del
+				   trabajo vecino. El censo queda porque nombra la forma del
+				   bloque; el mecanismo esta en el plan por si el reparto
+				   cambia. */
+				if (perf_activa)
+				{
+					if (reloj_total >= reloj_vencimiento)
+						perf_serv_vencido++;
+					else
+						perf_serv_reintento++;
+				}
+
 				intc_sh4_reintentar = 0;
 
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan

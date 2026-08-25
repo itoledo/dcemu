@@ -40,6 +40,11 @@ unsigned long long perf_ns_presentar= 0;
 unsigned long long perf_ns_servicio	= 0;
 unsigned long long perf_ns_ta		= 0;
 
+/* El censo de causa del servicio periodico: vencimiento real contra el
+   reintento de entrega armado (UpdateSR). Ver el bloque en main.c. */
+unsigned long long perf_serv_vencido   = 0;
+unsigned long long perf_serv_reintento = 0;
+
 unsigned long long perf_arm_pasos	= 0;
 unsigned long long perf_arm_ocioso	= 0;
 
@@ -689,6 +694,14 @@ void perf_resumen(void)
 	linea("    de eso texturas",perf_ns_textura,	real);
 	linea("  de eso presentar",	perf_ns_presentar,	real);
 	linea("bloque periodico",	perf_ns_servicio,	real);
+
+	if (perf_serv_vencido || perf_serv_reintento)
+		fprintf(stderr, "perf:   servicios: %llu por vencimiento, %llu solo"
+			" por reintento de entrega (%.1f %%)\n",
+			perf_serv_vencido, perf_serv_reintento,
+			100.0 * (double) perf_serv_reintento
+				  / (double) (perf_serv_vencido + perf_serv_reintento));
+
 	linea("TA (store queue)",	perf_ns_ta,			real);
 
 	if (perf_ns_captura)

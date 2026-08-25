@@ -62,6 +62,11 @@ extern unsigned long long perf_ns_presentar;	/* el intercambio de buffers */
 extern unsigned long long perf_ns_servicio;		/* el bloque periodico de main_loop() */
 extern unsigned long long perf_ns_ta;			/* ta_procesar_bloque() por store queue */
 
+/* La causa de cada servicio periodico: vencimiento real o solo el reintento
+   de entrega (intc_sh4_reintentar, que UpdateSR arma). */
+extern unsigned long long perf_serv_vencido;
+extern unsigned long long perf_serv_reintento;
+
 /*
 	El ARM7: cuantos pasos dio y cuantos de ellos fueron un salto a si mismo.
 	Si la segunda cifra domina, el ARM esta esperando y lo que hay que hacer no
