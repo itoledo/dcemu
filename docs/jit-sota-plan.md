@@ -1637,6 +1637,66 @@ rechazos queda en ~1 200 por guest (modo MMU del arranque) — extinto como
 categoría. El control MSVC quedó reconstruido y reentrenado del mismo
 fuente: `BAFD8519BADC3DD0`.
 
+**Las rutinas compartidas de la traducción (2026-08-24/25): SR2 −11,1 % y
+DOOM −7,2 %, ambos con rangos disjuntos y 4/4 — la mayor ganancia del
+recompilador desde el índice de enlaces, y la cadena de sondas completa
+que la encontró.** El reparto dijo que SR2 pagaba 7,4 ns por instrucción
+(CT 3,6); el censo de accesos, que emitía 254 bytes por instrucción (CT
+94); y el censo de bytes nuevo (`DCEMU_JIT_SONDA_BYTES=1`, por plantilla y
+por rubro, permanente), que el porqué era **la traducción MMU en línea: un
+`MOV.L @Rm,Rn` costaba 320 bytes contra los 62 del modo plano** (+260 por
+carga, +300 por escritura: la sonda de `mmu_datos`, el avance de URC y la
+composición de la física, repetidos en cada sitio), con las plantillas de
+acceso cargando ~60 % de los 170-200 MB del arena — presión de icache
+pura. La corrección: **el cuerpo de `gen_traducir_mmu` se emite UNA vez
+como dos rutinas compartidas** (lectura/escritura) al frente del arena, y
+cada sitio conserva el atajo P1/P2 en línea (los mismos bytes,
+factorizados en `gen_atajo_p1p2`), llama por rel32 y decide su camino
+lento con el EAX que la rutina devuelve — ECX (la virtual) sobrevive en
+los dos desenlaces, y las guardas de la rutina aterrizan en una cola
+`xor eax,eax; ret` en vez de en talones por sitio. La sonda de accesos
+fuerza la forma en línea (sus razones son por sitio); las rutinas se
+emiten al frente de `tr_traducir`, nunca en medio de un bloque. Resultado
+de tamaño: **SR2 169,6 → 97,4 MB (−43 %)**, cargas a ~100 B y escrituras a
+~165. Palanca `DCEMU_JIT_TRAD_EN_LINEA=1`; suites 23/23; compuertas
+verdes dos veces (`57E8FD3AAF5ADD04` y el reentrenado `02EE89A0671B8A51`);
+tanda: **SR2 53 461-56 025 contra 60 065-62 257 ms** (disjunto por 4 s
+enteros) y **DOOM 25 558-26 614 contra 27 448-28 281**, CT inerte por
+construcción (modo plano, cero llamadas), contadores idénticos entre
+brazos en las 24 corridas. Marcas: **SR2 ~1,10×, DOOM ~1,35×**. Y dos
+topes silenciosos destapados de paso, cada uno con su regla: **SR2 venía
+chocando el arena de 192 MB con la emisión en línea y dejaba de traducir
+por un `desmarcar` que ningún contador contaba** (ahora `sin arena` en el
+resumen), y con los bloques a la mitad ahora llena la **tabla de 32 768
+bloques** (índice `short`; `13 276 sin lugar`, fríos — los contadores de
+entradas no se mueven), que queda como margen nombrado con su censo
+pendiente. El control MSVC quedó reconstruido y reentrenado del mismo
+fuente: `6CFDD79A3B68DA5F`.
+
+**El servicio partido se midió y se REVIRTIÓ la misma noche — y su censo
+queda.** El censo de causa nuevo (`perf: servicios: … por vencimiento, …
+solo por reintento`, permanente en `--perf`) midió que **el 86,8 % de los
+servicios del bloque periódico de DCDoom (24,6 M en 35 s — 703 000 por
+segundo) y el 60,6 % de los de SR2 corren SOLO porque UpdateSR dejó armado
+el reintento de entrega** — ticks, AICA y DMA enteros para una entrega que
+solo necesita al INTC. El camino partido (saltear los tres en la frontera
+no vencida; exacto por las premisas ya probadas del reloj por eventos —
+todos sus plazos viven en `reloj_calcular()`, la aritmética de restos es
+invariante al tramo, y con DMA auto el vencimiento es 0, o sea nunca se
+entra) salió **NEUTRO en los tres guests** con compuertas verdes: 2/4 con
+solape en DOOM, SR2 y CT (`B6C6294CD3694FA0`). La lección es la de B.3 y
+la del cuerpo rápido del DSP, ahora por tercera vez y con su forma
+general: **un volumen enorme de trabajo salteado no compra tiempo si ese
+trabajo son cargas y comparaciones predecibles e independientes — el
+desorden del procesador ya las corría en la sombra del trabajo vecino.**
+Lo que sí compra tiempo, esta noche lo dijo dos veces, es lo que rompe esa
+sombra: los 320 bytes por acceso que desalojaban la icache, y los viajes
+con dependencia (el rebote de variantes). La lápida está en `main.c`; el
+mecanismo queda descrito aquí por si el reparto cambia. El cierre de la
+noche: canónico reentrenado tras la reversión **`CFDDAAB73D938FBA`**
+(compuerta verde, custodia `E45E868C92EADD18` intacta, suites 23/23) y
+control MSVC en paridad **`F486C5147C1FDE48`**.
+
 **El reconocimiento de cierre (2026-08-23, madrugada): el SH-4 traducido
 es lo único grande que queda, en los tres guests.** Repartos frescos sobre
 el canónico `4E25653D7EE69A7A`: SR2 **85,2 %** de resto (intérprete),
