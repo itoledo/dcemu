@@ -38,7 +38,7 @@ Actualizado el 7 de agosto de 2026.
 | Rectángulo de DOA2 sobre la sombra | cuatro mecanismos descartados; bloqueado en el momento del usuario (memoria `bugs-visuales-sin-candidato`) |
 | Costuras del logo de Crazy Taxi | **resuelta** (2026-08-15): UV 0..1 bajo `GL_REPEAT` envolviendo en el borde con la ventana estirando 640→800; una tira cuyas UV no salen de [0,1] no pide repetición y va a `GL_CLAMP_TO_EDGE`. `DCEMU_SIN_CLAMP_BORDE=1`, ver `notas-graficos.md` |
 | Tirones al jugar | **resuelta** (2026-08-15): `jit_enlazar()` era un barrido lineal sobre todos los bloques traducidos, o sea cuadrático — 12,8 s de una corrida de 120 s de Crazy Taxi. Con el índice por PC destino los cuadros pasados de 16,7 ms caen de 14,9 % a 0,65 %. `DCEMU_JIT_ENLACE_LINEAL=1` |
-| Sombra del taxi en Crazy Taxi | **abierta**: al saltar el auto la sombra se ve proyectada desde el auto hacia el suelo en vez de quedar sólo en el suelo (se ve en el attract). Reproducida y caracterizada, **sin candidato**; hace falta una captura de consola real como árbitro, igual que las otras dos de esta lista |
+| Sombra del taxi en Crazy Taxi | **resuelta (A.16, 2026-08-25)**: el chip decide el volumen por **paridad de planos, ciego al devanado**, y dcemu contaba con signo por sentido de giro — los volúmenes de CT traen devanado mixto (30/30 grupos medidos) y las paredes marcaban. Paridad por grupo plegada con OR; árbitro: storyboard del attract en consola real. `DCEMU_SIN_VOL_PARIDAD=1` |
 
 Ya no falla nada del PVR, del núcleo SH-4 ni del AICA. Lo que queda del plan original es el
 hito F (C.5 y C.9) y la vía E; lo nuevo que abrió el parque de juegos vive en sus notas.
@@ -1694,6 +1694,98 @@ vez que aparezca un valor que "no puede ser" al lado de otro que sí.
 —los dos que ejercen esta ruta—, Virtua Tennis, Virtua Tenis 2, Capcom vs. SNK y DCDoom salen
 **idénticos byte a byte**, y las 21 suites pasan. En Crazy Taxi cambian los 8 cuadros de la
 pausa y ninguno más.
+
+### A.16 — La sombra-cortina del taxi al saltar: el chip cuenta por paridad y dcemu contaba por devanado (25 de agosto de 2026)
+
+**El síntoma**, el de la fila de la tabla: al saltar el auto, la sombra se ve proyectada desde el
+auto hacia el suelo como una cortina, en vez de quedar sólo en el suelo. Se ve en el attract, y
+el bloqueador declarado era el árbitro de consola real.
+
+**La reproducción, determinista**: `DCEMU_RTC_FIJO=1000000000 DCEMU_PULSAR_START=300 --sin-vmu`
+(el START pasa el aviso de VMU y deja el título en reposo; el attract arranca solo). El salto de
+la bajada es el **cuadro 8400** (~151 s emulados, `DCEMU_CAPTURA_TODAS=8400` lo captura solo);
+en f8340 todavía viene bajando con chispas y en f8460 la cámara ya cortó.
+
+**El mecanismo, medido antes de tocar nada.** La marca de volúmenes contaba con signo por
+sentido de giro (`GL_INCR_WRAP` caras frontales, `GL_DECR_WRAP` traseras, dentro = cuenta ≠ 0),
+con el argumento escrito de que «en un volumen cerrado los cruces se cancelan de a pares». Se
+cancelan sólo si el devanado del volumen es consistente. El volcado de escena del salto
+(`DCEMU_TRAZA_ESCENA=8400:3`, que desde el expediente del auto de SR2 lista también los
+triángulos de volumen) más el área con signo calculada afuera dio el veredicto: **los 30 grupos
+de las tres escenas — ~10 modelos por escena, el taxi y el tráfico, todos en la lista opaca,
+todos cerrando con instrucción 1 — traen devanado mixto** (20 CW / 16 CCW, 8/4, 12/16...). El
+chip no mira el devanado; con la cuenta con signo los pares no compensaban, el residuo ±2/±4
+quedaba ≠ 0 detrás de las **paredes** del volumen extruido, y la segunda pasada las oscurecía:
+esa es la cortina, del auto al suelo.
+
+**La regla del chip** (DevBox §3.4.5.1): un bit de área por píxel; cada modelo de volumen
+entrega «1 si el píxel está dentro, 0 si está fuera», y los modelos se pliegan con booleanas —
+inclusión OR, exclusión AND. El adentro de un modelo cerrado es la **paridad** de sus planos
+delante de la superficie, ciega al devanado. Y el pliegue tiene que ser **por grupo**: dos
+volúmenes solapados (dos autos con la sombra encima) son «dentro» para el chip, mientras que la
+paridad de la suma de ambos daría fuera. Donde el devanado es consistente y no hay solape,
+paridad ≡ cuenta con signo (+1 y −1 coinciden módulo 2) — por eso el parque nunca vio esto.
+
+**El arreglo** (`graficos.c`, los dos caminos): en la plantilla, dos bits — el bit 1 acumula la
+paridad del grupo con `GL_INVERT` enmascarado y sin culling, y el pliegue la copia al bit 0
+redibujando los triángulos del grupo (un píxel con paridad está cubierto por alguno; para la
+exclusión el pliegue es de pantalla entera, con el quad en identidad porque el `glOrtho` vive
+en el MODELVIEW) — y las tiras prueban sólo el bit 0. En el camino por píxel la suma de antes
+sirve de contador tal cual y el pliegue prueba impar, ahora siempre por grupo. Un resto sin
+cerrar se pliega como inclusión. La instrucción 2 conserva la semántica del complemento-OR que
+valida `demos/volumen-excluir` en los dos caminos; el DevBox dice AND a secas, nada real la
+ejercita, y la decisión queda nombrada para el árbitro de consola.
+
+**El árbitro llegó, y por la vía del storyboard**: el attract grabado de consola real (YouTube
+`l78Y3gAblwY`, NTSCJ 1080p60) no se deja descargar, pero sus miniaturas de barra de progreso sí
+(`yt-dlp -f sb0`, 90 cuadros a ~1,9 s). A los ~91 s el taxi cruza el lomo con las ruedas en el
+aire y la sombra es una **mancha plana y desplazada sobre el pavimento** — la misma forma que la
+paridad produce en el f8400 de dcemu — y en los 90 cuadros no aparece nada parecido a la
+cortina, que en dcemu ocupaba un cuarto de pantalla y a 320×180 sería obvia.
+
+**La palanca es exacta**: `DCEMU_SIN_VOL_PARIDAD=1` sobre el binario nuevo reproduce el f8400
+del binario anterior **byte a byte** (`22EDF751…` en ambos), plantilla incluida.
+
+**La amplitud, medida** (`herramientas/vol-paridad-gate.ps1` y `vol-paridad-lote.ps1`, binario
+`AEE3F2F3B1441687`):
+
+- **La compuerta**: de las seis demos de volúmenes, cuatro salen **idénticas entre brazos en
+  los dos caminos** (modifier_volume, _tex, cheap_shadow, volumen-incluir) — devanado
+  consistente, paridad ≡ cuenta. Las dos que difieren, difieren **para bien**:
+  `pvr-modifier_volume_zclip` tenía con la cuenta vieja una muesca triangular en el
+  oscurecimiento de la pared y esquirlas en el piso — el cubo de la propia demo de KOS viene
+  devanado mixto, **medido: 6 CW / 6 CCW de sus 12 triángulos**, así que la demo que
+  «validaba» la cuenta con signo era sutilmente incorrecta —, y con paridad el corte del cubo
+  contra pared y piso es limpio. Y `volumen-excluir` en el
+  camino de plantilla **ahora pasa su autoverificación de complemento exacto** (rojo con el
+  cuadrado azul 320×240): la paridad por grupo trae de paso la exclusión real donde antes
+  estaba la aproximación `GL_ZERO` de 38 640 píxeles — cuya captura vieja muestra la misma
+  firma: de los dos triángulos del quad sobrevivía uno. El cuadro del salto difiere en ambos
+  caminos, como debe.
+- **El parque, tres brazos con su piso del día: piso 0 de 131, señal exactamente 1** —
+  `pvr-modifier_volume_zclip`, el cambio nombrado de arriba. Ni una demo más se mueve.
+- **El cinturón de juegos entero, con/con-2/sin a 20 s: 51 imágenes, cero anomalías** — todas
+  deterministas y byte a byte idénticas entre brazos. El cinturón es el de `juegos-jit.ps1`
+  (el `roms/` local quedó reducido a CT, SR2, DCDoom y un VT repack — los `.gdi` extraídos ya
+  no están — más los 47 CHD de primer disco de `E:\Juegos\roms\dreamcast`). El censo de
+  cierres como discriminador dice por qué: en la ventana de arranque solo Skies of Arcadia
+  cierra volúmenes (4) y sale idéntico igual, y Daytona USA registra 4672 triángulos **sin un
+  solo cierre** — el resto sin cerrar se pliega como inclusión, que es la conducta de siempre.
+  Y Crazy Taxi a 30 s (lote previo, con teclas) registra 9418 cierres con el cuadro final
+  idéntico: con el taxi en el piso el residuo del devanado no alcanza el cuadro — la
+  diferencia vive en los saltos, que es exactamente lo que el síntoma siempre dijo.
+- **El relevo de la custodia**: la captura canónica de CT a 60 s (la receta de las compuertas
+  del JIT) pasa de `E45E868C92EADD18` a **`FC833AB33F153989`** — el cuadro de juego tiene la
+  sombra del taxi a la vista y sale correcta. El relevo es limpio por las dos puntas: la
+  palanca sobre el binario nuevo reproduce la referencia vieja **byte a byte**, y el `.wav`
+  de la misma corrida sale idéntico entre brazos — el cambio es entero de la paridad y solo
+  de la imagen. El control MSVC quedó recompilado con el cambio (`8447BE5029D0B388`).
+
+**El método que lo cerró, para la próxima**: la hipótesis del devanado se confirmó con datos
+del guest antes de escribir el arreglo (volcado + área con signo, una pasada), y el árbitro de
+consola no necesitó el video entero — el storyboard de YouTube baja sin sesión y a 320×180
+alcanza para arbitrar un artefacto grande. Las otras dos fichas bloqueadas en «captura de
+consola real» (la sombra de VT2, el rectángulo de DOA2) pueden intentar la misma vía.
 
 ---
 

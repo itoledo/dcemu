@@ -892,22 +892,40 @@ barata — un solo juego cuya intensidad escala `FPU_SHAD_SCALE` (`0x005F8074`, 
 7-0, enable en el bit 8). `cheap_shadow` pide 0.5 y el azul de adentro sale `0x7F`, que es como se
 sabe que funciona.
 
-**El adentro se decide contando caras contra la profundidad de la escena, como hace el chip.** La
-superficie de un píxel está dentro del volumen cuando las caras del volumen más cercanas que ella
-(prueba de profundidad `GL_GREATER`) no se cancelan: las caras frontales incrementan el stencil,
-las traseras decrementan (`GL_INCR_WRAP`/`GL_DECR_WRAP` — acotar rompería un par cuya cara trasera
-se rasteriza primero), y adentro = cuenta ≠ 0. Probar ≠ 0 además hace irrelevante la convención de
-sentido de giro: en un volumen cerrado los cruces se cancelan de a pares, en uno abierto (el
-cuadrado plano de las demos de KOS) deja ±1.
+**El adentro se decide por paridad de caras contra la profundidad, por grupo, como hace el chip**
+(DevBox §3.4.5.1: un bit de área por píxel; cada modelo de volumen entrega «1 dentro / 0 fuera» y
+los modelos se pliegan con booleanas — inclusión OR, exclusión el pliegue del complemento). La
+superficie de un píxel está dentro de un grupo — los triángulos hasta su cierre, instrucción 1
+o 2 — cuando el número de caras del grupo más cercanas que ella (prueba de profundidad
+`GL_GREATER`) es **impar**, sin mirar el sentido de giro, que el hardware ignora. En la plantilla
+son dos bits: el bit 1 acumula la paridad del grupo con `GL_INVERT` enmascarado y sin culling, y
+el pliegue lo copia al bit 0 redibujando los triángulos del grupo (un píxel con paridad está
+cubierto por alguno); las tiras prueban solo el bit 0. En el camino por píxel la misma suma de
+antes sirve de contador — +1 y −1 coinciden módulo 2 — y el pliegue prueba impar.
 
-Antes era una **unión en espacio de pantalla** de triángulos sin ninguna profundidad — suficiente
-para ese cuadrado plano, pero las sombras extruidas de los autos de Crazy Taxi marcaban todo lo
-que sus caras cubrían: el techo del taxi oscurecido por su propia sombra y una manta sobre media
-pantalla. `pvr-modifier_volume_zclip` — la única demo de KOS con un volumen 3D genuinamente
-cerrado, un cubo que gira — es lo que muestra la diferencia: su oscurecimiento ahora abraza el
-suelo y la pared que interseca. La instrucción 2 ("cerrar excluyendo") conserva la vieja
-aproximación — pone en cero lo que cubre, ahora solo delante de la superficie — porque nada de lo
-que corremos la ejercita.
+**La versión con signo por sentido de giro (INCR frontales / DECR traseras, adentro = cuenta ≠ 0)
+duró del 2 al 25 de agosto y su argumento tenía un agujero medido**: «en un volumen cerrado los
+cruces se cancelan de a pares» vale solo si el devanado es consistente, y el del guest no tiene
+por qué serlo — el chip no lo mira. Los volúmenes de sombra de Crazy Taxi traen devanado mixto
+(30 de 30 grupos del volcado de escena del salto del attract, p. ej. 20 CW / 16 CCW en un mismo
+volumen cerrado), los pares no compensaban y las **paredes** marcaban: al saltar el taxi la
+sombra salía como una cortina proyectada del auto al suelo. Y **por grupo, no todo junto**,
+porque dos volúmenes solapados son «dentro» para el chip (OR) mientras la paridad de la suma
+daría fuera. El árbitro de consola real: el storyboard del attract grabado de hardware (YouTube
+`l78Y3gAblwY`, ~91 s) muestra el taxi con las ruedas en el aire y la sombra como mancha plana
+desplazada sobre el pavimento — ninguna cortina en los 90 cuadros. `DCEMU_SIN_VOL_PARIDAD=1`
+reproduce la cuenta con signo byte a byte (verificado contra el binario anterior en el cuadro
+8400 del attract).
+
+Antes de todo eso era una **unión en espacio de pantalla** de triángulos sin ninguna profundidad
+— suficiente para el cuadrado plano de las demos de KOS, pero las sombras extruidas de los autos
+de Crazy Taxi marcaban todo lo que sus caras cubrían: el techo del taxi oscurecido por su propia
+sombra y una manta sobre media pantalla. `pvr-modifier_volume_zclip` — la única demo de KOS con
+un volumen 3D genuinamente cerrado, un cubo que gira — es la que muestra esa diferencia. La
+instrucción 2 ("cerrar excluyendo") conserva en los dos caminos la semántica que valida
+`demos/volumen-excluir` — el complemento del grupo se pliega con OR —; el DevBox dice AND a secas
+(un volumen de exclusión solo recorta área 1 ya creada), nada real la ejercita, y decidir entre
+las dos lecturas necesita el árbitro de consola. Queda nombrado.
 
 Contar contra profundidad fuerza el orden: la profundidad tiene que estar resuelta **antes** de
 marcar, así que `dibujar_escena()` corre por fases — primero las tiras opacas y punch-through con
