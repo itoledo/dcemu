@@ -193,6 +193,7 @@ bool intc(DWORD irq)
 #endif
 	}
 
+
 /*	switch(irq)
 	{
 		case ASIC_IRQ9:		*INTEVT = 0x320;	break;
@@ -361,6 +362,27 @@ void intc_add(DWORD inttoadd, int cnt)
 
 	SET_BIT(ASIC_ACK_A, inttoadd);
 	logxmsg(LOG_INTC, "a�adiendo int %x, estado %x\n", inttoadd, ASIC_ACK_A);
+#endif
+}
+
+bool intc_cancelar_demora(DWORD evento)
+{
+#ifdef INT_QUEUE
+	(void) evento;
+	return false;
+#else
+	int di;
+
+	for (di = 0; di < INTC_DEMORAS; di++)
+		if (intc_demora[di].evt == evento)
+		{
+			intc_demora[di].evt = 0;
+			intc_demorados &= ~evento;
+			reloj_tocar();
+			return true;
+		}
+
+	return false;
 #endif
 }
 
@@ -808,6 +830,9 @@ void check_ints()
 			{
 				if (reloj_total >= intc_demora[di].vence)
 				{
+					if (intc_demora[di].evt == ASIC_EVT_MAPLE_DMA)
+						maple_dma_completar();
+
 					SET_BIT(ASIC_ACK_A, intc_demora[di].evt);
 					intc_demorados &= ~intc_demora[di].evt;
 					intc_demora[di].evt = 0;
@@ -902,4 +927,3 @@ void check_ints()
 	   consultar su lectura en flujo. */
 #endif
 }
-

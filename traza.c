@@ -481,8 +481,53 @@ void traza_rangos(void)
 	}
 }
 
+/*
+	DCEMU_VOLCAR_RAM=archivo: los 16 MB de RAM del sistema en crudo, al salir.
+
+	Es la herramienta de busqueda por diferencia, que es la unica forma barata
+	de encontrar una variable del guest cuyo VALOR se conoce pero no su
+	direccion -- la marcha de la caja de Sega Rally 2, por ejemplo. Dos corridas
+	identicas salvo por lo que se quiere aislar, y las direcciones donde una
+	tiene el valor A y la otra el valor B son un punado.
+
+	Sale por memread_fisico para que la ventana sea la misma que ve el guest.
+*/
+static void volcar_ram(void)
+{
+	const char *	nombre = getenv("DCEMU_VOLCAR_RAM");
+	FILE *			fp;
+	DWORD			dir;
+	static BYTE		bloque[65536];
+
+	if (nombre == NULL || nombre[0] == '\0')
+		return;
+
+	fp = fopen(nombre, "wb");
+
+	if (fp == NULL)
+	{
+		fprintf(stderr, "volcar-ram: no pude abrir %s\n", nombre);
+		return;
+	}
+
+	for (dir = 0x0C000000; dir < 0x0D000000; dir += sizeof(bloque))
+	{
+		size_t i;
+
+		for (i = 0; i < sizeof(bloque); i++)
+			memread_fisico(dir + (DWORD) i, &bloque[i], 1);
+
+		fwrite(bloque, 1, sizeof(bloque), fp);
+	}
+
+	fclose(fp);
+	fprintf(stderr, "volcar-ram: 16 MB en %s\n", nombre);
+}
+
 void traza_resumen(void)
 {
+	volcar_ram();
+
 	traza_rangos();
 
 	/* El .wav de --captura-audio se cierra aqui, por el mismo camino que el
@@ -703,12 +748,78 @@ void traza_volcar(const char * motivo)
 unsigned long	traza_desde_pc    = 0;		/* 0: apagado */
 long			traza_desde_n     = 0;
 long			traza_desde_salto = 0;		/* llegadas a saltar */
+static unsigned long long traza_desde_ms_min = 0;
+static int traza_desde_ms_leido = 0;
+static DWORD traza_desde_r4 = 0;
+static DWORD traza_desde_r4_mascara = 0xFFFFFFFF;
+static int traza_desde_r4_leido = 0;
+static int traza_desde_r4_activo = 0;
+static DWORD traza_desde_r1 = 0;
+static DWORD traza_desde_r1_mascara = 0xFFFFFFFF;
+static int traza_desde_r1_leido = 0;
+static int traza_desde_r1_activo = 0;
+unsigned long watchpoint_virtual_dir = 0;
+size_t watchpoint_virtual_tam = 0;
+static int watchpoint_virtual_leido = 0;
+
+void watchpoint_virtual_escritura(unsigned long direccion,
+								  const void * valor, size_t tam)
+{
+	unsigned long fin = direccion + tam;
+	unsigned long vigilado_fin = watchpoint_virtual_dir +
+		watchpoint_virtual_tam;
+	unsigned long dato = 0;
+
+	if (fin <= watchpoint_virtual_dir || direccion >= vigilado_fin)
+		return;
+
+	memcpy(&dato, valor, tam < sizeof(dato) ? tam : sizeof(dato));
+
+	fprintf(stderr, "watchpoint-virtual: %08lx escribe %08lx"
+		" -- escritura de %lu en %08lx, PC %08lx, PR %08lx,"
+		" %llu ciclos\n",
+		watchpoint_virtual_dir, dato, (unsigned long) tam, direccion,
+		(unsigned long) PC, (unsigned long) PR,
+		(unsigned long long) reloj_total);
+}
+
+void watchpoint_virtual_lectura(unsigned long direccion,
+							   unsigned long fisica,
+							   const void * valor, size_t tam)
+{
+	unsigned long fin = direccion + tam;
+	unsigned long vigilado_fin = watchpoint_virtual_dir +
+		watchpoint_virtual_tam;
+	unsigned long dato = 0;
+
+	if (fin <= watchpoint_virtual_dir || direccion >= vigilado_fin)
+		return;
+
+	memcpy(&dato, valor, tam < sizeof(dato) ? tam : sizeof(dato));
+
+	fprintf(stderr, "watchpoint-virtual: %08lx lee %08lx"
+		" -- lectura de %lu en %08lx, fisica %08lx, PC %08lx, PR %08lx,"
+		" %llu ciclos\n",
+		watchpoint_virtual_dir, dato, (unsigned long) tam, direccion, fisica,
+		(unsigned long) PC, (unsigned long) PR,
+		(unsigned long long) reloj_total);
+}
 
 static long		td_faltan  = 0;
 static int		td_armada  = 0;
 static DWORD	td_regs[16];
+static DWORD	td_fr[16];
 static DWORD	td_pr = 0, td_sr = 0;
+static DWORD	td_fpul = 0, td_fpscr = 0;
 static int		td_primera = 1;
+
+static DWORD traza_float_bits(float valor)
+{
+	DWORD bits;
+
+	memcpy(&bits, &valor, sizeof(bits));
+	return bits;
+}
 
 /*
 	Arma la traza de instrucciones desde el proximo paso, sin esperar a un PC.
@@ -731,7 +842,15 @@ void traza_arrancar(long n)
 static void traza_instruccion(DWORD pc)
 {
 	char	buffer[256];
+	static int fpu = -1;
 	int		i;
+
+	if (fpu < 0)
+	{
+		const char * e = getenv("DCEMU_TRAZA_FPU");
+
+		fpu = (e != NULL && atoi(e) != 0);
+	}
 
 	buffer[0] = '\0';
 	disasm(pc, buffer);
@@ -748,6 +867,20 @@ static void traza_instruccion(DWORD pc)
 		fprintf(stderr, " pr=%08lx sr=%08lx",
 			(unsigned long) PR, (unsigned long) SR);
 
+		if (fpu)
+		{
+			for (i = 0; i < 16; i++)
+			{
+				DWORD bits = traza_float_bits(FR(i));
+
+				fprintf(stderr, " fr%d=%08lx/%g", i,
+					(unsigned long) bits, (double) FR(i));
+			}
+
+			fprintf(stderr, " fpul=%08lx fpscr=%08lx",
+				(unsigned long) FPUL, (unsigned long) FPSCR);
+		}
+
 		td_primera = 0;
 	}
 	else
@@ -761,19 +894,99 @@ static void traza_instruccion(DWORD pc)
 
 		if ((SR & 1) != (td_sr & 1))
 			fprintf(stderr, " T=%d", (int) (SR & 1));
+
+		if (fpu)
+		{
+			for (i = 0; i < 16; i++)
+			{
+				DWORD bits = traza_float_bits(FR(i));
+
+				if (bits != td_fr[i])
+					fprintf(stderr, " fr%d=%08lx/%g", i,
+						(unsigned long) bits, (double) FR(i));
+			}
+
+			if (FPUL != td_fpul)
+				fprintf(stderr, " fpul=%08lx", (unsigned long) FPUL);
+
+			if (FPSCR != td_fpscr)
+				fprintf(stderr, " fpscr=%08lx", (unsigned long) FPSCR);
+		}
 	}
 
 	fprintf(stderr, "\n");
 
 	for (i = 0; i < 16; i++)
+	{
 		td_regs[i] = R(i);
+		td_fr[i] = traza_float_bits(FR(i));
+	}
 
 	td_pr = PR;
 	td_sr = SR;
+	td_fpul = FPUL;
+	td_fpscr = FPSCR;
 }
 
 void traza_paso(DWORD pc)
 {
+	if (!traza_desde_ms_leido)
+	{
+		const char * e = getenv("DCEMU_TRAZA_DESDE_MS");
+
+		traza_desde_ms_min = e ? strtoull(e, NULL, 10) : 0;
+		traza_desde_ms_leido = 1;
+	}
+
+	if (!traza_desde_r4_leido)
+	{
+		const char * e = getenv("DCEMU_TRAZA_DESDE_R4");
+		const char * m = getenv("DCEMU_TRAZA_DESDE_R4_MASCARA");
+
+		if (e)
+		{
+			traza_desde_r4 = (DWORD) strtoul(e, NULL, 16);
+			traza_desde_r4_activo = 1;
+		}
+
+		if (m)
+			traza_desde_r4_mascara = (DWORD) strtoul(m, NULL, 16);
+
+		traza_desde_r4_leido = 1;
+	}
+
+	if (!traza_desde_r1_leido)
+	{
+		const char * e = getenv("DCEMU_TRAZA_DESDE_R1");
+		const char * m = getenv("DCEMU_TRAZA_DESDE_R1_MASCARA");
+
+		if (e)
+		{
+			traza_desde_r1 = (DWORD) strtoul(e, NULL, 16);
+			traza_desde_r1_activo = 1;
+		}
+
+		if (m)
+			traza_desde_r1_mascara = (DWORD) strtoul(m, NULL, 16);
+
+		traza_desde_r1_leido = 1;
+	}
+
+	if (!watchpoint_virtual_leido)
+	{
+		char * separador;
+		const char * e = getenv("DCEMU_WATCHPOINT_VIRTUAL");
+
+		if (e)
+		{
+			watchpoint_virtual_dir = strtoul(e, &separador, 16);
+			watchpoint_virtual_tam = (*separador == ':')
+				? strtoul(separador + 1, NULL, 16) : 1;
+		}
+
+		watchpoint_virtual_leido = 1;
+	}
+
 	/* DCEMU_TRAZA_EN_MS=N[:M]: un checkpoint por ms emulado -- PC y registros
 	   -- durante los primeros 200 ms, y la traza de M instrucciones (3000 por
 	   omision) armada al cruzar el ms N. Es --traza-desde con un instante como
@@ -835,7 +1048,14 @@ void traza_paso(DWORD pc)
 	if (traza_disparo > 0 && --traza_disparo == 0)
 		traza_volcar("disparo");
 
-	if (traza_desde_pc && !td_armada && pc == (DWORD) traza_desde_pc)
+	if (traza_desde_pc && !td_armada && pc == (DWORD) traza_desde_pc &&
+		reloj_ms() >= traza_desde_ms_min &&
+		(!traza_desde_r1_activo ||
+		 (R(1) & traza_desde_r1_mascara) ==
+		 (traza_desde_r1 & traza_desde_r1_mascara)) &&
+		(!traza_desde_r4_activo ||
+		 (R(4) & traza_desde_r4_mascara) ==
+		 (traza_desde_r4 & traza_desde_r4_mascara)))
 	{
 		if (traza_desde_salto > 0)
 		{
@@ -1018,6 +1238,13 @@ void watchpoint_escritura(unsigned long direccion, const void * valor,
 	Se reporta una vez por PC distinto: una comparacion de cadenas pasa cien
 	veces por la misma instruccion y la lista deja de servir. Por eso tampoco se
 	vuelca el valor anterior: en una lectura no hay tal cosa.
+
+	Con DCEMU_WATCHPOINT_TODAS=1 se informa CADA lectura (hasta el tope de
+	DCEMU_WATCHPOINT_MAX), porque hay una segunda pregunta que la lista de PCs
+	no contesta: con que CADENCIA consume el guest un dato que el emulador
+	entrega a ritmo fijo -- el bufer de recepcion del Maple, por ejemplo. Ahi
+	el interes no es quien lo mira sino cuantas veces por cuadro, y la
+	deduplicacion esconde justo eso.
 */
 
 unsigned long	watchpoint_lectura_dir = 0;		/* 0: apagado */
@@ -1031,6 +1258,8 @@ static int		wpl_informes = 0;
 
 void watchpoint_lectura(unsigned long direccion, size_t tam)
 {
+	static int	todas = -1;		/* -1: sin leer el ambiente */
+
 	DWORD	leida    = (DWORD) direccion & 0x1FFFFFFFu;
 	DWORD	vigilada = (DWORD) watchpoint_lectura_dir & 0x1FFFFFFFu;
 	int		i;
@@ -1038,15 +1267,35 @@ void watchpoint_lectura(unsigned long direccion, size_t tam)
 	if (leida + tam <= vigilada || leida >= vigilada + watchpoint_lectura_tam)
 		return;
 
-	if (wpl_informes >= WATCHPOINT_MAX)
+	/* El mismo tope configurable que el de escritura: el macro fijo dejaba a
+	   DCEMU_WATCHPOINT_MAX sin efecto de este lado, y 200 informes de lectura
+	   se agotan en segundos en cuanto la pregunta es de cadencia. */
+	if (wp_tope < 0)
+	{
+		const char * v = getenv("DCEMU_WATCHPOINT_MAX");
+
+		wp_tope = (v != NULL) ? atoi(v) : WATCHPOINT_MAX;
+	}
+
+	if (wpl_informes >= wp_tope)
 		return;
 
-	for (i = 0; i < wpl_npcs; i++)
-		if (wpl_pcs[i] == PC)
-			return;
+	if (todas < 0)
+	{
+		const char * e = getenv("DCEMU_WATCHPOINT_TODAS");
 
-	if (wpl_npcs < WPL_PC_MAX)
-		wpl_pcs[wpl_npcs++] = PC;
+		todas = (e != NULL && atoi(e) != 0);
+	}
+
+	if (!todas)
+	{
+		for (i = 0; i < wpl_npcs; i++)
+			if (wpl_pcs[i] == PC)
+				return;
+
+		if (wpl_npcs < WPL_PC_MAX)
+			wpl_pcs[wpl_npcs++] = PC;
+	}
 
 	fprintf(stderr,
 		"watchpoint-lectura: %08lx -- lectura de %u en %08lx,"
@@ -1058,9 +1307,9 @@ void watchpoint_lectura(unsigned long direccion, size_t tam)
 		(unsigned long) PR,
 		(unsigned long long) reloj_total);
 
-	if (++wpl_informes >= WATCHPOINT_MAX)
-		fprintf(stderr, "watchpoint-lectura: %d informes, no se reporta mas\n",
-			WATCHPOINT_MAX);
+	if (++wpl_informes >= wp_tope)
+		fprintf(stderr, "watchpoint-lectura: %d informes, no se reporta mas"
+			" (DCEMU_WATCHPOINT_MAX lo sube)\n", wp_tope);
 }
 
 /*

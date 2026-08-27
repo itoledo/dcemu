@@ -93,6 +93,29 @@ void watchpoint_lectura(unsigned long direccion, size_t tam)
 	(void) tam;
 }
 
+/* Los watchpoints virtuales cuelgan de memread/memwrite y quedan apagados en
+   el arnes por la misma razon. */
+unsigned long	watchpoint_virtual_dir = 0;
+size_t			watchpoint_virtual_tam = 4;
+
+void watchpoint_virtual_escritura(unsigned long direccion,
+								  const void * valor, size_t tam)
+{
+	(void) direccion;
+	(void) valor;
+	(void) tam;
+}
+
+void watchpoint_virtual_lectura(unsigned long direccion,
+							   unsigned long fisica,
+							   const void * valor, size_t tam)
+{
+	(void) direccion;
+	(void) fisica;
+	(void) valor;
+	(void) tam;
+}
+
 /* --- intc.c -------------------------------------------------------------- */
 
 bool inside_int = false;

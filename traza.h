@@ -109,6 +109,15 @@ extern size_t			watchpoint_lectura_tam;
 
 void watchpoint_lectura(unsigned long direccion, size_t tam);
 
+extern unsigned long	watchpoint_virtual_dir;
+extern size_t			watchpoint_virtual_tam;
+
+void watchpoint_virtual_escritura(unsigned long direccion,
+								  const void * valor, size_t tam);
+void watchpoint_virtual_lectura(unsigned long direccion,
+							   unsigned long fisica,
+							   const void * valor, size_t tam);
+
 /*
 	--traza-desde=PC:N: las N instrucciones que siguen a la primera llegada a
 	PC, desensambladas y con los registros que cambiaron. Lo consulta

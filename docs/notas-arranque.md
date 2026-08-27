@@ -178,6 +178,34 @@ Es la única vía por la que el boot ROM y la biblioteca de Katana se enteran de
 nadie manda un `Device Request` a una ranura sin haber visto antes ese bit. Con el `0x20` fijo que
 había, una tarjeta perfectamente emulada seguía siendo invisible.
 
+### El largo real del DMA: la caja automática de Sega Rally 2 (2026-08-27)
+
+El fin del DMA no puede calcularse suponiendo una respuesta fija. La estimación anterior sumaba
+ocho palabras por marco, pero una lectura de bloque de VMU (`BREAD`) devuelve **131 palabras**.
+En la lista periódica de Windows CE, contando el `GetCondition` del mando y las respuestas de los
+otros tres puertos, la estimación daba siempre 48 palabras: los largos reales son 23 para
+`GETMINFO`, **146 para `BREAD`** y 16 para el comando `0x0D`. A 2 Mbps una palabra tarda 16 us;
+el `BREAD` terminaba **98 palabras, 1,568 ms, antes de tiempo**.
+
+No era una diferencia inocua. MapleDev reconstruye periódicamente el estado de DirectInput al
+terminar de recorrer la VMU. Con la demora nominal, el canal del gatillo derecho quedaba en cero
+durante ventanas de **24 a 63 ms**; el juego alcanzaba a consumirlas y alternaba acelerador 127/0.
+Su filtro convergía a `94/127`, el motor quedaba al 79,6 % del corte y la velocidad normalizada
+se estabilizaba en `0,383`, por debajo del `0,390` que exige el cambio de primera a segunda.
+
+`DCEMU_SONDA_MAPLE=1` cerró la correlación: cada transición a cero seguía al comando `0x0D` de la
+VMU. Contando las palabras que realmente produjo cada dispositivo, la ventana baja a **4-7 ms** y
+queda entre los sondeos de la física. El A/B conserva la estimación vieja con
+`DCEMU_MAPLE_DEMORA_NOMINAL=1`: el brazo viejo queda en primera y alrededor de 60 mph; el nuevo,
+con la misma VMU, llega a **tercera y 126,9 mph** a los 65 s, con el motor al 95,5 % del corte.
+
+Los dos síntomas reportados no formaban una cadena causal —la caja automática no lee botones—,
+pero sí compartían el mismo estado intermitente de DirectInput. Al desaparecer la ventana larga,
+START abre la pausa y ya no la cierra solo. Por eso `replay-at3.txt`, que contiene dos pulsaciones
+de START para medir aquel síntoma, ahora alcanza segunda y deja la carrera correctamente pausada
+(41,4 mph en el volcado a 45 s);
+`replay-at3-sin-pausa.txt` es la misma receta sin esas dos pulsaciones y es la que mide la caja.
+
 ---
 
 ## La VMU: 128 KB de flash con sistema de archivos (2026-08-05)

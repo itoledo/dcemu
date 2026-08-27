@@ -113,8 +113,88 @@ static void traza_depuracion_guest(void)
 	fputc('\n', stderr);
 }
 
+/*
+	Censo de numeros de syscall (DCEMU_SONDA_SYSCALL=1).
+
+	El guest de Sega Rally 2 --como Windows CE-- llama al sistema saltando a una
+	direccion impar: el error de direccion de instruccion entra por 0x0E0 y el
+	manejador decodifica la direccion como numero de servicio. El histograma de
+	DCEMU_TRAZA_EXC da el TOTAL, y el total no distingue "el runtime usa una
+	trampa por cada llamada de biblioteca" de "un servicio contesta sin hacer
+	nada y el juego reintenta para siempre" -- que es la forma de falla que este
+	arbol paga una y otra vez. El desglose por numero si los distingue.
+*/
+static struct { DWORD spc; unsigned long veces; } sysc[64];
+static int sysc_n = 0;
+
+static void sonda_syscall_informe(void)
+{
+	int i, j;
+
+	if (sysc_n == 0)
+		return;
+
+	fprintf(stderr, "sonda-syscall: %d numeros distintos\n", sysc_n);
+
+	/* Orden por frecuencia, que es lo unico que se mira. */
+	for (i = 0; i < sysc_n; i++)
+	{
+		int mejor = i;
+
+		for (j = i + 1; j < sysc_n; j++)
+			if (sysc[j].veces > sysc[mejor].veces)
+				mejor = j;
+
+		if (mejor != i)
+		{
+			DWORD s = sysc[i].spc; unsigned long v = sysc[i].veces;
+			sysc[i] = sysc[mejor];
+			sysc[mejor].spc = s; sysc[mejor].veces = v;
+		}
+
+		fprintf(stderr, "sonda-syscall:   %08lx  x%lu\n",
+			(unsigned long) sysc[i].spc, sysc[i].veces);
+	}
+}
+
+static void sonda_syscall(DWORD spc)
+{
+	static int activa = -1;
+	int i;
+
+	if (activa < 0)
+	{
+		const char * e = getenv("DCEMU_SONDA_SYSCALL");
+
+		activa = (e != NULL && atoi(e) != 0);
+
+		if (activa)
+			atexit(sonda_syscall_informe);
+	}
+
+	if (!activa)
+		return;
+
+	for (i = 0; i < sysc_n; i++)
+		if (sysc[i].spc == spc)
+		{
+			sysc[i].veces++;
+			return;
+		}
+
+	if (sysc_n < 64)
+	{
+		sysc[sysc_n].spc   = spc;
+		sysc[sysc_n].veces = 1;
+		sysc_n++;
+	}
+}
+
 void excepcion_entrar(DWORD codigo, DWORD vector)
 {
+	if (codigo == 0x0e0)
+		sonda_syscall(PC);
+
 	if (traza_activa && codigo == 0x0e0)
 	{
 		static int habilitado = -1;
@@ -440,10 +520,52 @@ void excepcion_abortar(DWORD codigo, DWORD vector)
 int excepcion_salto_valido = 0;
 int excepcion_sin_instantanea = 0;
 
+/*
+	Sonda del error de direccion (DCEMU_SONDA_DIRECCION=1): los 20 primeros PC
+	distintos que lo levantan, con la direccion y el desalineamiento.
+
+	Existe porque el histograma de excepciones da el total y el total no dice
+	nada: 200 000 errores de direccion por segundo en Sega Rally 2 pueden ser el
+	guest leyendo desalineado a proposito --con su sistema emulando el acceso en
+	el manejador-- o dcemu levantandolos donde no corresponde, y los dos casos
+	dan el mismo numero. El PC del sitio los separa.
+*/
+static void sonda_direccion(DWORD direccion, int escritura)
+{
+	static int		activa = -1;
+	static DWORD	pcs[20];
+	static int		npcs = 0;
+	int				i;
+
+	if (activa < 0)
+	{
+		const char * e = getenv("DCEMU_SONDA_DIRECCION");
+
+		activa = (e != NULL && atoi(e) != 0);
+	}
+
+	if (!activa || npcs >= 20)
+		return;
+
+	for (i = 0; i < npcs; i++)
+		if (pcs[i] == PC)
+			return;
+
+	pcs[npcs++] = PC;
+
+	fprintf(stderr, "sonda-direccion: PC %08lx %s %08lx (resto %lu)\n",
+		(unsigned long) PC,
+		escritura ? "escribe" : "lee",
+		(unsigned long) direccion,
+		(unsigned long) (direccion & 3));
+}
+
 void excepcion_direccion(DWORD direccion, int escritura)
 {
 	if (!excepcion_salto_valido)
 		return;
+
+	sonda_direccion(direccion, escritura);
 
 	/* Como en la falta de TLB: TEA lleva la direccion y PTEH.VPN su pagina,
 	   con el ASID intacto. */

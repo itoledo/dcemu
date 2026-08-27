@@ -25,6 +25,7 @@ void intc_revisar_sh4(void);
 void check_ints();
 bool intc_check();
 void intc_add(DWORD inttoadd, int cnt);
+bool intc_cancelar_demora(DWORD evento);
 
 /* El vencimiento mas cercano de las demoras (~0ull sin ninguna): un insumo
    del reloj por eventos (tmu.h). Absoluto, en ciclos de reloj_total. */

@@ -261,6 +261,7 @@ void check_registers()
 #endif
 }
 
+
 void regmem_setup(void)
 {
 	/* Registros de la MMU (fase 1.1 de docs/mmu-plan.md). Los atiende
@@ -933,11 +934,6 @@ void pvr_read(unsigned long direccion, void * p, size_t size)
 		{
 			memcpy(p, &MAPLE_STATE, size);
 			logmsg( "pvr_read: MAPLE_STATE: %x\r\n", MAPLE_STATE);
-			if (MAPLE_STATE & 0x1)
-			{
-				logmsg( "MAPLE_STATE:Desactivando DMA\r\n");
-				REMOVE_BIT(MAPLE_STATE, 0x1);
-			}
 		}
 		break;
 
@@ -1624,13 +1620,86 @@ static void sort_dma_ejecutar(void)
 	main_loop() lo llama junto al evento de vblank. Sin esto, la enumeracion
 	de dispositivos de CE espera un fin de DMA que nunca llega, y el arranque
 	entero -- driver de CD incluido -- se queda detras de ella.
+
+	Con SB_MSYS.bit12 en 1 el disparo es unico: no se rearma hasta que el
+	guest escribe 1 en SB_MSHTCL. Sega Rally 2 usa ese modo
+	(SB_MSYS=C3501000).
 */
+static int maple_hard_trigger_armado = 1;
+
 void maple_vblank(void)
 {
 	DWORD uno = 1;
 
-	if ((MAPLE_ENABLE & 1) && (MAPLE_RESET2 & 1))
+	if ((MAPLE_ENABLE & 1) && (MAPLE_RESET2 & 1) &&
+		!(MAPLE_STATE & 1) &&
+		(!(MAPLE_SPEED & (1 << 12)) || maple_hard_trigger_armado))
+	{
+		if (MAPLE_SPEED & (1 << 12))
+			maple_hard_trigger_armado = 0;
+
 		pvr_write(0xa05f6c18, &uno, sizeof(DWORD));
+	}
+}
+
+#define MAPLE_RESPUESTAS_MAX 4096
+#define MAPLE_RESPUESTAS_BYTES (1024 * 1024)
+
+static struct {
+	DWORD direccion;
+	size_t inicio;
+	size_t tam;
+} maple_respuestas[MAPLE_RESPUESTAS_MAX];
+
+static BYTE maple_respuestas_datos[MAPLE_RESPUESTAS_BYTES];
+static int maple_respuestas_n = 0;
+static size_t maple_respuestas_bytes = 0;
+
+static void maple_respuesta_guardar(DWORD direccion, const void * datos,
+	size_t tam)
+{
+	if (maple_respuestas_n >= MAPLE_RESPUESTAS_MAX ||
+		maple_respuestas_bytes + tam > sizeof(maple_respuestas_datos))
+	{
+		fprintf(stderr, "maple: las respuestas del DMA exceden el buffer"
+			" interno\n");
+		exit(1);
+	}
+
+	maple_respuestas[maple_respuestas_n].direccion = direccion;
+	maple_respuestas[maple_respuestas_n].inicio = maple_respuestas_bytes;
+	maple_respuestas[maple_respuestas_n].tam = tam;
+	memcpy(maple_respuestas_datos + maple_respuestas_bytes, datos, tam);
+	maple_respuestas_bytes += tam;
+	maple_respuestas_n++;
+}
+
+/*
+	SB_MDST vale 1 mientras el DMA esta en curso y baja junto con el evento de
+	fin. Leerlo no acusa ni termina nada. Los datos recibidos se publican antes
+	del mismo evento: hasta entonces siguen viajando por el bus (DevBox 2.6.8).
+*/
+void maple_dma_completar(void)
+{
+	int i;
+
+	for (i = 0; i < maple_respuestas_n; i++)
+		memwrite_fisico(maple_respuestas[i].direccion,
+			maple_respuestas_datos + maple_respuestas[i].inicio,
+			maple_respuestas[i].tam);
+
+	maple_respuestas_n = 0;
+	maple_respuestas_bytes = 0;
+	REMOVE_BIT(MAPLE_STATE, 0x1);
+	maple_dma = false;
+}
+
+void maple_dma_cancelar(void)
+{
+	maple_respuestas_n = 0;
+	maple_respuestas_bytes = 0;
+	REMOVE_BIT(MAPLE_STATE, 0x1);
+	maple_dma = false;
 }
 
 void pvr_write(unsigned long direccion, void * p, size_t size)
@@ -1876,6 +1945,12 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 			memcpy(&MAPLE_ENABLE, p, size);
 //			logmsg( "pvr_write: MAPLE_ENABLE: %x\r\n", MAPLE_ENABLE);
 
+			if (!(MAPLE_ENABLE & 1) && (MAPLE_STATE & 1))
+			{
+				intc_cancelar_demora(ASIC_EVT_MAPLE_DMA);
+				maple_dma_cancelar();
+			}
+
 			if (traza_activa)
 				fprintf(stderr, "traza: maple SB_MDEN=%08lx\n",
 					(unsigned long) MAPLE_ENABLE);
@@ -1885,13 +1960,31 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		case 0xa05f6c18: // SB_MDST, arranque del DMA
 		{
 			logmsg("MAPLE_STATE\r\n");
-			memcpy(&MAPLE_STATE, p, size);
+			memcpy(&dw, p, size);
 
-			if (MAPLE_STATE & 0x1)
+			/* Escribir cero no tiene efecto; escribir uno solo arranca si el
+			   canal esta habilitado y libre (DevBox 2.6.8). */
+			if ((dw & 0x1) && (MAPLE_ENABLE & 0x1) &&
+				!(MAPLE_STATE & 0x1))
 			{
 				DWORD td1 = 0, td2, curaddr;
 				int i = 0, j, tam;
-				int palabras = 0;	/* movidas por el bus, para la demora */
+				int palabras_nominales = 0;
+				int palabras_reales = 0;
+				static unsigned long dma_numero = 0;
+				static int sonda_maple = -1;
+				static int demora_nominal = -1;
+
+				dma_numero++;
+				if (sonda_maple < 0)
+					sonda_maple = getenv("DCEMU_SONDA_MAPLE") != NULL;
+				if (demora_nominal < 0)
+					demora_nominal =
+						getenv("DCEMU_MAPLE_DEMORA_NOMINAL") != NULL;
+
+				SET_BIT(MAPLE_STATE, 0x1);
+				maple_respuestas_n = 0;
+				maple_respuestas_bytes = 0;
 
 //				logmsg( "pvr_write: MAPLE_STATE enabled\r\n");
 
@@ -1937,7 +2030,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 						last = (td1 & 0x80000000) ? true : false;
 						curaddr += 4;
-						palabras += 1;
+						palabras_nominales += 1;
+						palabras_reales += 1;
 						i++;
 						continue;
 					}
@@ -1973,6 +2067,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							fprintf(stderr, "traza: maple respuesta a %08lx, que no es"
 								" RAM: se corta la lista\n", (unsigned long) td2);
 
+						maple_dma_cancelar();
 						return;
 					}
 //					logmsg( "le�dos td1:%x, td2:%x\r\n", td1, td2);
@@ -1980,11 +2075,9 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 //					logmsg( "tama�o del paquete: %x\r\n", (tam = (td1 & 0xFF) + 1));
 					tam = (td1 & 0xFF) + 1;
 
-					/* El comando de ida mas una respuesta nominal. No hace
-					   falta exactitud: la demora tiene que caer despues de la
-					   contabilidad del que disparo y antes del cuadro que
-					   viene, y todo el rango razonable cumple. */
-					palabras += tam + 8;
+					/* La estimacion anterior: el comando de ida mas ocho
+					   palabras de respuesta. Se conserva solo para el A/B. */
+					palabras_nominales += tam + 8;
 					// ahora tenemos el paquetito! a tratar de leerlo.
 
 					if (((td1 >> 16) & 0x3) != 0) // si no es el puerto 1
@@ -1992,7 +2085,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						// grabemos 0xFFFFFFFF
 						logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
 						dw = 0xFFFFFFFF;
-						memwrite_fisico(td2, &dw, sizeof(DWORD));
+						maple_respuesta_guardar(td2, &dw, sizeof(DWORD));
+						palabras_reales += tam + 1;
 					}
 					else
 					if (tam > 0)
@@ -2000,6 +2094,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 						DWORD * paquete;
 						maple_devinfo_t devinfo;
 						int recadr, sendadr;
+						int respuesta_palabras = 0;
 						
 						paquete = (DWORD *) malloc(sizeof(DWORD) * tam);
 						for (j = 0; j < tam; j++)
@@ -2049,14 +2144,19 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 							int vmu_n = vmu_maple(paquete, tam, vmu_resp, 132);
 
 							if (vmu_n > 0)
-								memwrite_fisico(td2, vmu_resp, (size_t) vmu_n * 4);
+							{
+								maple_respuesta_guardar(td2, vmu_resp,
+									(size_t) vmu_n * 4);
+								respuesta_palabras = vmu_n;
+							}
 						}
 						else
 						if (recadr != 0x20)
 						{
 							logmsg( "Grabando 0xFFFFFFFF en %x, tam=%d, td=%x\r\n", td2, tam, td1);
 							dw = 0xFFFFFFFF;
-							memwrite_fisico(td2, &dw, sizeof(DWORD));
+							maple_respuesta_guardar(td2, &dw, sizeof(DWORD));
+							respuesta_palabras = 1;
 						}
 						else
 						if ((paquete[0] & 0xFF) == 1) // Request Device Info
@@ -2104,9 +2204,13 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								(((0x20 | (vmu_presente() ? 1 : 0)) << 16) & 0xFF0000) |
 								(((sizeof(maple_devinfo_t)/4) << 24) & 0xFF000000);
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
-							memwrite_fisico(td2, &paquete[0], sizeof(DWORD));
+							maple_respuesta_guardar(td2, &paquete[0],
+								sizeof(DWORD));
 //							logmsg( "Escribiendo devinfo en %x\r\n", td2 + 4);
-							memwrite_fisico(td2 + 4, &devinfo, sizeof(maple_devinfo_t));
+							maple_respuesta_guardar(td2 + 4, &devinfo,
+								sizeof(maple_devinfo_t));
+							respuesta_palabras = 1 +
+								(int) (sizeof(maple_devinfo_t) / 4);
 						}
 						else
 						if ((paquete[0] & 0xFF) == 9) // MAPLE_COMMAND_GETCOND
@@ -2188,11 +2292,16 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								(((sizeof(cont_cond_t)/4 + 1) << 24) & 0xFF000000);
 								
 //							logmsg( "Escribiendo en %x: %x\r\n", td2, paquete[0]);
-							memwrite_fisico(td2, &paquete[0], sizeof(DWORD));
+							maple_respuesta_guardar(td2, &paquete[0],
+								sizeof(DWORD));
 							dw = (1 << 24); // MAPLE_FUNC_CONTROLLER
-							memwrite_fisico(td2 + 4, &dw, sizeof(DWORD));
+							maple_respuesta_guardar(td2 + 4, &dw,
+								sizeof(DWORD));
 //							logmsg( "Escribiendo cont_cond en %x\r\n", td2 + 8);
-							memwrite_fisico(td2 + 8, &ct, sizeof(cont_cond_t));
+							maple_respuesta_guardar(td2 + 8, &ct,
+								sizeof(cont_cond_t));
+							respuesta_palabras = 2 +
+								(int) (sizeof(cont_cond_t) / 4);
 						}
 						else
 						{
@@ -2202,6 +2311,18 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								fprintf(stderr, "traza: maple comando %02lx sin emular\n",
 									(unsigned long) (paquete[0] & 0xFF));
 						}
+
+						palabras_reales += tam + respuesta_palabras;
+						if (sonda_maple && reloj_ms() >= 35000)
+							fprintf(stderr, "sonda maple: dma %lu a %llu ms,"
+								" comando %02lx para %02x, ida %d, vuelta %d,"
+								" respuesta %08lx\n",
+								dma_numero,
+								(unsigned long long) reloj_ms(),
+								(unsigned long) (paquete[0] & 0xFF),
+								recadr, tam, respuesta_palabras,
+								(unsigned long) td2);
+
 						free(paquete);
 					}
 					else
@@ -2213,11 +2334,10 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					i++;
 				}
 
-				/* La transferencia se hizo entera aca mismo, asi que el canal
-				   ya esta libre. Antes el bit se bajaba en la *lectura* del
-				   registro, que hacia que la primera consulta viera un DMA en
-				   curso que no existia. */
-				REMOVE_BIT(MAPLE_STATE, 0x1);
+				if (sonda_maple && reloj_ms() >= 35000)
+					fprintf(stderr, "sonda maple: dma %lu total nominal %d,"
+						" real %d palabras\n",
+						dma_numero, palabras_nominales, palabras_reales);
 
 				/*
 					El fin de DMA es **uno por recorrido y con la demora del
@@ -2242,13 +2362,26 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					puerto A, dentro del lazo: una lista sin puerto A no
 					levantaba fin de DMA jamas.
 				*/
-				intc_add(ASIC_EVT_MAPLE_DMA, palabras * 64 + 200);
+				/*
+					La demora anterior suponia ocho palabras de respuesta para
+					cada marco. Una lectura de bloque de VMU devuelve 131:
+					Sega Rally 2 terminaba ese DMA 98 palabras antes, y la
+					ventana en que MapleDev reconstruye DirectInput en cero
+					alcanzaba al sondeo de la fisica. Contar lo que viajo de
+					verdad deja esa ventana entre sondeos, como en la consola.
+
+					DCEMU_MAPLE_DEMORA_NOMINAL conserva la estimacion anterior
+					para el A/B.
+				*/
+				intc_add(ASIC_EVT_MAPLE_DMA,
+					(demora_nominal ? palabras_nominales : palabras_reales)
+						* 64 + 200);
 
 				maple_dma = true;
 			}
 			else
 			{
-				logmsg( "pvr_write: MAPLE_STATE disabled\r\n");
+				logmsg( "pvr_write: MAPLE_STATE sin arranque\r\n");
 			}
 		}
 		break;
@@ -2257,6 +2390,16 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 		{
 			memcpy(&MAPLE_SPEED, p, size);
 //			logmsg( "pvr_write: MAPLE_SPEED: %x\r\n", MAPLE_SPEED);
+		}
+		break;
+
+		case 0xa05f6c88: // SB_MSHTCL, rearme del disparo por hardware
+		{
+			memcpy(&dw, p, size);
+
+			if ((dw & 1) && (MAPLE_RESET2 & 1) &&
+				(MAPLE_SPEED & (1 << 12)))
+				maple_hard_trigger_armado = 1;
 		}
 		break;
 
@@ -3352,4 +3495,3 @@ void WriteMemoryF(unsigned long direccion, float * valor)
 	memwrite(direccion, valor, sizeof(DWORD));
 }
 #endif
-

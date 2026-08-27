@@ -67,6 +67,8 @@ void mem_directo_recalcular(void);
 /* El disparo por hardware del Maple (SB_MDTSEL=1): main_loop() lo llama en
    cada vblank. Ver mem.c. */
 void maple_vblank(void);
+void maple_dma_completar(void);
+void maple_dma_cancelar(void);
 
 /* Contadores de escrituras a RAM de video, solo con --traza-mem. */
 extern DWORD traza_video_escrituras;
@@ -258,6 +260,8 @@ void excepcion_direccion(DWORD direccion, int escritura);
 			MEM_DIRECTO_LEER(_md_b + ((_mmu_d) & 0xFFFFFF), (target), (size)); \
 		else \
 			memread_fisico(_mmu_d, (target), (size)); \
+		if (watchpoint_virtual_dir) \
+			watchpoint_virtual_lectura(_ubc_d, _mmu_d, (target), (size)); \
 		if (ubc_operando_activa) \
 			ubc_operando(_ubc_d, (target), (size), 0); \
 	} while (0)
@@ -278,6 +282,8 @@ void excepcion_direccion(DWORD direccion, int escritura);
 		} \
 		else \
 			memwrite_fisico(_mmu_d, (source), (size)); \
+		if (watchpoint_virtual_dir) \
+			watchpoint_virtual_escritura(_ubc_d, (source), (size)); \
 		if (ubc_operando_activa) \
 			ubc_operando(_ubc_d, (source), (size), 1); \
 	} while (0)

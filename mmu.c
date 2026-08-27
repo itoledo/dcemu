@@ -16,6 +16,7 @@
 #include "sh4emu.h"
 #include "mem.h"		/* get_memory_pointer, para el cache de pagina del fetch */
 #include "perf.h"		/* el desglose de la MMU: ver perf.h */
+#include "tmu.h"		/* reloj_ms(), para DCEMU_TRAZA_TLB */
 
 int mmu_activa = 0;
 
@@ -333,9 +334,11 @@ static void ldtlb_trazar(DWORD pteh, DWORD ptel)
 
 	ultima = fisica;
 
-	fprintf(stderr, "tlb: %08lx -> fisica %08lx (ASID %02lx%s%s)\n",
+	fprintf(stderr, "tlb: %08lx -> fisica %08lx a los %llu ms"
+		" (ASID %02lx%s%s)\n",
 		(unsigned long) vigilada,
 		(unsigned long) fisica,
+		(unsigned long long) reloj_ms(),
 		(unsigned long) (pteh & 0xFF),
 		(ptel & BIT_V) ? "" : ", !V",
 		(ptel & BIT_D_DAT) ? "" : ", !D");
