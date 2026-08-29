@@ -128,6 +128,112 @@ void traza_cp_periodico(void)
    de algo -- por ejemplo despues de que la lectora le entregue un archivo. */
 long traza_disparo = 0;
 
+/*
+	DCEMU_SONDA_SR2=1: telemetria del auto de Sega Rally 2, una linea cada
+	100 ms emulados, desde el bloque periodico. Existe porque las capturas de
+	pantalla no alcanzan para comparar la velocidad terminal entre corridas:
+	los menus con cuenta regresiva hacen que la carrera arranque en otro
+	instante con cada configuracion, y un cuadro suelto no dice si 59 mph era
+	la subida o el tope. Es pasiva: lee la RAM del guest por memread_fisico y
+	no toca nada.
+
+	La base del bloque del auto cambia con el camino de menus (se la ha visto
+	en 0ccce660 y 0ccce680), asi que se localiza validando la firma del bloque
+	-- vel_tope (+0x7c) entre 200 y 300 y marcha (+0x28) entre 0 y 6 -- y se
+	revalida en cada muestra.
+*/
+long traza_sr2_activa = -2;		/* -2 sin leer, -1 apagada, 1 encendida */
+
+static float sr2_leer_f(DWORD dir)
+{
+	DWORD w = 0;
+	float f;
+
+	memread_fisico(dir, &w, sizeof(DWORD));
+	memcpy(&f, &w, sizeof(float));
+	return f;
+}
+
+void traza_sr2_periodico(void)
+{
+	static unsigned long long	proximo = 0;
+	static DWORD				base = 0;
+	unsigned long long			ms;
+	long						marcha;
+	DWORD						w;
+
+	if (traza_sr2_activa == -2)
+	{
+		const char * e = getenv("DCEMU_SONDA_SR2");
+
+		traza_sr2_activa = (e != NULL && atoi(e) != 0) ? 1 : -1;
+
+		if (traza_sr2_activa == -1)
+			return;
+	}
+
+	ms = reloj_ms();
+
+	if (ms < proximo)
+		return;
+
+	proximo = ms + 100;
+
+	/* La firma del bloque, revalidada por muestra: vel_tope entre 200 y 300 y
+	   marcha entre 0 y 6. La base cambia con el camino de menus, asi que si
+	   la cacheada deja de validar se rebusca por la firma FUERTE del bloque
+	   -- el factor 0,78 en +0x264 seguido de la tabla de la caja -- en la
+	   zona donde el juego lo colocA. */
+	{
+		float tope = (base != 0) ? sr2_leer_f(base + 0x7c) : 0.0f;
+
+		if (base != 0)
+			memread_fisico(base + 0x28, &w, sizeof(DWORD));
+
+		if (base == 0 || tope <= 200.0f || tope >= 300.0f || w > 6)
+		{
+			DWORD dir;
+
+			base = 0;
+
+			for (dir = 0x0CC80000; dir < 0x0CD80000; dir += 0x20)
+			{
+				if (sr2_leer_f(dir + 0x264) == 0.78f &&
+					sr2_leer_f(dir + 0x268) == 0.0f &&
+					sr2_leer_f(dir + 0x26c) == 0.5f &&
+					sr2_leer_f(dir + 0x270) == 0.65f)
+				{
+					float t = sr2_leer_f(dir + 0x7c);
+
+					memread_fisico(dir + 0x28, &w, sizeof(DWORD));
+
+					if (t > 200.0f && t < 300.0f && w <= 6)
+					{
+						base = dir;
+						fprintf(stderr, "sr2: bloque del auto en %08lx\n",
+							(unsigned long) base);
+						break;
+					}
+				}
+			}
+
+			if (base == 0)
+				return;
+		}
+	}
+
+	memread_fisico(base + 0x28, &w, sizeof(DWORD));
+	marcha = (long) w;
+
+	fprintf(stderr, "sr2 %llu ms base=%08lx vel=%.2f marcha=%ld rpm=%.0f"
+		" vnorm=%.4f rnorm=%.4f rampa=%.4f\n",
+		ms, (unsigned long) base,
+		sr2_leer_f(base + 0x14), marcha,
+		sr2_leer_f(base + 0x2c),
+		sr2_leer_f(base + 0x40), sr2_leer_f(base + 0x4c),
+		sr2_leer_f(base + 0x630));
+}
+
 /* ------------------------------------------------------------------------ */
 /* Caida del emulador                                                       */
 /* ------------------------------------------------------------------------ */

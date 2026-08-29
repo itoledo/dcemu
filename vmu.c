@@ -319,6 +319,35 @@ int vmu_maple(const void * paquete, int tam_palabras,
 			datos = 1 + meminfo(rp + 8);
 		}
 		else
+		if (func == FUNC_LCD)
+		{
+			/*
+				La info de medio del LCD: 48x32 puntos, un solo LCD. Es la
+				palabra que contesta el hardware (la que llevan flycast y
+				reicast, probada contra estos mismos drivers).
+
+				Contestarle RESP_FUNC_MALA aqui -- lo que se hacia -- es lo
+				que tenia a Sega Rally 2 sin caja automatica: el DEVINFO
+				declara la funcion LCD, MapleDev (Windows CE) pregunta por su
+				medio al montar la tarjeta, y ante el error reintentaba el
+				ciclo entero de sondeo (GETMINFO x3, BREAD, BSYNC) cada
+				~133 ms PARA SIEMPRE -- y cada reintento tumbaba y rearmaba el
+				estado de DirectInput, con una ventana de 1-2 cuadros en que
+				el juego leia el acelerador en cero. El filtro del juego
+				promediaba esas ventanas y la primera marcha moria a 63 mph,
+				bajo el umbral de 64,5 del cambio a segunda. Con --sin-vmu
+				(sin ciclo de sondeo) la caja siempre anduvo: ese era el
+				aislamiento. La forma de la falla es la recurrente del arbol:
+				declarar algo y contestarlo con un error cuando lo piden.
+			*/
+			vmu_u32 lcd = 0x1F2F0010;
+
+			codigo = RESP_DATOS;
+			memcpy(rp + 4, &func, 4);
+			memcpy(rp + 8, &lcd, 4);
+			datos = 2;
+		}
+		else
 			codigo = RESP_FUNC_MALA;
 		break;
 

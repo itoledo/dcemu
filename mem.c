@@ -1642,6 +1642,37 @@ void maple_vblank(void)
 	}
 }
 
+/*
+	El tiempo de servicio de la VMU: un recorrido del Maple que toco la
+	tarjeta no termina antes de esto. La tarjeta real es un microcontrolador
+	lento y sus comandos de archivo tardan milisegundos; dcemu contestaba en
+	el largo del alambre (0,2-0,9 ms) y eso expone una carrera del montaje de
+	MapleDev (Windows CE) que el hardware nunca ve. Medido con Sega Rally 2,
+	que monta la tarjeta en cada arranque, barriendo la demora:
+
+	    <= ~1 ms   arranca, pero el montaje FALLA y FILESYS reintenta el ciclo
+	               entero (GETMINFO x2, BREAD, 0x0D) cada ~133 ms PARA
+	               SIEMPRE -- y cada vuelta tumba y rearma DirectInput, con
+	               1-2 cuadros de acelerador en cero. El promedio dejaba la
+	               primera marcha en 63 mph, bajo el umbral del cambio a
+	               segunda (64,5): la caja automatica nunca cambiaba, y START
+	               en carrera hacia rapid fire. Con --sin-vmu (sin ciclo)
+	               siempre anduvo: ese era el aislamiento.
+	    2-10 ms    el arranque se CUELGA en la pantalla de advertencia de la
+	               tarjeta: el driver espera ~10 ms (el timeout canonico de
+	               WinCE) y el fin que llega adentro de esa ventana se pierde.
+	    12-14 ms   el montaje termina bien, el sondeo eterno no existe, la
+	               caja automatica cambia (tercera y cuarta marcha medidas) y
+	               la pausa con START queda firme.
+	    >= 16 ms   se cuelga de nuevo: el fin cae despues del proximo vblank
+	               y el disparo por hardware encuentra el canal ocupado.
+
+	13 ms es el medio de la meseta: pasado el timeout, antes del vblank.
+	DCEMU_MAPLE_DEMORA_VMU_US=N (decimal) la cambia; 0 la apaga, que es la
+	conducta anterior.
+*/
+#define MAPLE_VMU_DEMORA_US 13000
+
 #define MAPLE_RESPUESTAS_MAX 4096
 #define MAPLE_RESPUESTAS_BYTES (1024 * 1024)
 
@@ -1655,9 +1686,32 @@ static BYTE maple_respuestas_datos[MAPLE_RESPUESTAS_BYTES];
 static int maple_respuestas_n = 0;
 static size_t maple_respuestas_bytes = 0;
 
+/*
+	En el bus real cada respuesta se DMA a la RAM CUANDO llega por el alambre,
+	transferencia por transferencia; lo unico que marca el fin del recorrido
+	es la interrupcion. Publicar todo junto al final -- lo que se hizo primero
+	-- es MENOS fiel para un recorrido con varias transferencias: un driver
+	que mira sus buffers en medio del cuadro (MapleDev rota las direcciones de
+	respuesta) veia datos viejos hasta 2,4 ms. Por omision cada respuesta se
+	escribe al armarla, con el fin del DMA (SB_MDST, IRQ) demorado igual;
+	DCEMU_MAPLE_PUBLICAR_AL_FIN=1 conserva la publicacion al final para el
+	A/B.
+*/
+static int maple_publicar_al_fin = -1;
+
 static void maple_respuesta_guardar(DWORD direccion, const void * datos,
 	size_t tam)
 {
+	if (maple_publicar_al_fin < 0)
+		maple_publicar_al_fin =
+			getenv("DCEMU_MAPLE_PUBLICAR_AL_FIN") != NULL;
+
+	if (!maple_publicar_al_fin)
+	{
+		memwrite_fisico(direccion, (void *) datos, tam);
+		return;
+	}
+
 	if (maple_respuestas_n >= MAPLE_RESPUESTAS_MAX ||
 		maple_respuestas_bytes + tam > sizeof(maple_respuestas_datos))
 	{
@@ -1676,8 +1730,7 @@ static void maple_respuesta_guardar(DWORD direccion, const void * datos,
 
 /*
 	SB_MDST vale 1 mientras el DMA esta en curso y baja junto con el evento de
-	fin. Leerlo no acusa ni termina nada. Los datos recibidos se publican antes
-	del mismo evento: hasta entonces siguen viajando por el bus (DevBox 2.6.8).
+	fin. Leerlo no acusa ni termina nada.
 */
 void maple_dma_completar(void)
 {
@@ -1974,13 +2027,27 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 				static unsigned long dma_numero = 0;
 				static int sonda_maple = -1;
 				static int demora_nominal = -1;
+				static int demora_vmu_us = -1;
+				int maple_dma_hubo_vmu;
 
 				dma_numero++;
 				if (sonda_maple < 0)
-					sonda_maple = getenv("DCEMU_SONDA_MAPLE") != NULL;
+				{
+					const char * e = getenv("DCEMU_SONDA_MAPLE");
+
+					sonda_maple = (e != NULL) ? atoi(e) : 0;
+				}
 				if (demora_nominal < 0)
 					demora_nominal =
 						getenv("DCEMU_MAPLE_DEMORA_NOMINAL") != NULL;
+				if (demora_vmu_us < 0)
+				{
+					const char * e = getenv("DCEMU_MAPLE_DEMORA_VMU_US");
+
+					demora_vmu_us = (e != NULL) ? atoi(e)
+						: MAPLE_VMU_DEMORA_US;
+				}
+				maple_dma_hubo_vmu = 0;
 
 				SET_BIT(MAPLE_STATE, 0x1);
 				maple_respuestas_n = 0;
@@ -2149,6 +2216,8 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 									(size_t) vmu_n * 4);
 								respuesta_palabras = vmu_n;
 							}
+
+							maple_dma_hubo_vmu = 1;
 						}
 						else
 						if (recadr != 0x20)
@@ -2314,6 +2383,7 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 
 						palabras_reales += tam + respuesta_palabras;
 						if (sonda_maple && reloj_ms() >= 35000)
+						{
 							fprintf(stderr, "sonda maple: dma %lu a %llu ms,"
 								" comando %02lx para %02x, ida %d, vuelta %d,"
 								" respuesta %08lx\n",
@@ -2322,6 +2392,34 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 								(unsigned long) (paquete[0] & 0xFF),
 								recadr, tam, respuesta_palabras,
 								(unsigned long) td2);
+
+							/* El detalle de los marcos hacia la VMU: las
+							   palabras del pedido y la cabeza de la
+							   respuesta, para leer que pregunta el driver
+							   y que le contestamos. */
+							if (sonda_maple > 1 && recadr == 0x01)
+							{
+								int k;
+
+								fprintf(stderr, "  pedido :");
+								for (k = 0; k < tam && k < 4; k++)
+									fprintf(stderr, " %08lx",
+										(unsigned long) paquete[k]);
+								fprintf(stderr, "\n  vuelta :");
+								for (k = 0; k < respuesta_palabras && k < 6; k++)
+								{
+									DWORD w;
+
+									memcpy(&w, maple_respuestas_datos +
+										maple_respuestas_bytes -
+										(size_t) respuesta_palabras * 4 +
+										(size_t) k * 4, sizeof(DWORD));
+									fprintf(stderr, " %08lx",
+										(unsigned long) w);
+								}
+								fprintf(stderr, "\n");
+							}
+						}
 
 						free(paquete);
 					}
@@ -2373,9 +2471,25 @@ void pvr_write(unsigned long direccion, void * p, size_t size)
 					DCEMU_MAPLE_DEMORA_NOMINAL conserva la estimacion anterior
 					para el A/B.
 				*/
-				intc_add(ASIC_EVT_MAPLE_DMA,
-					(demora_nominal ? palabras_nominales : palabras_reales)
-						* 64 + 200);
+				{
+					int cuentas = (demora_nominal
+						? palabras_nominales : palabras_reales) * 64 + 200;
+
+					/*
+						DCEMU_MAPLE_DEMORA_VMU_US=N (decimal): si el recorrido
+						toco la VMU, el fin del DMA no baja de N microsegundos.
+						Es la perilla del barrido: el largo de alambre cuenta
+						solo la transmision, y una VMU real tarda milisegundos
+						en servir GETMINFO/BREAD -- su microcontrolador es de
+						sub-MHz. Una cuenta de intc_add son 50 ciclos: ~4 por
+						microsegundo.
+					*/
+					if (maple_dma_hubo_vmu && demora_vmu_us > 0 &&
+						cuentas < demora_vmu_us * 4)
+						cuentas = demora_vmu_us * 4;
+
+					intc_add(ASIC_EVT_MAPLE_DMA, cuentas);
+				}
 
 				maple_dma = true;
 			}

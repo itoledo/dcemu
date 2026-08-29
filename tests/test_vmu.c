@@ -310,6 +310,25 @@ static void lcd_y_zumbador_contestan_ok(void)
 	ESPERAR_U32(respuesta[0] & 0xFF, 0x07);
 }
 
+static void getminfo_del_lcd_contesta_el_medio(void)
+{
+	tarjeta_nueva();
+
+	/*
+		MapleDev (Windows CE) pregunta por el medio del LCD al montar la
+		tarjeta -- Sega Rally 2 lo hace en cada arranque -- y ante un error
+		reintenta el ciclo de sondeo para siempre, tumbando DirectInput en
+		cada vuelta. La palabra es la del hardware: 48x32 puntos, un LCD.
+	*/
+	pedido[0] = ENCABEZADO(10, 1);
+	pedido[1] = FUNC_LCD;
+
+	ESPERAR_I32(mandar(2), 3);					/* cabecera + func + medio */
+	ESPERAR_U32(respuesta[0] & 0xFF, 0x08);
+	ESPERAR_U32(respuesta[1], FUNC_LCD);
+	ESPERAR_U32(respuesta[2], 0x1F2F0010);
+}
+
 static void botones_sueltos(void)
 {
 	tarjeta_nueva();
@@ -337,6 +356,7 @@ static const dc_caso casos[] =
 	CASO(bloque_fuera_de_rango),
 	CASO(funcion_desconocida_y_comando_desconocido),
 	CASO(lcd_y_zumbador_contestan_ok),
+	CASO(getminfo_del_lcd_contesta_el_medio),
 	CASO(botones_sueltos),
 };
 

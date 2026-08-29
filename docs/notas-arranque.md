@@ -194,17 +194,43 @@ Su filtro convergía a `94/127`, el motor quedaba al 79,6 % del corte y la veloc
 se estabilizaba en `0,383`, por debajo del `0,390` que exige el cambio de primera a segunda.
 
 `DCEMU_SONDA_MAPLE=1` cerró la correlación: cada transición a cero seguía al comando `0x0D` de la
-VMU. Contando las palabras que realmente produjo cada dispositivo, la ventana baja a **4-7 ms** y
-queda entre los sondeos de la física. El A/B conserva la estimación vieja con
-`DCEMU_MAPLE_DEMORA_NOMINAL=1`: el brazo viejo queda en primera y alrededor de 60 mph; el nuevo,
-con la misma VMU, llega a **tercera y 126,9 mph** a los 65 s, con el motor al 95,5 % del corte.
+VMU. **El veredicto de arriba no sobrevivió a la verificación** (2026-08-29): con el A/B corrido
+sobre un solo binario y una receta que sí llega a la carrera, el brazo de palabras reales salió
+**peor** que el nominal —vnorm máximo 0,2439 contra 0,3880, oscilando entre 22 y 36 mph con el
+gatillo sostenido—, porque el 88,5 % de los DMA (los marcos sin VMU) terminaban ANTES que con la
+estimación vieja, no después, y las ventanas de cero se hacían más frecuentes. La cuenta de
+palabras reales queda —es la verdad del alambre—, pero no era el arreglo.
 
-Los dos síntomas reportados no formaban una cadena causal —la caja automática no lee botones—,
-pero sí compartían el mismo estado intermitente de DirectInput. Al desaparecer la ventana larga,
-START abre la pausa y ya no la cierra solo. Por eso `replay-at3.txt`, que contiene dos pulsaciones
-de START para medir aquel síntoma, ahora alcanza segunda y deja la carrera correctamente pausada
-(41,4 mph en el volcado a 45 s);
-`replay-at3-sin-pausa.txt` es la misma receta sin esas dos pulsaciones y es la que mide la caja.
+### La causa raíz: el montaje de la tarjeta y el tiempo de servicio de la VMU (2026-08-29)
+
+Lo que las ventanas de DirectInput tenían detrás no era el largo del DMA sino un **ciclo eterno
+de sondeo del filesystem**: `GETMINFO` ×2, `BREAD` del bloque raíz y `0x0D`, cada ~133 ms,
+durante toda la carrera y para siempre. `DCEMU_SONDA_MAPLE=2` (el detalle de los marcos) mostró
+además que el driver preguntaba `GETMINFO` por la **función LCD** y dcemu contestaba `0xFE`
+(función mala) —el DEVINFO la declara—; `vmu.c` ahora contesta el medio del LCD
+(`0x1F2F0010`, 48×32, la palabra del hardware), aunque eso **no** detuvo el ciclo.
+
+Lo que lo detiene es el **tiempo de servicio de la tarjeta**. La VMU real es un microcontrolador
+lento: sus comandos de archivo tardan milisegundos, y dcemu contestaba en el largo del alambre
+(0,2-0,9 ms). A esa velocidad el montaje de MapleDev **falla** y FILESYS lo reintenta para
+siempre —cada vuelta tumba y rearma DirectInput, con 1-2 cuadros de acelerador en cero, y el
+promedio dejaba la primera marcha en 63 mph, bajo el umbral de 64,5 del cambio—. El barrido de la
+demora (la tabla completa está sobre `MAPLE_VMU_DEMORA_US` en `mem.c`) dio tres regímenes:
+≤1 ms reintento eterno, 2-10 ms **el arranque se cuelga** en la advertencia de la tarjeta (la
+ventana del timeout de ~10 ms de WinCE), 12-14 ms el montaje termina, el ciclo no existe y la
+caja cambia. La omisión es **13 ms** (`DCEMU_MAPLE_DEMORA_VMU_US=N` la cambia, `0` la apaga).
+
+El aislamiento que lo delató: `--sin-vmu` siempre tuvo la caja sana (tercera marcha en el volcado
+de RAM de la sesión anterior). Verificado con la omisión nueva y sin variables: **segunda a los
+76,5 s, tercera marcha, 58 mph** (la receta con dirección neutra no pasa de ahí: choca), y la
+pausa con START queda firme —el rapid-fire era el mismo estado intermitente—. La telemetría es
+`DCEMU_SONDA_SR2=1` y las recetas por milisegundo emulado (`t<ms>` en el replay) son lo que hizo
+comparables los brazos: las de sondeos se desincronizan con cualquier cambio de temporización.
+
+De paso quedó medido que **publicar las respuestas al final del recorrido es neutro** para este
+expediente (mismo 0,2439 al dígito); en el bus real cada respuesta se escribe al llegar, así que
+la omisión volvió a la publicación por respuesta y `DCEMU_MAPLE_PUBLICAR_AL_FIN=1` conserva la
+otra forma para el A/B.
 
 ---
 

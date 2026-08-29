@@ -318,10 +318,21 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 		la misma imagen de tarjeta.
 	*/
 	{
+		/*
+			Un paso puede fijarse por numero de sondeo (la forma original) o
+			por MILISEGUNDO emulado, con el prefijo 't': "t45500 fffb 0 ...".
+			El sondeo cuenta llamadas a entrada_leer, y su relacion con el
+			tiempo NO es fija: cada recorrido del Maple es un sondeo, y el
+			trafico de la VMU lo acelera -- una receta a ciegas escrita en
+			sondeos se desincroniza con cualquier cambio de temporizacion del
+			emulador. El milisegundo emulado es estable ante eso, que es lo
+			que una receta de menus necesita.
+		*/
 		typedef struct {
-			int		sondeo;
+			int		sondeo;		/* o ms emulado, si es_ms */
 			WORD	botones;
 			BYTE	lt, rt, jx, jy;
+			BYTE	es_ms;
 		} entrada_paso_t;
 
 		static int				modo = -2;		/* -2 sin leer, 0 nada, 1 graba, 2 replay */
@@ -352,10 +363,25 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 					int		cap = 0;
 					int		s;
 					unsigned b, plt, prt, pjx, pjy;
+					int es_ms;
+					int c;
 
-					while (fscanf(fp, "%d %x %u %u %u %u",
-						&s, &b, &plt, &prt, &pjx, &pjy) == 6)
+					for (;;)
 					{
+						/* Prefijo opcional 't': el paso va en ms emulados. */
+						do
+							c = fgetc(fp);
+						while (c == ' ' || c == '\n' || c == '\r');
+
+						es_ms = (c == 't');
+
+						if (!es_ms && c != EOF)
+							ungetc(c, fp);
+
+						if (fscanf(fp, "%d %x %u %u %u %u",
+							&s, &b, &plt, &prt, &pjx, &pjy) != 6)
+							break;
+
 						if (pasos_n == cap)
 						{
 							cap = cap ? cap * 2 : 256;
@@ -369,6 +395,7 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 						pasos[pasos_n].rt = (BYTE) prt;
 						pasos[pasos_n].jx = (BYTE) pjx;
 						pasos[pasos_n].jy = (BYTE) pjy;
+						pasos[pasos_n].es_ms = (BYTE) es_ms;
 						pasos_n++;
 					}
 
@@ -399,11 +426,17 @@ void entrada_leer(WORD * botones, BYTE * lt, BYTE * rt, BYTE * jx, BYTE * jy)
 
 		if (modo == 2)
 		{
+			unsigned long long ms = reloj_ms();
+
+			#define PASO_VENCIDO(p) ((p).es_ms \
+				? (unsigned long long) (p).sondeo <= ms \
+				: (p).sondeo <= sondeo)
+
 			while (paso_actual + 1 < pasos_n
-				&& pasos[paso_actual + 1].sondeo <= sondeo)
+				&& PASO_VENCIDO(pasos[paso_actual + 1]))
 				paso_actual++;
 
-			if (pasos_n > 0 && pasos[0].sondeo <= sondeo)
+			if (pasos_n > 0 && PASO_VENCIDO(pasos[0]))
 			{
 				*botones = pasos[paso_actual].botones;
 				*lt = pasos[paso_actual].lt;
@@ -1329,6 +1362,11 @@ void main_loop(void)
 				   puede depender del interruptor. */
 				if (traza_cp_tope != -1)
 					traza_cp_periodico();
+
+				/* La telemetria del auto de SR2 (DCEMU_SONDA_SR2), misma
+				   regla: -1 apagada y el llamador ni siquiera llama. */
+				if (traza_sr2_activa != -1)
+					traza_sr2_periodico();
 
 				/*
 					El reloj por eventos (tmu.h): si ningun vencimiento llego y

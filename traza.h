@@ -39,6 +39,11 @@ extern int traza_activa;
 extern long traza_cp_tope;
 void traza_cp_periodico(void);
 
+/* La telemetria del auto de Sega Rally 2 (DCEMU_SONDA_SR2), misma regla que
+   traza_cp_tope: -1 apagada y el llamador se salta la llamada. Ver traza.c. */
+extern long traza_sr2_activa;
+void traza_sr2_periodico(void);
+
 /* EXPERIMENTO: ver traza.c. */
 extern long traza_disparo;
 
