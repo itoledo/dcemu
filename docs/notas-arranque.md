@@ -232,6 +232,36 @@ expediente (mismo 0,2439 al dígito); en el bus real cada respuesta se escribe a
 la omisión volvió a la publicación por respuesta y `DCEMU_MAPLE_PUBLICAR_AL_FIN=1` conserva la
 otra forma para el A/B.
 
+### El barrido KOS de la demora nueva (2026-08-29)
+
+Pendiente desde el cierre del expediente: la demora de servicio cambia la temporización de
+**todo** guest que toque la VMU, no sólo de Sega Rally 2, y el A/B previo sólo cubrió cinco
+juegos comerciales. Barrido de tres brazos sobre un único binario (`herramientas/barrido-vmu-
+demora.ps1`): `viejo-a`/`viejo-b` con `DCEMU_MAPLE_DEMORA_VMU_US=0` corridos dos veces para medir
+el piso de este barrido en particular, y `nuevo-a` con la omisión (13 ms), los tres con RTC
+clavado y VMU fresca por demo.
+
+**Piso: 0 de 131.** El brazo viejo corrido dos veces da capturas idénticas en las 131 demos —
+confirma otra vez la regla del barrido con RTC fijo y tarjeta fresca (`docs/rendimiento-plan.md`
+no aplica aquí, pero el mismo método de `barrido.ps1 -Vmu` sí).
+
+**Señal: 24 de 131 cambian entre viejo y nuevo, y ninguna es una regresión.** Las 24 se explican
+por completo con un solo mecanismo: **el arranque más largo desplaza la fase de una animación
+por tiempo**, no cambia lo que la demo dibuja. Veintitrés son demos que terminan rápido y caen en
+la pantalla "Set Date/Clock" del menú del BIOS que dcemu sintetiza — comparadas píxel a píxel,
+difieren en **20-60 píxeles de una franja horizontal de 4 líneas** (y=562-566) que es el fondo
+animado detrás del cuadro de texto, no el texto ni la fecha (ambas quedan en `11/27/1998 00:00`,
+igual en los dos brazos). La restante, `network-ping`, cae en el logo animado de Dreamcast del
+arranque; comparada píxel a píxel difiere en la intensidad del rojo de la espiral (`(187,62,46)`
+contra `(187,56,40)`, 27 de diferencia máxima) — el mismo logo, en otro instante de su pulso de
+color. Ningún veredicto serial cambió: `cpp-filesystem` reporta la misma lista de errores en los
+dos brazos y `basic-fpu-exc` sigue en `TEST SUCCEEDED!`.
+
+**Compuerta cerrada.** Con el piso en cero y la señal entera explicada por un mecanismo benigno y
+ya documentado (la fase de una animación que corre con el reloj emulado, no con el contenido),
+la demora de servicio de la VMU queda verificada contra el parque completo, no sólo contra los
+cinco juegos comerciales del A/B original.
+
 ---
 
 ## La VMU: 128 KB de flash con sistema de archivos (2026-08-05)
