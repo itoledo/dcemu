@@ -737,20 +737,69 @@ static const char * const jit_fin_nombre[JIT_FIN_N] =
 	--16 146 reemplazos sobre 16 384 bloques-- y la cobertura se quedaba en el
 	0,25 % con el censo ya seco: los bloques existian y no se encontraban.
 
-	Direccionamiento abierto con sondeo lineal corto: si en ocho sitios no
-	entra, ese bloque no se indexa y su PC sigue interpretado.
+	Direccionamiento abierto con sondeo lineal. Si el sondeo no encuentra
+	lugar, el bloque no se indexa y su PC se desmarca -- vuelve al interprete
+	hasta que el muestreo lo reproponga.
 
 	El tamano viene de una medida: con 16 384 bloques sobre 32 768 ranuras
 	--carga del 50 %-- Crazy Taxi dejaba 5269 inserciones sin lugar en ocho
 	sondeos, o sea bloques ya emitidos que nadie podia encontrar. A carga del
 	25 % la cola del sondeo lineal se corta; la tabla son shorts, 256 KB.
+
+	El sondeo era 8 y el censo de sin-lugar mostro que no alcanza NI con la
+	carga al 25 %: a esa carga un cumulo lleno de 8 es raro pero no imposible
+	(esperados ~2 sobre 131 072 posiciones, y las lapidas de la retraduccion
+	alargan las corridas), y un PC que cae en uno falla PARA SIEMPRE -- SR2
+	tenia 9, y como la falla ademas retraducia en cada visita (el bug de
+	abajo), quemo 12 904 ranuras de bloque y choco el tope global de 32 768 a
+	mitad de corrida, apagando el traductor entero. Con 32 la falla al azar es
+	~0.25^32: extinta. El costo en jit_buscar es cero en regimen -- el lazo
+	sale en el primer vacio o en el match, y solo una busqueda que atraviesa
+	un cumulo de mas de 8 ocupados paga sondeos extra, que es exactamente el
+	caso raro que este numero existe para cubrir.
 */
 #define JIT_HASH_BITS	17
 #define JIT_HASH_N		(1u << JIT_HASH_BITS)
-#define JIT_HASH_SONDEO	8
+#define JIT_HASH_SONDEO	32
+
+/* DCEMU_JIT_TABLA_VIEJA=1: sondeo de 8, sin reuso de lapidas y sin desmarcar
+   al fallar -- la conducta anterior entera, con su fuga. Es el brazo del A/B:
+   la emision no cambia con nada de esto, asi que los dos brazos corren sobre
+   un solo binario. */
+static int jit_tabla_vieja = 0;
+static int jit_sondeo      = JIT_HASH_SONDEO;
 
 static short				jit_hash[JIT_HASH_N];
 static unsigned long long	jit_colisiones = 0;
+
+/*
+	El censo de las inserciones sin lugar, por PC. Existe por una cuenta que
+	no cerraba sola: a carga <=25 % con sondeo de 8, una falla al azar es
+	rarisima, y SR2 reporto 12 904 -- el censo mostro que eran 9 PCs en fuga.
+	Un PC sin lugar no volvia al interprete y ya: el despachador lo
+	RETRADUCIA en cada visita (buscar -> NULL -> tr_traducir, cuyo dedup usa
+	el mismo buscar), quemando una ranura de jit_bloques[] y arena por visita
+	hasta chocar el tope global -- y con el tope chocado el traductor entero
+	dejaba de traducir, incluidas las retraducciones por remapeo. El arreglo
+	son las dos cosas juntas porque son un solo mecanismo: el sondeo a 32
+	extingue la falla, y el desmarcar de abajo hace verdad lo que el
+	comentario de la tabla siempre prometio -- sin lugar = interpretado, no
+	en fuga. El censo queda de guardia: cualquier numero aca es la proxima
+	vez. Mismo patron que jit_rechazo_sitios: solo en el camino de falla.
+*/
+typedef struct
+{
+	DWORD				pc;
+	unsigned long long	veces;
+} jit_colision_sitio;
+
+static jit_colision_sitio	jit_colision_sitios[64];
+static unsigned				jit_colision_pcs = 0;	/* distintos censados */
+
+/* Propuestas rechazadas con la tabla de bloques llena (ver tr_traducir). */
+static unsigned long long	jit_tope_bloques = 0;
+
+static void jit_desmarcar(DWORD pc);
 
 /* El sitio de salto indirecto por el que salio el ultimo bloque, o -1. Lo pone
    el codigo emitido y lo consume el despachador para aprender el destino. */
@@ -861,7 +910,7 @@ static jit_bloque * jit_buscar(DWORD pc)
 	unsigned h = jit_hash_de(pc);
 	int i;
 
-	for (i = 0; i < JIT_HASH_SONDEO; i++)
+	for (i = 0; i < jit_sondeo; i++)
 	{
 		short b = jit_hash[(h + (unsigned) i) & (JIT_HASH_N - 1)];
 
@@ -897,11 +946,21 @@ static void jit_insertar(int idx)
 	unsigned h = jit_hash_de(jit_bloques[idx].pc);
 	int i;
 
-	for (i = 0; i < JIT_HASH_SONDEO; i++)
+	for (i = 0; i < jit_sondeo; i++)
 	{
 		unsigned k = (h + (unsigned) i) & (JIT_HASH_N - 1);
+		short    b = jit_hash[k];
 
-		if (jit_hash[k] < 0)
+		/*
+			Una ranura de lapida (pc == 1, la retraduccion) se reusa: buscar la
+			trata como ocupada-que-no-matchea, asi que pisarla no corta ninguna
+			cadena de sondeo -- el reuso clasico de tumbas del direccionamiento
+			abierto. Sin esto los cumulos crecian con cada retraduccion (las
+			lapidas no salen nunca de la tabla) y eran LA causa de los
+			sin-lugar de SR2: sus 9 PCs en fuga eran justamente sitios
+			remapeados, cuyas propias lapidas les llenaban el vecindario.
+		*/
+		if (b < 0 || (!jit_tabla_vieja && jit_bloques[b].pc == 1))
 		{
 			jit_hash[k] = (short) idx;
 			return;
@@ -909,6 +968,39 @@ static void jit_insertar(int idx)
 	}
 
 	jit_colisiones++;
+
+	/* Sin lugar de verdad (extinto con el sondeo a 32 y el reuso): que el PC
+	   vuelva al interprete en vez de retraducirse en cada visita. El bloque
+	   ya emitido corre esta unica vez y se pierde -- una ranura, no una
+	   fuga. */
+	if (!jit_tabla_vieja)
+		jit_desmarcar(jit_bloques[idx].pc);
+
+	{
+		DWORD    pc = jit_bloques[idx].pc;
+		unsigned s  = (pc >> 1) & 63;
+		unsigned k2;
+
+		for (k2 = 0; k2 < 8; k2++, s = (s + 1) & 63)
+		{
+			jit_colision_sitio * c = &jit_colision_sitios[s];
+
+			if (c->pc == pc)
+			{
+				c->veces++;
+				return;
+			}
+
+			if (c->pc == 0)
+			{
+				c->pc    = pc;
+				c->veces = 1;
+				jit_colision_pcs++;
+				return;
+			}
+		}
+		/* Vecindario lleno: el total ya lo cuenta. */
+	}
 }
 
 /*
@@ -6398,8 +6490,25 @@ static jit_bloque * tr_traducir(DWORD pc)
 	int						intento;
 	int						i;
 
+	/*
+		El tope de bloques era otro desmarcar SILENCIOSO, y peor que el del
+		arena: chocado, ninguna traduccion nueva ocurre nunca mas -- las
+		retraducciones por remapeo incluidas, o sea el bug del "interpretado
+		PARA SIEMPRE" de vuelta por otra puerta. SR2 lo chocaba a mitad de la
+		corrida de 60 s por la fuga de inserciones (arreglada arriba) y hoy
+		queda en ~29 000; una sesion larga puede chocarlo legitimamente, y eso
+		tiene que avisar y contarse, como el tope de pistas del lector.
+	*/
 	if (jit_n_bloques >= JIT_MAX_BLOQUES)
+	{
+		if (jit_tope_bloques == 0)
+			fprintf(stderr, "jit: tope de %d bloques alcanzado: no se traduce"
+				" mas (las propuestas siguientes quedan interpretadas)\n",
+				JIT_MAX_BLOQUES);
+
+		jit_tope_bloques++;
 		return NULL;
+	}
 
 	for (intento = 0; intento < 2; intento++)
 	{
@@ -6502,7 +6611,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 		unsigned vh = jit_hash_de(b->pc);
 		int vi;
 
-		for (vi = 0; vi < JIT_HASH_SONDEO; vi++)
+		for (vi = 0; vi < jit_sondeo; vi++)
 		{
 			short vb = jit_hash[(vh + (unsigned) vi) & (JIT_HASH_N - 1)];
 
@@ -7231,6 +7340,43 @@ static void jit_resumen(void)
 		jit_epoca - 1, jit_ep_escritura, jit_ep_pag_vista, jit_ep_mapeo,
 		jit_ep_modo, jit_ep_fpu);
 
+	if (jit_tope_bloques)
+		fprintf(stderr, "jit: %llu propuestas rechazadas con la tabla de"
+			" bloques llena (%d)\n", jit_tope_bloques, JIT_MAX_BLOQUES);
+
+	/* El desglose de los sin-lugar (ver jit_colision_sitios). La linea dice
+	   ademas cuantas ranuras de bloque quedaron usadas contra el tope, porque
+	   la fuga se cobra ahi. */
+	if (jit_colisiones)
+	{
+		fprintf(stderr, "jit: sin lugar: %llu inserciones sobre %u PCs"
+			" distintos; ranuras de bloque %d de %d; los reincidentes:",
+			jit_colisiones, jit_colision_pcs, jit_n_bloques, JIT_MAX_BLOQUES);
+
+		for (i = 0; i < 8; i++)
+		{
+			int mejor = -1;
+
+			for (j = 0; j < 64; j++)
+				if (jit_colision_sitios[j].veces != 0
+					&& (mejor < 0
+						|| jit_colision_sitios[j].veces
+							> jit_colision_sitios[mejor].veces))
+					mejor = j;
+
+			if (mejor < 0)
+				break;
+
+			fprintf(stderr, " %08lx x %llu",
+				(unsigned long) jit_colision_sitios[mejor].pc,
+				jit_colision_sitios[mejor].veces);
+
+			jit_colision_sitios[mejor].veces = 0;
+		}
+
+		fprintf(stderr, "\n");
+	}
+
 	/* Donde se fue el tiempo de traducir. **El enlace es cuadratico**: cada
 	   bloque nuevo barre TODOS los existentes buscando quien lo esperaba, asi
 	   que traducir se encarece a medida que la corrida avanza. La sonda de
@@ -7428,6 +7574,16 @@ void jit_iniciar(void)
 			jit_variantes_fpu = 0;
 		if (sr != NULL && atoi(sr) != 0)
 			jit_retraducir = 0;
+
+		{
+			const char * tv = getenv("DCEMU_JIT_TABLA_VIEJA");
+
+			if (tv != NULL && atoi(tv) != 0)
+			{
+				jit_tabla_vieja = 1;
+				jit_sondeo      = 8;
+			}
+		}
 		if (tl != NULL && atoi(tl) != 0)
 			jit_trad_en_linea = 1;
 

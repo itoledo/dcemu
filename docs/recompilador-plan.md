@@ -173,6 +173,74 @@ Lo probado y descartado no se reintenta sin releer su porqué.
 | La firma que lo delata en la propia tabla | **el costo por traducción crece con el banco** | en el brazo lineal: 0,174 ms en DOOM (35 s), 0,365 en SR2 (60 s), 0,490 en CT (180 s); con el índice, 0,008-0,014 en los tres. Un costo por unidad que depende de cuánto lleve corrido la tanda es cuadrático, se mire lo que se mire |
 | La sonda de tirones (`DCEMU_SONDA_CUADROS=1`) | **el instrumento que lo encontró** | una tanda da la media y la media es lo único que un tirón no mueve; la distribución por cuadro con el tiempo **emulado** al lado separa «dcemu se frenó» de «el guest hizo un cuadro largo» |
 | Sonda de conservación de URC (`-DDCEMU_SONDA_URC`) | **el instrumento que cerró la caza en 3 corridas** | uc/ue/uv en los puntos de control; conservación con dirección, no hipótesis |
+| La fuga de la tabla hash de bloques | **cerrada (2026-08-30): el traductor de SR2 moría a mitad de corrida** — `DCEMU_JIT_TABLA_VIEJA=1` revive la conducta anterior | una inserción sin lugar no volvía al intérprete: se retraducía **en cada visita**, quemando 12 904 ranuras por **9 PCs** hasta chocar el tope de 32 768 — y chocado, no se traduce nunca más, retraducciones por remapeo incluidas. Ver la sección de abajo |
+
+## La fuga de la tabla de bloques (2026-08-30)
+
+Salió del único pendiente con nombre que quedaba en la lista de rendimiento: el censo de los
+«sin lugar en la tabla» de SR2. La cuenta que no cerraba: a carga ≤25 % con sondeo lineal
+de 8, una falla de inserción al azar es rarísima, y SR2 reportaba 12 904. El censo por PC
+(el patrón de `jit_rechazo_sitios`, escrito **antes** de tocar nada) dio el veredicto en una
+línea: **12 904 inserciones sobre 9 PCs distintos, y las ranuras de bloque en 32 768 de
+32 768** — la tabla entera quemada a mitad de la corrida de 60 s.
+
+El mecanismo, en tres pasos y los tres silenciosos:
+
+1. **La inserción fallida no hacía lo que su comentario prometía.** «No se indexa y su PC
+   sigue interpretado» era la intención; la realidad era que el despachador lo **retraducía
+   en cada visita** (buscar → NULL → `tr_traducir`, cuyo dedup usa el mismo buscar), quemando
+   una ranura de `jit_bloques[]` y arena por visita. Tres PCs cargaban el 82 %
+   (0x1176c × 5540, 0x1179c × 2743, 0x117b2 × 2246).
+2. **Los cúmulos que hacían fallar el sondeo eran las propias lápidas.** Los 9 PCs eran
+   sitios remapeados por WinCE: cada retraducción deja una lápida (`pc == 1`) que nunca sale
+   de la tabla, así que el vecindario del hash de un sitio caliente remapeado se llena solo.
+3. **Chocado el tope de 32 768, `tr_traducir` devuelve NULL para siempre** — ninguna
+   traducción nueva, las retraducciones por remapeo incluidas: el «interpretado PARA SIEMPRE»
+   del expediente de DOOM, de vuelta por otra puerta, y sin un contador que lo dijera.
+
+El arreglo son tres piezas de un solo mecanismo (por eso una palanca): el **sondeo a 32**
+(la falla al azar pasa a ~0,25³², extinta; costo cero en régimen — el lazo sale en el primer
+vacío o en el match), el **reuso de lápidas** al insertar (el reuso clásico de tumbas:
+buscar las trata como ocupadas-que-no-matchean, así que pisarlas no corta ninguna cadena — y
+corta de raíz el crecimiento de los cúmulos), y el **desmarcar al fallar** (si alguna vez
+vuelve a pasar, el PC va al intérprete de verdad, una ranura y no una fuga). El tope de
+bloques ahora **avisa y se cuenta** al chocarse, como el tope de pistas del lector. La
+emisión no cambia con nada de esto — es puro lado anfitrión — así que el A/B corre entero
+sobre un binario.
+
+Con el arreglo, SR2 queda en **0 sin lugar y 29 073 ranuras de 32 768**, con el traductor
+vivo la corrida entera y ~9 200 bloques más traducidos (los que la muerte del traductor
+dejaba interpretados). DOOM y CT tenían 0 sin lugar y van de testigos.
+
+**La compuerta, y la lección del pad que costó tres corridas extra.** SR2 y DOOM salieron
+byte a byte en captura y en **todos** los puntos de `DCEMU_CP_MS` (60 000 y 35 000; binario
+final `FAE1FE0AA6A5AC94`). CT salió con la captura idéntica y los cp divergiendo **un ciclo
+de `reloj_total`** desde los 115 s, registros intactos — y reproducible: tres corridas del
+brazo nuevo idénticas entre sí, tres del viejo idénticas entre sí. Una divergencia
+determinista y correlacionada con el brazo, en el único guest donde los brazos son
+demostrablemente el mismo código (0 lápidas, 0 colisiones: la tabla queda idéntica). La
+resolución fue el **replay de mando**: grabada una receta y reproducida bajo los dos brazos,
+**180 000 puntos idénticos** — la divergencia era el pad por XInput (CT ramifica por los
+análogos), y la correlación con el brazo, coincidencia del momento de cada corrida. La
+lección: «reproducible» no basta como descarte del pad — el jitter es bimodal y puede
+correlacionar por accidente con lo que se está midiendo; el descarte de verdad es el replay,
+que reemplaza la entrada entera.
+
+**La tanda (4 rondas alternadas, un binario): neutra, y eso es el veredicto esperado.**
+SR2 solapado (nueva 46 189-46 596 ms contra vieja 44 614-46 217 — nueva traduce ~9 200
+bloques más y son fríos a 60 s), DOOM al dígito, CT ilegible (el ambiente se degradó en las
+últimas rondas). Esto **no es una optimización: es el cierre de un modo de falla** que el
+banco de 60 s apenas roza — el tope se chocaba al final de la ventana — y que una sesión de
+juego real paga entero, con el traductor muerto y cada remapeo posterior cayendo al
+intérprete para siempre.
+
+Los residuos, nombrados: (a) SR2 destapó **12 019 rechazos con el tope de retraducción**
+(16 por PC) ahora que el traductor vive para verlos — sitios cuyo contenido alterna más de
+16 veces, el caso que el expediente de la retraducción llamó «variantes por ASID» y cuyo
+censo ya corre solo; 0,005 % de las entradas. (b) Las ranuras de bloque de las lápidas no se
+reusan (~443 por corrida de SR2, menor; el aviso del tope diría si crece). (c) El tope de
+32 768 sigue siendo el `short` de la tabla: SR2 queda a 89 % en 60 s, y si una sesión larga
+lo choca, ahora lo dice.
 
 ## El gancho que nunca estuvo conectado (2026-08-14)
 
