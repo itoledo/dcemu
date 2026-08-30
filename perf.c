@@ -62,6 +62,12 @@ unsigned long long perf_mmu_traduce			= 0;
 unsigned long long perf_mmu_utlb			= 0;
 unsigned long long perf_mmu_utlb_pasos		= 0;
 unsigned long long perf_mmu_cache_acierto	= 0;
+unsigned long long perf_mmu_ent_vacia		= 0;
+unsigned long long perf_mmu_ent_gen			= 0;
+unsigned long long perf_mmu_ent_etiqueta	= 0;
+unsigned long long perf_mmu_ent_etiq_sh		= 0;
+unsigned long long perf_mmu_ent_etiq_modo	= 0;
+unsigned long long perf_mmu_ent_pagina		= 0;
 unsigned long long perf_mmu_datos_acierto	= 0;
 unsigned long long perf_mmu_vaciados		= 0;
 unsigned long long perf_mmu_datos_choque	= 0;
@@ -965,6 +971,33 @@ void perf_resumen(void)
 				100.0 * (double) perf_mmu_cache_acierto
 					/ (double) perf_mmu_utlb,
 				(double) perf_mmu_utlb_pasos / (double) perf_mmu_utlb);
+
+		/* El censo de esos fallos, con el mismo molde que el de mmu_datos:
+		   cada causa pide un remedio distinto. */
+		if (perf_mmu_ent_vacia + perf_mmu_ent_gen + perf_mmu_ent_etiqueta
+			+ perf_mmu_ent_pagina)
+		{
+			unsigned long long f = perf_mmu_ent_vacia + perf_mmu_ent_gen
+				+ perf_mmu_ent_etiqueta + perf_mmu_ent_pagina;
+
+			fprintf(stderr, "perf:   ... de los fallos de entrada, %.1f %%"
+				" generacion vencida (LDTLB), %.1f %% otra pagina,"
+				" %.1f %% otra etiqueta (modo o ASID), %.1f %% ranura sin"
+				" estrenar\n",
+				100.0 * (double) perf_mmu_ent_gen      / (double) f,
+				100.0 * (double) perf_mmu_ent_pagina   / (double) f,
+				100.0 * (double) perf_mmu_ent_etiqueta / (double) f,
+				100.0 * (double) perf_mmu_ent_vacia    / (double) f);
+
+			if (perf_mmu_ent_etiqueta)
+				fprintf(stderr, "perf:   ... de los de etiqueta, %.1f %%"
+					" acaban en una entrada compartida (SH) y %.1f %% son"
+					" solo el modo con el mismo ASID: los dos evitables\n",
+					100.0 * (double) perf_mmu_ent_etiq_sh
+						/ (double) perf_mmu_ent_etiqueta,
+					100.0 * (double) perf_mmu_ent_etiq_modo
+						/ (double) perf_mmu_ent_etiqueta);
+		}
 	}
 
 	/*

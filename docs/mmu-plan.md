@@ -631,3 +631,40 @@ puede ver ninguna regresión de este camino.
 > borrado: atribuyó los 8,9 ns a lo primero que se tenía a la vista sin separar los sumandos.
 > El desglose, las sondas y el plan están en [`rendimiento-plan.md`](rendimiento-plan.md),
 > fase 6.
+
+## La etiqueta sin modo de la caché de entrada (2026-08-30)
+
+La caché de 256 delante del recorrido de la UTLB acertaba **43,4 % en DCDoom y 57,9 % en
+SR2**, y el fallo restante recorría 18-21 entradas de 64 en promedio. El censo por causa
+(el molde del de `mmu_datos`, contadores `perf_mmu_ent_*` bajo `--perf`) fue en tres
+escalones, cada uno matando una hipótesis:
+
+1. **No es capacidad ni frío**: 0,1-0,3 % de ranuras sin estrenar; «otra página» 11-17 %.
+   El grueso era «otra etiqueta» (73,2 % de los fallos de DOOM) y generación vencida.
+2. **No son páginas compartidas**: solo 1,8 % (DOOM) / 5,2 % (SR2) de los fallos por
+   etiqueta acaban en una entrada SH. La etiqueta ciega al ASID no habría recuperado nada.
+3. **Es el bit de modo**: el **98,3 % (DOOM) / 91,4 % (SR2)** de los fallos por etiqueta
+   son el MISMO ASID con solo el modo distinto — el vaivén usuario/privilegiado de los
+   syscalls de WinCE tocando las mismas páginas, tirando el acierto en cada cruce.
+
+Con el mismo ASID el recorrido encuentra la misma entrada en los dos modos (el ASID casa
+por igualdad y la regla de espacio único no interviene), así que guardar el modo ahí solo
+tiraba aciertos. Pero el bit existe por una trampa real: un llenado que casó **vía espacio
+único** (sv, privilegiado, ASID de PTEH distinto del de la entrada) no puede acertarse
+desde modo usuario con el PTEH casualmente igual. La solución es que la etiqueta tenga dos
+formas decididas AL LLENAR: `MMU_CACHE_AMBOS` (sin modo) cuando el ASID de la entrada casó
+por igualdad con PTEH o la página es SH, y la forma con modo de siempre cuando casó vía
+sv. La búsqueda compara las dos formas (la segunda solo corre si la primera falló).
+
+Medido sobre el mismo binario: aciertos **43,4 → 84,1 % en DOOM** (recorrido medio 20,9 →
+8,3) y **57,9 → 72,3 % en SR2** (18,2 → 13,8), con las cuentas de búsquedas idénticas al
+dígito — el control de que la ejecución no se movió. Compuerta verde (capturas y
+`DCEMU_CP_MS` completos byte a byte en SR2 180 s y DOOM 35 s contra el brazo viejo), y la
+tanda sobre el canónico reentrenado (`25B7366C16CED290`): **DOOM −3,0 % con rangos
+disjuntos y 4/4 pares**; SR2 dentro de su dispersión (2/4, dirección favorable). CT no
+corre el A/B: sin MMU, los brazos son el mismo código. `DCEMU_MMU_ETIQUETA_MODO=1` es la
+palanca que reproduce la conducta anterior.
+
+El residuo con nombre: la mitad restante de los fallos de SR2 es **generación vencida** —
+los 5,4 M de LDTLB por minuto de WinCE venciendo entradas guardadas — y eso no lo arregla
+ninguna etiqueta: la entrada de la UTLB realmente cambió. Es el techo de esta caché.

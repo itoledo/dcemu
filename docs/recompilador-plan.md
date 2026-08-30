@@ -237,10 +237,19 @@ intérprete para siempre.
 Los residuos, nombrados: (a) SR2 destapó **12 019 rechazos con el tope de retraducción**
 (16 por PC) ahora que el traductor vive para verlos — sitios cuyo contenido alterna más de
 16 veces, el caso que el expediente de la retraducción llamó «variantes por ASID» y cuyo
-censo ya corre solo; 0,005 % de las entradas. (b) Las ranuras de bloque de las lápidas no se
-reusan (~443 por corrida de SR2, menor; el aviso del tope diría si crece). (c) El tope de
-32 768 sigue siendo el `short` de la tabla: SR2 queda a 89 % en 60 s, y si una sesión larga
-lo choca, ahora lo dice.
+censo ya corre solo; 0,005 % de las entradas (44 213 a 180 s). (b) Las ranuras de bloque de
+las lápidas no se reusan (~443-579 por corrida de SR2, menor; el aviso del tope diría si
+crece). (c) ~~El tope de 32 768~~ — **saldado el mismo día, porque el sondeo de 180 s lo
+convirtió en defecto medido**: SR2 llenaba las 32 768 ranuras legítimamente (9577 propuestas
+rechazadas con la tabla llena, y una lápida que no puede renacer pierde el bloque entero).
+El tope pasó a **65 536** con la tabla hash de ints a 18 bits (1 MB, misma carga del 25 %) y
+el arena a 256 MB; `DCEMU_JIT_BLOQUES=N` recorta el tope en runtime y `=32768` es el brazo
+del A/B. A 180 s SR2 queda en 39 406 ranuras con el traductor vivo (128,7 MB de arena), y la
+tanda sobre el canónico reentrenado (`25B7366C16CED290`) dio **SR2 −1,4 % a 180 s con rangos
+disjuntos y 4/4 pares** — la ganancia es entera del tramo donde el tope viejo mataba al
+traductor, que es por qué el banco de 60 s no la veía. Compuerta verde (capturas y cp
+completos, SR2 180 s y DOOM). El mismo censo de la caché de entrada de la MMU de esa noche
+está en `docs/mmu-plan.md` («La etiqueta sin modo», DOOM −3,0 % disjunto).
 
 ## El gancho que nunca estuvo conectado (2026-08-14)
 

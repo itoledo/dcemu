@@ -47,6 +47,10 @@ DWORD mmu_utlb_dat2[MMU_UTLB_ENTRADAS];
 */
 DWORD mmu_utlb_gen[MMU_UTLB_ENTRADAS];
 
+/* DCEMU_MMU_ETIQUETA_MODO=1: la etiqueta de mmu_cache vuelve a llevar el modo
+   siempre -- la conducta anterior, el brazo del A/B de MMU_CACHE_AMBOS. */
+static int mmu_etiqueta_ambos = 1;
+
 /* Nombres cortos para uso interno; el formato lo define mmu.h. */
 #define BIT_V			MMU_BIT_V
 
@@ -642,6 +646,15 @@ void mmu_sondas_iniciar(void)
 
 	mmu_cache_apagada = (v != NULL && atoi(v) != 0);
 
+	v = getenv("DCEMU_MMU_ETIQUETA_MODO");
+
+	if (v != NULL && atoi(v) != 0)
+	{
+		mmu_etiqueta_ambos = 0;
+		fprintf(stderr, "mmu: la etiqueta de la cache de entrada lleva el"
+			" modo SIEMPRE (la conducta anterior)\n");
+	}
+
 	v = getenv("DCEMU_SIN_MMU_MACRO");
 
 	mmu_macro_probar = !(mmu_cache_apagada || (v != NULL && atoi(v) != 0));
@@ -693,6 +706,7 @@ void mmu_sondas_iniciar(void)
 static int utlb_buscar(DWORD direccion, int usuario, int sv, DWORD * mascara_out)
 {
 	DWORD			etiqueta;
+	DWORD			et_ambos;
 	mmu_cache_t *	e;
 	int				i;
 
@@ -704,9 +718,14 @@ static int utlb_buscar(DWORD direccion, int usuario, int sv, DWORD * mascara_out
 		return utlb_encontrar(direccion, usuario, sv, mascara_out);
 
 	etiqueta = ASID_DE(*PTEH) | ((DWORD) usuario << 8) | MMU_CACHE_VALIDA;
+	et_ambos = (etiqueta & ~0x100ul) | MMU_CACHE_AMBOS;
 	e        = &mmu_cache[(direccion >> 12) & (MMU_CACHE_N - 1)];
 
-	if (e->etiqueta == etiqueta && (direccion & ~e->mascara) == e->vpn
+	/* La forma sin modo (ver MMU_CACHE_AMBOS en mmu.h): dos comparaciones en
+	   vez de una, y la segunda solo corre si la primera fallo. Es lo que deja
+	   sobrevivir un acierto al vaiven usuario/privilegiado de WinCE. */
+	if ((e->etiqueta == etiqueta || e->etiqueta == et_ambos)
+		&& (direccion & ~e->mascara) == e->vpn
 		&& mmu_utlb_gen[e->entrada] == e->gen)
 	{
 		/* Un acierto es un acceso a la UTLB tambien: ver urc_avanzar(). */
@@ -719,7 +738,45 @@ static int utlb_buscar(DWORD direccion, int usuario, int sv, DWORD * mascara_out
 		return e->entrada;
 	}
 
-	i = utlb_encontrar(direccion, usuario, sv, mascara_out);
+	/* El censo del fallo, con el molde del de mmu_datos: la causa decide el
+	   remedio (mas ranuras no arreglan un churn de generaciones). Solo bajo
+	   --perf, y en el camino que ya va al recorrido de 64. */
+	if (perf_activa)
+	{
+		int etiq = 0;
+
+		if (!(e->etiqueta & MMU_CACHE_VALIDA))
+			perf_mmu_ent_vacia++;
+		else if ((direccion & ~e->mascara) != e->vpn)
+			perf_mmu_ent_pagina++;
+		else if (e->etiqueta != etiqueta && e->etiqueta != et_ambos)
+		{
+			perf_mmu_ent_etiqueta++;
+			etiq = 1;
+
+			/* Con el MISMO ASID y solo el modo distinto, el recorrido
+			   encuentra la misma entrada en ambos modos (el ASID casa por
+			   igualdad; la regla de espacio unico no interviene): el fallo
+			   seria evitable con una etiqueta que guarde el modo solo cuando
+			   el ASID se ignoro al llenarla. */
+			if (((e->etiqueta ^ etiqueta) & 0xFFul) == 0)
+				perf_mmu_ent_etiq_modo++;
+		}
+		else
+			perf_mmu_ent_gen++;
+
+		i = utlb_encontrar(direccion, usuario, sv, mascara_out);
+
+		/* De los fallos por etiqueta, cuantos acaban en una entrada
+		   COMPARTIDA (BIT_SH): para esas el recorrido ignora el ASID, o sea
+		   que el fallo era evitable con una etiqueta ciega al ASID. Si en
+		   cambio son paginas por proceso (mismo VA, otro ASID, OTRA
+		   traduccion), no hay nada que recuperar. */
+		if (etiq && i >= 0 && (mmu_utlb_dat1[i] & BIT_SH))
+			perf_mmu_ent_etiq_sh++;
+	}
+	else
+		i = utlb_encontrar(direccion, usuario, sv, mascara_out);
 
 	/* Una falta no se guarda: la entrada no existe todavia y el manejador del
 	   guest esta por cargarla, lo que invalida esto de todos modos. */
@@ -727,7 +784,20 @@ static int utlb_buscar(DWORD direccion, int usuario, int sv, DWORD * mascara_out
 	{
 		e->vpn      = direccion & ~*mascara_out;
 		e->mascara  = *mascara_out;
-		e->etiqueta = etiqueta;
+		/*
+			La etiqueta va SIN el modo cuando el ASID de la entrada caso por
+			igualdad con PTEH (o la pagina es compartida): ahi el recorrido da
+			la misma entrada en los dos modos y guardar el modo solo tiraba el
+			acierto en el proximo vaiven usuario/privilegiado. Un llenado que
+			caso via espacio unico --sv, privilegiado, ASID ajeno-- conserva
+			el modo: cachear ese sin modo dejaria que una vuelta a usuario
+			con el PTEH casualmente igual acierte una entrada que en usuario
+			NO casa, que es la trampa por la que el bit existe.
+		*/
+		e->etiqueta = (mmu_etiqueta_ambos
+					   && ((mmu_utlb_dat1[i] & BIT_SH)
+						   || ASID_DE(mmu_utlb_dir[i]) == ASID_DE(*PTEH)))
+					  ? et_ambos : etiqueta;
 		e->entrada  = i;
 		e->gen      = mmu_utlb_gen[i];
 	}

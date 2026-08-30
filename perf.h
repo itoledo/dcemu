@@ -236,6 +236,17 @@ extern unsigned long long perf_mmu_traduce;			/* mmu_traducir(), datos */
 extern unsigned long long perf_mmu_utlb;			/* ... de esas, las que buscan entrada */
 extern unsigned long long perf_mmu_utlb_pasos;		/* entradas recorridas en total */
 extern unsigned long long perf_mmu_cache_acierto;	/* aciertos de la cache de traduccion */
+
+/* Por que fallo la cache de entrada (mmu_cache, la de 256): la respuesta
+   separa capacidad/asociatividad (otra pagina), churn de generaciones (los
+   LDTLB del guest venciendo entradas guardadas) y frio. Son remedios
+   distintos, igual que en el censo de mmu_datos. */
+extern unsigned long long perf_mmu_ent_vacia;		/* ranura sin estrenar */
+extern unsigned long long perf_mmu_ent_gen;			/* misma pagina, generacion vencida */
+extern unsigned long long perf_mmu_ent_etiqueta;	/* misma pagina, otro ASID/modo */
+extern unsigned long long perf_mmu_ent_etiq_sh;		/* ... y la entrada es compartida */
+extern unsigned long long perf_mmu_ent_etiq_modo;	/* ... mismo ASID, solo otro modo */
+extern unsigned long long perf_mmu_ent_pagina;		/* otra pagina: choque o capacidad */
 extern unsigned long long perf_mmu_datos_acierto;
 extern unsigned long long perf_mmu_vaciados;		/* mmu_tlb_invalidar(): el vaciado entero */
 extern unsigned long long perf_mmu_datos_choque;	/* fallo con la MISMA pagina: modo o ASID */

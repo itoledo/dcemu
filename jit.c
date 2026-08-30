@@ -454,8 +454,8 @@ void jit_escribir_par(DWORD dir, DWORD desp)
 	corazonada: Crazy Taxi saturo los 16 384 bloques con 5269 candidatos
 	calientes sin lugar --un tercio de su volumen sigue interpretado por falta
 	de capacidad, no de plantillas-- y DCDoom dejo el arena al 98 % (15,68 de
-	16 MB). El tope de bloques es el maximo que el `short` de la tabla hash
-	direcciona.
+	16 MB). El tope de bloques era el maximo que el `short` de la tabla hash
+	direccionaba; la tabla es de ints desde el tope de 65 536.
 */
 /* 64 MB: la segunda tanda de plantillas dejo a DCDoom con el arena de 32 al
    98,8 % y 1314 emisiones fallidas -- bloques de 15,6 instrucciones que ya no
@@ -466,8 +466,16 @@ void jit_escribir_par(DWORD dir, DWORD desp)
 /* 192 MB: los bloques de hasta 96 instrucciones (superbloques, paso 1)
    subieron el bloque medio de SR2 a 27,8 instrucciones y dejaron los 128 al
    99,7 %. Es espacio de direcciones, no memoria tocada. */
-#define JIT_ARENA_TAM		(192u * 1024u * 1024u)
-#define JIT_MAX_BLOQUES		32768
+/* 256 MB y 65 536 bloques (2026-08-30): con la fuga de la tabla arreglada,
+   SR2 llena las 32 768 ranuras LEGITIMAMENTE a los 180 s -- 9577 propuestas
+   rechazadas con la tabla llena, y peor: una lapida de retraduccion que no
+   puede renacer pierde el bloque entero, asi que los sitios remapeados de
+   WinCE degradan al interprete para siempre (37 973 rechazos por tope de
+   retraduccion contra 12 019 a 60 s). El doble de bloques pide arena a
+   juego: SR2 llevaba 103 MB de 192 con la tabla llena. DCEMU_JIT_BLOQUES=N
+   recorta el tope en runtime -- 32768 es el brazo del A/B. */
+#define JIT_ARENA_TAM		(256u * 1024u * 1024u)
+#define JIT_MAX_BLOQUES		65536
 /* El tope a 96 SE MIDIO Y PERDIO (superbloques, paso 1): la longitud extra
    se va a colas frias -- las entradas al despacho apenas bajaron 1-3 % --
    mientras el codigo emitido crece 13-34 % y dispersa lo caliente; SR2 paso
@@ -744,7 +752,9 @@ static const char * const jit_fin_nombre[JIT_FIN_N] =
 	El tamano viene de una medida: con 16 384 bloques sobre 32 768 ranuras
 	--carga del 50 %-- Crazy Taxi dejaba 5269 inserciones sin lugar en ocho
 	sondeos, o sea bloques ya emitidos que nadie podia encontrar. A carga del
-	25 % la cola del sondeo lineal se corta; la tabla son shorts, 256 KB.
+	25 % la cola del sondeo lineal se corta; con el tope de 65 536 la tabla
+	guarda esa carga con 18 bits, y son ints (1 MB) porque el indice ya no
+	cabe en un short.
 
 	El sondeo era 8 y el censo de sin-lugar mostro que no alcanza NI con la
 	carga al 25 %: a esa carga un cumulo lleno de 8 es raro pero no imposible
@@ -758,7 +768,7 @@ static const char * const jit_fin_nombre[JIT_FIN_N] =
 	un cumulo de mas de 8 ocupados paga sondeos extra, que es exactamente el
 	caso raro que este numero existe para cubrir.
 */
-#define JIT_HASH_BITS	17
+#define JIT_HASH_BITS	18
 #define JIT_HASH_N		(1u << JIT_HASH_BITS)
 #define JIT_HASH_SONDEO	32
 
@@ -769,8 +779,12 @@ static const char * const jit_fin_nombre[JIT_FIN_N] =
 static int jit_tabla_vieja = 0;
 static int jit_sondeo      = JIT_HASH_SONDEO;
 
-static short				jit_hash[JIT_HASH_N];
+static int					jit_hash[JIT_HASH_N];
 static unsigned long long	jit_colisiones = 0;
+
+/* DCEMU_JIT_BLOQUES=N: el tope de bloques en runtime (1..JIT_MAX_BLOQUES).
+   32768 reproduce el tope anterior y es el brazo del A/B de la capacidad. */
+static int					jit_max_bloques = JIT_MAX_BLOQUES;
 
 /*
 	El censo de las inserciones sin lugar, por PC. Existe por una cuenta que
@@ -912,7 +926,7 @@ static jit_bloque * jit_buscar(DWORD pc)
 
 	for (i = 0; i < jit_sondeo; i++)
 	{
-		short b = jit_hash[(h + (unsigned) i) & (JIT_HASH_N - 1)];
+		int b = jit_hash[(h + (unsigned) i) & (JIT_HASH_N - 1)];
 
 		if (b < 0)
 			return NULL;
@@ -949,7 +963,7 @@ static void jit_insertar(int idx)
 	for (i = 0; i < jit_sondeo; i++)
 	{
 		unsigned k = (h + (unsigned) i) & (JIT_HASH_N - 1);
-		short    b = jit_hash[k];
+		int      b = jit_hash[k];
 
 		/*
 			Una ranura de lapida (pc == 1, la retraduccion) se reusa: buscar la
@@ -962,7 +976,7 @@ static void jit_insertar(int idx)
 		*/
 		if (b < 0 || (!jit_tabla_vieja && jit_bloques[b].pc == 1))
 		{
-			jit_hash[k] = (short) idx;
+			jit_hash[k] = idx;
 			return;
 		}
 	}
@@ -2168,7 +2182,9 @@ static int jit_emitir_trampolin(void)
 		jit_x64_shr_ri(&g.e, X64_RAX, 1);
 		jit_x64_imul_rri(&g.e, X64_RAX, X64_RAX, (int) 2654435761u);
 		jit_x64_shr_ri(&g.e, X64_RAX, 32 - JIT_HASH_BITS);
-		jit_x64_movsx_w_rm_idx(&g.e, X64_RAX, CTX, X64_RAX, 2,
+		/* Tabla de ints desde el tope de 65 536: carga de 32 bits, paso 4.
+		   El -1 de ranura vacia deja el bit de signo puesto igual. */
+		jit_x64_mov_rm_idx(&g.e, X64_RAX, CTX, X64_RAX, 4,
 			D(&jit_hash[0]));
 		jit_x64_test_rr(&g.e, X64_RAX, X64_RAX);
 		salir[ns++] = jit_x64_jcc(&g.e, X64_S);
@@ -6499,12 +6515,12 @@ static jit_bloque * tr_traducir(DWORD pc)
 		queda en ~29 000; una sesion larga puede chocarlo legitimamente, y eso
 		tiene que avisar y contarse, como el tope de pistas del lector.
 	*/
-	if (jit_n_bloques >= JIT_MAX_BLOQUES)
+	if (jit_n_bloques >= jit_max_bloques)
 	{
 		if (jit_tope_bloques == 0)
 			fprintf(stderr, "jit: tope de %d bloques alcanzado: no se traduce"
 				" mas (las propuestas siguientes quedan interpretadas)\n",
-				JIT_MAX_BLOQUES);
+				jit_max_bloques);
 
 		jit_tope_bloques++;
 		return NULL;
@@ -6613,7 +6629,7 @@ static jit_bloque * tr_traducir(DWORD pc)
 
 		for (vi = 0; vi < jit_sondeo; vi++)
 		{
-			short vb = jit_hash[(vh + (unsigned) vi) & (JIT_HASH_N - 1)];
+			int vb = jit_hash[(vh + (unsigned) vi) & (JIT_HASH_N - 1)];
 
 			if (vb < 0)
 				break;
@@ -6778,7 +6794,7 @@ static int jit_emitir(DWORD pc, void (* generar)(jit_gen *),
 	unsigned	disponible;
 	jit_bloque * b;
 
-	if (jit_n_bloques >= JIT_MAX_BLOQUES)
+	if (jit_n_bloques >= jit_max_bloques)
 		return 0;
 
 	/* Cada bloque arranca alineado a 16. */
@@ -7342,7 +7358,7 @@ static void jit_resumen(void)
 
 	if (jit_tope_bloques)
 		fprintf(stderr, "jit: %llu propuestas rechazadas con la tabla de"
-			" bloques llena (%d)\n", jit_tope_bloques, JIT_MAX_BLOQUES);
+			" bloques llena (%d)\n", jit_tope_bloques, jit_max_bloques);
 
 	/* El desglose de los sin-lugar (ver jit_colision_sitios). La linea dice
 	   ademas cuantas ranuras de bloque quedaron usadas contra el tope, porque
@@ -7351,7 +7367,7 @@ static void jit_resumen(void)
 	{
 		fprintf(stderr, "jit: sin lugar: %llu inserciones sobre %u PCs"
 			" distintos; ranuras de bloque %d de %d; los reincidentes:",
-			jit_colisiones, jit_colision_pcs, jit_n_bloques, JIT_MAX_BLOQUES);
+			jit_colisiones, jit_colision_pcs, jit_n_bloques, jit_max_bloques);
 
 		for (i = 0; i < 8; i++)
 		{
@@ -7577,11 +7593,23 @@ void jit_iniciar(void)
 
 		{
 			const char * tv = getenv("DCEMU_JIT_TABLA_VIEJA");
+			const char * tb = getenv("DCEMU_JIT_BLOQUES");
 
 			if (tv != NULL && atoi(tv) != 0)
 			{
 				jit_tabla_vieja = 1;
 				jit_sondeo      = 8;
+			}
+
+			if (tb != NULL)
+			{
+				int n = atoi(tb);
+
+				if (n >= 1 && n <= JIT_MAX_BLOQUES)
+				{
+					jit_max_bloques = n;
+					fprintf(stderr, "jit: tope de bloques en %d\n", n);
+				}
 			}
 		}
 		if (tl != NULL && atoi(tl) != 0)

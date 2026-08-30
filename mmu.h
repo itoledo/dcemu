@@ -248,6 +248,14 @@ extern int mmu_macro_probar;
 /* La etiqueta de las caches de traduccion. Compartida con mmu.c. */
 #define ASID_DE(e)			((e) & 0x000000FF)
 #define MMU_CACHE_VALIDA	0x00010000ul	/* bit fuera del ASID y del modo */
+/* La forma "vale en ambos modos" de la etiqueta de mmu_cache (sin el bit de
+   modo): la lleva un llenado cuyo ASID caso por IGUALDAD con PTEH (o una
+   pagina compartida) -- ahi el recorrido encuentra la misma entrada en los
+   dos modos, asi que el modo en la etiqueta solo tiraba aciertos: el censo
+   dio 98,3 % (DOOM) / 91,4 % (SR2) de los fallos por etiqueta como solo-modo
+   con el mismo ASID. Un llenado que caso via espacio unico (sv y ASID ajeno)
+   conserva el modo, que es el caso por el que el bit existe. */
+#define MMU_CACHE_AMBOS		0x00020000ul
 
 #define MMU_DATOS_N			8192			/* tope; el efectivo lo da la mascara */
 #define MMU_DATOS_LEER		1u
