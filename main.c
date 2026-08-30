@@ -1421,9 +1421,12 @@ void main_loop(void)
 				// reloj_total, porque su reloj es otro -- 44100 Hz de muestreo
 				// y 22,5792 MHz de bloque de audio. Ver aica.h.
 				//
-				// Con el hilo del AICA esto solo adelanta su objetivo y no
-				// espera a nadie; sin el, es el aica_tick() de siempre. Ver
-				// docs/hilos-plan.md, fase 1.
+				// Con el hilo del AICA esto solo adelanta su objetivo (un
+				// almacen volatile, sin mutex) y no espera a nadie; sin el, es
+				// el aica_tick() de siempre. Publicar aqui, en CADA servicio,
+				// es lo que hace exacto al hilo: el calendario de
+				// publicaciones es el calendario de mezclas del camino de un
+				// hilo. Ver hilo_aica.h y docs/hilos-plan.md, fase 1.
 				hilo_aica_publicar();
 
 				// Y la linea del AICA hacia el ASIC. El chip solo la sube y la
@@ -1439,10 +1442,20 @@ void main_loop(void)
 				// la primera. Ver aica.h.
 				{
 					static unsigned vistas_sub = 0, vistas_baj = 0;
+					static int sonda_linea = -1;
+
+					if (sonda_linea < 0)
+						sonda_linea = getenv("DCEMU_SONDA_LINEA_AICA") != NULL;
 
 					while (vistas_sub != aica_asic_subidas)
 					{
 						vistas_sub++;
+
+						/* SONDA temporal: el instante de entrega de la linea. */
+						if (sonda_linea && vistas_sub <= 400)
+							fprintf(stderr, "sonda linea: subida %u en reloj=%llu\n",
+								vistas_sub, (unsigned long long) reloj_total);
+
 						intc_add_ext(ASIC_EVT_EXT_AICA);
 					}
 

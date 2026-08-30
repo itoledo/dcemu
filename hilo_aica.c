@@ -51,8 +51,14 @@
 #include "traza.h"
 #include "perf.h"
 
-/* Una de cada cuantas entradas al bloque periodico publica el objetivo. */
-#define HILO_AICA_PUBLICAR		64
+/*
+	Antes se publicaba una de cada 64 entradas, porque publicar era tomar el
+	mutex. Ya no: el objetivo es un volatile de un solo escritor (el SH-4) y
+	un solo lector (el hilo), el mismo patron que los indices del anillo
+	aica_salida[] en aica.h, y publicar es UN almacen. Se publica en CADA
+	servicio del bloque periodico a proposito, porque de eso depende la
+	exactitud: ver el comentario de hilo_aica_entrar().
+*/
 
 /*
 	Cuantas muestras avanza el AICA entre dos revisiones del estado compartido.
@@ -80,7 +86,14 @@ static hilo *		el_hilo		= NULL;
 static hilo_mtx *	mtx			= NULL;
 static hilo_cond *	cond		= NULL;
 
-static unsigned long long	objetivo	= 0;
+/*
+	`objetivo` cruza sin mutex: lo escribe solo el SH-4 (en cada servicio del
+	bloque periodico) y lo lee solo el hilo del AICA. En x64 un almacen
+	alineado de 64 bits es un solo MOV, y el patron ya esta establecido en el
+	arbol con los indices del anillo (aica.h). `alcanzado` si va bajo el
+	mutex: lo escribe el hilo y el SH-4 espera sobre el.
+*/
+static volatile unsigned long long	objetivo	= 0;
 static unsigned long long	alcanzado	= 0;
 static int					terminar	= 0;
 static int					activo		= 0;
@@ -215,7 +228,12 @@ void hilo_aica_terminar(void)
 	   este y la ultima muestra no se produce: el .wav salia cuatro bytes --un
 	   cuadro estereo-- mas corto que el del camino sin hilos, con el resto
 	   identico. La prueba de aceptacion es que sean iguales, asi que la
-	   diferencia importa aunque sea inaudible. */
+	   diferencia importa aunque sea inaudible.
+
+	   entrar() espera al objetivo PUBLICADO, asi que primero se publica el
+	   reloj final: es el unico sitio donde el alcance debe llegar hasta
+	   reloj_total mismo. */
+	hilo_aica_publicar();
 	hilo_aica_entrar();
 	hilo_aica_salir();
 
@@ -249,8 +267,6 @@ void hilo_aica_terminar(void)
 
 void hilo_aica_publicar(void)
 {
-	static unsigned n = 0;
-
 	if (!activo)
 	{
 		/* El camino de siempre. */
@@ -258,30 +274,61 @@ void hilo_aica_publicar(void)
 		return;
 	}
 
-	if ((++n & (HILO_AICA_PUBLICAR - 1)) != 0)
-		return;
-
-	hilo_mtx_tomar(mtx);
-
-	/* Monotono por construccion: reloj_total solo sube. */
+	/* Monotono por construccion: reloj_total solo sube. Un almacen volatile,
+	   sin mutex: ver la declaracion de `objetivo`. */
 	objetivo = reloj_total;
 
+	/*
+		El aviso solo hace falta si el hilo duerme, y `esperando` se mira sin
+		el mutex a proposito: si la lectura sucia pierde la carrera con el
+		hilo que se esta por dormir, el proximo servicio --microsegundos de
+		reloj real despues-- lo despierta. Es latencia de una publicacion,
+		nunca un aviso perdido para siempre.
+	*/
 	if (esperando)
-		hilo_cond_avisar_a_todos(cond);
+	{
+		hilo_mtx_tomar(mtx);
 
-	hilo_mtx_soltar(mtx);
+		if (esperando)
+			hilo_cond_avisar_a_todos(cond);
+
+		hilo_mtx_soltar(mtx);
+	}
 }
 
+/*
+	La regla de exactitud, y por que se espera al OBJETIVO PUBLICADO y no a
+	reloj_total: en el emulador de un hilo, un cambio de estado del lado del
+	audio (una escritura de registro, un PLAY del CDDA, una rafaga a la RAM de
+	onda) se aplica en su reloj_total exacto, y las muestras que a ese instante
+	seguian pendientes --porque el bloque periodico corre entre bloques del
+	traductor, no entre instrucciones-- se mezclan DESPUES, ya con el estado
+	nuevo. El conjunto de muestras mezcladas antes del cambio es entonces
+	"todas las de borde <= el ultimo servicio", y como publicar ocurre en cada
+	servicio, ese conjunto es exactamente { muestras <= objetivo }.
+
+	Esperar aqui hasta reloj_total mezclaria de mas: las pendientes caerian
+	ANTES del cambio, con el estado viejo, y el .wav se corria --medido: el
+	PLAY del CDDA de Sega Rally 2 con dos muestras pendientes salia 8 bytes
+	corrido--. Esperar al objetivo publicado reproduce el calendario del
+	emulador de un hilo al byte.
+
+	Mientras el SH-4 espera aqui no hay quien publique (el que publica es el
+	mismo hilo que espera), asi que el objetivo esta congelado y la espera
+	termina.
+*/
 void hilo_aica_entrar(void)
 {
+	unsigned long long obj;
+
 	if (!activo)
 		return;
 
 	hilo_mtx_tomar(mtx);
 
-	objetivo = reloj_total;
+	obj = objetivo;
 
-	if (alcanzado >= reloj_total)
+	if (alcanzado >= obj)
 	{
 		sin_espera++;
 		return;					/* con el mutex tomado, a proposito */
@@ -294,7 +341,7 @@ void hilo_aica_entrar(void)
 	{
 		PERF_MARCA(t_esp);
 
-		while (alcanzado < reloj_total)
+		while (alcanzado < obj)
 		{
 			esperando++;
 			hilo_cond_esperar(cond, mtx);

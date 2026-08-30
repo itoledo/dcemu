@@ -36,25 +36,26 @@ int  hilo_aica_activo(void);
 
 /*
 	Desde el bloque periodico de main_loop(): adelanta el objetivo del hilo
-	hasta reloj_total, para que tenga con que trabajar. No espera a nadie.
-
-	No lo hace en cada llamada -- el bloque entra cuatro millones de veces por
-	segundo y tomar el mutex tantas veces costaria mas de lo que ahorra --, sino
-	una de cada HILO_AICA_PUBLICAR. Con 64 el objetivo queda a lo sumo 3200
-	ciclos atrasado, que es menos de una muestra: el hilo nunca se queda sin
-	trabajo por esto.
+	hasta reloj_total, para que tenga con que trabajar. No espera a nadie y no
+	toma el mutex (el objetivo es un volatile de un escritor y un lector, como
+	los indices del anillo): se publica en CADA servicio, porque el calendario
+	de publicaciones ES el calendario de mezclas del emulador de un hilo -- de
+	el depende la exactitud del par de abajo.
 
 	Con el hilo apagado llama a aica_tick() y punto, o sea el camino de siempre.
 */
 void hilo_aica_publicar(void);
 
 /*
-	El par que envuelve todo acceso del SH-4 al estado del AICA.
+	El par que envuelve todo acceso del SH-4 al estado del lado del audio
+	(registros del AICA, RAM de onda, y los comandos del CDDA en cdda.c).
 
-	entrar() espera a que el hilo llegue exactamente a reloj_total y **deja el
-	mutex tomado**; salir() lo suelta. Entre los dos, el hilo del AICA no puede
-	avanzar, asi que el acceso ve un chip detenido en el instante emulado que
-	le corresponde.
+	entrar() espera a que el hilo llegue al ultimo objetivo PUBLICADO -- no a
+	reloj_total: las muestras pendientes a este instante se mezclan despues del
+	acceso, con el estado nuevo, que es exactamente lo que hace el emulador de
+	un hilo -- y **deja el mutex tomado**; salir() lo suelta. Entre los dos, el
+	hilo del AICA no puede avanzar, asi que el acceso ve el chip detenido en el
+	mismo punto en que lo veria el camino de un hilo.
 
 	Con el hilo apagado los dos no hacen nada.
 */

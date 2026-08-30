@@ -256,6 +256,18 @@ int iso_read_sector(char * target, int secstart, int secnum)
 	return 0;
 }
 
+/*
+	El par de hilo_aica.h que cdda.c toma en sus puertas del lado SH-4. En la
+	suite no hay hilos: cuerpos vacios, igual que con el hilo apagado.
+*/
+void hilo_aica_entrar(void)
+{
+}
+
+void hilo_aica_salir(void)
+{
+}
+
 void dobles_reset(void)
 {
 	dobles_ta_list_end		= 0;

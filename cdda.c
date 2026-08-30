@@ -12,6 +12,22 @@
 #include "cdda.h"
 #include "iso.h"
 #include "traza.h"
+#include "hilo_aica.h"
+
+/*
+	El CDDA es estado del lado del AICA: cdda_muestra() corre una vez por
+	muestra dentro de mezclar_una_muestra(), o sea EN EL HILO DEL AICA cuando
+	--hilos esta puesto. Todo lo demas de este archivo lo llama el SH-4 (los
+	paquetes SPI de gdrom.c y los hooks de syscall de dcopcodes.c), asi que
+	cada puerta de ese lado fuerza primero el alcance -- la misma regla que
+	los registros del AICA en mem.c: el comando cae con el chip detenido en el
+	reloj_total exacto, y la salida no se mueve ni una muestra. Sin el gancho,
+	un PLAY aplicado con el mezclador atrasado corria la musica una muestra:
+	el .wav de Sega Rally 2 salia 4 bytes corrido desde los 32 s.
+
+	Con el hilo apagado entrar()/salir() no hacen nada, y tests/dobles.c les
+	da cuerpos vacios: cdda.c sigue sin saber que existe SDL.
+*/
 
 /*
 	DCEMU_SIN_CDDA=1: la lectora acepta los comandos de audio y contesta como
@@ -53,6 +69,8 @@ static int	repeticiones = 0;
 
 void cdda_reiniciar(void)
 {
+	hilo_aica_entrar();
+
 	estado       = CDDA_EST_SIN_INFO;
 	fad_ini      = 0;
 	fad_fin      = 0;
@@ -61,11 +79,15 @@ void cdda_reiniciar(void)
 	buf_fad      = 0;
 	buf_sectores = 0;
 	cursor       = 0;
+
+	hilo_aica_salir();
 }
 
 /* El FAD del cuadro que se esta entregando. Con el buffer vacio es el proximo
-   que se va a traer, que es lo que hay que contestar despues de un SEEK. */
-int cdda_fad(void)
+   que se va a traer, que es lo que hay que contestar despues de un SEEK.
+   El cuerpo es interno para que cdda_pista() no tome el gancho dos veces:
+   hilo_aica_entrar() no es reentrante. */
+static int fad_crudo(void)
 {
 	if (buf_sectores == 0)
 		return fad_lectura;
@@ -73,25 +95,51 @@ int cdda_fad(void)
 	return buf_fad + cursor / CDDA_CUADROS_SECTOR;
 }
 
+int cdda_fad(void)
+{
+	int fad;
+
+	hilo_aica_entrar();
+	fad = fad_crudo();
+	hilo_aica_salir();
+
+	return fad;
+}
+
 int cdda_estado(void)
 {
-	return estado;
+	int e;
+
+	hilo_aica_entrar();
+	e = estado;
+	hilo_aica_salir();
+
+	return e;
 }
 
 int cdda_pista(void)
 {
-	int fad = cdda_fad();
+	int fad;
 	int i;
+	int pista = 1;
+
+	hilo_aica_entrar();
+	fad = fad_crudo();
 
 	for (i = 0; i < iso_num_pistas(); i++)
 	{
 		int desde = iso_pista_fad(i);
 
 		if (fad >= desde && fad < desde + iso_pista_sectores(i))
-			return i + 1;
+		{
+			pista = i + 1;
+			break;
+		}
 	}
 
-	return 1;
+	hilo_aica_salir();
+
+	return pista;
 }
 
 /*
@@ -222,7 +270,9 @@ static void arrancar(int desde, int hasta, int veces, const char * como)
 
 void cdda_reproducir_sectores(int desde, int hasta, int veces)
 {
+	hilo_aica_entrar();
 	arrancar(desde, hasta, veces, "por sectores");
+	hilo_aica_salir();
 }
 
 /*
@@ -249,26 +299,40 @@ void cdda_reproducir_pistas(int pista_ini, int pista_fin, int veces)
 	desde = iso_pista_fad(a);
 	hasta = iso_pista_fad(b) + iso_pista_sectores(b) - 1;
 
+	hilo_aica_entrar();
 	arrancar(desde, hasta, veces, "por pistas");
+	hilo_aica_salir();
 }
 
 void cdda_pausar(void)
 {
+	hilo_aica_entrar();
+
 	if (estado == CDDA_EST_SONANDO)
 		estado = CDDA_EST_PAUSADO;
+
+	hilo_aica_salir();
 }
 
 void cdda_seguir(void)
 {
+	hilo_aica_entrar();
+
 	if (estado == CDDA_EST_PAUSADO)
 		estado = CDDA_EST_SONANDO;
+
+	hilo_aica_salir();
 }
 
 void cdda_parar(void)
 {
+	hilo_aica_entrar();
+
 	estado       = CDDA_EST_SIN_INFO;
 	buf_sectores = 0;
 	cursor       = 0;
+
+	hilo_aica_salir();
 }
 
 /*
@@ -278,6 +342,8 @@ void cdda_parar(void)
 */
 void cdda_buscar(int fad)
 {
+	hilo_aica_entrar();
+
 	fad_lectura  = fad;
 	fad_ini      = fad;
 	buf_sectores = 0;
@@ -287,4 +353,6 @@ void cdda_buscar(int fad)
 		fad_fin = fad;
 
 	estado = CDDA_EST_PAUSADO;
+
+	hilo_aica_salir();
 }

@@ -250,6 +250,62 @@ medido, lo barato y grande esta todo **fuera** de los hilos: el bloque periodico
 verificado, una linea) y despues el interprete, que es el 62 % restante. La fase 1 de este
 documento sigue en pie y vale 1,19×, pero **deja de ser lo primero**.
 
+## Resultado de la fase 1, segunda vuelta (2026-08-29): el muro medido
+
+La fase se revisito con el mundo nuevo — Release, clang, el traductor del SH-4 por
+omision, el ARM7 y el DSP emitidos — porque el reparto de hoy volvia a darle techo
+(`herramientas/reparto-perf.ps1`, binario canonico):
+
+| | DOOM | CT | SR2 |
+| --- | --- | --- | --- |
+| velocidad | 1,51× | 2,28× | 1,28× |
+| AICA total (casi todo ARM7) | 10,2 % | 12,1 % | 8,2 % |
+| techo del hilo | **1,11×** | **1,13×** | **1,08×** |
+| alcances forzados | ~0 | 0,032 por muestra | ~0 |
+
+Con ese techo — del tamano de las mayores ganancias recientes del arbol — se corrio la
+compuerta de exactitud (`herramientas/hilos-gate.ps1`) y salieron tres cosas, en orden:
+
+**1. El CDDA no estaba cubierto por el protocolo.** No existia cuando la fase se escribio:
+sus comandos (PLAY/SEEK/PAUSE desde gdrom.c y dcopcodes.c) mutaban estado que el hilo del
+AICA consume por muestra, sin alcance. Arreglado: las puertas del lado SH-4 de `cdda.c`
+toman `hilo_aica_entrar()`/`salir()` — con el hilo apagado no hacen nada, y `tests/dobles.c`
+les da cuerpos vacios. Queda como correccion del modo aparcado.
+
+**2. El protocolo se volvio mas exacto y mas barato.** `entrar()` esperaba hasta
+`reloj_total`; eso mezclaba DE MAS: en el camino de un hilo, las muestras pendientes al
+instante de una escritura (pendientes porque el bloque periodico corre entre bloques del
+traductor, no entre instrucciones) se mezclan DESPUES, con el estado nuevo. Ahora
+`publicar()` es un almacen volatile en CADA servicio (el patron del anillo, sin mutex) y
+`entrar()` espera al ultimo objetivo publicado: el calendario de publicaciones ES el
+calendario de mezclas del camino de un hilo, y el conjunto de muestras mezcladas antes de
+cualquier acceso coincide al byte.
+
+**3. Y el muro que el plan predijo, medido en el primer testigo posible.** La entrega de la
+linea del AICA al ASIC (`aica_asic_subidas`, consumida en el bloque periodico) depende de
+hasta donde llego el hilo EN TIEMPO REAL. `DCEMU_SONDA_LINEA_AICA=1` en Sega Rally 2:
+**la primera subida se entrega 1052 ciclos tarde** en el brazo con hilos, el guest toma
+otro camino (5 subidas contra 3 en 36 s), su PLAY de CDDA cae 10 055 ciclos despues y el
+`.wav` sale corrido dos muestras. CT y DOOM salen byte a byte identicos en la compuerta —
+no consumen esa linea en la ventana del banco —, pero una fase exacta para unos guests y
+distinta para otros no es una fase de este arbol.
+
+**Por que no se puede arreglar sin perder el paralelismo entero:** para entregar la subida
+en el instante del camino de un hilo, el bloque periodico tendria que saber si el AICA
+levanto la linea en las muestras que este servicio cruza — o sea esperar
+`alcanzado >= reloj_total` en cada servicio que cruza una muestra. Son 44 100 esperas por
+segundo emulado, y cada una dura exactamente lo que tarda el hilo en mezclar la muestra
+recien publicada: el costo entero del AICA vuelve al camino critico, en serie, con el
+mutex encima. Es lockstep con extra pasos. La linea la puede levantar el ARM (que corre en
+el hilo) ademas de los temporizadores, asi que tampoco se puede predecir sin ejecutarlo.
+
+**Veredicto: la fase queda aparcada en firme.** El codigo queda mejor de lo que estaba
+(CDDA cubierto, protocolo exacto por calendario, publicacion sin mutex) y el muro queda
+medido y nombrado, con su sonda (`DCEMU_SONDA_LINEA_AICA`) para re-medirlo si alguna vez
+se acepta una salida no identica. Lo que el reparto de hoy señala como siguiente esta
+fuera de los hilos: el bloque periodico (13,6-19,2 %, con la leccion B.3 encima), el
+camino del cuadro de CT (8,8 %, la mitad `presentar`) y el resto del interprete.
+
 ## Resultado de la fase 1
 
 **Implementada, correcta, y no gana tiempo: pierde entre un 4 y un 5 %.** Queda en el
