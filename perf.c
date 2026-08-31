@@ -45,6 +45,16 @@ unsigned long long perf_ns_ta		= 0;
 unsigned long long perf_serv_vencido   = 0;
 unsigned long long perf_serv_reintento = 0;
 
+/* El desglose del reintento: cuantos corren con ALGUIEN pidiendo (pendiente
+   enmascarado: el brazo que un armado condicional no puede ahorrar) y
+   cuantos sin nada (armados por una escritura de SR con cero pendientes).
+   Y del lado del que arma: cuantas escrituras de SR ni siquiera cambian
+   BL/IMASK -- la ventana que el rearme dice proteger. */
+unsigned long long perf_serv_reintento_pide = 0;
+unsigned long long perf_serv_reintento_cons = 0;
+unsigned long long perf_sr_escrituras       = 0;
+unsigned long long perf_sr_sin_ventana      = 0;
+
 unsigned long long perf_arm_pasos	= 0;
 unsigned long long perf_arm_ocioso	= 0;
 
@@ -707,6 +717,20 @@ void perf_resumen(void)
 			perf_serv_vencido, perf_serv_reintento,
 			100.0 * (double) perf_serv_reintento
 				  / (double) (perf_serv_vencido + perf_serv_reintento));
+
+	if (perf_serv_reintento)
+		fprintf(stderr, "perf:   ... de los de reintento, %.1f %% corren con"
+			" alguien pidiendo (%.1f %% con el predicado conservador de"
+			" banderas crudas); %llu escrituras de"
+			" SR, %.1f %% sin tocar BL/IMASK\n",
+			100.0 * (double) perf_serv_reintento_pide
+				  / (double) perf_serv_reintento,
+			100.0 * (double) perf_serv_reintento_cons
+				  / (double) perf_serv_reintento,
+			perf_sr_escrituras,
+			perf_sr_escrituras
+				? 100.0 * (double) perf_sr_sin_ventana
+					/ (double) perf_sr_escrituras : 0.0);
 
 	linea("TA (store queue)",	perf_ns_ta,			real);
 

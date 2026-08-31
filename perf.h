@@ -241,6 +241,11 @@ extern unsigned long long perf_mmu_cache_acierto;	/* aciertos de la cache de tra
    separa capacidad/asociatividad (otra pagina), churn de generaciones (los
    LDTLB del guest venciendo entradas guardadas) y frio. Son remedios
    distintos, igual que en el censo de mmu_datos. */
+extern unsigned long long perf_serv_reintento_pide;
+extern unsigned long long perf_serv_reintento_cons;
+extern unsigned long long perf_sr_escrituras;
+extern unsigned long long perf_sr_sin_ventana;
+
 extern unsigned long long perf_mmu_ent_vacia;		/* ranura sin estrenar */
 extern unsigned long long perf_mmu_ent_gen;			/* misma pagina, generacion vencida */
 extern unsigned long long perf_mmu_ent_etiqueta;	/* misma pagina, otro ASID/modo */

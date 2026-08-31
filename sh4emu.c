@@ -402,10 +402,33 @@ void UpdateSR(DWORD new)
 		escritura se tomaba por "el llamador ya escribio SR" y **SR quedaba sin
 		tocar**. Ahora la entrada del emulador es UpdateSR_ya_escrito().
 	*/
+	/* El censo del rearme (--perf): cuantas escrituras de SR ni tocan
+	   BL/IMASK, o sea cuantos rearmes no protegen ninguna ventana. Se mira
+	   ANTES de escribir, contra lo que va a quedar. */
+	if (perf_activa)
+	{
+		perf_sr_escrituras++;
+
+		if (((SR ^ sr_normalizar(new)) & 0x100000F0ul) == 0)
+			perf_sr_sin_ventana++;
+	}
+
 	SR = sr_normalizar(new);
 
 	// Escribir SR puede abrir la ventana de entrega: bajar BL o el IMASK deja
 	// entregable lo que ya estaba pidiendo. Ver intc_sh4_reintentar en intc.h.
+	//
+	// **El rearme es incondicional A PROPOSITO, y condicionarlo se midio y
+	// perdio por exactitud** (2026-08-31): armar solo con alguien pidiendo
+	// (el predicado conservador de intc_alguien_pide_conservador) ahorraba el
+	// 61 % de los 24,6 M de servicios solo-reintento de DOOM -- y la lista de
+	// entregas DIVERGIA (2342 entregas de diferencia en 35 s, la primera
+	// corrida 250 ciclos, EN CUALQUIER DIRECCION). El mecanismo es la grilla:
+	// el grano no es absoluto -- cada servicio consume el acumulado y corre
+	// la fase de los granos siguientes -- asi que quitar servicios mueve las
+	// fronteras donde las entregas esperan. Saltear el CUERPO manteniendo
+	// cada servicio (el servicio partido, B.3) era la unica forma exacta, y
+	// era neutra. La sonda que lo cazo es DCEMU_SONDA_ENTREGAS.
 	intc_sh4_reintentar = 1;
 
 	// Y puede cambiar SR.MD, que **cambia el mapeo**: la misma virtual traduce
@@ -432,7 +455,7 @@ void UpdateSR(DWORD new)
 */
 void UpdateSR_ya_escrito(void)
 {
-	intc_sh4_reintentar = 1;
+	intc_sh4_reintentar = 1;	/* incondicional: ver UpdateSR() */
 
 	/* La entrada a una excepcion pone MD a mano: mismo motivo que arriba. */
 	JIT_EPOCA_MODO(SR_MD);

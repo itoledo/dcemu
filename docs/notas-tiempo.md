@@ -144,3 +144,36 @@ Dos cosas aquí costaron un cuelgue cada una: la interrupción solía ser una l�
 es lo que deja el boot ROM en una consola de tienda — el `dma_init()` de KOS solo escribe DMAOR en
 NAOMI, *"these are set by the bios on Dreamcast"*, así que con los hooks de syscall nadie más
 ponía DME y `basic-dma-speedtest` armaba un canal 1 perfectamente válido que nunca corría.
+
+## El rearme condicional que no puede ser exacto (2026-08-31)
+
+El reparto fresco puso al bloque periódico en 15-21 % con el **86,8 % de los servicios de DOOM
+corriendo solo por el reintento de entrega** (WinCE escribe SR ~650 000 veces/s y cada escritura
+arma `intc_sh4_reintentar`). El censo en dos pasos dio esperanza: el 61,3 % de esos reintentos de
+DOOM corre con **cero banderas crudas** (ni UNF, ni TE, ni nada latcheado en el ASIC — el predicado
+conservador `intc_alguien_pide_conservador()`), o sea servicios que no podían entregar nada. El
+rearme condicional —armar solo con alguien pidiendo, predicado cacheado y recomputado por
+servicio— se implementó, con todos los agujeros de postura tapados… y **la compuerta lo tumbó**:
+capturas iguales pero la **lista de entregas** (`DCEMU_SONDA_ENTREGAS=1`, una línea por
+interrupción con `reloj_total`, INTEVT y PC) divergía — DOOM 132 313 contra 134 655 entregas en
+35 s, la primera a 250 ciclos **y en cualquier dirección**: el brazo con MÁS servicios entregó
+DESPUÉS, lo que ningún modelo de «más servicios = entrega antes» puede producir.
+
+El mecanismo de fondo, que es la lección: **la grilla del grano no es absoluta.** Cada entrada del
+bloque periódico consume el acumulado (`cycles -= ciclos`) y con eso corre la fase de los granos
+siguientes 400 ciclos desde sí misma. Los servicios de reintento de más no *agregan* fronteras a
+una grilla fija: **la desplazan entera**, así que una entrega que espera frontera cae en instantes
+distintos según cuántos servicios hubo antes — quitar servicios mueve el calendario de entregas en
+ambas direcciones. Con esta grilla, la única poda exacta del bloque periódico es la que mantiene
+cada servicio y saltea su *cuerpo* — el «servicio partido» de B.3 — y esa ya se midió **neutra**.
+Las dos juntas cierran el candidato entero: ni el cuerpo ni la cantidad de servicios tienen tela.
+
+Tres cosas quedan de la excursión, todas instrumentos: la **sonda de entregas**
+(`DCEMU_SONDA_ENTREGAS=1`), que es el árbitro correcto para cualquier cambio de temporización de
+interrupciones (los `cp` por ms NO sirven aquí: muestrean en las entradas del bloque periódico, y
+un cambio de cadencia mueve el instante del muestreo con el guest intacto); el **censo del
+reintento** (`--perf`: cuántos con alguien pidiendo, con el predicado laxo y el conservador, y
+cuántas escrituras de SR ni tocan BL/IMASK — el 99,7 % SÍ los toca, así que filtrar por bits
+tampoco tenía tela); y el dato de que **SR2 tiene una bandera cruda latcheada el 87,9 % del
+tiempo** (un TE de DMAC sin IE, que ningún predicado exacto puede excluir porque las escrituras de
+CHCR no pasan por ningún gancho).

@@ -1405,7 +1405,23 @@ void main_loop(void)
 					if (reloj_total >= reloj_vencimiento)
 						perf_serv_vencido++;
 					else
+					{
 						perf_serv_reintento++;
+
+						/* El desglose que decide si el rearme condicional
+						   tiene techo: un reintento CON alguien pidiendo es
+						   pendiente enmascarado (inevitable); SIN nadie, el
+						   armado fue por una escritura de SR con cero
+						   pendientes y era ahorrable. */
+						if (intc_alguien_pide())
+							perf_serv_reintento_pide++;
+
+						/* Y la forma conservadora (banderas crudas), que es
+						   la unica que el rearme condicional exacto puede
+						   usar: si ESTA fraccion es alta, no hay techo. */
+						if (intc_alguien_pide_conservador())
+							perf_serv_reintento_cons++;
+					}
 				}
 
 				intc_sh4_reintentar = 0;

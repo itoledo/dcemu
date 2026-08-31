@@ -40,6 +40,11 @@ bool intc_asic_pendiente(void);
    Ver el comentario en intc.c. */
 extern int intc_sh4_reintentar;
 
+/* Hay alguien pidiendo (fuentes SH-4 + compuerta del ASIC), sin mirar SR y
+   sin entregar: el predicado del censo del reintento. */
+int intc_alguien_pide(void);
+int intc_alguien_pide_conservador(void);
+
 /* El ASIC tiene dos registros de estado: el normal (SB_ISTNRM, ASIC_ACK_A) y
    el externo (SB_ISTEXT, ASIC_ACK_B). El fin de comando de la lectora llega
    por el externo, asi que hace falta una cola aparte. */

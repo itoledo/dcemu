@@ -78,6 +78,81 @@ static DWORD intc_demorados = 0;
 */
 int intc_sh4_reintentar = 0;
 
+/*
+	El rearme condicional -- armar en UpdateSR solo con alguien pidiendo --
+	SE INTENTO Y SE REVIRTIO el 2026-08-31: la lista de entregas divergia
+	(DCEMU_SONDA_ENTREGAS: DOOM 132 313 contra 134 655 en 35 s, la primera a
+	250 ciclos y en cualquier direccion). El agujero no era el predicado sino
+	la grilla: el grano de main_loop no es absoluto -- cada servicio consume
+	el acumulado y corre la fase de los granos siguientes 400 ciclos desde si
+	mismo -- asi que QUITAR servicios mueve las fronteras donde una entrega
+	espera. Con esa grilla, la unica poda exacta del bloque periodico es la
+	que mantiene cada servicio y saltea su cuerpo (el servicio partido de
+	B.3), y esa se midio neutra. Los censos de abajo quedan como el
+	expediente: intc_alguien_pide{,_conservador}() y los contadores
+	perf_serv_reintento_* nombran la forma (61 % de los reintentos de DOOM
+	con cero banderas; SR2 con una bandera latcheada el 88 % del tiempo).
+*/
+
+/*
+	Hay ALGUIEN pidiendo? -- las mismas fuentes que intc_revisar_sh4() mas la
+	compuerta del ASIC, sin mirar SR y sin entregar nada: es el predicado del
+	censo del reintento (que separa "pendiente enmascarado" de "armado sin
+	nada que entregar"). Camino frio.
+*/
+int intc_alguien_pide(void)
+{
+	if ((*TCR0 & TMU_TCR_UNF) && (*TCR0 & TMU_TCR_UNIE))
+		return 1;
+	if ((*TCR1 & TMU_TCR_UNF) && (*TCR1 & TMU_TCR_UNIE))
+		return 1;
+	if ((*TCR2 & TMU_TCR_UNF) && (*TCR2 & TMU_TCR_UNIE))
+		return 1;
+
+	if ((wdt_control() & WTCSR_IOVF) && !(wdt_control() & WTCSR_WTIT))
+		return 1;
+
+	if (*DMAOR & DME)
+	{
+		if ((*CHCR0 & CHCR_TE) && (*CHCR0 & CHCR_IE))
+			return 1;
+		if ((*CHCR1 & CHCR_TE) && (*CHCR1 & CHCR_IE))
+			return 1;
+		if ((*CHCR2 & CHCR_TE) && (*CHCR2 & CHCR_IE))
+			return 1;
+		if ((*CHCR3 & CHCR_TE) && (*CHCR3 & CHCR_IE))
+			return 1;
+	}
+
+	return intc_asic_pendiente() ? 1 : 0;
+}
+
+/*
+	La forma CONSERVADORA del predicado: banderas crudas, sin enables ni
+	mascaras. Es la unica que un rearme condicional exacto puede usar -- un
+	enable escrito DESPUES de la bandera (UNIE con UNF ya arriba, la mascara
+	del ASIC abierta con el bit ya puesto) convierte un no-pedido en pedido
+	sin pasar por ningun sitio que arme, y hoy esa clase la cubre la tormenta
+	de escrituras de SR sin querer. Con las banderas crudas, ese estado ya
+	cuenta como "alguien pide" desde antes del enable.
+*/
+int intc_alguien_pide_conservador(void)
+{
+	if ((*TCR0 & TMU_TCR_UNF) || (*TCR1 & TMU_TCR_UNF)
+		|| (*TCR2 & TMU_TCR_UNF))
+		return 1;
+
+	if (wdt_control() & WTCSR_IOVF)
+		return 1;
+
+	if ((*CHCR0 & CHCR_TE) || (*CHCR1 & CHCR_TE)
+		|| (*CHCR2 & CHCR_TE) || (*CHCR3 & CHCR_TE))
+		return 1;
+
+	return (intc_demorados != 0 || intc_queuemask_ext != 0
+			|| ASIC_ACK_A != 0) ? 1 : 0;
+}
+
 void intc_revisar_sh4(void)
 {
 	/* Si no se puede entregar ninguna, ni vale mirar las banderas. */
@@ -202,6 +277,32 @@ bool intc(DWORD irq)
 	} */
 	
 	*INTEVT = irq;
+
+	/*
+		DCEMU_SONDA_ENTREGAS=1: una linea por entrega, con el instante y el PC
+		interrumpido. Es EL testigo de exactitud del rearme condicional: dos
+		corridas con la misma lista de entregas vieron el mismo calendario de
+		interrupciones, que es lo unico que el rearme puede mover -- y los cp
+		por ms no sirven de arbitro aqui, porque muestrean en las entradas del
+		bloque periodico y el rearme cambia CUALES entradas existen (el
+		instante del muestreo, no el estado del guest). Camino frio: solo se
+		llega con una entrega en la mano.
+	*/
+	{
+		static int sonda_entregas = -1;
+
+		if (sonda_entregas == -1)
+		{
+			const char * v = getenv("DCEMU_SONDA_ENTREGAS");
+
+			sonda_entregas = (v != NULL && atoi(v) != 0);
+		}
+
+		if (sonda_entregas)
+			fprintf(stderr, "entrega %llu %03lx pc=%08lx\n",
+				(unsigned long long) reloj_total, (unsigned long) irq,
+				(unsigned long) PC);
+	}
 
 	/*
 		Censo de interrupciones entregadas por segundo emulado, por INTEVT. La
