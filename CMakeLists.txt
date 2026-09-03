@@ -407,11 +407,10 @@ target_compile_options(dcemu PRIVATE $<$<CONFIG:Release>:/Zi>)
 # /OPT:NOICF; MSVC conserva su configuracion canonica, que hoy no pliega
 # ningun manejador con plantilla. La guarda de jit_iniciar() lo nombra si
 # algun dia vuelve.
-if(DCEMU_CLANG)
-	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:NOICF>)
-else()
-	target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
-endif()
+# Y MSVC tambien desde el 2026-09-03: el toolset 14.51 (VS 18) SI pliega --
+# la guarda de jit_iniciar() salto en el primer arranque del binario MSVC de
+# este arbol--, asi que la regla deja de ser por compilador: nadie pliega.
+target_link_options(dcemu PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:NOICF>)
 
 # Sanitizers (fase G de jit-sota-plan.md, la mitad barata): una corrida de
 # las compuertas de exactitud bajo ASan o UBSan como red de correccion para

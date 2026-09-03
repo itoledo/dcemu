@@ -547,6 +547,17 @@ el **próximo vencimiento** — la infraestructura ya existe, es el reloj por
 eventos de la fase 5. **Gate**: capturas y `.wav` intactos; el total de
 instrucciones cambia y se reporta como elisión, como el ARM7.
 
+**Hecha el 2026-09-03, y más fuerte que lo que esta fase pedía**: la condición
+de entrada la dio el censo del contrato (el lazo de espera de Crazy Taxi es el
+47,22 % de sus instrucciones), y el mecanismo escrito no avanza el reloj hasta el
+próximo vencimiento sino que **saltea vueltas enteras dentro del grano**, así que
+la grilla no se mueve y **el total de instrucciones queda al dígito** (no se
+reporta como elisión: se cuenta). CT elide el 37 % de sus instrucciones y gana
+−4,7 % con rangos disjuntos, compuerta verde contra el intérprete con 60 000
+puntos. El expediente entero — piezas, aritmética del corte, compuerta, tanda y
+lo que queda para la máquina del banco — está en `docs/recompilador-plan.md`,
+«La elisión de lazos ociosos».
+
 ### Fase D — los residuos chicos del camino de memoria (solo si la fase A los sostiene)
 
 Los tres pendientes numerados de `recompilador-plan.md`, cada uno con su techo ya

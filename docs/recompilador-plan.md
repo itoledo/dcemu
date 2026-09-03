@@ -28,6 +28,13 @@ traductor automático; `=1`, los dos bloques de la fase 0 emitidos a mano.
   una falta conserva el PR viejo y el éxito deja `pc+4`, igual que el intérprete.
   `DCEMU_JIT_SIN_PARES=1` los apaga todos; `DCEMU_JIT_SIN_PARES_LLAMADA=1` aísla
   solo los tres nuevos.
+- **La elisión de lazos ociosos** (2026-09-03): en una arista de retroceso plana, una
+  vuelta que devuelve los mismos registros sin escritura emitida, llamada a C ni
+  entrada al despachador es idéntica a todas las que siguen hasta el corte, y se
+  saltean sumando ciclos e instrucciones — **CT elide el 36,4 % de sus
+  instrucciones**, exacto al dígito y con la grilla intacta. Generación de impureza
+  por fila, sonda en un talón por arista con retirada a los 16 fallos, sólo en modo
+  plano. `DCEMU_JIT_OCIOSOS=0|1|2`. La sección propia está al final.
 - **El censo de la frontera** (en el resumen `jit:`, siempre): en qué termina cada
   bloque, ponderado por las veces que se corrió. Es lo que separa «hay muchos sitios»
   de «por ahí pasa la ejecución», y lo que eligió el lote de arriba. El residuo que
@@ -751,61 +758,163 @@ capa de PGO pendiente). La regla que el plan sí clavó: ninguna cifra de veloci
 de que el trabajo salga idéntico al dígito — y esa disciplina es la que encontró cada
 uno de los bugs de la tabla de veredictos.
 
-## Lo que sigue: la elision de ociosos, disenada y sin escribir
+## La elisión de lazos ociosos (2026-09-03): CT elide el 36 % de sus instrucciones, exacto al dígito
 
-El censo del contrato dejo el blanco mas grande del arbol con nombre y numero:
+El censo del contrato dejó el blanco más grande del árbol con nombre y número:
 **el lazo de espera de Crazy Taxi son el 47,22 % de sus instrucciones**
 (`0c158400` 26,24 %, `0c158418` 10,49 %, `0c1583f8` 7,87 % y el retorno
 `0c156c30` 2,62 %, los cuatro con 535,8 millones de vueltas). DOOM y SR2 no
 tienen nada parecido: sus bloques pesados son trabajo de 50 a 80 instrucciones.
+Estaba diseñada y sin escribir; esta es la v1 escrita, medida y encendida.
 
-El principio: **dentro de un grano no corre nada externo al guest** --ni ticks,
-ni DMA, ni AICA, ni lineas de video: todo eso vive en el bloque periodico-- y en
-modo plano el camino rapido emitido solo entra en zonas de RAM del sistema (PVR,
-TMU, RAM de sonido, VRAM y colas de almacenamiento van todas por ayudante). Asi
-que si una vuelta de un lazo devuelve el mismo estado de registros que al entrar
-y no escribio memoria ni paso por C, **todas las vueltas siguientes hasta el
-corte son identicas**: se saltean k vueltas sumando k por ciclos y k por
-instrucciones, y la ultima parcial corre de verdad para que el corte caiga en la
-misma instruccion que en el interprete. No se agregan ni se quitan servicios --la
-grilla del grano no se mueve-- y **el total de instrucciones queda igual al
-digito**, que es mas fuerte que el precedente del ARM7, donde la cuenta se
-informa como elision.
+**El principio.** Dentro de un grano no corre nada externo al guest —ni ticks,
+ni DMA, ni AICA, ni líneas de video: todo eso vive en el bloque periódico (el
+hilo del AICA es opt-in, `--hilos`)— y en modo plano el camino rápido emitido
+solo entra en zonas de RAM del sistema (`mem_directo_recalcular()`: base directa
+sólo donde el manejador es `ram_read`/`ram_write`; PVR, TMU, RAM de sonido, VRAM
+y colas de almacenamiento van por ayudante). Así que si una vuelta de un lazo
+devuelve el mismo estado de registros que al entrar y no escribió memoria ni
+pasó por C, **todas las vueltas siguientes hasta el corte son idénticas**: se
+saltean k vueltas sumando k por ciclos y k por instrucciones, y la última parcial
+corre de verdad para que el corte caiga en la misma instrucción que en el
+intérprete. No se agregan ni se quitan servicios —la grilla del grano no se
+mueve— y **el total de instrucciones queda igual al dígito**, que es más fuerte
+que el precedente del ARM7, donde la cuenta se informa como elisión.
 
-Las piezas, en orden de riesgo:
+**Las piezas, como quedaron escritas (`jit.c`, «La elisión de lazos ociosos»):**
 
- - **Una generacion de impureza, no una bandera.** Una bandera limpiada por una
-   arista dejaria a otra comparando contra una instantanea anterior a
-   escrituras que ya nadie recuerda. La incrementan, por FILA y no por bloque
-   --el descubridor no corta tras un RTS o un BRA sin par, asi que los bloques
-   arrastran colas muertas y una marca en el prologo daria falsos impuros--:
-   toda escritura emitida, toda llamada a manejador, los aterrizajes lentos de
-   las LECTURAS (una lectura por ayudante puede tener efectos: FIFO, RTC, la
-   espera del hilo del AICA) y la entrada al despachador.
- - **Dos formas de arista.** El lazo tipico de KOS cierra DENTRO de un bloque
-   --`tr_traducir` crece hacia atras para poner la cabeza como entrada-- y el de
-   CT es entre bloques solo porque el par JSR lo parte. Hacen falta las dos: el
-   enlace hacia atras con destino constante, y el salto interno hacia atras.
- - **El punto fijo, comparado en C** sobre un conjunto que basta para una vuelta
-   pura: R0-R15, SR, PR, GBR, MACH/MACL. Todo lo que lee SSR/SPC/VBR/bancos pasa
-   por manejador o es terminal --y bumpea la generacion--, y las filas FPU no
-   reciben enlaces.
- - **La retirada**, que es lo que la hace barata: a los 16 fallos consecutivos
-   sin elidir, la arista se reparchea directo. Sin ella, cada arista de retroceso
-   del guest pagaria una llamada por vuelta.
- - **Bajo MMU no entra en la v1**: URC avanza por vuelta en los aciertos
-   emitidos y en los puentes entre paginas, y el arbol no tiene un contador de
-   avances siempre encendido.
+ - **Una generación de impureza de 64 bits, no una bandera** (`jit_ocioso_gen`).
+   La suben, en línea y por FILA (`add qword [gen],1`): toda escritura del
+   camino rápido emitido (`gen_escribir`, tras la tienda), toda llamada a C
+   (`gen_llamar`: ayudantes de lectura y escritura, el camino lento de los
+   accesos, PREF, los pares de FMOV) y toda llamada a manejador
+   (`tr_manejador`); y en C, cada entrada al despachador (`jit_despachar`,
+   antes del trampolín), que es lo que separa dos granos. Por fila y no por
+   bloque a propósito: el descubridor no corta tras una rama sin par, así que
+   los bloques arrastran colas muertas, y una marca en la cabeza del bloque
+   daría por impura una vuelta por las tiendas de una cola que no corrió — el
+   cuerpo del lazo de CT lleva detrás del `BF` el código de salida del lazo.
+   Los 64 bits son porque a diez millones de bumps por segundo (CT: 604 M en
+   60 s) 32 bits dan la vuelta en siete minutos.
+ - **La sonda vive en un talón por arista, que el parche del enlace instala.**
+   Califica un enlace estático (`sitio_pc == NULL`), directo (sin puente), de
+   un bloque plano sin filas FPU, cuyo destino está en o antes de la entrada
+   del bloque que salta. `jit_parchear_enlace()` apunta el `rel32` al talón en
+   vez de al sucesor (costura o prólogo), y el talón vuelca el contador (las
+   tres instrucciones de `gen_volcar_cuenta`), llama a `jit_ocioso_sonda()` con
+   su arista, suma a CYC lo que devuelve, lo vuelca al contexto y salta al
+   sucesor de siempre. Se llega por salto y no por `call`, así que la pila está
+   como la dejó el trampolín y la llamada a C sale alineada y con su espacio de
+   sombra. Cero cambios en la emisión de los bloques: el mecanismo entero es
+   parche + talón, como las costuras.
+ - **El punto fijo, comparado en C**: R0-R15, SR, PR, GBR, MACH y MACL contra
+   la instantánea que la misma arista tomó la vuelta anterior, con la
+   generación igual. Lo que no está en la lista no puede cambiar en una vuelta
+   pura: SSR/SPC/VBR/bancos/FPSCR sólo se tocan por manejador o fila terminal
+   (bump), y **la FPU entera queda cubierta porque un bloque con filas FPU no
+   recibe enlaces** (`jit_parchear_enlace` los rechaza; todas las filas FPU de
+   la tabla, FNEG/FABS/FLDI/FLDS/FSTS y los movedores de FPUL incluidos, llevan
+   `fpu=1`): en una vuelta que vuelve a la sonda sin pasar por el despachador
+   todos los bloques entraron por enlace, o sea que ninguno tiene filas FPU.
+ - **La aritmética del corte.** La vuelta j empieza en `cyc + (j-1)·v` y termina
+   en `cyc + j·v`; el corte emitido —`CYC >= límite` tras cada instrucción con
+   ciclos— no salta dentro de ella si y sólo si su final queda por debajo del
+   límite, porque CYC es monótono en la vuelta. Así que
+   `k = (límite − 1 − cyc) / v` con `cyc < límite` (la sonda corre detrás del
+   corte del enlace, que ya lo garantiza), y con el reintento armado el límite
+   es cero y k queda en cero. Las instrucciones se suman en la sonda
+   (`jit_estado.instr`, y `perf_instrucciones` con `--perf`); los ciclos vuelven
+   por EAX al talón.
+ - **La retirada**, que es lo que la hace barata: a los 16 fallos seguidos sin
+   elidir (generación movida, registros distintos, o punto fijo sin lugar antes
+   del corte), la sonda reescribe el `rel32` del enlace directo al sucesor y el
+   talón queda huérfano. Un reparcheo del enlace (otro bloque con el mismo PC)
+   reusa la arista y emite un talón nuevo. Sin retirada, cada arista de
+   retroceso de un lazo de trabajo pagaría una llamada y ~22 comparaciones por
+   vuelta.
+ - **Bajo MMU no entra (v1)**: URC avanza por vuelta en los aciertos emitidos y
+   en los puentes, y el árbol no tiene un contador de avances siempre
+   encendido. **Los bloques MMU tampoco emiten bumps** (`g->ocioso_bumps` sólo en
+   `JIT_ACC_PLANO`): una cadena bajo MMU nunca llega a una sonda, así que DCDoom
+   y Sega Rally 2 quedan inertes **por construcción** salvo en su código de
+   arranque plano — y ese es el control que la compuerta de los dos guests con
+   MMU tiene que confirmar cuando se corra en la máquina del banco. Con el
+   buscador emitido (`DCEMU_JIT_BUSCADOR=1`) no se instalan sondas.
+ - **La palanca tiene tres posiciones y no dos** porque son dos mecanismos:
+   `DCEMU_JIT_OCIOSOS=0` apaga todo (la emisión anterior byte por byte), `=1`
+   emite sólo los bumps (mide su costo) y `=2` —la omisión— instala además las
+   sondas. Un combinado neutro podría ser el ahorro de las sondas tapando el
+   costo de los bumps, y sin el brazo del medio no se sabe (la lección del
+   pliegue de guardas y la rejilla).
 
-El caso de CT, ya trazado: tres bloques --A `0c1583f8` con el par JSR que escribe
-PR con el mismo valor cada vuelta, B `0c156c30` que es RTS+NOP, y C
-`0c158400..0c15841e` cuyo `BF` final es la salida enlazable hacia atras, o sea la
-arista de la sonda--. R0-R4 se recargan de RAM, T se recalcula igual, R12/R14
-solo se tocan en el camino de salida: punto fijo desde la segunda visita. 35
-ciclos y 20 instrucciones por vuelta, 11,4 vueltas por grano, de las que
-quedarian ~2,3 ejecutadas.
+**La forma real del lazo de CT, medida por la sonda misma.** Una sola arista
+carga el 99,99 % de lo elidido: `0c158400 → 0c1583f8`, el `BF` final del cuerpo
+hacia la cabeza del par JSR, con **20,0 instrucciones por vuelta** (las mismas
+20 palabras del bloque a mano de la fase 0) y **8,8 vueltas por elisión**. En 60 s
+emulados: 31,1 M de sondas, 15,5 M de elisiones, **136,3 M de vueltas y 2 726 710 760
+instrucciones elididas — el 36,4 % del total**, 4,77 G de ciclos. De cada grano de
+11,4 vueltas corren de verdad ~2,6: la primera tras el despachador toma la
+instantánea (la entrada al despachador ensució), la segunda la confirma y elide, y
+la última parcial corta. Las otras 1644 aristas con sonda casi no eliden; 553 se
+retiraron.
 
-**Lo que hay que medir antes de creerle a la aritmetica**: la sonda cuesta una
-llamada y ~22 comparaciones cuando NO elide, y el bump de generacion cuesta un
-almacen por escritura emitida en todos los guests. Por eso la palanca tiene tres
-posiciones y no dos: apagada, solo los bumps, y entera.
+**El control del resumen** (`jit: elision de ociosos …`, siempre): dice en qué
+posición corrió la palanca y cuenta aristas, sondas, elisiones, vueltas,
+instrucciones y retiradas, más las seis aristas que más elidieron. «Aristas con
+sondas en cero» separa «no había lazos» de «el talón no corrió» — la confusión
+del gancho de época sin llamador.
+
+**La compuerta (`herramientas/ociosos-gate.ps1`)**: cuatro brazos sobre un binario
+contra el intérprete, bajo replay de mando (`herramientas/mando-ct-ociosos.txt`, grabada
+con `DCEMU_GRABAR_MANDO`), captura y 60 000 puntos de `DCEMU_CP_MS`. **Verde en
+Crazy Taxi**: apagada, solo bumps y entera dan la captura byte a byte y los 60 000
+puntos idénticos al intérprete, con **7 478 034 596 instrucciones en 175 195 281
+entradas en los tres brazos**, al dígito — con la entera elidiendo 2,73 G de esas
+instrucciones por aritmética. Los bumps cuestan **1,53 MB de emisión (+4,5 %,
+33,90 → 35,43 MB)** y los 1645 talones 79 KB.
+
+**La tanda (`herramientas/ociosos-ab.ps1`, tres brazos alternados con rotación de
+orden, calentamiento por guest descartado):**
+
+| brazo | ms (4 rondas, orden rotado) | rango |
+| --- | --- | --- |
+| **entera** (omisión) | 73 766 / 74 781 / 74 679 / 73 923 | **73 766–74 781** |
+| solo bumps | 76 974 / 78 539 / 77 945 / 78 285 | 76 974–78 539 |
+| apagada | 76 880 / 77 763 / 77 031 / 78 009 | 76 880–78 009 |
+
+**Crazy Taxi −4,7 % con rangos disjuntos y 4 de 4** (74 287 contra 77 921 ms de
+media), y **el brazo del medio es neutro**: los 429 millones de bumps de la corrida
+(7,2 M por segundo, uno por escritura emitida, llamada o entrada) no se ven en el
+reloj — la lección del servicio partido, ahora a favor: un lee-modifica-escribe
+predecible sobre una línea caliente corre en la sombra del trabajo vecino. Toda la
+ganancia es de las sondas. En 180 s la elisión cubre **8 218 487 460 de
+21 955 638 721 instrucciones (37,4 %)** en 46,8 M de elisiones y 410,9 M de
+vueltas, con 1903 aristas con sonda y 620 retiradas; los tres brazos dan el total de
+instrucciones al dígito por camino de mando (CT muestra sus dos totales bimodales
+del pad, `…8721` y `…7629`, y cada brazo ve los dos). Marca: **2,42× tiempo real**
+sobre este binario MSVC sin PGO (venía de 2,34×). Que el 37 % de las instrucciones
+valga 4,7 % del tiempo dice cuánto costaba ya la vuelta emitida: unos 0,44 ns por
+instrucción elidida, contra 3,5 de la media de la corrida — el lazo de espera era
+el código más barato del guest, y lo que queda de Crazy Taxi es el resto del juego,
+el ARM7 y los gráficos.
+
+**Dónde se midió, y lo que eso deja abierto.** Esta sesión corrió en la máquina
+sin `build-clang`, sin LLVM, sin `build-pgo` y con `roms/` reducido a Crazy Taxi,
+Capcom vs. SNK y los dos Virtua Tennis: el binario es **MSVC 14.51 sin PGO**
+(`build-jit/`, NMake Release, `/OPT:NOICF` — ver abajo) y las cifras son de ese
+binario, comparables sólo dentro de él. Quedan para la máquina del banco: (a) la
+compuerta de DCDoom y SR2 (inertes por construcción, pero hay que verlo: cero
+sondas y bumps sólo en el arranque plano), (b) el ciclo de PGO clang
+(`ciclo-clang.ps1`) y la tanda de tres guests sobre el canónico reentrenado,
+(c) el barrido KOS y la red de juegos con la palanca entera — la v1 sólo instala
+sondas en enlaces estáticos de retroceso, así que los lazos de una sola palabra de
+las demos (`while (!flag);`, que cierran DENTRO de un bloque por salto interno)
+no eliden todavía: esa es **la segunda forma de arista** del diseño original y
+queda nombrada como el paso siguiente, con su propio censo primero.
+
+**Y una trampa de esta máquina que es del árbol.** El primer arranque del binario
+MSVC dijo «el enlazador plegó manejadores (ICF): la clasificación por puntero está
+contaminada»: el toolset 14.51 de VS 18 SÍ pliega, así que la excepción «MSVC
+conserva su configuración canónica» del CMakeLists dejó de valer y **los dos
+enlaces van ahora con `/OPT:NOICF`**. La guarda hizo exactamente lo que se
+escribió para hacer.

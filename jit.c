@@ -189,6 +189,27 @@ typedef struct
 
 static jit_estado_t jit_estado;
 
+/*
+	La elision de lazos ociosos (docs/recompilador-plan.md, 'Lo que sigue').
+
+	La generacion de impureza: la sube todo lo que puede hacer que dos vueltas
+	de un lazo con los mismos registros NO sean identicas -- una escritura
+	emitida, una llamada a manejador o a ayudante (una lectura por ayudante
+	puede tener efectos: FIFO, RTC), y la entrada al despachador (entre dos
+	entradas corrio el bloque periodico). Es un contador y no una bandera a
+	proposito: cada arista guarda el valor con el que tomo su instantanea, asi
+	que una arista no puede limpiarle la marca a otra. El codigo emitido la
+	sube en linea (`add qword [gen], 1`), asi que es una global vista desde el
+	contexto como las demas. De 64 bits para que no pueda dar la vuelta entre
+	dos visitas a una misma arista: a diez millones de bumps por segundo, 32
+	bits dan la vuelta en siete minutos.
+*/
+unsigned long long	jit_ocioso_gen = 1;
+
+/* DCEMU_JIT_OCIOSOS: 0 apagada (emision identica a la anterior), 1 solo los
+   bumps (mide su costo), 2 entera (la omision). */
+static int		jit_ociosos = 2;
+
 /* Solo desde C: el despachador las lleva, el codigo emitido no las toca. */
 static unsigned long long jit_entradas  = 0;
 static unsigned long long jit_rechazos  = 0;
@@ -543,6 +564,9 @@ typedef struct
 	unsigned char *	talon_jmp;		/* el rel32 del salto final del talon */
 	int				veces;
 	DWORD			pc;				/* a que PC quiere saltar (0 si es dinamico) */
+	/* La arista de la elision de ociosos: indice + 1 en jit_aristas, 0 si el
+	   enlace no tiene sonda. Lo pone jit_parchear_enlace al instalarla. */
+	int				sonda;
 } jit_enlace;
 
 static const unsigned jit_nunca = 0;
@@ -1110,6 +1134,7 @@ static int D(const void * p)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_LIMITE		D(&intc_corte_limite)
+#define D_OCIOSO_GEN	D(&jit_ocioso_gen)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
 #define D_BASE_LEC	D(&mem_base_lectura[0])
@@ -1206,6 +1231,11 @@ typedef struct
 	*/
 	DWORD			 acc_dir;
 	int				 acc_dir_valida;
+
+	/* Emitir los bumps de la generacion de impureza (la elision de ociosos):
+	   solo en bloques planos y con la palanca en 1 o 2. Los bloques MMU no los
+	   llevan porque una cadena bajo MMU nunca llega a una sonda (v1). */
+	int				 ocioso_bumps;
 } jit_gen;
 
 /* Los ocho no volatiles que el bloque usa, en orden de empuje. */
@@ -1334,6 +1364,10 @@ static void gen_sync_pendiente(jit_gen * g)
 static void gen_llamar(jit_gen * g, const void * destino, int disp_tabla)
 {
 	gen_sync_pendiente(g);
+
+	/* Toda salida a C ensucia la vuelta (elision de ociosos). */
+	if (g->ocioso_bumps)
+		jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN, 1);
 
 	if (!jit_x64_call_directo(&g->e, destino))
 		jit_x64_call_m(&g->e, CTX, disp_tabla);
@@ -2211,6 +2245,16 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 			jit_x64_mov16_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
 		else
 			jit_x64_mov8_mr_idx(&g->e, X64_RAX, X64_R8, 1, 0, X64_RDX);
+
+		/* La escritura ensucia la vuelta (elision de ociosos): una vuelta con
+		   los mismos registros que la anterior pero con una tienda adentro
+		   puede estar acumulando en RAM (leer, sumar, guardar, y el registro
+		   vuelve a cero), asi que la instantanea de registros no la cubre. Es
+		   por fila y no por bloque a proposito: el descubridor no corta tras
+		   una rama sin par, y una marca en la cabeza del bloque daria por
+		   impura una vuelta por las tiendas de una cola que no corrio. */
+		if (g->ocioso_bumps)
+			jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN, 1);
 
 		gen_rapido_fin(g, &a,
 			ancho == 4 ? D_ESCR32F : (ancho == 2 ? D_ESCR16F : D_ESCR8F),
@@ -4790,6 +4834,10 @@ static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
 	   asi que la emision de estas filas no cambia un byte. */
 	gen_sync_pendiente(g);
 
+	/* Y la llamada al manejador ensucia la vuelta (elision de ociosos). */
+	if (g->ocioso_bumps)
+		jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN, 1);
+
 	jit_x64_mov_ri(&g->e, X64_RCX, (unsigned) t->palabra[i]);
 
 	if (!jit_x64_call_directo(&g->e, f))
@@ -6537,6 +6585,8 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 {
 	int i;
 
+	g->ocioso_bumps = (jit_ociosos >= 1 && t->modo == JIT_ACC_PLANO);
+
 	tr_prologo(g, t);
 
 	if (jit_sonda_cruces)
@@ -6795,6 +6845,262 @@ static unsigned char * jit_emitir_costura(const jit_bloque * fuente,
 	return inicio;
 }
 
+/* ------------------------------------------------------------------------ */
+/* La elision de lazos ociosos                                              */
+/* ------------------------------------------------------------------------ */
+
+/*
+	El censo del contrato dejo el blanco con nombre y numero: el lazo de
+	espera de Crazy Taxi son el 47,22 % de sus instrucciones. Dentro de un
+	grano no corre nada externo al guest --ticks, DMA, AICA y lineas de video
+	viven en el bloque periodico-- y en modo plano el camino rapido emitido
+	solo entra en la RAM del sistema (todo lo demas va por ayudante). Asi que
+	si una vuelta de un lazo devuelve el mismo estado de registros que al
+	entrar y en el medio no hubo escritura emitida, ni llamada a C, ni
+	entrada al despachador, TODAS las vueltas siguientes hasta el corte son
+	identicas: se saltean k vueltas sumando k por ciclos y k por
+	instrucciones, y la ultima parcial corre de verdad para que el corte
+	caiga en la misma instruccion que en el interprete. La grilla del grano
+	no se mueve, no se agrega ni se quita ningun servicio, y el total de
+	instrucciones queda al digito.
+
+	La sonda vive en un talon por arista de retroceso: un enlace estatico
+	plano cuyo destino esta antes que la entrada del bloque que salta (el
+	lazo de CT es tres bloques --el par JSR, el RTS+NOP y el cuerpo-- y su
+	arista es el BF final del cuerpo hacia la cabeza). El parche del enlace
+	apunta el salto al talon; el talon vuelca el contador, llama a la sonda
+	con su arista, suma los ciclos elididos y salta al sucesor de siempre. La
+	sonda compara el estado con la instantanea que la misma arista tomo la
+	vuelta anterior: R0-R15, SR, PR, GBR, MACH y MACL. Lo que no esta en esa
+	lista no puede cambiar en una vuelta pura: SSR/SPC/VBR/bancos/FPSCR solo
+	se tocan por manejador o fila terminal (bump), y la FPU entera queda
+	cubierta porque **un bloque con filas FPU no recibe enlaces**: en una
+	vuelta que vuelve a la sonda sin pasar por el despachador todos los
+	bloques entraron por enlace, o sea que ninguno tiene filas FPU.
+
+	La retirada es lo que la hace barata: a los JIT_OCIOSO_RETIRADA fallos
+	seguidos sin elidir, la arista se reparchea directa al sucesor y la sonda
+	deja de correr. Sin ella cada arista de retroceso de un lazo de trabajo
+	pagaria una llamada y ~22 comparaciones por vuelta.
+
+	Bajo MMU no entra (v1): URC avanza por vuelta en los aciertos emitidos y
+	en los puentes, y el arbol no tiene un contador de avances siempre
+	encendido. Los bloques MMU tampoco emiten bumps: una cadena bajo MMU nunca
+	llega a una sonda, asi que DCDoom y Sega Rally 2 quedan inertes por
+	construccion salvo en su codigo de arranque plano. Con el buscador
+	emitido tampoco se instala: ese despacho no pasa por C y no ensucia.
+*/
+typedef struct
+{
+	DWORD				regs[16];
+	DWORD				sr, pr, gbr, mach, macl;
+	DWORD				cyc;
+	unsigned long long	instr;
+	unsigned long long	gen;
+	int					valido;
+	int					fallos;			/* seguidos sin elidir */
+	int					retirada;
+	unsigned char *		sitio_jmp;		/* el rel32 del enlace, para retirarse */
+	unsigned char *		directo;		/* adonde iba el enlace sin sonda */
+	DWORD				pc_fuente;
+	DWORD				pc_destino;
+	unsigned long long	sondas;
+	unsigned long long	elisiones;
+	unsigned long long	vueltas;
+	unsigned long long	instr_elididas;
+	unsigned long long	ciclos_elididos;
+} jit_arista;
+
+#define JIT_ARISTAS_N			4096
+#define JIT_OCIOSO_RETIRADA		16
+
+static jit_arista			jit_aristas[JIT_ARISTAS_N];
+static int					jit_n_aristas = 0;
+static unsigned long long	jit_aristas_sin_lugar = 0;
+static unsigned long long	jit_ocioso_retiradas = 0;
+
+/* La retirada: el rel32 del enlace vuelve a apuntar al sucesor directo, y
+   el talon queda huerfano en el arena. Lo escribe la propia sonda, desde C
+   y en el mismo hilo: el proximo cruce ya no pasa por aqui. */
+static void jit_arista_retirar(jit_arista * a)
+{
+	long long rel = (long long) (a->directo - (a->sitio_jmp + 4));
+
+	if (rel < -2147483647LL || rel > 2147483647LL)
+		return;
+
+	a->sitio_jmp[0] = (unsigned char) ((unsigned long long) rel & 0xFF);
+	a->sitio_jmp[1] = (unsigned char) (((unsigned long long) rel >> 8) & 0xFF);
+	a->sitio_jmp[2] = (unsigned char) (((unsigned long long) rel >> 16) & 0xFF);
+	a->sitio_jmp[3] = (unsigned char) (((unsigned long long) rel >> 24) & 0xFF);
+
+	a->retirada = 1;
+	jit_ocioso_retiradas++;
+}
+
+/*
+	La sonda. Llega con el contexto al dia --el enlace ya volco los registros
+	y CYC-- y con el contador ya volcado por el talon. Devuelve los ciclos
+	elididos, que el talon suma a CYC; las instrucciones se suman aqui.
+*/
+static unsigned jit_ocioso_sonda(jit_arista * a)
+{
+	context_t *			c     = &core.context;
+	DWORD				cyc   = c->cycles;
+	unsigned long long	instr = jit_estado.instr;
+	DWORD				k     = 0;
+	DWORD				vuelta = 0;
+
+	a->sondas++;
+
+	if (a->valido && a->gen == jit_ocioso_gen
+		&& memcmp(a->regs, c->registers, sizeof(a->regs)) == 0
+		&& a->sr == c->SR_REG.SR_ALL && a->pr == c->PR_REG
+		&& a->gbr == c->GBR_REG
+		&& a->mach == c->MACH_REG && a->macl == c->MACL_REG)
+	{
+		DWORD lim = (DWORD) intc_corte_limite;
+
+		vuelta = cyc - a->cyc;
+
+		/*
+			Cuantas vueltas enteras caben antes del corte. La vuelta j empieza
+			en cyc + (j-1)*vuelta y termina en cyc + j*vuelta, y el corte
+			--`CYC >= limite` tras cada instruccion con ciclos-- no salta
+			dentro de ella si y solo si su final queda por debajo del limite:
+			CYC es monotono en la vuelta. La (k+1)-esima corre de verdad y
+			corta donde el interprete cortaria. Con el reintento armado el
+			limite es cero y k queda en cero.
+		*/
+		if (vuelta != 0 && cyc < lim)
+			k = (lim - 1 - cyc) / vuelta;
+
+		if (k != 0)
+		{
+			unsigned long long ni = instr - a->instr;
+
+			jit_estado.instr += k * ni;
+
+			if (perf_activa)
+				perf_instrucciones += k * ni;
+
+			a->elisiones++;
+			a->vueltas         += k;
+			a->instr_elididas  += k * ni;
+			a->ciclos_elididos += k * vuelta;
+			a->fallos = 0;
+		}
+		else
+			a->fallos++;
+
+		a->cyc   = cyc + k * vuelta;
+		a->instr = jit_estado.instr;
+	}
+	else
+	{
+		memcpy(a->regs, c->registers, sizeof(a->regs));
+		a->sr     = c->SR_REG.SR_ALL;
+		a->pr     = c->PR_REG;
+		a->gbr    = c->GBR_REG;
+		a->mach   = c->MACH_REG;
+		a->macl   = c->MACL_REG;
+		a->cyc    = cyc;
+		a->instr  = instr;
+		a->gen    = jit_ocioso_gen;
+		a->valido = 1;
+		a->fallos++;
+	}
+
+	if (a->fallos >= JIT_OCIOSO_RETIRADA && !a->retirada)
+		jit_arista_retirar(a);
+
+	return k * vuelta;
+}
+
+/*
+	El talon de la sonda, emitido al parchear un enlace de retroceso plano.
+	Se llega por salto y no por call, asi que la pila esta como la dejo el
+	trampolin y la llamada a C sale alineada y con su espacio de sombra, igual
+	que las de los bloques. Devuelve NULL si la arista no califica o no hay
+	sitio, y entonces el enlace se parchea directo como siempre.
+*/
+static unsigned char * jit_emitir_sonda_ociosa(jit_enlace * e,
+	const jit_bloque * fuente, const jit_bloque * destino,
+	unsigned char * directo)
+{
+	x64_emisor		em;
+	unsigned char *	inicio;
+	jit_arista *	a;
+
+	if (jit_ociosos < 2 || jit_buscador != NULL || mmu_activa
+		|| fuente->mmu != JIT_ACC_PLANO || fuente->fpu >= 0
+		|| destino->pc > fuente->pc)
+		return NULL;
+
+	if (e->sonda != 0)
+		a = &jit_aristas[e->sonda - 1];	/* reparcheo: la misma arista */
+	else if (jit_n_aristas < JIT_ARISTAS_N)
+	{
+		a        = &jit_aristas[jit_n_aristas++];
+		e->sonda = jit_n_aristas;
+	}
+	else
+	{
+		jit_aristas_sin_lugar++;
+		return NULL;
+	}
+
+	jit_codigo_us = (jit_codigo_us + 15u) & ~15u;
+
+	if (jit_codigo_us >= jit_codigo_tam)
+		return NULL;
+
+	jit_x64_iniciar(&em, jit_codigo + jit_codigo_us,
+		jit_codigo_tam - jit_codigo_us);
+	inicio = jit_x64_aqui(&em);
+
+	/* El contador pendiente, antes de que la sonda lo lea: las mismas tres
+	   instrucciones de gen_volcar_cuenta. */
+	jit_x64_add64_mr(&em, CTX, D_INSTR, N);
+
+	if (perf_activa)
+		jit_x64_add64_mr(&em, CTX, D_PERF, N);
+
+	jit_x64_xor_rr(&em, N, N);
+
+	jit_x64_mov64_ri(&em, X64_RCX, (unsigned long long) (size_t) a);
+
+	if (!jit_x64_call_directo(&em, (const void *) jit_ocioso_sonda))
+	{
+		jit_x64_mov64_ri(&em, X64_RAX,
+			(unsigned long long) (size_t) jit_ocioso_sonda);
+		jit_x64_call_r(&em, X64_RAX);
+	}
+
+	/* Los ciclos elididos, al registro y al contexto (el enlace ya lo habia
+	   volcado con el valor de antes). */
+	jit_x64_alu_rr(&em, X64_ADD, CYC, X64_RAX);
+	jit_x64_mov_mr(&em, CTX, O_CYC, CYC);
+	jit_x64_jmp_a(&em, directo);
+
+	if (em.desborde || !jit_disp_ok)
+		return NULL;
+
+	jit_codigo_us += jit_x64_largo(&em);
+
+	/* La arista nace --o renace, en un reparcheo-- sin instantanea; los
+	   contadores del resumen sobreviven al reparcheo. */
+	a->valido     = 0;
+	a->fallos     = 0;
+	a->retirada   = 0;
+	a->sitio_jmp  = e->sitio_jmp;
+	a->directo    = directo;
+	a->pc_fuente  = fuente->pc;
+	a->pc_destino = destino->pc;
+
+	return inicio;
+}
+
 static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * fuente,
 	const jit_bloque * destino)
 {
@@ -6858,6 +7164,17 @@ static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * fuente,
 
 		if (costura != NULL)
 			salto = costura;
+	}
+
+	/* La sonda de la elision de ociosos, delante del sucesor (costura o
+	   prologo): solo en aristas de retroceso planas y estaticas. */
+	if (!puente && e->sitio_pc == NULL)
+	{
+		unsigned char * sonda =
+			jit_emitir_sonda_ociosa(e, fuente, destino, salto);
+
+		if (sonda != NULL)
+			salto = sonda;
 	}
 
 	rel   = (long long) (salto - (e->sitio_jmp + 4));
@@ -7744,6 +8061,9 @@ int jit_despachar(DWORD pc)
 		b->veces++;
 		jit_ult_sitio = -1;
 		jit_estado.entrada = (void *) b->codigo;
+		/* Entre dos entradas corrio el bloque periodico (o el interprete):
+		   la vuelta que cruce una entrada no es pura (elision de ociosos). */
+		jit_ocioso_gen++;
 		((void (*)(void)) jit_tramp)();
 		corridos = 1;
 
@@ -8104,6 +8424,67 @@ void jit_resumen(void)
 	   que traducir se encarece a medida que la corrida avanza. La sonda de
 	   tirones lo destapo -- los cuadros lentos de Crazy Taxi eran traduccion,
 	   y la traduccion era esto. */
+	/* La elision de ociosos. La linea de control dice en que posicion corrio
+	   la palanca, y 'aristas con sondas en cero' separa 'no habia lazos' de
+	   'el talon no corrio' -- la confusion del gancho de epoca sin llamador. */
+	{
+		unsigned long long sondas = 0, elisiones = 0, vueltas = 0;
+		unsigned long long instr_el = 0, ciclos_el = 0;
+		int k, mostrados;
+
+		for (k = 0; k < jit_n_aristas; k++)
+		{
+			sondas    += jit_aristas[k].sondas;
+			elisiones += jit_aristas[k].elisiones;
+			vueltas   += jit_aristas[k].vueltas;
+			instr_el  += jit_aristas[k].instr_elididas;
+			ciclos_el += jit_aristas[k].ciclos_elididos;
+		}
+
+		fprintf(stderr, "jit: elision de ociosos %s: generacion %llu, %d aristas"
+			" con sonda (%llu sin lugar), %llu sondas, %llu elisiones, %llu"
+			" vueltas elididas (%llu instrucciones, %.1f %% del total;"
+			" %llu ciclos), %llu retiradas\n",
+			jit_ociosos >= 2 ? "entera"
+							 : (jit_ociosos == 1 ? "solo bumps" : "apagada"),
+			jit_ocioso_gen, jit_n_aristas, jit_aristas_sin_lugar, sondas,
+			elisiones, vueltas, instr_el,
+			jit_estado.instr
+				? 100.0 * (double) instr_el / (double) jit_estado.instr : 0.0,
+			ciclos_el, jit_ocioso_retiradas);
+
+		/* Las aristas que mas elidieron, de mayor a menor. */
+		for (mostrados = 0; mostrados < 6; mostrados++)
+		{
+			int mejor = -1;
+
+			for (k = 0; k < jit_n_aristas; k++)
+				if (jit_aristas[k].instr_elididas != 0
+					&& (mejor < 0 || jit_aristas[k].instr_elididas
+									> jit_aristas[mejor].instr_elididas))
+					mejor = k;
+
+			if (mejor < 0)
+				break;
+
+			fprintf(stderr, "jit:   %08lx -> %08lx: %llu vueltas elididas en"
+				" %llu elisiones (%llu instrucciones, %.1f por vuelta),"
+				" %llu sondas%s\n",
+				(unsigned long) jit_aristas[mejor].pc_fuente,
+				(unsigned long) jit_aristas[mejor].pc_destino,
+				jit_aristas[mejor].vueltas, jit_aristas[mejor].elisiones,
+				jit_aristas[mejor].instr_elididas,
+				jit_aristas[mejor].vueltas
+					? (double) jit_aristas[mejor].instr_elididas
+					  / (double) jit_aristas[mejor].vueltas : 0.0,
+				jit_aristas[mejor].sondas,
+				jit_aristas[mejor].retirada ? " (retirada)" : "");
+
+			/* Para no repetirla: se anula en una copia local del criterio. */
+			jit_aristas[mejor].instr_elididas = 0;
+		}
+	}
+
 	fprintf(stderr, "jit: verificacion por entrada: %llu veces por el camino"
 		" largo (%.1f %% de las entradas), %llu palabras comparadas"
 		" (%.1f por vez)\n",
@@ -8302,6 +8683,17 @@ void jit_iniciar(void)
 
 		if (dc != NULL && atoi(dc) != 0)
 			jit_dir_constante = 0;
+
+		{
+			const char * oc = getenv("DCEMU_JIT_OCIOSOS");
+
+			if (oc != NULL)
+			{
+				int n = atoi(oc);
+
+				jit_ociosos = (n < 0) ? 0 : (n > 2 ? 2 : n);
+			}
+		}
 
 		if (sd != NULL && atoi(sd) != 0)
 			jit_div1_emitida = 1;
