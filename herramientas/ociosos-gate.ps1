@@ -30,6 +30,7 @@ param(
 $ErrorActionPreference = "Stop"
 $raiz = Split-Path -Parent $PSScriptRoot
 Set-Location $raiz
+. "$PSScriptRoot\banco.ps1"
 
 if (Get-Process dcemu -EA SilentlyContinue) { throw "dcemu corriendo" }
 $err = Join-Path (Split-Path -Parent $Exe) "stderr.txt"
@@ -44,14 +45,15 @@ function HashLineas($l) {
 }
 
 $bancos = @{
-    doom = @{ img="roms\DCDoom GDI and CDI\DCDoom CDI.cdi"; s=35; replay=$false }
-    sr2  = @{ img="roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"; s=60; replay=$false }
-    ct   = @{ img="roms\Crazy Taxi (USA).cdi"; s=60; replay=$true }
+    doom = @{ img=(ImagenBanco "doom"); s=35; replay=$false }
+    sr2  = @{ img=(ImagenBanco "sr2");  s=60; replay=$false }
+    ct   = @{ img=(ImagenBanco "ct");   s=60; replay=$true }
 }
 
 $j = $bancos[$Guest]
 if (-not $j) { throw "guest desconocido: $Guest" }
-if (-not (Test-Path $j.img)) { Write-Output "$Guest SALTEADO: no esta $($j.img)"; exit 0 }
+if (-not $j.img) { Write-Output "$Guest SALTEADO: no esta la imagen (ver herramientas/banco.ps1)"; exit 0 }
+Write-Output "imagen: $($j.img)"
 if ($j.replay -and -not (Test-Path $Mando)) { throw "falta la receta de mando $Mando (grabar con DCEMU_GRABAR_MANDO)" }
 if ($Segundos -gt 0) { $j.s = $Segundos }
 

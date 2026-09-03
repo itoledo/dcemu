@@ -9,15 +9,17 @@
 # barrido entero. El banco de PGO no se toca: esto es material de exactitud y
 # compatibilidad, no de cronometro.
 param(
-	[string] $Exe = "build-jit\Release\dcemu.exe",
+	[string] $Exe = "",
 	[int]    $Segundos = 40,
 	[int]    $TopeMin = 8,
 	[string] $Tanda = 'viejos'		# viejos | nuevos | todos
 )
 
 $ErrorActionPreference = "Continue"
+. "$PSScriptRoot\banco.ps1"
+if (-not $Exe) { $Exe = ExeBanco "build-jit" }
 Set-Location D:\dev\dcemu
-if (-not (Test-Path $Exe)) { throw "falta $Exe" }
+if (-not (Test-Path -LiteralPath $Exe)) { throw "falta $Exe" }
 $err = Join-Path (Split-Path $Exe) "stderr.txt"
 
 Get-Process dcemu -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
@@ -81,7 +83,8 @@ switch ($Tanda) {
 
 function Correr($nombre, $brazo)
 {
-	$img = "E:\Juegos\roms\dreamcast\$nombre.chd"
+	$img = ImagenChd $nombre
+	if (-not $img) { throw "falta el .chd de $nombre (ver herramientas/banco.ps1)" }
 	$tag = ($nombre -split ' \(')[0] -replace '[^A-Za-z0-9]', ''
 	$bmp = "logs\chdb-$tag-$brazo.bmp"
 

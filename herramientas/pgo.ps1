@@ -50,12 +50,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Las rutas que cambian entre maquinas (LLVM, las imagenes) las resuelve
+# banco.ps1; aqui solo se nombran los guests.
+. "$PSScriptRoot\banco.ps1"
+
 if ($Clang) { $Jit = $true }
 
 if ($Exe -eq "") {
 	$Exe = if ($Clang) { "build-clang\dcemu.exe" }
-		elseif ($Jit)  { "build-jit\Release\dcemu.exe" }
-		else           { "build\Release\dcemu.exe" }
+		elseif ($Jit)  { ExeBanco "build-jit" }
+		else           { ExeBanco "build" }
 }
 
 if (-not (Test-Path $Exe)) { throw "falta ${Exe}: compila primero con -DDCEMU_PGO=GEN" }
@@ -63,8 +67,8 @@ if (-not (Test-Path $Exe)) { throw "falta ${Exe}: compila primero con -DDCEMU_PG
 if ($Clang) {
 	$profraw  = "build-pgo\clang-jit-raw"
 	$profdata = "build-pgo\dcemu-jit-clang.profdata"
-	$llvmProfdata = "E:\llvm\22.1.8\bin\llvm-profdata.exe"
-	if (-not (Test-Path $llvmProfdata)) { throw "no hay llvm-profdata en $llvmProfdata" }
+	$llvmProfdata = Join-Path (LlvmRaiz) "bin\llvm-profdata.exe"
+	if (-not (Test-Path -LiteralPath $llvmProfdata)) { throw "no hay llvm-profdata en $llvmProfdata" }
 	New-Item -ItemType Directory -Force $profraw | Out-Null
 
 	# Los .profraw de una tanda anterior contaminarian el perfil, igual que
@@ -132,14 +136,23 @@ if (-not $Clang) {
 # segundos emulados de DCDoom por siete son doce minutos de corrida
 # instrumentada, y pgomgr sabe ponderar al fundir.
 $bancos = @(
-	@{ n = "crazytaxi"; img = "roms\Crazy Taxi (USA).cdi";                                                  s = $SegundosKatana; teclas = $true;  peso = 1 },
-	@{ n = "vtennis";   img = "roms\Virtua Tennis (2000)(Sega)(US)[cr DCRES][f PAL 60Hz][repack].cdi";      s = $SegundosKatana; teclas = $true;  peso = 1 },
-	@{ n = "dcdoom";    img = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi";                                     s = $SegundosCE;     teclas = $false; peso = 7 },
+	@{ n = "crazytaxi"; img = (ImagenBanco "ct");   s = $SegundosKatana; teclas = $true;  peso = 1 },
+	@{ n = "vtennis";   img = (ImagenBanco "vt");   s = $SegundosKatana; teclas = $true;  peso = 1 },
+	@{ n = "dcdoom";    img = (ImagenBanco "doom"); s = $SegundosCE;     teclas = $false; peso = 7 },
 	# 60 s = la ventana entera de su banco de medicion (la receta de
 	# rendimiento-plan-2.md, sin teclas): SR2 es el guest cuyo perfil faltaba,
 	# asi que acortarle el entrenamiento iria contra lo que viene a arreglar.
-	@{ n = "rally2";    img = "roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"; s = $SegundosRally; teclas = $false; peso = 1; soloJit = $true }
+	# En la segunda maquina es el .chd de redump: mismo guest, y el perfil
+	# lleva ademas la descompresion de libchdr -- que ese binario tambien corre.
+	@{ n = "rally2";    img = (ImagenBanco "sr2");  s = $SegundosRally; teclas = $false; peso = 1; soloJit = $true }
 )
+
+# Un guest sin imagen NO se saltea: el perfil describiria otro programa y el
+# binario saldria "entrenado" con un banco distinto del documentado.
+foreach ($b in $bancos) {
+	if ($b.soloJit -and -not $Jit) { continue }
+	if (-not $b.img) { throw "falta la imagen de $($b.n) (ver herramientas/banco.ps1)" }
+}
 
 # Con -Jit cada banco se desdobla en sus dos formas; sin el, la unica corrida no
 # toca DCEMU_JIT (el binario del arbol ni lo compila). El centinela es "" y no

@@ -21,6 +21,7 @@ param([string] $Exe = "build-jit\dcemu.exe", [string] $Guest = "", [int] $Rondas
 $ErrorActionPreference = "Stop"
 $raiz = Split-Path -Parent $PSScriptRoot
 Set-Location $raiz
+. "$PSScriptRoot\banco.ps1"
 $err = Join-Path (Split-Path $Exe) "stderr.txt"
 
 if (Get-Process dcemu -EA SilentlyContinue) { throw "dcemu corriendo" }
@@ -52,9 +53,9 @@ function Correr($brazo, $img, $segundos, $teclas)
 }
 
 $bancos = @(
-	@{ n = "DCDoom"; img = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi"; s = 35; teclas = $false },
-	@{ n = "Crazy Taxi"; img = "roms\Crazy Taxi (USA).cdi"; s = 180; teclas = $true },
-	@{ n = "Sega Rally 2"; img = "roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"; s = 60; teclas = $false }
+	@{ n = "DCDoom";       img = (ImagenBanco "doom"); s = 35;  teclas = $false },
+	@{ n = "Crazy Taxi";   img = (ImagenBanco "ct");   s = 180; teclas = $true },
+	@{ n = "Sega Rally 2"; img = (ImagenBanco "sr2");  s = 60;  teclas = $false }
 )
 if ($Guest) { $bancos = $bancos | Where-Object { $_.n -like "*$Guest*" } }
 if (-not $bancos) { throw "guest desconocido: $Guest" }
@@ -65,8 +66,8 @@ $ordenes = @(@("entera","bumps","apagada"), @("apagada","entera","bumps"),
              @("bumps","entera","apagada"), @("apagada","bumps","entera"))
 
 foreach ($b in $bancos) {
-	if (-not (Test-Path $b.img)) { Write-Output "=== $($b.n) SALTEADO: no esta la imagen"; continue }
-	Write-Output "=== $($b.n), $($b.s) s emulados (calentamiento descartado)"
+	if (-not $b.img) { Write-Output "=== $($b.n) SALTEADO: no esta la imagen (ver herramientas/banco.ps1)"; continue }
+	Write-Output "=== $($b.n), $($b.s) s emulados (calentamiento descartado): $($b.img)"
 	Correr "entera" $b.img $b.s $b.teclas | Out-Null
 	for ($r = 0; $r -lt $Rondas; $r++) {
 		foreach ($m in $ordenes[$r % $ordenes.Count]) { Correr $m $b.img $b.s $b.teclas }

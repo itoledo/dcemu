@@ -8,23 +8,28 @@
 # se truncan una a la otra. 18 Wheeler lleva DCEMU_PULSAR_START en el probe
 # 2700 (45 s emulados: su pantalla de PRESS START) en LOS DOS brazos.
 param(
-	[string] $Exe = "build-jit\Release\dcemu.exe",
+	[string] $Exe = "",
 	[string] $Solo = ""   # correr un solo guest por nombre (p.ej. -Solo thps1)
 )
 
 $ErrorActionPreference = "Stop"
-if (-not (Test-Path $Exe)) { throw "falta $Exe" }
+# Los .chd viven en E:\Juegos\roms\dreamcast en una maquina y en roms\chd en
+# la otra: banco.ps1 los resuelve (DCEMU_CHD manda), y el ejecutable tambien.
+. "$PSScriptRoot\banco.ps1"
+if (-not $Exe) { $Exe = ExeBanco "build-jit" }
+if (-not (Test-Path -LiteralPath $Exe)) { throw "falta $Exe" }
 $err = Join-Path (Split-Path $Exe) "stderr.txt"
 
 Write-Output "hash: $((Get-FileHash $Exe -Algorithm SHA256).Hash.Substring(0,16))"
 
 $guests = @(
-	@{ n = "18w";   img = "E:\Juegos\roms\dreamcast\18 Wheeler - American Pro Trucker (USA).chd"; s = 60; start = "2700" },
-	@{ n = "thps2"; img = "E:\Juegos\roms\dreamcast\Tony Hawk's Pro Skater 2 (USA).chd";          s = 40; start = $null },
-	@{ n = "cvs2";  img = "E:\Juegos\roms\dreamcast\Capcom vs. SNK 2 - Millionaire Fighting 2001 (Japan).chd"; s = 40; start = $null },
-	@{ n = "thps1"; img = "E:\Juegos\roms\dreamcast\Tony Hawk's Pro Skater (USA).chd";            s = 40; start = $null }
+	@{ n = "18w";   img = (ImagenChd "18 Wheeler - American Pro Trucker (USA)");              s = 60; start = "2700" },
+	@{ n = "thps2"; img = (ImagenChd "Tony Hawk's Pro Skater 2 (USA)");                       s = 40; start = $null },
+	@{ n = "cvs2";  img = (ImagenChd "Capcom vs. SNK 2 - Millionaire Fighting 2001 (Japan)"); s = 40; start = $null },
+	@{ n = "thps1"; img = (ImagenChd "Tony Hawk's Pro Skater (USA)");                         s = 40; start = $null }
 )
 if ($Solo) { $guests = @($guests | Where-Object { $_.n -eq $Solo }); if (-not $guests) { throw "guest desconocido: $Solo" } }
+foreach ($g in $guests) { if (-not $g.img) { throw "falta el .chd de $($g.n) (ver herramientas/banco.ps1)" } }
 
 function Correr($g, $brazo)
 {

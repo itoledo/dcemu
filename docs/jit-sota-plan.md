@@ -967,6 +967,20 @@ Falta lo que el paso 0 pide y sólo tiene sentido cuando haya binarios que
 comparar: **hashear qué binario compila qué** — la lección del A/B que midió el
 mismo binario diez veces.
 
+**La segunda máquina (2026-09-03).** El mismo árbol —el mismo instalador
+`LLVM-22.1.8-win64.exe`, verificado contra la SHA-256 de arriba, extraído con
+7-Zip— vive en `C:\llvm\22.1.8` en la segunda máquina (VS 18 Enterprise, MSVC
+14.51 también; aquí el generador por omisión de CMake es NMake, así que el
+ejecutable queda en la raíz del directorio de compilación). Con dos raíces
+posibles la ruta dejó de estar escrita en los guiones: `herramientas\banco.ps1`
+prueba `DCEMU_LLVM`, `C:\llvm\22.1.8` y `E:\llvm\22.1.8` en ese orden, y
+`llvm-entorno.ps1` y `pgo.ps1 -Clang` le preguntan a él. Dos cosas que costaron
+tiempo aquí y no allá: el CDN de releases de GitHub entrega ~60 KB/s por conexión
+desde esa red (la línea da 2,6 MB/s contra Cloudflare), así que el instalador se
+bajó por rangos en paralelo; y el binario MSVC de esta máquina fue el primero en
+disparar la guarda del ICF de `jit_iniciar()` — el toolset 14.51 pliega — con lo
+que los dos enlaces van con `/OPT:NOICF` (ver el invariante en CLAUDE.md).
+
 **Paso 1 — el binario clang, hecho el 2026-08-20.** El CMakeLists ganó una rama
 clang (detectada por `CMAKE_C_COMPILER_ID`, porque `MSVC` es TRUE también con
 clang-cl): `-ffp-contract=off` y `-fno-strict-aliasing` globales —el primero

@@ -20,12 +20,20 @@
 # update, que es lo que dejo rota la receta de DCEMU_JIT_VOLCADO. Este es un
 # arbol extraido del instalador oficial, sin registro ni desinstalador, y se
 # borra con un rm -rf.
+#
+# Donde vive depende de la maquina -- E:\llvm\22.1.8 en la del banco original,
+# C:\llvm\22.1.8 en la segunda -- y lo resuelve banco.ps1 (DCEMU_LLVM manda si
+# esta puesta). -Raiz sigue existiendo para apuntar a otro arbol a mano.
 param(
-	[string] $Raiz = "E:\llvm\22.1.8",
+	[string] $Raiz = "",
 	[switch] $Verificar
 )
 
-if (-not (Test-Path "$Raiz\bin\clang-cl.exe")) {
+if (-not $Raiz) {
+	. "$PSScriptRoot\banco.ps1"
+	$Raiz = LlvmRaiz
+}
+if (-not (Test-Path -LiteralPath "$Raiz\bin\clang-cl.exe")) {
 	throw "No hay clang-cl en $Raiz\bin. Ver el paso 0 de docs/jit-sota-plan.md."
 }
 

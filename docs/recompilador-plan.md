@@ -898,19 +898,52 @@ instrucción elidida, contra 3,5 de la media de la corrida — el lazo de espera
 el código más barato del guest, y lo que queda de Crazy Taxi es el resto del juego,
 el ARM7 y los gráficos.
 
-**Dónde se midió, y lo que eso deja abierto.** Esta sesión corrió en la máquina
-sin `build-clang`, sin LLVM, sin `build-pgo` y con `roms/` reducido a Crazy Taxi,
-Capcom vs. SNK y los dos Virtua Tennis: el binario es **MSVC 14.51 sin PGO**
-(`build-jit/`, NMake Release, `/OPT:NOICF` — ver abajo) y las cifras son de ese
-binario, comparables sólo dentro de él. Quedan para la máquina del banco: (a) la
-compuerta de DCDoom y SR2 (inertes por construcción, pero hay que verlo: cero
-sondas y bumps sólo en el arranque plano), (b) el ciclo de PGO clang
-(`ciclo-clang.ps1`) y la tanda de tres guests sobre el canónico reentrenado,
-(c) el barrido KOS y la red de juegos con la palanca entera — la v1 sólo instala
-sondas en enlaces estáticos de retroceso, así que los lazos de una sola palabra de
-las demos (`while (!flag);`, que cierran DENTRO de un bloque por salto interno)
-no eliden todavía: esa es **la segunda forma de arista** del diseño original y
-queda nombrada como el paso siguiente, con su propio censo primero.
+**Dónde se midió.** La tanda de arriba corrió en la segunda máquina cuando aún no
+tenía banco: sin `build-clang`, sin LLVM, sin `build-pgo` y con `roms/` reducido a
+Crazy Taxi, Capcom vs. SNK y los dos Virtua Tennis, así que el binario es **MSVC
+14.51 sin PGO** (`build-jit/`, NMake Release, `/OPT:NOICF` — ver abajo) y esas
+cifras se comparan sólo dentro de él. **El mismo día la máquina quedó equipada**
+— LLVM 22.1.8 en `C:\llvm\22.1.8`, DCDoom y el repack de Virtua Tennis desde
+`\\birdienas\backup\dcemu\roms`, y Sega Rally 2 más el trío CHD desde la colección
+redump del NAS (`roms\chd`; SR2 es aquí el `.chd`, mismo guest para la compuerta
+y no para el cronómetro entre máquinas), con las rutas resueltas por
+`herramientas/banco.ps1` — y lo que quedaba pendiente se midió:
+
+- **La compuerta de DCDoom y Sega Rally 2, verde e inerte** como la construcción
+  lo predecía, sobre el binario MSVC y sobre el canónico clang por igual: DOOM
+  35 aristas con sonda, 360 sondas, 0 elisiones y 20 retiradas, con
+  5 284 887 508 instrucciones en los cuatro brazos; SR2 3 aristas, 6 sondas,
+  0 elisiones, 8 468 000 780 instrucciones. Los bumps de sus arranques planos son
+  454 309 en DOOM y 1 420 en SR2 sobre generaciones de 89 y 236 millones —
+  o sea que bajo MMU la generación la mueve el despachador y nada más.
+- **El canónico clang reentrenado, `35AA2D4CFA5B62B5`** (ciclo GEN → `pgo.ps1
+  -Clang` → USE, 13,6 min de entrenamiento), con la compuerta verde en los tres
+  guests: capturas byte a byte contra el intérprete y **byte a byte contra las del
+  binario MSVC** (las doce, los cuatro brazos de cada guest), 155 000 puntos de
+  `DCEMU_CP_MS` y los tres totales de instrucciones idénticos a los del MSVC — los
+  contadores del traductor son invariantes entre compiladores, que es la regla de
+  la fase G.
+- **La tanda de tres brazos y tres guests sobre ese canónico** (4 rondas, orden
+  rotado, calentamiento por guest descartado):
+
+  | guest | entera (omisión) | solo bumps | apagada | veredicto |
+  | --- | --- | --- | --- | --- |
+  | Crazy Taxi, 180 s | 66 162 / 66 866 / 67 146 / 67 085 → **66 162–67 146** | 69 529 / 71 353 / 70 533 / 70 764 → 69 529–71 353 | 69 032 / 69 592 / 71 965 / 70 275 → 69 032–71 965 | **−4,8 %, rangos disjuntos, 4/4**; bumps neutro |
+  | DCDoom, 35 s | 22 968 / 23 259 / 23 224 / 23 149 → 22 968–23 259 | 23 428 / 23 359 / 23 151 / 23 108 → 23 108–23 428 | 23 133 / 23 335 / 23 194 / 23 108 → 23 108–23 335 | solapados: inerte |
+  | Sega Rally 2 (`.chd`), 60 s | 46 774 / 47 061 / 47 887 / 47 038 → 46 774–47 887 | 46 761 / 46 953 / 46 953 / 47 685 → 46 761–47 685 | 46 831 / 46 677 / 47 308 / 47 680 → 46 677–47 680 | solapados: inerte |
+
+  La ganancia de CT se reproduce sobre el binario con perfil (−4,8 % contra el
+  −4,7 % del MSVC sin PGO) y el brazo del medio vuelve a ser neutro. Marcas sobre
+  este canónico y esta máquina: **CT 2,69×**, DOOM 1,51×, SR2 1,28× (con la
+  descompresión del `.chd` adentro) — no se comparan con las de la otra máquina.
+  Los totales de CT en la tanda muestran los valores bimodales del pad (sin replay,
+  a propósito: la tanda mide tiempo y el descarte del jitter es la compuerta).
+
+Queda (c): el barrido KOS y la red de juegos con la palanca entera — la v1 sólo
+instala sondas en enlaces estáticos de retroceso, así que los lazos de una sola
+palabra de las demos (`while (!flag);`, que cierran DENTRO de un bloque por salto
+interno) no eliden todavía: esa es **la segunda forma de arista** del diseño
+original y queda nombrada como el paso siguiente, con su propio censo primero.
 
 **Y una trampa de esta máquina que es del árbol.** El primer arranque del binario
 MSVC dijo «el enlazador plegó manejadores (ICF): la clasificación por puntero está
