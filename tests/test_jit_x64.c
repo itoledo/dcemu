@@ -396,6 +396,15 @@ static void saltos_hacia_adelante_y_hacia_atras(void)
 	jit_x64_fijar(&e, p);
 	ESPERAR_EMITIDO(0xE9, 0x01, 0x00, 0x00, 0x00, 0xC3);
 
+	/* call con destino a parchear: el mismo rel32 con el opcode de CALL. Es lo
+	   que usa el talon de sincronizacion por bloque, que se emite despues del
+	   cuerpo y por eso no puede resolverse al vuelo. */
+	arrancar();
+	p = jit_x64_call(&e);
+	jit_x64_ret(&e);
+	jit_x64_fijar(&e, p);
+	ESPERAR_EMITIDO(0xE8, 0x01, 0x00, 0x00, 0x00, 0xC3);
+
 	/* jcc largo, con su prefijo de dos bytes. */
 	arrancar();
 	p = jit_x64_jcc(&e, X64_NE);

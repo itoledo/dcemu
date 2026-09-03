@@ -108,6 +108,11 @@ OPCODE(sleep116)
 		temporizadores y la interrupcion llega igual.
 	*/
 
+	/* El censo del ocio: ver perf.h. Cada vuelta de esta espera cuesta un viaje
+	   entero por main_loop, asi que cuantas son decide si el traductor necesita
+	   una plantilla que avance el reloj de una. */
+	PERF_CONTAR(perf_sleeps);
+
 	core.context.cycles += 4;
 }
 

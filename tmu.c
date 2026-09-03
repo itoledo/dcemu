@@ -175,7 +175,7 @@ int tmu_tick(DWORD ciclos)
 				*tcr[n] |= TMU_TCR_UNF;
 
 				/* Recien pide: que la entrega no espere al compas grueso. */
-				intc_sh4_reintentar = 1;
+				INTC_PEDIR_REINTENTO();
 
 				if (*tcr[n] & TMU_TCR_UNIE)
 					pendientes |= (1 << n);

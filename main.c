@@ -642,7 +642,7 @@ static void dma_canal(int n, DWORD * sar, DWORD * dar, DWORD * dmatcr, DWORD * c
 	   DMTE la deriva intc_revisar_sh4() de estas mismas banderas -- aca no se
 	   entrega nada, igual que el TMU y el WDT. */
 	*chcr  |= CHCR_TE;
-	intc_sh4_reintentar = 1;
+	INTC_PEDIR_REINTENTO();
 
 	if (traza_activa)
 		fprintf(stderr, "traza: DMAC canal %d: transferencia hecha, "
@@ -1183,6 +1183,12 @@ void main_loop(void)
 					WORD instr = *(WORD *) MMU_FETCH_PUNTERO(PC);
 
 					PERF_CONTAR(perf_instrucciones);
+
+					/* El censo del contrato (perf.h): la clase de la fila y el
+					   largo de las corridas de filas directas. Va junto al
+					   contador de instrucciones y por lo mismo -- el camino con
+					   MMU y las ranuras cuentan adentro de run(). */
+					PERF_OPCODE(PC, instr);
 #ifdef DCEMU_INLINE
 					if (despacho_inline(instr))
 						PERF_CONTAR(perf_inline_si);
@@ -1424,7 +1430,15 @@ void main_loop(void)
 					}
 				}
 
-				intc_sh4_reintentar = 0;
+				/* La coherencia entre la bandera y el limite del corte emitido:
+				   un sitio que armara una sin la otra dejaria al traductor sin
+				   cortar donde el interprete corta, y eso no se ve hasta mil
+				   millones de instrucciones despues. Aqui cuesta una comparacion
+				   por servicio y se informa al salir. Ver intc.h. */
+				if ((intc_corte_limite == 0) != (intc_sh4_reintentar != 0))
+					intc_corte_incoherente++;
+
+				INTC_LIMPIAR_REINTENTO();
 
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan
 				// su propio resto, cada uno con su divisor. Ninguno entrega su
@@ -2888,6 +2902,7 @@ int main(int argc, char *argv[])
 	perf_resumen();
 	arm7_perfil_resumen();
 #ifdef DCEMU_JIT
+	jit_resumen();		/* aca y no por atexit: ver jit.c */
 	arm7jit_resumen();
 #endif
 

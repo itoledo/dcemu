@@ -19,6 +19,7 @@
 #include "main.h"
 #include "arnes.h"
 #include "ta.h"
+#include "tmu.h"		/* RELOJ_GRANO: el limite del corte emitido */
 
 /* --- graficos.c ---------------------------------------------------------- */
 
@@ -126,6 +127,11 @@ DWORD	intc_queuemask_ext = 0;
 /* La ponen las dos entradas de escritura de SR y los productores de
    peticiones; en el arnes no la consume nadie. Ver intc.c. */
 int	intc_sh4_reintentar = 0;
+
+/* Su pareja: el limite del corte emitido, que viaja con la bandera. En el
+   arnes no hay codigo emitido, pero las macros de intc.h lo escriben. */
+int	intc_corte_limite = RELOJ_GRANO;
+unsigned long long intc_corte_incoherente = 0;
 
 /* La lectora avisa el fin de cada comando; las pruebas del GD-ROM miran estos
    contadores para verificar que interrumpio cuando correspondia. */

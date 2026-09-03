@@ -40,6 +40,32 @@ bool intc_asic_pendiente(void);
    Ver el comentario en intc.c. */
 extern int intc_sh4_reintentar;
 
+/*
+	El limite del corte del bloque periodico **para el codigo emitido**: vale
+	RELOJ_GRANO normalmente y CERO mientras el reintento este armado.
+
+	Existe para que el traductor pregunte una cosa donde preguntaba dos. El corte
+	emitido reproduce la condicion de main_loop --`cycles >= RELOJ_GRANO ||
+	intc_sh4_reintentar`-- y le costaba dos comparaciones con sus dos saltos en
+	cada frontera de instruccion con ciclos, o sea en casi todas. Envenenando el
+	limite, `CYC >= limite` es cierta exactamente cuando lo era la disyuncion.
+
+	Por eso los dos se mueven JUNTOS, con las macros de abajo, y por eso el
+	bloque periodico comprueba la coherencia una vez por servicio: un sitio que
+	armara el reintento sin envenenar el limite dejaria al traductor sin cortar,
+	que es una divergencia silenciosa y tardia. El contador la nombra a gritos.
+*/
+extern int intc_corte_limite;
+
+/* Cuantas veces el limite y la bandera no coincidieron. Cero siempre. */
+extern unsigned long long intc_corte_incoherente;
+
+#define INTC_PEDIR_REINTENTO()							\
+	do { intc_sh4_reintentar = 1; intc_corte_limite = 0; } while (0)
+
+#define INTC_LIMPIAR_REINTENTO()						\
+	do { intc_sh4_reintentar = 0; intc_corte_limite = RELOJ_GRANO; } while (0)
+
 /* Hay alguien pidiendo (fuentes SH-4 + compuerta del ASIC), sin mirar SR y
    sin entregar: el predicado del censo del reintento. */
 int intc_alguien_pide(void);

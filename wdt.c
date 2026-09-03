@@ -155,7 +155,7 @@ int wdt_tick(DWORD ciclos)
 			else
 			{
 				wtcsr |= WTCSR_IOVF;
-				intc_sh4_reintentar = 1;
+				INTC_PEDIR_REINTENTO();
 				iti = 1;
 			}
 		}

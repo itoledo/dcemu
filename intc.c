@@ -78,6 +78,10 @@ static DWORD intc_demorados = 0;
 */
 int intc_sh4_reintentar = 0;
 
+/* El limite del corte emitido y su contador de coherencia. Ver intc.h. */
+int intc_corte_limite = RELOJ_GRANO;
+unsigned long long intc_corte_incoherente = 0;
+
 /*
 	El rearme condicional -- armar en UpdateSR solo con alguien pidiendo --
 	SE INTENTO Y SE REVIRTIO el 2026-08-31: la lista de entregas divergia

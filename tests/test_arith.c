@@ -696,6 +696,89 @@ static void div0u_apaga_q_m_y_t(void)
    cociente correcto, el resto del paso (el sumar/restar y el calculo de Q)
    esta bien y lo unico roto es la formula de T. */
 
+/*
+	La forma cerrada de DIV1, contra el manejador real y sobre estado al azar.
+
+	div1s52() esta escrito como el manual: dos switch anidados sobre el Q viejo y
+	sobre M, con una suma o una resta en cada rama y un Q distinto en cada una.
+	Leido asi son cuatro casos; leido como algebra son dos lineas:
+
+	  se RESTA si (Q_viejo == M), y se suma si no;
+	  Q_nuevo = qs ^ tmp1 ^ M,   con qs = bit 31 de Rn ANTES del corrimiento
+	                             y  tmp1 = el acarreo/prestamo de la operacion.
+
+	Esta prueba existe porque de esa forma cerrada depende **la plantilla emitida
+	de DIV1**: el traductor no puede permitirse el switch --sus ramas dependen de
+	los datos y fallan la prediccion la mitad de las veces en un lazo de
+	division-- y emite la version sin ramas. Si la equivalencia se rompiera, el
+	sintoma seria un cociente mal calculado mil millones de instrucciones despues.
+	Aqui se rompe en el acto, y sin depender de que el emisor este compilado.
+
+	El generador es un LCG fijo: la prueba tiene que fallar siempre igual. Los
+	valores 0 y 0x80000000 entran a mano porque son los bordes -- divisor cero
+	(donde acarreo y prestamo dejan de ser complementarios) y el bit de signo.
+*/
+static void div1_la_forma_cerrada_coincide(void)
+{
+	unsigned long semilla = 12345u;
+	int i;
+
+	for (i = 0; i < 4096; i++)
+	{
+		DWORD n_ini, m_ini, qs, tmp0, esperado_rn, tmp1;
+		int q0, m0, t0, resta, q_nuevo, t_nuevo;
+
+		semilla = semilla * 1103515245u + 12345u;
+		n_ini = (DWORD) (semilla >> 1);
+		semilla = semilla * 1103515245u + 12345u;
+		m_ini = (DWORD) (semilla >> 1);
+
+		if (i < 8)			/* los bordes, a mano */
+		{
+			n_ini = (i & 1) ? 0x80000000ul : 0ul;
+			m_ini = (i & 2) ? 0x80000000ul : 0ul;
+		}
+
+		q0 = (i >> 0) & 1;
+		m0 = (i >> 1) & 1;
+		t0 = (i >> 2) & 1;
+
+		arnes_reset();
+
+		R(1) = n_ini;
+		R(0) = m_ini;
+		SR_Q = (unsigned) q0;
+		SR_M = (unsigned) m0;
+		SR_T = (unsigned) t0;
+
+		/* La forma cerrada, calculada aparte. */
+		qs   = n_ini >> 31;
+		tmp0 = (n_ini << 1) | (DWORD) t0;
+		resta = (q0 == m0);
+
+		if (resta)
+		{
+			esperado_rn = tmp0 - m_ini;
+			tmp1 = (esperado_rn > tmp0) ? 1u : 0u;
+		}
+		else
+		{
+			esperado_rn = tmp0 + m_ini;
+			tmp1 = (esperado_rn < tmp0) ? 1u : 0u;
+		}
+
+		q_nuevo = (int) ((qs ^ tmp1 ^ (DWORD) m0) & 1u);
+		t_nuevo = (q_nuevo == m0) ? 1 : 0;
+
+		ejecutar(instr_nm(0x3004, 1, 0));	/* DIV1 R0, R1 */
+
+		ESPERAR_U32(R(1), esperado_rn);
+		ESPERAR_U32(SR_Q, (unsigned) q_nuevo);
+		ESPERAR_U32(SR_M, (unsigned) m0);
+		ESPERAR_T(t_nuevo);
+	}
+}
+
 static void paso_div1(int corregir_t)
 {
 	ejecutar(instr_nm(0x3004, 1, 0));	/* DIV1 R0, R1 */
@@ -1166,6 +1249,7 @@ static const dc_caso casos[] =
 	CASO(div1_division_con_resto),
 	CASO(div1_divisor_grande),
 	CASO(div1_divisor_mayor_que_el_dividendo),
+	CASO(div1_la_forma_cerrada_coincide),
 	CASO(macl_acumula_y_avanza_los_punteros),
 	CASO(macl_con_operandos_negativos),
 	CASO(macl_arrastra_hacia_mach),

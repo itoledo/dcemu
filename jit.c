@@ -1109,6 +1109,7 @@ static int D(const void * p)
 #define D_ESCR_PAR	D(&jit_estado.h_escribir_par)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
+#define D_LIMITE		D(&intc_corte_limite)
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
 #define D_BASE_LEC	D(&mem_base_lectura[0])
@@ -1137,6 +1138,8 @@ static int D(const void * p)
    1084 emisiones fallidas contra 322 y 263 -- y el PC quedaba interpretado
    para siempre: la cobertura CAIA al permitir bloques mas largos. */
 #define JIT_MAX_SALIDAS		(JIT_MAX_INSTR + JIT_MAX_INSTR / 2 + 16)
+typedef struct jit_traduccion jit_traduccion;
+
 typedef struct
 {
 	x64_emisor	e;
@@ -1145,6 +1148,64 @@ typedef struct
 	jit_enlace	enlace[JIT_MAX_ENLACES];
 	int			n_enlaces;
 	jit_marco	marco;
+
+	/*
+		La sincronizacion pendiente de la fila en curso: la instantanea que
+		hace reejecutable al acceso que viene. **Se emite en el camino lento y
+		no antes de la plantilla**, que es toda la fase: el camino rapido
+		emitido no puede faltar --alineacion, modo, traduccion acertada y zona
+		con base directa lo garantizan, y el UBC y el watchpoint estan plegados
+		en mem_base_*-- asi que volcar los registros ahi era pagar cuarenta
+		bytes por acceso para un longjmp que no ocurre.
+
+		Lo que la hace exacta es que TODA salida a C pasa por gen_llamar() o
+		por tr_manejador(), y las dos la emiten antes de la llamada. Y que las
+		plantillas de acceso mutan los registros del guest **despues** del
+		acceso (el post-incremento de @Rm+, el compromiso de @-Rn), asi que
+		volcar tarde vuelca el mismo estado previo que volcar temprano.
+
+		El contador de control es jit_sync_sin_consumir: una fila con accede
+		que no llegue a ningun sitio de llamada seria una que puede faltar sin
+		instantanea, asi que se descarta el bloque entero y se cuenta.
+	*/
+	jit_traduccion * sync_t;
+	DWORD			 sync_pc;
+	int				 sync_activa;
+	int				 sync_usada;
+
+	/*
+		El talon de sincronizacion **por bloque**. El volcado son las mismas seis
+		tiendas para todos los accesos del bloque --las cinco ranuras que ese
+		bloque mapea, mas CYC--, asi que emitirlo entero en cada talon multiplica
+		cuarenta bytes por acceso, y bajo MMU por DOS, que son los dos talones
+		que abre cada acceso. Emitido una vez y llamado por rel32, cada talon
+		queda en el `mov` del PC (que si es propio de la instruccion) y cinco
+		bytes de `call`.
+
+		El `call` es seguro adentro de un bloque aunque el arena tenga una sola
+		informacion de desenrollado: el talon no llama a nadie ni toca la pila mas
+		alla del retorno, asi que RSP vuelve a estar como lo espera la llamada al
+		ayudante que sigue, y nada puede faltar mientras esta corrido.
+	*/
+	x64_parche		 sync_llam[JIT_MAX_INSTR * 2];
+	int				 n_sync_llam;
+
+	/*
+		La direccion constante del acceso que viene, si la hay.
+
+		Los literales de PC-relativo --`MOV.L @(d,PC),Rn` y su hermana de 16
+		bits-- tienen la direccion decidida al traducir: es `(pc & ~3) + 4 +
+		disp*4`. El valor se sigue leyendo, que el literal es dato; lo que se
+		pliega es **el camino hasta el**. Con la direccion conocida, el indice de
+		zona y el desplazamiento dentro de ella son constantes, y la guarda de
+		alineacion sobra porque la formula ya alinea.
+
+		Vale la pena por el censo: esa fila es el **13,87 % de las instrucciones
+		de Crazy Taxi**, 6,21 % de DCDoom y 6,82 % de Sega Rally 2 sumando las
+		dos anchuras.
+	*/
+	DWORD			 acc_dir;
+	int				 acc_dir_valida;
 } jit_gen;
 
 /* Los ocho no volatiles que el bloque usa, en orden de empuje. */
@@ -1215,8 +1276,65 @@ static void gen_volcar_cuenta(jit_gen * g)
 	La llamada al ayudante: directa si el arena cae en alcance (cinco bytes y
 	sin carga) y por la tabla en memoria si no.
 */
+static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k);
+static void tr_sync_talon(jit_gen * g, jit_traduccion * t, DWORD pc_k);
+static unsigned long long jit_bytes_sync;
+
+/* El volcado de la sincronizacion, emitido UNA vez por bloque y llamado desde
+   cada talon. DCEMU_JIT_SYNC_EN_CADA_TALON=1 lo vuelve a poner entero en cada
+   uno --la forma anterior byte por byte-- y es el A/B del escalon. */
+static int jit_sync_stub = 1;
+
+/* El pliegue de los accesos con direccion constante (los literales de
+   PC-relativo). DCEMU_JIT_SIN_DIR_CONSTANTE=1 lo apaga y reproduce la emision
+   anterior byte por byte: es el A/B del escalon. */
+static int jit_dir_constante = 1;
+
+/*
+	Emite la sincronizacion pendiente, si la hay. Va **inmediatamente antes de
+	toda llamada a C**, que es el unico sitio desde donde una instruccion emitida
+	puede faltar: los ayudantes de memoria expanden el macro de mem.h entero --
+	traduccion, watchpoints, UBC, camino lento y el error de direccion-- y
+	cualquiera de esos puede salir por longjmp.
+
+	No la consume: un acceso abre dos talones --el fisico y el virtual-- y los
+	dos tienen que llevarla. La marca de consumo la levanta el conductor cuando
+	la fila termino de emitirse.
+*/
+static void gen_sync_pendiente(jit_gen * g)
+{
+	unsigned antes;
+
+	if (!g->sync_activa)
+		return;
+
+	antes = jit_x64_largo(&g->e);
+
+	/*
+		El volcado es el mismo para todos los accesos del bloque --las ranuras que
+		ese bloque mapea y CYC--, asi que se emite UNA vez al final y cada talon
+		lo llama. Lo unico propio de la instruccion es el PC.
+
+		Con DCEMU_JIT_SYNC_EN_CADA_TALON=1 vuelve a emitirse entero en cada talon,
+		que es la forma anterior byte por byte y el brazo del A/B.
+	*/
+	if (jit_sync_stub
+		&& g->n_sync_llam < (int) (sizeof(g->sync_llam) / sizeof(g->sync_llam[0])))
+	{
+		jit_x64_mov_mi(&g->e, CTX, O_PC, g->sync_pc);
+		g->sync_llam[g->n_sync_llam++] = jit_x64_call(&g->e);
+	}
+	else
+		tr_sync_talon(g, g->sync_t, g->sync_pc);
+
+	jit_bytes_sync += jit_x64_largo(&g->e) - antes;
+	g->sync_usada = 1;
+}
+
 static void gen_llamar(jit_gen * g, const void * destino, int disp_tabla)
 {
+	gen_sync_pendiente(g);
+
 	if (!jit_x64_call_directo(&g->e, destino))
 		jit_x64_call_m(&g->e, CTX, disp_tabla);
 }
@@ -1303,6 +1421,36 @@ static int					jit_sonda_accesos = 0;
    DCEMU_JIT_SIN_ATAJO_P1P2=1 lo apaga y reproduce la emision anterior
    byte por byte: es el A/B de la fase y la linea base de antes. */
 static int					jit_atajo_p1p2 = 1;
+
+/* El corte del bloque periodico, emitido como UNA comparacion contra el limite
+   envenenable de intc.h en vez de dos contra la constante y la bandera.
+   DCEMU_JIT_CORTE_VIEJO=1 vuelve a las dos y reproduce la emision anterior
+   byte por byte: es el A/B del escalon. */
+static int					jit_corte_viejo = 0;
+
+/*
+	DIV1 emitida en linea y sin ramas: **medida y APAGADA**, con
+	DCEMU_JIT_DIV1_EMITIDA=1 para volver a encenderla.
+
+	El censo la senalaba como el blanco mayor de DCDoom (4,91 % de sus
+	instrucciones) y la aritmetica cerraba: cambiar una llamada al manejador --con
+	sincronizacion, recarga de CYC y de las cinco ranuras-- por unas cuarenta
+	instrucciones rectas. **Perdio su A/B con claridad**: +3,6 % en DOOM, rangos
+	disjuntos y 4/4, sobre el canonico reentrenado `E1E565F833F4738B`.
+
+	Y el arena descarta la explicacion facil: 49 474 303 bytes contra 49 239 871,
+	o sea +0,48 %. No son los bytes: es que **las ramas del manejador se predicen
+	bien** --M es fijo durante una division y el patron de Q lo aprende el
+	predictor-- y la version sin ramas las cambia por una cadena de dependencias
+	de quince pasos, con dos setcc/movzx y un lee-modifica-escribe de SR al final.
+	Es la lección del cuerpo rapido del DSP otra vez, ahora en el SH-4: quitar
+	ramas que ya se predicen no compra nada, y alargar la cadena cuesta.
+
+	Queda porque la forma cerrada esta probada (tests/test_arith.c) y porque la
+	variante que NO se probo --emitir el switch tal cual, con sus ramas, para
+	ahorrar solo la llamada-- tiene aca la mitad del trabajo hecha.
+*/
+static int					jit_div1_emitida = 0;
 
 /* Las dos guardas por acceso que el censo mostro muertas -- el cambio de modo
    del lado MMU y el break de operando del UBC -- se pliegan en otro lado.
@@ -1707,7 +1855,13 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 	if (jit_sonda_accesos)
 		jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_total), 1);
 
-	if (alineacion)
+	/* Con la direccion decidida al emitir, la guarda de alineacion se decide
+	   tambien: la formula del literal de PC-relativo ya alinea, asi que la
+	   prueba no puede fallar y no se emite. Si alguna vez llegara una
+	   constante desalineada, se emite igual y el ayudante levanta el error de
+	   direccion por el camino de siempre. */
+	if (alineacion
+		&& !(g->acc_dir_valida && (g->acc_dir & (DWORD) alineacion) == 0))
 	{
 		jit_x64_test_ri8(&g->e, X64_RCX, alineacion);
 		gen_lento(g, a, X64_NE, JIT_RZ_ALINEACION);
@@ -1787,7 +1941,23 @@ static void gen_rapido_inicio(jit_gen * g, jit_acceso * a, int disp_tabla,
 		}
 	}
 
-	/* rax = la base de la zona; r8 = el desplazamiento dentro de ella. */
+	/* rax = la base de la zona; r8 = el desplazamiento dentro de ella.
+
+	   Con la direccion constante y sin MMU, las dos cosas son constantes: el
+	   indice de zona se pliega en el desplazamiento de la carga de la tabla y el
+	   offset es un inmediato. La prueba de base nula se queda --la tabla cambia
+	   cuando se arma un watchpoint o un break de operando-- y es lo unico que
+	   sigue mirando el estado. */
+	if (g->acc_dir_valida && modo != JIT_ACC_MMU)
+	{
+		jit_x64_mov64_rm(&g->e, X64_RAX, CTX,
+			disp_tabla + (int) ((g->acc_dir >> 24) * 8));
+		jit_x64_test64_rr(&g->e, X64_RAX, X64_RAX);
+		gen_lento(g, a, X64_E, JIT_RZ_ZONA);
+		jit_x64_mov_ri(&g->e, X64_R8, (int) (g->acc_dir & 0x00FFFFFFul));
+		return;
+	}
+
 	jit_x64_mov_rr(&g->e, X64_RAX, a->fis);
 	jit_x64_shr_ri(&g->e, X64_RAX, 24);
 	jit_x64_mov64_rm_idx(&g->e, X64_RAX, CTX, X64_RAX, 8, disp_tabla);
@@ -2270,15 +2440,44 @@ static void gen_salir_en(jit_gen * g, DWORD pc_sig)
 	evaluaria. Los dos saltos cortos caen dentro de los pocos bytes que separan
 	las tres etiquetas, asi que no hay rel32 en el camino que no corta.
 */
+/*
+	La condicion del corte, emitida. Es la de main_loop -- `cycles >= RELOJ_GRANO
+	|| intc_sh4_reintentar` -- y se emitia tal cual: dos comparaciones y dos
+	saltos, uno de ellos TOMADO en el camino comun para saltear el talon de
+	salida que quedaba en medio del codigo caliente.
+
+	Ahora es **una sola comparacion contra un limite envenenable**: quien arma el
+	reintento pone el limite en cero (INTC_PEDIR_REINTENTO en intc.h), asi que
+	`CYC >= limite` vale exactamente cuando valia la disyuncion. Dos
+	instrucciones en vez de cuatro, en casi todas las fronteras del bloque.
+
+	Con DCEMU_JIT_CORTE_VIEJO=1 vuelve la forma de dos comparaciones, byte por
+	byte, que es el brazo del A/B.
+*/
+static void gen_corte_condicion(jit_gen * g, x64_parche * cortar, int * n)
+{
+	if (jit_corte_viejo)
+	{
+		jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
+		cortar[(*n)++] = jit_x64_jcc_corto(&g->e, X64_AE);
+		jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
+		return;
+	}
+
+	jit_x64_cmp_rm32(&g->e, CYC, CTX, D_LIMITE);
+}
+
 static void gen_corte(jit_gen * g, DWORD pc_sig)
 {
-	x64_parche a_cortar, sigue;
+	x64_parche a_cortar[1], sigue;
+	int n = 0;
 
-	jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
-	a_cortar = jit_x64_jcc_corto(&g->e, X64_AE);
-	jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
-	sigue = jit_x64_jcc_corto(&g->e, X64_E);
-	jit_x64_fijar(&g->e, a_cortar);
+	gen_corte_condicion(g, a_cortar, &n);
+	sigue = jit_x64_jcc_corto(&g->e, jit_corte_viejo ? X64_E : X64_B);
+
+	while (n--)
+		jit_x64_fijar(&g->e, a_cortar[n]);
+
 	gen_salir_en(g, pc_sig);
 	jit_x64_fijar(&g->e, sigue);
 }
@@ -2686,8 +2885,6 @@ static void gen_bloque_ce(jit_gen * g)
 static void jit_marcar(DWORD pc);
 static void jit_desmarcar(DWORD pc);
 
-typedef struct jit_traduccion jit_traduccion;
-
 static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig);
 static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t);
 static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k);
@@ -2959,14 +3156,31 @@ static void pl_mov3(jit_gen * g, jit_traduccion * t, int i)		/* MOV Rm,Rn */
 
 /* MOV.L @(disp,PC),Rn -- la direccion es constante del bloque, que es uno de
    los dos pliegues que el plan permite sin IR. El valor se sigue leyendo. */
+/* Los dos literales de PC-relativo: la direccion sale de la palabra y del PC,
+   asi que es constante al traducir. Se anuncia en g->acc_dir para que el
+   camino rapido pliegue la zona, el desplazamiento y la alineacion; el VALOR
+   se sigue leyendo, que el literal es dato. ECX se carga igual porque el
+   camino lento --el ayudante-- espera ahi la virtual. */
+static void tr_leer_const(jit_gen * g, jit_traduccion * t, int n, int ancho,
+	DWORD dir)
+{
+	jit_x64_mov_ri(&g->e, X64_RCX, dir);
+
+	g->acc_dir        = dir;
+	g->acc_dir_valida = jit_dir_constante;
+
+	tr_leer_a(g, t, n, ancho);
+
+	g->acc_dir_valida = 0;
+}
+
 static void pl_movl2(jit_gen * g, jit_traduccion * t, int i)
 {
 	WORD  w   = t->palabra[i];
 	DWORD pc  = t->pc[i];
 	DWORD dir = (DWORD) (w & 0xFF) * 4 + (pc & 0xFFFFFFFCul) + 4;
 
-	jit_x64_mov_ri(&g->e, X64_RCX, dir);
-	tr_leer_a(g, t, TN(w), 4);
+	tr_leer_const(g, t, TN(w), 4, dir);
 }
 
 static void pl_movl9(jit_gen * g, jit_traduccion * t, int i)	/* MOV.L @Rm,Rn */
@@ -3624,8 +3838,7 @@ static void pl_movw1(jit_gen * g, jit_traduccion * t, int i)
 	DWORD pc  = t->pc[i];
 	DWORD dir = (DWORD) (w & 0xFF) * 2 + pc + 4;
 
-	jit_x64_mov_ri(&g->e, X64_RCX, dir);
-	tr_leer_a(g, t, TN(w), 2);
+	tr_leer_const(g, t, TN(w), 2, dir);
 }
 
 /* --- la frontera FPU (sz0): los FMOV por el puntero de banco vivo -------- */
@@ -4572,6 +4785,11 @@ static void tr_prologo(jit_gen * g, jit_traduccion * t);
 */
 static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
 {
+	/* No pasa por gen_llamar(), asi que la sincronizacion pendiente se emite
+	   aqui. Queda en el mismo sitio que antes --antes del mov de la palabra--
+	   asi que la emision de estas filas no cambia un byte. */
+	gen_sync_pendiente(g);
+
 	jit_x64_mov_ri(&g->e, X64_RCX, (unsigned) t->palabra[i]);
 
 	if (!jit_x64_call_directo(&g->e, f))
@@ -4587,7 +4805,118 @@ static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
 		gen_corte(g, t->pc[i] + 2);
 }
 
+/*
+	DIV1 Rm,Rn emitido, y sin ramas.
+
+	**Por que vale la pena.** El censo del contrato (2026-09-02) dio DIV1 en el
+	4,91 % de las instrucciones ejecutadas de DCDoom: el guest divide por
+	software y cada paso costaba sincronizacion, llamada, recarga de CYC y
+	recarga de las cinco ranuras, mas un manejador con dos switch anidados.
+
+	**Por que sin ramas.** Los switch de div1s52() dependen de Q y de M: M es fijo
+	durante una division, pero Q alterna con los bits del cociente, o sea que una
+	rama ahi falla la prediccion la mitad de las veces. Emitir el switch tal cual
+	cambiaria una llamada por veinte ciclos de penalidad.
+
+	**La forma cerrada** (probada contra el manejador real sobre 4096 estados al
+	azar mas los bordes, en tests/test_arith.c, div1_la_forma_cerrada_coincide):
+
+	  qs   = bit 31 de Rn ANTES del corrimiento
+	  tmp0 = (Rn << 1) | T
+	  se RESTA si (Q == M), y se suma si no
+	  tmp1 = el prestamo de la resta o el acarreo de la suma
+	  Q'   = qs ^ tmp1 ^ M
+	  T'   = (Q' == M)
+
+	Los dos trucos que la vuelven recta, en vez de un cmov que este emisor no
+	tiene: el operando se niega con mascara --`b' = (b ^ (sel-1)) - (sel-1)`, que
+	da b cuando sel vale 1 y -b cuando vale 0-- asi que siempre se SUMA; y el
+	acarreo se corrige con `tmp1 = CF ^ !sel`. Eso vale para todo b salvo **b
+	cero**, donde acarreo y prestamo dejan de ser complementarios (los dos valen
+	0 y la negacion daria 1): de ahi el `and` final contra (b != 0), que es el
+	unico caso que la forma cerrada no cubre sola y el que la prueba fuerza a
+	mano.
+
+	Las operaciones de 8 bits van todas sobre AL a proposito: setcc y or_mr8
+	sobre R8-R15 pedirian REX que el emisor no arma para esa forma.
+*/
 static void pl_div1s52(jit_gen * g, jit_traduccion * t, int i)
+{
+	WORD w = t->palabra[i];
+	int  n = TN(w), m = TM(w);
+	int  hn;
+
+	/* qs = bit 31 de Rn, tomado antes de tocarlo. */
+	tr_cargar(g, t, X64_R8, n);
+	jit_x64_shift_ri(&g->e, X64_SHR, X64_R8, 31);
+
+	/* tmp0 = (Rn << 1) | T, en RCX. */
+	tr_cargar(g, t, X64_RCX, n);
+	jit_x64_alu_rr(&g->e, X64_ADD, X64_RCX, X64_RCX);
+	jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_SR);
+	jit_x64_mov_rr(&g->e, X64_R9, X64_RAX);
+	jit_x64_alu_ri(&g->e, X64_AND, X64_R9, 1);
+	jit_x64_alu_rr(&g->e, X64_OR, X64_RCX, X64_R9);
+
+	/* sel = Q ^ M (0 = restar) en R9; M en R10. Q es el bit 8 de SR y M el 9. */
+	jit_x64_mov_rr(&g->e, X64_R9, X64_RAX);
+	jit_x64_shift_ri(&g->e, X64_SHR, X64_R9, 8);
+	jit_x64_mov_rr(&g->e, X64_R10, X64_RAX);
+	jit_x64_shift_ri(&g->e, X64_SHR, X64_R10, 9);
+	jit_x64_alu_rr(&g->e, X64_XOR, X64_R9, X64_R10);
+	jit_x64_alu_ri(&g->e, X64_AND, X64_R9, 1);
+	jit_x64_alu_ri(&g->e, X64_AND, X64_R10, 1);
+
+	/* b' = sel ? b : -b, por mascara; y el resultado, siempre sumando. */
+	tr_cargar(g, t, X64_RDX, m);
+	jit_x64_mov_rr(&g->e, X64_RAX, X64_R9);
+	jit_x64_alu_ri(&g->e, X64_SUB, X64_RAX, 1);
+	jit_x64_mov_rr(&g->e, X64_R11, X64_RDX);
+	jit_x64_alu_rr(&g->e, X64_XOR, X64_R11, X64_RAX);
+	jit_x64_alu_rr(&g->e, X64_SUB, X64_R11, X64_RAX);
+	jit_x64_alu_rr(&g->e, X64_ADD, X64_RCX, X64_R11);
+
+	/* tmp1 = CF ^ !sel, y cero si b era cero. */
+	jit_x64_setcc(&g->e, X64_B, X64_RAX);
+	jit_x64_movzx_b(&g->e, X64_RAX, X64_RAX);
+	jit_x64_mov_rr(&g->e, X64_R11, X64_RAX);
+	jit_x64_mov_rr(&g->e, X64_RAX, X64_R9);
+	jit_x64_alu_ri(&g->e, X64_XOR, X64_RAX, 1);
+	jit_x64_alu_rr(&g->e, X64_XOR, X64_R11, X64_RAX);
+	jit_x64_test_rr(&g->e, X64_RDX, X64_RDX);
+	jit_x64_setcc(&g->e, X64_NE, X64_RAX);
+	jit_x64_movzx_b(&g->e, X64_RAX, X64_RAX);
+	jit_x64_alu_rr(&g->e, X64_AND, X64_R11, X64_RAX);
+
+	/* Q' = qs ^ tmp1 ^ M, en R8. */
+	jit_x64_alu_rr(&g->e, X64_XOR, X64_R8, X64_R11);
+	jit_x64_alu_rr(&g->e, X64_XOR, X64_R8, X64_R10);
+
+	/* T' = !(Q' ^ M), en RAX. */
+	jit_x64_mov_rr(&g->e, X64_RAX, X64_R8);
+	jit_x64_alu_rr(&g->e, X64_XOR, X64_RAX, X64_R10);
+	jit_x64_alu_ri(&g->e, X64_XOR, X64_RAX, 1);
+
+	/* SR por bytes, como gen_poner_t: T es el bit 0 y Q el bit 0 del byte 1.
+	   Escribir SR entero pisaria S, el IMASK y los bits altos. */
+	jit_x64_and_mi8(&g->e, CTX, O_SR, 0xFE);
+	jit_x64_or_mr8(&g->e, CTX, O_SR, X64_RAX);
+	jit_x64_mov_rr(&g->e, X64_RAX, X64_R8);
+	jit_x64_and_mi8(&g->e, CTX, O_SR + 1, 0xFE);
+	jit_x64_or_mr8(&g->e, CTX, O_SR + 1, X64_RAX);
+
+	/* Y recien ahora Rn: todo lo de arriba lo leyo. */
+	hn = tr_h(t, n);
+
+	if (hn >= 0)
+		jit_x64_mov_rr(&g->e, (x64_reg) hn, X64_RCX);
+	else
+		jit_x64_mov_mr(&g->e, CTX, O_R(n), X64_RCX);
+}
+
+/* El brazo del A/B: DIV1 por el manejador real, como antes. La fila cambia de
+   ciclos y de `accede` con la palanca, asi que el cambio va en jit_iniciar. */
+static void pl_div1s52_c(jit_gen * g, jit_traduccion * t, int i)
 {
 	tr_manejador(g, t, i, (const void *) div1s52);
 }
@@ -4887,7 +5216,10 @@ static jit_plantilla jit_plantillas[] =
 	/* El tercer lote: la division por el manejador real, y los saltos
 	   relativos por registro. Las filas de manejador llevan accede=1 (la
 	   sincronizacion es el contrato) y ciclos 0 (los suma el manejador). */
-	{ NULL, "DIV1 Rm,Rn",         0, 1, 0, 0, pl_div1s52 },
+	/* Por manejador, que es lo que gano la tanda: la emision sin ramas existe y
+	   esta probada, pero perdio por 3,6 % (ver pl_div1s52). Con
+	   DCEMU_JIT_DIV1_EMITIDA=1, jit_iniciar cambia la fila a {1, 0, pl_div1s52}. */
+	{ NULL, "DIV1 Rm,Rn",         0, 1, 0, 0, pl_div1s52_c },
 	{ NULL, "DIV0S Rm,Rn",        0, 1, 0, 0, pl_div0s53 },
 	{ NULL, "DIV0U",              0, 1, 0, 0, pl_div0u54 },
 	{ NULL, "SHAD Rm,Rn",         0, 1, 0, 0, pl_shad90 },
@@ -5044,6 +5376,32 @@ static opcode_f * const jit_manejadores[JIT_N_PLANTILLAS] =
    averiguarlo. Por omision, todas. */
 static int jit_n_activas = JIT_N_PLANTILLAS;
 
+/*
+	Ligar las filas de la tabla a los manejadores reales: la tabla se escribe
+	como una lista y el orden de los dos arreglos es lo unico que las une, asi
+	que un desajuste seria una plantilla usada para otra instruccion. La
+	comprobacion de tamano lo impide.
+
+	Esta aparte de jit_iniciar() porque **el censo del contrato clasifica con la
+	tabla y corre con el traductor apagado**, que es su modo natural: apagado,
+	todas las instrucciones pasan por el interprete y por lo tanto por el
+	gancho. Sin esto la tabla queda en NULL y el censo informa que el 100 % de
+	las instrucciones no tiene plantilla, que es lo que paso la primera vez.
+*/
+static void jit_plantillas_ligar(void)
+{
+	static int ligadas = 0;
+	int i;
+
+	if (ligadas)
+		return;
+
+	ligadas = 1;
+
+	for (i = 0; i < JIT_N_PLANTILLAS; i++)
+		jit_plantillas[i].f = jit_manejadores[i];
+}
+
 static const jit_plantilla * jit_plantilla_de(opcode_f * f)
 {
 	int i;
@@ -5053,6 +5411,230 @@ static const jit_plantilla * jit_plantilla_de(opcode_f * f)
 			return &jit_plantillas[i];
 
 	return NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* El censo del contrato: de que clase es cada codificacion                  */
+/* ------------------------------------------------------------------------ */
+
+/*
+	Como jit_plantilla_de(), pero recorriendo la tabla ENTERA: el censo mide el
+	contrato del traductor, no la tabla recortada por DCEMU_JIT_PLANTILLAS, que
+	existe para bisecar. Devuelve el indice o -1.
+*/
+static int jit_pl_indice(opcode_f * f)
+{
+	int i;
+
+	for (i = 0; i < JIT_N_PLANTILLAS; i++)
+		if (jit_plantillas[i].f == f)
+			return i;
+
+	return -1;
+}
+
+/* La plantilla que le tocaria a una codificacion, por el mismo camino que el
+   traductor: el manejador que la oplist le da. Se toma la tabla de PR=0/SZ=0
+   para que la clasificacion no dependa del modo FPU vigente al informar. */
+static const jit_plantilla * jit_plantilla_de_todas(WORD w)
+{
+	int i = jit_pl_indice(OP_HANDLER(oplist_pr0_sz0, w));
+
+	return (i < 0) ? NULL : &jit_plantillas[i];
+}
+
+static int jit_clase_de(const jit_plantilla * p)
+{
+	if (p == NULL)			return JIT_CL_SIN;
+	if (p->terminal)		return JIT_CL_TERMINAL;
+	if (p->rama)			return JIT_CL_RAMA;
+
+	/* `propia` marca a las que cuentan el intento por su cuenta, que son las
+	   FPU por envoltorio: las unicas que llaman a C sin ser terminales ni
+	   ramas. Van aparte porque su costo es una llamada, no una emision. */
+	if (p->propia)			return JIT_CL_FPU;
+
+	/*
+		Acceso emitido en linea contra fila traducida llamando al manejador
+		real. Las separa **ciclos == 0**, y no por casualidad: tr_manejador
+		recarga CYC del contexto despues de la llamada porque el manejador ya
+		los sumo, asi que el conductor no debe volver a sumarlos. La distincion
+		importa porque el costo es distinto -- una emite el acceso, la otra
+		paga una llamada -- y porque solo la primera podria mover su
+		sincronizacion al camino lento.
+
+		Una sola fila cae aqui sin ser manejador: LDS.L @Rm+,PR, un acceso en
+		linea que no suma ciclos. Su peso se lee aparte en la tabla por
+		plantilla, que va al lado justamente para poder corregirlo a mano.
+	*/
+	if (p->accede)
+		return (p->ciclos == 0) ? JIT_CL_MANEJADOR : JIT_CL_ACCESO;
+
+	return JIT_CL_ALU;
+}
+
+static unsigned char * jit_clase_tabla = NULL;
+
+const unsigned char * jit_clases(void)
+{
+	unsigned long w;
+
+	if (jit_clase_tabla != NULL)
+		return jit_clase_tabla;
+
+	jit_plantillas_ligar();
+
+	jit_clase_tabla = (unsigned char *) calloc(65536, 1);
+
+	if (jit_clase_tabla == NULL)
+		return NULL;
+
+	for (w = 0; w < 65536; w++)
+		jit_clase_tabla[w] = (unsigned char)
+			jit_clase_de(jit_plantilla_de_todas((WORD) w));
+
+	return jit_clase_tabla;
+}
+
+/*
+	El informe: la mezcla dinamica por clase y el peso de cada plantilla.
+
+	Se corre con el traductor APAGADO (DCEMU_JIT=0), que es lo que hace pasar
+	todas las instrucciones por el gancho del interprete. Las dos formas ejecutan
+	lo mismo al digito, asi que la mezcla vale para el traductor aunque la haya
+	contado el interprete.
+*/
+void jit_censo_contrato(const unsigned long long * histo,
+	unsigned long long total)
+{
+	static const char * const nombre[JIT_CL_N] =
+	{
+		"sin plantilla", "directa (tramo)", "acceso en linea",
+		"rama", "FPU por envoltorio", "terminal", "por manejador C"
+	};
+
+	unsigned long long por_clase[JIT_CL_N];
+	unsigned long long por_pl[JIT_N_PLANTILLAS];
+	unsigned long long sin_pl_veces[16];
+	unsigned			sin_pl_op[16];
+	int				sin_pl_n = 0;
+	unsigned long		w;
+	int				i, j, c;
+
+	if (histo == NULL || total == 0)
+		return;
+
+	jit_plantillas_ligar();
+
+	for (c = 0; c < JIT_CL_N; c++)
+		por_clase[c] = 0;
+
+	for (i = 0; i < JIT_N_PLANTILLAS; i++)
+		por_pl[i] = 0;
+
+	for (i = 0; i < 16; i++)
+	{
+		sin_pl_veces[i] = 0;
+		sin_pl_op[i]	= 0;
+	}
+
+	for (w = 0; w < 65536; w++)
+	{
+		const jit_plantilla * p;
+		int idx;
+
+		if (histo[w] == 0)
+			continue;
+
+		idx = jit_pl_indice(OP_HANDLER(oplist_pr0_sz0, (WORD) w));
+		p	= (idx < 0) ? NULL : &jit_plantillas[idx];
+
+		por_clase[jit_clase_de(p)] += histo[w];
+
+		if (idx >= 0)
+		{
+			por_pl[idx] += histo[w];
+			continue;
+		}
+
+		/* Las que no tienen plantilla se guardan por codificacion: son las que
+		   cortan bloques, y el mnemonico dice cual escribir. */
+		if (sin_pl_n < 16)
+		{
+			sin_pl_veces[sin_pl_n] = histo[w];
+			sin_pl_op[sin_pl_n]	= (unsigned) w;
+			sin_pl_n++;
+		}
+		else
+		{
+			int peor = 0;
+
+			for (j = 1; j < 16; j++)
+				if (sin_pl_veces[j] < sin_pl_veces[peor])
+					peor = j;
+
+			if (histo[w] > sin_pl_veces[peor])
+			{
+				sin_pl_veces[peor] = histo[w];
+				sin_pl_op[peor]	= (unsigned) w;
+			}
+		}
+	}
+
+	fprintf(stderr, "perf: censo del contrato (%llu instrucciones"
+		" clasificadas)\n", total);
+
+	for (c = 0; c < JIT_CL_N; c++)
+		fprintf(stderr, "perf:   %-20s %14llu  %5.2f %%\n",
+			nombre[c], por_clase[c],
+			100.0 * (double) por_clase[c] / (double) total);
+
+	fprintf(stderr, "perf:   plantillas mas pesadas (por instrucciones"
+		" ejecutadas):\n");
+
+	for (i = 0; i < 24; i++)
+	{
+		int mejor = -1;
+
+		for (j = 0; j < JIT_N_PLANTILLAS; j++)
+			if (por_pl[j] != 0 && (mejor < 0 || por_pl[j] > por_pl[mejor]))
+				mejor = j;
+
+		if (mejor < 0)
+			break;
+
+		fprintf(stderr, "perf:     %-24s %14llu  %5.2f %%\n",
+			jit_plantillas[mejor].nombre, por_pl[mejor],
+			100.0 * (double) por_pl[mejor] / (double) total);
+
+		por_pl[mejor] = 0;
+	}
+
+	if (sin_pl_n)
+	{
+		fprintf(stderr, "perf:   sin plantilla, por codificacion"
+			" (palabra, veces, %%, mnemonico):\n");
+
+		for (i = 0; i < sin_pl_n; i++)
+		{
+			int mejor = -1;
+
+			for (j = 0; j < sin_pl_n; j++)
+				if (sin_pl_veces[j] != 0
+					&& (mejor < 0 || sin_pl_veces[j] > sin_pl_veces[mejor]))
+					mejor = j;
+
+			if (mejor < 0)
+				break;
+
+			fprintf(stderr, "perf:     %04X  %14llu  %5.2f %%  %s\n",
+				sin_pl_op[mejor], sin_pl_veces[mejor],
+				100.0 * (double) sin_pl_veces[mejor] / (double) total,
+				opcodes_mnemonico((WORD) sin_pl_op[mejor]));
+
+			sin_pl_veces[mejor] = 0;
+		}
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -5244,6 +5826,22 @@ static void tr_sync(jit_gen * g, jit_traduccion * t, DWORD pc_k)
 }
 
 /*
+	La misma sincronizacion, en el talon lento y **sin contar**: el intento ya lo
+	conto el conductor con un `inc` delante de la plantilla, que es un byte en el
+	camino rapido en vez de los cuarenta del volcado entero.
+
+	El orden importa y es el del interprete: contar ANTES de intentar, para que
+	una falta que sale por longjmp deje el intento contado. Lo que el talon hace
+	es volcarlo (gen_volcar_cuenta) junto con el resto del estado.
+*/
+static void tr_sync_talon(jit_gen * g, jit_traduccion * t, DWORD pc_k)
+{
+	tr_volcar_regs(g, t);
+	jit_x64_mov_mi(&g->e, CTX, O_PC, pc_k);
+	gen_volcar_cuenta(g);
+}
+
+/*
 	La salida de un bloque que termina en fila TERMINAL: sin escribir PC -- el
 	manejador es su dueno y ya dejo el verdadero en el contexto (TRAPA deja el
 	vector, no pc+2) -- y sin enlace: el despachador re-evalua la clave entera,
@@ -5327,10 +5925,21 @@ static void gen_salir_enlazable(jit_gen * g, jit_traduccion * t, DWORD pc_sig)
 
 	jit_x64_mov_mi(&g->e, CTX, O_PC, pc_sig);
 
-	jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
-	sin_enlace[0] = jit_x64_jcc(&g->e, X64_AE);
-	jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
-	sin_enlace[1] = jit_x64_jcc(&g->e, X64_NE);
+	/* La misma condicion del corte, en una comparacion: ver gen_corte(). */
+	if (jit_corte_viejo)
+	{
+		jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
+		sin_enlace[0] = jit_x64_jcc(&g->e, X64_AE);
+		jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
+		sin_enlace[1] = jit_x64_jcc(&g->e, X64_NE);
+	}
+	else
+	{
+		jit_x64_cmp_rm32(&g->e, CYC, CTX, D_LIMITE);
+		sin_enlace[0] = jit_x64_jcc(&g->e, X64_AE);
+		sin_enlace[1] = sin_enlace[0];
+		sin_enlace[1].sitio = 0;
+	}
 
 	/* La guarda. El desplazamiento del cmp es lo que se parchea; `jit_nunca`
 	   esta lejos del contexto, asi que se codifica como disp32 y son los
@@ -5405,10 +6014,21 @@ static void gen_salir_dinamico(jit_gen * g, jit_traduccion * t)
 	e->sitio_pc = jit_x64_aqui(&g->e) - 4;
 	sin_enlace[0] = jit_x64_jcc(&g->e, X64_NE);
 
-	jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
-	sin_enlace[1] = jit_x64_jcc(&g->e, X64_AE);
-	jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
-	sin_enlace[2] = jit_x64_jcc(&g->e, X64_NE);
+	/* La misma condicion del corte, en una comparacion: ver gen_corte(). */
+	if (jit_corte_viejo)
+	{
+		jit_x64_cmp_ri(&g->e, CYC, RELOJ_GRANO);
+		sin_enlace[1] = jit_x64_jcc(&g->e, X64_AE);
+		jit_x64_cmp_mi(&g->e, CTX, D_REINTENTO, 0);
+		sin_enlace[2] = jit_x64_jcc(&g->e, X64_NE);
+	}
+	else
+	{
+		jit_x64_cmp_rm32(&g->e, CYC, CTX, D_LIMITE);
+		sin_enlace[1] = jit_x64_jcc(&g->e, X64_AE);
+		sin_enlace[2] = sin_enlace[1];
+		sin_enlace[2].sitio = 0;
+	}
 
 	jit_x64_mov_rm(&g->e, X64_RAX, CTX, D_EPOCA);
 	jit_x64_cmp_rm32(&g->e, X64_RAX, CTX, D(&jit_nunca));
@@ -5895,8 +6515,17 @@ static int tr_descubrir(jit_traduccion * t, DWORD pc)
 	no se puede corregir sin medirse. Acumula al traducir (frio); imprime con
 	DCEMU_JIT_SONDA_BYTES=1.
 */
+/* Filas con acceso que no alcanzaron ningun sitio de llamada. Contador de
+   control de la sincronizacion en el talon: cero siempre. */
+static unsigned long long	jit_sync_sin_consumir = 0;
+
+/* DCEMU_JIT_SYNC_PREVIA=1: la sincronizacion vuelve delante de la plantilla,
+   en el camino rapido. Reproduce la emision anterior byte por byte. */
+static int				jit_sync_previa = 0;
+
+
 static unsigned long long	jit_bytes_prologo = 0;
-static unsigned long long	jit_bytes_sync    = 0;
+static unsigned long long	jit_bytes_sync;	/* declarada arriba, con gen_sync_pendiente */
 static unsigned long long	jit_bytes_resto   = 0;
 static unsigned long long	jit_bytes_salidas = 0;
 static unsigned long long	jit_bytes_pl[sizeof(jit_plantillas) / sizeof(jit_plantillas[0])];
@@ -5934,13 +6563,50 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 			continue;
 		}
 
-		if (p->accede)
-			tr_sync(g, t, pc_i);
+		/* La sincronizacion queda ARMADA, no emitida: la pone gen_llamar() o
+		   tr_manejador() justo antes de la llamada a C, que es el unico sitio
+		   desde donde la fila puede faltar. Ver jit_gen.
+
+		   Con DCEMU_JIT_SYNC_PREVIA=1 vuelve al camino rapido, delante de la
+		   plantilla: es la conducta anterior byte por byte y el brazo del A/B. */
+		if (jit_sync_previa)
+		{
+			if (p->accede)
+				tr_sync(g, t, pc_i);
+
+			g->sync_activa = 0;
+			jit_bytes_sync += jit_x64_largo(&g->e) - a0;
+		}
+		else
+		{
+			g->sync_activa = p->accede;
+			g->sync_usada  = 0;
+			g->sync_t      = t;
+			g->sync_pc     = pc_i;
+
+			/* El intento se cuenta ANTES de la plantilla, como en run(): si el
+			   acceso falta, el longjmp sale por encima del epilogo y el talon
+			   ya volco la cuenta con este intento adentro. Es lo unico del
+			   volcado que se queda en el camino rapido, y es un byte. */
+			if (p->accede)
+				jit_x64_inc_r(&g->e, N);
+			}
 
 		a1 = jit_x64_largo(&g->e);
-		jit_bytes_sync += a1 - a0;
 
 		p->emitir(g, t, i);
+
+		/* Una fila que toca memoria y no llego a ningun sitio de llamada podria
+		   faltar sin instantanea: se descarta el bloque y se cuenta, en vez de
+		   emitir algo que solo se rompe cuando el guest toque una pagina que no
+		   esta. Tiene que quedar en cero en toda corrida. */
+		if (g->sync_activa && !g->sync_usada)
+		{
+			jit_sync_sin_consumir++;
+			g->e.desborde = 1;
+		}
+
+		g->sync_activa = 0;
 
 		a2 = jit_x64_largo(&g->e);
 		jit_bytes_pl[idx] += a2 - a1;
@@ -6012,6 +6678,22 @@ static void tr_emitir_cuerpo(jit_gen * g, jit_traduccion * t)
 	else
 		gen_salir_enlazable(g, t, t->pc[t->n - 1] + 2);
 	tr_epilogo(g, t);
+
+	/*
+		El talon de sincronizacion del bloque, si alguien lo llamo. Va al final y
+		por eso es inalcanzable por caida: el epilogo termina en un salto. Los
+		sitios se fijan justo antes de emitirlo, que es cuando `fijar` apunta al
+		lugar donde va a empezar.
+	*/
+	if (g->n_sync_llam)
+	{
+		for (i = 0; i < g->n_sync_llam; i++)
+			jit_x64_fijar(&g->e, g->sync_llam[i]);
+
+		tr_volcar_regs(g, t);
+		gen_volcar_cuenta(g);
+		jit_x64_ret(&g->e);
+	}
 
 	jit_bytes_salidas += jit_x64_largo(&g->e);	/* la otra mitad de la resta */
 }
@@ -7104,7 +7786,15 @@ int jit_despachar(DWORD pc)
 /* Arranque                                                                 */
 /* ------------------------------------------------------------------------ */
 
-static void jit_resumen(void)
+/*
+	El resumen del traductor. **Lo llama main.c en la secuencia de salida**, no
+	atexit(): registrado ahi corria despues de que SDL cerrara la redireccion de
+	stderr, asi que la linea no aparecia en ningun archivo salvo con --perf --que
+	imprime por otro camino-- y las compuertas, que corren SIN --perf, leian un
+	resumen vacio. Un contador de control que solo existe cuando nadie lo mira es
+	la misma trampa que el gancho de epoca sin llamador.
+*/
+void jit_resumen(void)
 {
 	int i, j;
 
@@ -7360,6 +8050,22 @@ static void jit_resumen(void)
 		fprintf(stderr, "jit: %llu propuestas rechazadas con la tabla de"
 			" bloques llena (%d)\n", jit_tope_bloques, jit_max_bloques);
 
+	/* El contador de control de la sincronizacion en el talon. Va sin condicion
+	   -- un cero callado no se distingue de una sonda muerta -- y con la forma
+	   vigente al lado, porque las dos cosas juntas son lo que dice si el A/B
+	   comparo lo que dice comparar. */
+	fprintf(stderr, "jit: sincronizacion %s, %llu filas con acceso sin sitio"
+		" de llamada; corte %s, %llu incoherencias del limite; DIV1 %s;"
+		" direccion constante %s\n",
+		jit_sync_previa ? "delante de la plantilla"
+						 : (jit_sync_stub ? "en el talon, por llamada"
+										  : "en el talon, entera"),
+		jit_sync_sin_consumir,
+		jit_corte_viejo ? "en dos comparaciones" : "en una comparacion",
+		intc_corte_incoherente,
+		jit_div1_emitida ? "emitida sin ramas" : "por manejador",
+		jit_dir_constante ? "plegada" : "por tabla");
+
 	/* El desglose de los sin-lugar (ver jit_colision_sitios). La linea dice
 	   ademas cuantas ranuras de bloque quedaron usadas contra el tope, porque
 	   la fuga se cobra ahi. */
@@ -7585,6 +8291,26 @@ void jit_iniciar(void)
 		const char * sr = getenv("DCEMU_JIT_SIN_RETRADUCIR");
 		const char * sb = getenv("DCEMU_JIT_SONDA_BYTES");
 		const char * tl = getenv("DCEMU_JIT_TRAD_EN_LINEA");
+		const char * sp = getenv("DCEMU_JIT_SYNC_PREVIA");
+		const char * cv = getenv("DCEMU_JIT_CORTE_VIEJO");
+		const char * sd = getenv("DCEMU_JIT_DIV1_EMITIDA");
+		const char * st = getenv("DCEMU_JIT_SYNC_EN_CADA_TALON");
+		const char * dc = getenv("DCEMU_JIT_SIN_DIR_CONSTANTE");
+
+		if (st != NULL && atoi(st) != 0)
+			jit_sync_stub = 0;
+
+		if (dc != NULL && atoi(dc) != 0)
+			jit_dir_constante = 0;
+
+		if (sd != NULL && atoi(sd) != 0)
+			jit_div1_emitida = 1;
+
+		if (sp != NULL && atoi(sp) != 0)
+			jit_sync_previa = 1;
+
+		if (cv != NULL && atoi(cv) != 0)
+			jit_corte_viejo = 1;
 
 		if (sv != NULL && atoi(sv) != 0)
 			jit_variantes_fpu = 0;
@@ -7752,12 +8478,23 @@ void jit_iniciar(void)
 	for (i = 0; i < JIT_HASH_N; i++)
 		jit_hash[i] = -1;
 
-	/* Las filas de la tabla de plantillas se ligan a los manejadores reales
-	   aca: la tabla se escribe como una lista y el orden de los dos arreglos
-	   es lo unico que las une, asi que un desajuste seria una plantilla usada
-	   para otra instruccion. La comprobacion de tamano lo impide. */
-	for (i = 0; i < JIT_N_PLANTILLAS; i++)
-		jit_plantillas[i].f = jit_manejadores[i];
+	jit_plantillas_ligar();
+
+	/* La palanca de DIV1 cambia la fila ENTERA, no solo la emision: por
+	   manejador la fila va con ciclos 0 y accede 1 --el manejador suma sus
+	   ciclos por dentro y el conductor no debe volver a sumarlos-- y emitida,
+	   con ciclos 1 y sin accede. */
+	if (jit_div1_emitida)
+	{
+		int idiv = jit_pl_indice((opcode_f *) div1s52);
+
+		if (idiv >= 0)
+		{
+			jit_plantillas[idiv].ciclos = 1;
+			jit_plantillas[idiv].accede = 0;
+			jit_plantillas[idiv].emitir = pl_div1s52;
+		}
+	}
 
 	/*
 		La clasificacion de arriba compara PUNTEROS de manejador, y el plegado
@@ -7831,7 +8568,6 @@ void jit_iniciar(void)
 	if (v != NULL && *v != '\0')
 		jit_volcar(v);
 
-	atexit(jit_resumen);
 }
 
 #endif /* DCEMU_JIT */

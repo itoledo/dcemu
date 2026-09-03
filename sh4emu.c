@@ -247,6 +247,7 @@ void run(WORD arg)
 	   cuenta son las ranuras de retardo y el camino con excepciones. Ver
 	   perf.h: una ranura es una instruccion, y son del orden del 10 %. */
 	PERF_CONTAR(perf_instrucciones);
+	PERF_OPCODE(PC, arg);
 
 	OP_DESPACHAR(arg);
 }
@@ -429,7 +430,7 @@ void UpdateSR(DWORD new)
 	// fronteras donde las entregas esperan. Saltear el CUERPO manteniendo
 	// cada servicio (el servicio partido, B.3) era la unica forma exacta, y
 	// era neutra. La sonda que lo cazo es DCEMU_SONDA_ENTREGAS.
-	intc_sh4_reintentar = 1;
+	INTC_PEDIR_REINTENTO();
 
 	// Y puede cambiar SR.MD, que **cambia el mapeo**: la misma virtual traduce
 	// distinto en modo usuario y en privilegiado. Los bloques traducidos valen
@@ -455,7 +456,7 @@ void UpdateSR(DWORD new)
 */
 void UpdateSR_ya_escrito(void)
 {
-	intc_sh4_reintentar = 1;	/* incondicional: ver UpdateSR() */
+	INTC_PEDIR_REINTENTO();		/* incondicional: ver UpdateSR() */
 
 	/* La entrada a una excepcion pone MD a mano: mismo motivo que arriba. */
 	JIT_EPOCA_MODO(SR_MD);

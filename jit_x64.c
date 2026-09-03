@@ -842,6 +842,24 @@ x64_parche jit_x64_jmp(x64_emisor * e)
 	return p;
 }
 
+/* Una llamada relativa cuyo destino todavia no se emitio: el mismo parche de
+   cuatro bytes que el salto, con el opcode de CALL. La usa el talon de
+   sincronizacion por bloque, que se emite despues del cuerpo. */
+x64_parche jit_x64_call(x64_emisor * e)
+{
+	x64_parche p;
+
+	b1(e, 0xE8);
+	p.sitio = e->p;
+	p.ancho = 4;
+	b4(e, 0);
+
+	if (e->desborde)
+		p.sitio = 0;
+
+	return p;
+}
+
 void jit_x64_fijar(x64_emisor * e, x64_parche p)
 {
 	long long rel;

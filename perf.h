@@ -153,6 +153,18 @@ extern unsigned long long perf_cuadros;
 */
 extern unsigned long long perf_instrucciones;
 
+/*
+	Cuantas veces se ejecuto SLEEP. Va en el binario normal --es un incremento
+	en un manejador, no en el camino caliente-- porque es el censo que decide si
+	el traductor necesita una plantilla de avance para el: el PC no avanza
+	(syscontrol.c), asi que el guest se queda ahi hasta que llegue una
+	interrupcion y **cada vuelta paga el viaje entero por main_loop**, con la
+	instantanea de excepcion incluida bajo MMU. Un Windows CE que espere aqui
+	puede estar gastando en esperar mas de lo que gasta en trabajar, y ninguna
+	cifra del arbol lo mostraba.
+*/
+extern unsigned long long perf_sleeps;
+
 /* Cuantas atendio el despacho en linea de main.c y cuantas fueron a la tabla.
    La fraccion es lo que permite extrapolar el costo de la llamada indirecta a
    todas las instrucciones. Solo con -DDCEMU_INLINE. */
@@ -340,6 +352,40 @@ void perf_bloque_paso(unsigned long pc);
 	do { if (perf_forma) perf_bloque_paso((unsigned long) (pc)); } while (0)
 #else
 #define PERF_BLOQUE(pc)		((void) 0)
+#endif
+
+/*
+	**El censo del contrato**, en el mismo binario aparte que la forma y por la
+	misma razon: cuenta al guest, no cronometra al emulador.
+
+	Dos cosas que la forma no dice y que deciden que optimizacion del traductor
+	vale la pena:
+
+	 - **la mezcla por clase de fila** (directa, acceso, rama, FPU, terminal),
+	   que es lo que fija el costo emitido de cada instruccion. Se agrupa en
+	   jit.c, con la misma tabla de plantillas que usa el traductor, para que no
+	   exista un segundo decodificador que pueda derivar del primero.
+	 - **el largo de las corridas de filas directas**, contadas al EJECUTAR y no
+	   al traducir. Es el factor de amortizacion de cualquier cosa que se quiera
+	   pagar una vez por tramo recto en vez de una vez por instruccion, y sacarlo
+	   de la traduccion sesga: lo que importa es por donde pasa la ejecucion, no
+	   que hay escrito.
+
+	Se corre con el traductor apagado (DCEMU_JIT=0), que es lo que hace pasar
+	todas las instrucciones por el gancho; las dos formas ejecutan lo mismo al
+	digito, asi que la mezcla vale para las dos.
+*/
+extern unsigned long long * perf_op_histo;
+
+/* Se llama **antes** de despachar, con el PC y la palabra. Ver perf.c. */
+void perf_op_paso(unsigned long pc, unsigned w);
+
+#ifdef DCEMU_FORMA
+#define PERF_OPCODE(pc, w)\
+	do { if (perf_op_histo)\
+			perf_op_paso((unsigned long) (pc), (unsigned) (w)); } while (0)
+#else
+#define PERF_OPCODE(pc, w)	((void) 0)
 #endif
 
 /*

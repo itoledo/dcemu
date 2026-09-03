@@ -26,6 +26,7 @@
 
 #include "arnes.h"
 #include "suites.h"
+#include "../perf.h"		/* perf_sleeps: la sonda del censo del ocio */
 
 /* -------------------------------------------------------------- T y NOP */
 
@@ -74,6 +75,30 @@ static void sleep_no_avanza(void)
 	ejecutar(0x001B);					/* SLEEP */
 
 	ESPERAR_U32(PC, PRUEBA_PC);
+}
+
+/*
+	Y que el censo de SLEEP cuente. Es una prueba de la SONDA, no del manejador:
+	perf_sleeps existe para contestar si un guest se pasa el tiempo esperando
+	aqui, y un cero puede querer decir "no espera" o "nadie mira". El banco
+	contesto cero en los dos guests con MMU, y ese cero solo vale algo si esta
+	probado que el contador sube cuando la instruccion corre.
+*/
+static void sleep_cuenta_el_censo(void)
+{
+	unsigned long long antes;
+	int guardado = perf_activa;
+
+	arnes_reset();
+
+	perf_activa = 1;
+	antes = perf_sleeps;
+
+	ejecutar(0x001B);					/* SLEEP */
+
+	perf_activa = guardado;
+
+	ESPERAR_U32((unsigned long) (perf_sleeps - antes), 1);
 }
 
 static void ocbi_solo_avanza(void)
@@ -1085,6 +1110,7 @@ static const dc_caso casos[] =
 	CASO(sett_prende_t),
 	CASO(nop_solo_avanza),
 	CASO(sleep_no_avanza),
+	CASO(sleep_cuenta_el_censo),
 	CASO(ocbi_solo_avanza),
 	CASO(ocbwb_solo_avanza),
 	CASO(ocbp_solo_avanza),

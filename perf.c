@@ -16,6 +16,9 @@
 #endif
 #include "tmu.h"			/* reloj_total, reloj_ms() */
 #include "arm7.h"			/* los contadores de la memoizacion de barridos */
+#ifdef DCEMU_JIT
+#include "jit.h"			/* las clases del censo del contrato */
+#endif
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -170,6 +173,7 @@ void perf_onda_marcar_escritura(unsigned long dir, unsigned long n)
 
 unsigned long long perf_cuadros			= 0;
 unsigned long long perf_instrucciones	= 0;
+unsigned long long perf_sleeps			= 0;
 unsigned long long perf_inline_si		= 0;
 unsigned long long perf_inline_no		= 0;
 
@@ -294,6 +298,91 @@ static void bloque_cerrar(unsigned long pc, unsigned long largo)
 	bloque_registrar(pc, largo);
 }
 
+/* ------------------------------------------------------------------------ */
+/* El censo del contrato: la mezcla por clase y el largo de los tramos       */
+/* ------------------------------------------------------------------------ */
+
+unsigned long long * perf_op_histo = NULL;
+
+/* Corridas de filas directas contiguas: la unidad que un tramo cubriria. */
+static unsigned long long tramo_n		= 0;	/* tramos cerrados */
+static unsigned long long tramo_instr	= 0;	/* instrucciones adentro */
+static unsigned long	  tramo_max		= 0;
+#define PERF_TRAMO_CUBOS	8
+static unsigned long long tramo_histo[PERF_TRAMO_CUBOS] = { 0 };
+
+static void tramo_cerrar(unsigned long largo)
+{
+	unsigned long cubo;
+
+	if (largo == 0)
+		return;
+
+	tramo_n++;
+	tramo_instr += largo;
+
+	if (largo > tramo_max)
+		tramo_max = largo;
+
+		 if (largo <=  4)	cubo = largo - 1;
+	else if (largo <=  8)	cubo = 4;
+	else if (largo <= 16)	cubo = 5;
+	else if (largo <= 32)	cubo = 6;
+	else					cubo = 7;
+
+	tramo_histo[cubo]++;
+}
+
+/*
+	Se llama **antes** de despachar, con el PC de la instruccion y su palabra.
+
+	Un tramo se corta por lo mismo que lo cortaria el traductor: una fila que no
+	sea directa, o un PC que no sea el siguiente. Lo segundo es conservador --un
+	salto interno hacia adelante dentro del mismo bloque tambien corta aqui y en
+	el traductor no tendria por que--, asi que el largo medido es un PISO de lo
+	que un tramo real cubriria, no un techo.
+*/
+void perf_op_paso(unsigned long pc, unsigned w)
+{
+	static unsigned long esperado = 0;
+	static unsigned long largo	= 0;
+	static const unsigned char * clases = NULL;
+	static int sin_clases = 0;
+
+	perf_op_histo[w & 0xFFFF]++;
+
+#ifdef DCEMU_JIT
+	if (clases == NULL)
+	{
+		if (sin_clases)
+			return;
+
+		clases = jit_clases();
+
+		if (clases == NULL)
+		{
+			sin_clases = 1;
+			return;
+		}
+	}
+
+	if (clases[w & 0xFFFF] == JIT_CL_ALU && pc == esperado)
+		largo++;
+	else
+	{
+		tramo_cerrar(largo);
+		largo = (clases[w & 0xFFFF] == JIT_CL_ALU) ? 1 : 0;
+	}
+
+	esperado = pc + 2;
+#else
+	/* Sin traductor compilado no hay tabla de clases: el histograma por
+	   codificacion se cuenta igual, los tramos no. */
+	(void) pc; (void) esperado; (void) largo; (void) clases;
+	(void) sin_clases; (void) tramo_cerrar;
+#endif
+}
+
 /*
 	Se llama despues de cada despacho del bucle exterior, con el PC resultante.
 
@@ -412,7 +501,18 @@ void perf_inicio(void)
 		return;
 
 	if (perf_forma)
+	{
 		fprintf(stderr, "perf: midiendo la forma de ejecucion\n");
+
+		/* 512 KB para el histograma de codificaciones, solo con la sonda
+		   encendida: un binario que no mide no los toca. El puntero **es** el
+		   interruptor del gancho, como perf_forma lo es del de la forma. */
+		perf_op_histo = (unsigned long long *)
+			calloc(65536, sizeof(unsigned long long));
+
+		if (perf_op_histo == NULL)
+			fprintf(stderr, "perf: sin sitio para el censo del contrato\n");
+	}
 
 	if (perf_sonda_onda)
 		fprintf(stderr, "perf: censo por paginas de la RAM de onda\n");
@@ -682,6 +782,24 @@ void perf_resumen(void)
 			(double) perf_instrucciones * 1e3 / (double) real,
 			reloj_total ? (double) perf_instrucciones / (double) reloj_total : 0.0);
 
+	/*
+		El ocio de Windows CE. Se informa como fraccion de las instrucciones
+		porque esa es la pregunta: un SLEEP no cuesta lo que cuesta una
+		instruccion media --el PC no avanza, asi que cada vuelta rehace la
+		busqueda, la instantanea y el despacho-- y si la fraccion es apreciable,
+		el tiempo se esta yendo en esperar.
+	*/
+	/* Sin condicion: un cero aqui es una medida --"este guest no espera con
+	   SLEEP"-- y callarlo lo volveria indistinguible de que nadie mire. Que la
+	   sonda cuenta lo prueba tests/test_syscontrol.c. */
+	if (perf_instrucciones)
+		fprintf(stderr, "perf: %llu SLEEP ejecutados (%.2f %% de las"
+			" instrucciones)\n",
+			perf_sleeps,
+			perf_instrucciones
+				? 100.0 * (double) perf_sleeps / (double) perf_instrucciones
+				: 0.0);
+
 	/* Solo con -DDCEMU_INLINE. La fraccion cubierta es lo que permite
 	   extrapolar el costo de la llamada indirecta a todas las instrucciones. */
 	if (perf_inline_si + perf_inline_no)
@@ -884,6 +1002,40 @@ void perf_resumen(void)
 				" (%.3f %%)\n",
 				perf_bloques_perdidos,
 				100.0 * (double) perf_bloques_perdidos / (double) perf_bloques);
+	}
+
+	/*
+		El censo del contrato: la mezcla por clase, el peso por plantilla y el
+		largo de las corridas de filas directas. Es lo que dice cuanto vale pagar
+		algo una vez por tramo en vez de una vez por instruccion.
+	*/
+	if (perf_op_histo != NULL)
+	{
+#ifdef DCEMU_JIT
+		jit_censo_contrato(perf_op_histo, perf_instrucciones);
+#endif
+
+		if (tramo_n)
+		{
+			fprintf(stderr, "perf:   corridas de filas directas: %llu,"
+				" %.2f instrucciones cada una (la mayor %lu)\n",
+				tramo_n, (double) tramo_instr / (double) tramo_n, tramo_max);
+
+			fprintf(stderr, "perf:   ... cubren el %.2f %% de las instrucciones"
+				"; largos 1:%.1f%%  2:%.1f%%  3:%.1f%%  4:%.1f%%"
+				"  5-8:%.1f%%  9-16:%.1f%%  17-32:%.1f%%  33+:%.1f%%\n",
+				perf_instrucciones
+					? 100.0 * (double) tramo_instr / (double) perf_instrucciones
+					: 0.0,
+				100.0 * (double) tramo_histo[0] / (double) tramo_n,
+				100.0 * (double) tramo_histo[1] / (double) tramo_n,
+				100.0 * (double) tramo_histo[2] / (double) tramo_n,
+				100.0 * (double) tramo_histo[3] / (double) tramo_n,
+				100.0 * (double) tramo_histo[4] / (double) tramo_n,
+				100.0 * (double) tramo_histo[5] / (double) tramo_n,
+				100.0 * (double) tramo_histo[6] / (double) tramo_n,
+				100.0 * (double) tramo_histo[7] / (double) tramo_n);
+		}
 	}
 
 	/*

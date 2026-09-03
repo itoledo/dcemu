@@ -359,6 +359,355 @@ eso más las cadenas más largas, no más). Dos avisos: las **salidas con enlace
 agotados** existen (96/1171/145 — el tope de 12 va a quedar corto con trazas), y el
 mezclador del AICA ya pesa 2,9-7,4 %.
 
+## El censo del contrato (2026-09-02)
+
+La lista de optimizaciones "con techo defendible" se declaro agotada dos veces, y
+las dos veces la reabrio un censo. Este es el tercero, y mide algo que ninguno de
+los anteriores miraba: **el contrato por instruccion**, o sea lo que el traductor
+paga en cada fila del guest ademas del trabajo de la fila.
+
+El instrumento es nuevo (`DCEMU_FORMA` + `--perf`, con `DCEMU_JIT=0` para que
+todas las instrucciones pasen por el gancho del interprete): un histograma por
+codificacion, agrupado en `jit.c` **por la misma tabla de plantillas que usa el
+traductor** -- sin segundo decodificador --, mas el largo de las corridas de
+filas directas contadas al EJECUTAR. Y un contador de SLEEP, ese si en el binario
+normal.
+
+| clase | DOOM | SR2 | CT |
+| --- | --- | --- | --- |
+| acceso en linea | **36,55 %** | **39,38 %** | **41,24 %** |
+| directa (elegible para un tramo) | 44,95 % | 38,83 % | 34,77 % |
+| rama | 10,76 % | 15,37 % | 16,99 % |
+| por manejador C | **6,95 %** | 2,90 % | 1,58 % |
+| FPU por envoltorio | 0,15 % | 3,07 % | **5,00 %** |
+| terminal | 0,44 % | 0,30 % | 0,31 % |
+| sin plantilla | 0,20 % | 0,11 % | 0,07 % |
+| corrida de filas directas | 1,48 | 1,38 | 1,41 |
+| ... de largo 1 | 78,1 % | 75,5 % | 73,0 % |
+| SLEEP ejecutados | **0** | **0** | **0** |
+
+Lo que el censo decide, con las reglas escritas antes de mirar:
+
+ - **El avance de SLEEP queda descartado: cero en los tres.** La regla pedia
+   2 %. Y el cero esta probado, no supuesto: `tests/test_syscontrol.c` tiene el
+   caso que verifica que el contador sube cuando la instruccion corre, porque un
+   cero sin control positivo no se distingue de una sonda muerta -- la leccion
+   del gancho de epoca que nunca estuvo conectado. **Windows CE no espera con
+   SLEEP**; sus bloques mas pesados son lazos de trabajo de 50-80 instrucciones.
+ - **Los accesos son la clase mas grande, 36-41 %**, y hoy cada uno paga diez
+   instrucciones de sincronizacion **en el camino rapido**, que no puede faltar.
+   Es el blanco mayor y el mas barato. El argumento no es el costo de diez
+   almacenes --la leccion del servicio partido dice que el volumen predecible no
+   compra tiempo-- sino los **bytes**: son ~40 de los ~92 (CT) a ~118 (MMU) que
+   se emiten por instruccion, y la presion de icache es lo que pago -7,2 y
+   -11,1 % en las rutinas compartidas de la traduccion.
+ - **El tramo recto rinde la mitad de lo estimado y baja de prioridad.** Las
+   corridas de filas directas son de 1,38-1,48 instrucciones y **tres de cada
+   cuatro son de una sola**: un tramo degenera en cambiar seis instrucciones por
+   cuatro, no en amortizar el corte entre varias. Sigue siendo positivo (~1,2-1,5
+   por instruccion) pero es la fase mas cara de escribir, asi que va despues.
+ - **Aparece un blanco que el plan no tenia: las filas por manejador C.** En
+   DOOM son el 6,95 % de las instrucciones ejecutadas, y **DIV1 sola es el
+   4,91 %** (mas ROTCL al 5,06 %, que si se emite): el guest hace division por
+   software y cada paso cuesta sincronizacion completa, llamada, recarga de CYC
+   y recarga de las cinco ranuras. Es trabajo de plantillas, conocido y de
+   riesgo bajo.
+ - **La FPU por envoltorio confirma su clientela**: CT 5,00 % y SR2 3,07 %,
+   DOOM 0,15 %. Cada una es una llamada a C que la emision en SSE quitaria.
+ - **La cobertura ya no es un problema**: "sin plantilla" es 0,07-0,20 %.
+
+Y el censo confirma el otro cliente, el que decide la elision de ociosos:
+**el lazo de espera de Crazy Taxi son el 47,22 % de sus instrucciones**
+(`0c158400` 26,24 %, `0c158418` 10,49 %, `0c1583f8` 7,87 % y el retorno
+`0c156c30` 2,62 %, los cuatro con 535,8 millones de vueltas). Es el mismo 47,2 %
+que midio la fase 4 de `rendimiento-plan-2.md` en su dia, ahora bajo el banco
+vigente. DOOM y SR2 no tienen nada parecido, asi que el mecanismo es de Katana y
+su compuerta tiene que probar que los otros dos quedan inertes.
+
+## La sincronizacion en el talon lento (2026-09-03)
+
+**El censo del contrato dijo que los accesos son la clase mas grande -- 36,55 %
+de DOOM, 39,38 % de SR2, 41,24 % de CT -- y cada uno pagaba diez instrucciones
+de volcado en el camino rapido.** Eso es lo que hace `tr_sync`: las cinco
+ranuras al contexto, CYC, el PC como inmediato, el contador y su volcado. Estaba
+delante de la plantilla, o sea que lo ejecutaba **el acceso que no falta**, que
+son todos menos una fraccion minuscula.
+
+El camino rapido emitido **no puede faltar**, y eso ya estaba probado por partes:
+la alineacion se verifica antes (es el error de direccion, una funcion), el modo
+se resuelve al emitir, la traduccion acertada devuelve fisica, la zona con base
+directa solo existe si no hay watchpoint ni break de operando --los dos plegados
+en `mem_directo_recalcular()`-- y la pagina con codigo desvia. Lo unico que puede
+salir por `longjmp` es el ayudante. Asi que la instantanea hace falta **antes de
+la llamada**, no antes del acceso.
+
+Lo que la hace exacta sin listas que mantener: **toda salida a C pasa por
+`gen_llamar()` o por `tr_manejador()`**, y las dos emiten la sincronizacion
+pendiente justo antes de la llamada. El conductor la ARMA (no la emite) y al
+terminar la fila comprueba que alguien la haya usado; si no, descarta el bloque
+y lo cuenta (`jit_sync_sin_consumir`, que se imprime siempre y tiene que ser
+cero). Una fila con acceso que no llegara a ningun sitio de llamada seria una que
+puede faltar sin instantanea, y ese es el unico modo de falla del cambio.
+
+Dos cosas que la primera version rompio y que quedan como reglas:
+
+ - **El contador de instrucciones vivia adentro de la sincronizacion.** Al
+   moverla al talon, el camino rapido dejo de contar: 1 802 498 699 contra
+   2 834 974 481 en veinte segundos de DOOM. El arreglo es el orden del
+   interprete: **contar el intento ANTES de intentarlo** -- un `inc` de un byte
+   delante de la plantilla, que es lo unico del volcado que se queda en el camino
+   rapido -- y que el talon solo lo vuelque. Asi una falta sale con el intento
+   contado y un retorno normal no lo cuenta dos veces.
+ - **Bajo MMU la emision CRECE**, porque un acceso abre dos talones --el fisico y
+   el virtual-- y los dos llevan la sincronizacion: DOOM pasa de 39 441 375 a
+   44 915 415 bytes (+13,9 %) en la misma corrida. En modo plano hay un solo
+   talon y el cambio es neutro en bytes. Aun asi la primera lectura da 4,3 contra
+   4,5 ns por instruccion: lo que se ahorra en instrucciones ejecutadas pesa mas
+   que lo que se paga en bytes. El talon de sincronizacion **por bloque** --un
+   `mov` del PC y un `call` de cinco bytes por talon, contra los cuarenta del
+   volcado entero-- es el paso siguiente y esta disenado.
+
+Palanca: `DCEMU_JIT_SYNC_PREVIA=1` vuelve la sincronizacion delante de la
+plantilla y reproduce la emision anterior. Compuerta: `herramientas/sync-gate.ps1`
+(tres brazos por guest contra el **interprete**, que es el arbitro correcto aqui:
+lo que se movio es donde se vuelca el estado antes de una falta).
+
+## El corte en una comparacion (2026-09-03)
+
+El corte del bloque periodico emitido reproduce la condicion de `main_loop` --
+`cycles >= RELOJ_GRANO || intc_sh4_reintentar` -- y la emitia tal cual: dos
+comparaciones y dos saltos, **en cada frontera de instruccion con ciclos**, o sea
+en el 90 % de las instrucciones segun el censo del contrato. Y uno de los dos
+saltos era TOMADO en el camino comun, para saltear el talon de salida que quedaba
+en medio del codigo caliente.
+
+Ahora es **una sola comparacion contra un limite envenenable**: `intc_corte_limite`
+(intc.h) vale `RELOJ_GRANO` normalmente y **cero mientras el reintento este
+armado**, asi que `CYC >= limite` es cierta exactamente cuando lo era la
+disyuncion. Dos instrucciones en vez de cuatro, sin cambiar la semantica ni la
+frontera donde se corta.
+
+Lo que lo hace sano es que las dos cosas se mueven JUNTAS. Los cinco sitios que
+arman el reintento --`tmu.c` al poner UNF, `wdt.c` al poner IOVF, `dma_canal()` al
+poner TE, y las dos entradas de `UpdateSR`-- pasan por `INTC_PEDIR_REINTENTO()`, y
+el bloque periodico limpia con `INTC_LIMPIAR_REINTENTO()`. Un sitio que armara uno
+sin el otro dejaria al traductor sin cortar donde el interprete corta, que es una
+divergencia silenciosa y tardia: por eso el bloque periodico **comprueba la
+coherencia una vez por servicio** y `intc_corte_incoherente` va en el resumen, sin
+condicion y en cero.
+
+Palanca: `DCEMU_JIT_CORTE_VIEJO=1` vuelve a las dos comparaciones, byte por byte.
+
+### Dos trampas de medicion que esta fase destapo
+
+Ninguna de las dos es del traductor, y las dos hacen que una compuerta salga
+verde sin haber probado nada:
+
+ - **El resumen `jit:` no llegaba a `stderr.txt` salvo con `--perf`.**
+   `jit_resumen()` estaba registrado con `atexit()` y corria despues de que SDL
+   cerrara la redireccion. Las compuertas corren SIN `--perf`, asi que todos sus
+   contadores --incluidos los de control que esta fase y la anterior agregan--
+   eran invisibles justo donde hacen falta. Ahora lo llama `main.c` en la
+   secuencia de salida, al lado de `arm7jit_resumen()`.
+ - **Vaciar una variable de ambiente no es borrarla.** En PowerShell 7,
+   `[Environment]::SetEnvironmentVariable($v, $null)` **deja la variable vacia**,
+   y `getenv()` la devuelve NO nula: para `DCEMU_JIT`, `atoi("")` es 0, o sea el
+   valor de la palanca de aislamiento. La primera version de la compuerta de la
+   fase anterior corrio **los tres brazos con el interprete** y salio verde en
+   los tres guests sin haber ejercitado una sola instruccion emitida. La forma
+   correcta es `Remove-Item "Env:NOMBRE"`, y el control barato que la caza es que
+   cada brazo imprima una linea que solo existe si el traductor corrio.
+
+### La tanda del contrato (canonico `668F6E3E434EE8A0`, PGO reentrenado)
+
+Cuatro brazos sobre un binario, que es lo que hace falta para leer dos palancas
+--un combinado neutro puede ser dos efectos que se cancelan--: base (las dos
+viejas), sync (solo el talon), corte (solo una comparacion) y ambas (la
+omision). Calentamiento por guest descartado, orden rotado entre rondas.
+
+| guest | base | sync | corte | **ambas** |
+| --- | --- | --- | --- | --- |
+| DCDoom 35 s | 22 542 ms | 22 278 (-1,17 %, 3/4) | 22 302 (-1,06 %, 3/4) | **21 850 (-3,07 %, disjunto 4/4)** |
+| Sega Rally 2 60 s | 45 120 ms | 44 514 (-1,34 %, 3/4) | 44 481 (-1,42 %, 4/4) | **44 056 (-2,36 %, disjunto 4/4)** |
+| Crazy Taxi 180 s | 70 160 ms | **67 574 (-3,68 %, disjunto)** | **69 011 (-1,64 %, disjunto)** | **65 526 (-6,60 %, disjunto 4/4)** |
+
+Marcas: **DOOM 1,55 -> 1,60x, SR2 1,33 -> 1,36x, CT 2,57 -> 2,75x**.
+
+Tres lecturas:
+
+ - **El par se separa limpio en los tres guests**, y en Crazy Taxi cada palanca
+   se separa incluso sola. Que CT sea el que mas gana era predecible por el
+   censo: es el que mas accesos ejecuta (41,24 %) y, por ser plano, el unico
+   donde mover la sincronizacion al talon **no cuesta bytes** -- tiene un solo
+   talon por acceso, no dos.
+ - **En DOOM y SR2 cada palanca sola queda en el estandar debil** (3/4 con
+   solape) y solo el par cruza a rangos disjuntos. Es coherente con que la
+   emision crezca 13,9 % bajo MMU: parte de lo que la sincronizacion ahorra en
+   instrucciones ejecutadas se paga en bytes, y el talon de sincronizacion por
+   bloque --un `mov` del PC y un `call` de cinco bytes contra los cuarenta del
+   volcado-- es lo que queda por cobrar ahi.
+ - **La tanda es tambien una prueba de exactitud**: las 17 corridas de DOOM y
+   las 16 de SR2 dan el total de instrucciones y las entradas **al digito**. CT
+   muestra tres valores distintos que **no correlacionan con el brazo** (cada
+   brazo ve mas de uno) -- es su bimodalidad de mando conocida, y su compuerta
+   ya habia salido byte a byte bajo replay.
+
+## DIV1 emitida sin ramas (2026-09-03)
+
+El censo del contrato destapo un blanco que ningun plan tenia: **DIV1 sola es el
+4,91 % de las instrucciones ejecutadas de DCDoom** (con ROTCL al 5,06 % al lado,
+que si se emitia). El guest divide por software, y cada paso pagaba
+sincronizacion, llamada al manejador, recarga de CYC, recarga de las cinco
+ranuras -- y adentro, un manejador con dos switch anidados.
+
+**Las ramas eran el problema, no la llamada.** Los switch de `div1s52()` miran Q
+y M: M es fijo durante una division, pero Q alterna con los bits del cociente,
+asi que emitir el switch tal cual habria cambiado una llamada por una prediccion
+fallada de cada dos.
+
+**La forma cerrada** que permite emitirlo recto -- y que se probo ANTES de
+escribir el emisor:
+
+    qs   = bit 31 de Rn, antes del corrimiento
+    tmp0 = (Rn << 1) | T
+    se RESTA si (Q == M), y se suma si no
+    tmp1 = el prestamo de la resta, o el acarreo de la suma
+    Q'   = qs ^ tmp1 ^ M
+    T'   = (Q' == M)
+
+Los cuatro casos del manual colapsan en esas dos lineas. `tests/test_arith.c`
+(`div1_la_forma_cerrada_coincide`) la compara contra el manejador real sobre
+4096 estados al azar mas los ocho bordes, y **paso a la primera**: el riesgo
+algebraico quedo cerrado sin depender de que el emisor estuviera compilado, que
+es lo que este arbol pide de una plantilla nueva.
+
+Dos trucos la vuelven recta sin `cmov`, que el emisor no tiene: el operando se
+niega con mascara -- `b' = (b ^ (sel-1)) - (sel-1)`, que da `b` cuando hay que
+sumar y `-b` cuando hay que restar -- asi que **siempre se suma**; y el acarreo
+se corrige con `tmp1 = CF ^ !sel`. Eso vale para todo `b` salvo **cero**, donde
+acarreo y prestamo dejan de ser complementarios: de ahi el `and` final contra
+`(b != 0)`, que es el unico caso que la forma cerrada no cubre sola y el que la
+prueba fuerza a mano.
+
+La fila cambia de forma, no solo de emision: pasa de `{ciclos 0, accede 1}` --lo
+que necesita una fila por manejador, porque el manejador suma sus ciclos por
+dentro-- a `{ciclos 1, accede 0}`. Por eso la palanca `DCEMU_JIT_SIN_DIV1=1` no
+cambia solo el emisor: `jit_iniciar()` devuelve **la fila entera** a su forma
+anterior, o los ciclos se contarian dos veces.
+
+Compuerta verde en los tres guests (capturas byte a byte y 155 000 puntos de
+control contra el interprete), con el control diciendo en cada brazo si DIV1
+salio emitida o por manejador. DCDoom ejecuta 267 millones de DIV1 en esos 35
+segundos: si la forma cerrada tuviera un caso mal, no habria por donde
+esconderse.
+
+### Y perdio la tanda: **+3,6 %, revertida** (canonico `E1E565F833F4738B`)
+
+| brazo | ms (4 rondas) |
+| --- | --- |
+| emitida sin ramas | 22 440 / 22 463 / 22 498 / 22 564 |
+| por manejador | 21 698 / 21 752 / 21 683 / 21 686 |
+
+Rangos disjuntos, 4 de 4, con el total de instrucciones al digito en las nueve
+corridas. **La emision es 3,6 % mas lenta que la llamada.**
+
+Y el arena descarta la explicacion facil: **49 474 303 bytes contra 49 239 871,
+o sea +0,48 %**. No son los bytes ni la presion de icache. Lo que queda es lo
+unico que cambio de verdad: **las ramas del manejador se predicen bien** --M es
+fijo durante una division y el patron de Q lo aprende el predictor-- y la
+version sin ramas las cambia por una cadena de dependencias de quince pasos, con
+dos `setcc`/`movzx` y un lee-modifica-escribe de SR al final.
+
+Es **la leccion del cuerpo rapido del DSP, ahora en el SH-4**: quitar ramas que
+ya se predicen no compra nada, y la aritmetica sin ramas que las reemplaza se
+paga en latencia. Con una diferencia que vale anotar: alli el candidato era
+saltear trabajo, aca era saltear una LLAMADA, y tampoco alcanzo.
+
+Queda apagada y con palanca (`DCEMU_JIT_DIV1_EMITIDA=1`) porque la forma cerrada
+esta probada y porque la variante que **no** se midio --emitir el switch tal
+cual, con sus ramas, para ahorrar solo la llamada y las cinco recargas-- tiene
+aca la mitad del trabajo hecha. El censo la sigue senalando: 4,91 % de DCDoom.
+
+## El talon de sincronizacion por bloque: neutro en tiempo, -15 % de emision (2026-09-03)
+
+La tanda del contrato dejo una pista: en Crazy Taxi las dos palancas se separan
+solas, y en los dos guests con MMU solo el par cruza a rangos disjuntos. La
+diferencia entre unos y otro es que **bajo MMU cada acceso abre DOS talones** --el
+fisico y el virtual-- y los dos llevaban el volcado entero, asi que la emision
+crecia 13,9 %.
+
+El volcado es el mismo para todos los accesos de un bloque: las ranuras que ese
+bloque mapea, mas CYC. Lo unico propio de la instruccion es el PC. Asi que se
+emite **una vez por bloque**, al final --inalcanzable por caida, porque el
+epilogo termina en un salto-- y cada talon queda en el `mov` del PC y cinco bytes
+de `call`. El `call` es seguro adentro de un bloque aunque el arena tenga una
+sola informacion de desenrollado: el talon no llama a nadie ni toca la pila mas
+alla del retorno, y nada puede faltar mientras esta corrido.
+
+**El efecto en la emision es grande y el efecto en el tiempo es nulo:**
+
+| | arena con talon | arena entero | contra la linea base previa a la fase |
+| --- | --- | --- | --- |
+| DCDoom 35 s | 41 651 935 | 49 239 871 (**-15,4 %**) | 39 441 375 (+5,6 %) |
+| Sega Rally 2 60 s | 81 585 480 | 96 788 863 (**-15,7 %**) | 95 850 022 (**-14,9 %**) |
+
+| tanda (canonico `E7DB8F4BF1DFF538`) | con talon | sin |
+| --- | --- | --- |
+| DCDoom | 21 722 / 21 581 / 21 982 / 22 001 | 21 848 / 21 748 / 21 633 / 21 831 |
+| Sega Rally 2 | 44 746 / 43 281 / 43 433 / 43 516 | 43 353 / 43 297 / 43 200 / 43 333 |
+
+DOOM 2 de 4 y solapado; SR2 1 de 4. **Neutro**, y eso mismo es el hallazgo: los
+talones son codigo frio, sus bytes no se buscan nunca, y quince por ciento menos
+de emision no se nota en el reloj. La presion de icache que pago -7,2 y -11,1 %
+en las rutinas compartidas de la traduccion era de bytes **en el camino
+caliente**; estos no lo son.
+
+**Queda encendido igual, y no como optimizacion sino como capacidad.** Este arbol
+ya destapo dos topes silenciosos --el arena de 192 MB y la tabla de 32 768
+bloques, los dos chocados por SR2 a 180 s-- y con el talon SR2 emite menos de lo
+que emitia antes de esta fase, no mas. `DCEMU_JIT_SYNC_EN_CADA_TALON=1` es el
+brazo del A/B.
+
+## El pliegue de las direcciones constantes: CT -2,22 % (2026-09-03)
+
+El censo del contrato tenia un blanco mas, y era el segundo mas pesado de Crazy
+Taxi: **`MOV.L @(d,PC),Rn` es el 13,87 % de sus instrucciones ejecutadas**
+(DCDoom 6,21 %, Sega Rally 2 6,82 % sumando las dos anchuras). Es el literal de
+PC-relativo, y su direccion **esta decidida al traducir**: `(pc & ~3) + 4 +
+disp*4`.
+
+Eso ya se aprovechaba a medias --la direccion se cargaba como inmediato-- pero el
+camino hasta el dato seguia siendo el generico: probar la alineacion, sacar el
+byte alto, indexar la tabla de zonas, enmascarar el desplazamiento. Con la
+direccion conocida, **tres de esas cuatro cosas son constantes**:
+
+ - la **alineacion** no puede fallar: la formula del literal ya alinea, asi que
+   la prueba no se emite (y si alguna vez llegara una constante desalineada, se
+   emite igual y el ayudante levanta el error de direccion por el camino de
+   siempre);
+ - el **indice de zona** se pliega en el desplazamiento de la carga de la tabla;
+ - el **desplazamiento dentro de la zona** es un inmediato.
+
+Lo unico que sigue mirando el estado es la prueba de base nula, y tiene que
+seguir: la tabla cambia cuando se arma un watchpoint o un break de operando.
+El valor, por supuesto, se sigue leyendo -- el literal es dato.
+
+**Tanda sobre el canonico reentrenado `3E7AF60F89EE8F1A`:**
+
+| guest | con pliegue | sin |
+| --- | --- | --- |
+| Crazy Taxi 180 s | 64 423 / 64 067 / 63 935 / 64 671 | 65 434 / 65 234 / 64 971 / 67 298 |
+| DCDoom 35 s | 21 926 / 21 729 / 21 685 / 22 630 | 21 968 / 21 898 / 22 016 / 21 915 |
+
+**Crazy Taxi -2,22 %, rangos disjuntos y 4 de 4.** DCDoom neutro, y por
+construccion: el pliegue de zona vale **solo en modo plano**, porque bajo MMU la
+fisica sale de la rutina de traduccion y no es constante. A los guests con MMU
+les queda la elision de la guarda de alineacion, que son dos instrucciones sobre
+el 6 % de sus filas -- bajo el ruido.
+
+Marca de CT: **2,80x**. Palanca `DCEMU_JIT_SIN_DIR_CONSTANTE=1`; compuerta verde
+en los tres guests.
+
 ## Lo pendiente, en orden
 
 (El mini-lote C6xx + pares de llamada se cerró el 2026-08-10, y el atajo de
@@ -401,3 +750,62 @@ de 134,6 a 92,3 s), y SR2 ≥1,0× en fase 2 (va 0,92×, con la compuerta resuel
 capa de PGO pendiente). La regla que el plan sí clavó: ninguna cifra de velocidad antes
 de que el trabajo salga idéntico al dígito — y esa disciplina es la que encontró cada
 uno de los bugs de la tabla de veredictos.
+
+## Lo que sigue: la elision de ociosos, disenada y sin escribir
+
+El censo del contrato dejo el blanco mas grande del arbol con nombre y numero:
+**el lazo de espera de Crazy Taxi son el 47,22 % de sus instrucciones**
+(`0c158400` 26,24 %, `0c158418` 10,49 %, `0c1583f8` 7,87 % y el retorno
+`0c156c30` 2,62 %, los cuatro con 535,8 millones de vueltas). DOOM y SR2 no
+tienen nada parecido: sus bloques pesados son trabajo de 50 a 80 instrucciones.
+
+El principio: **dentro de un grano no corre nada externo al guest** --ni ticks,
+ni DMA, ni AICA, ni lineas de video: todo eso vive en el bloque periodico-- y en
+modo plano el camino rapido emitido solo entra en zonas de RAM del sistema (PVR,
+TMU, RAM de sonido, VRAM y colas de almacenamiento van todas por ayudante). Asi
+que si una vuelta de un lazo devuelve el mismo estado de registros que al entrar
+y no escribio memoria ni paso por C, **todas las vueltas siguientes hasta el
+corte son identicas**: se saltean k vueltas sumando k por ciclos y k por
+instrucciones, y la ultima parcial corre de verdad para que el corte caiga en la
+misma instruccion que en el interprete. No se agregan ni se quitan servicios --la
+grilla del grano no se mueve-- y **el total de instrucciones queda igual al
+digito**, que es mas fuerte que el precedente del ARM7, donde la cuenta se
+informa como elision.
+
+Las piezas, en orden de riesgo:
+
+ - **Una generacion de impureza, no una bandera.** Una bandera limpiada por una
+   arista dejaria a otra comparando contra una instantanea anterior a
+   escrituras que ya nadie recuerda. La incrementan, por FILA y no por bloque
+   --el descubridor no corta tras un RTS o un BRA sin par, asi que los bloques
+   arrastran colas muertas y una marca en el prologo daria falsos impuros--:
+   toda escritura emitida, toda llamada a manejador, los aterrizajes lentos de
+   las LECTURAS (una lectura por ayudante puede tener efectos: FIFO, RTC, la
+   espera del hilo del AICA) y la entrada al despachador.
+ - **Dos formas de arista.** El lazo tipico de KOS cierra DENTRO de un bloque
+   --`tr_traducir` crece hacia atras para poner la cabeza como entrada-- y el de
+   CT es entre bloques solo porque el par JSR lo parte. Hacen falta las dos: el
+   enlace hacia atras con destino constante, y el salto interno hacia atras.
+ - **El punto fijo, comparado en C** sobre un conjunto que basta para una vuelta
+   pura: R0-R15, SR, PR, GBR, MACH/MACL. Todo lo que lee SSR/SPC/VBR/bancos pasa
+   por manejador o es terminal --y bumpea la generacion--, y las filas FPU no
+   reciben enlaces.
+ - **La retirada**, que es lo que la hace barata: a los 16 fallos consecutivos
+   sin elidir, la arista se reparchea directo. Sin ella, cada arista de retroceso
+   del guest pagaria una llamada por vuelta.
+ - **Bajo MMU no entra en la v1**: URC avanza por vuelta en los aciertos
+   emitidos y en los puentes entre paginas, y el arbol no tiene un contador de
+   avances siempre encendido.
+
+El caso de CT, ya trazado: tres bloques --A `0c1583f8` con el par JSR que escribe
+PR con el mismo valor cada vuelta, B `0c156c30` que es RTS+NOP, y C
+`0c158400..0c15841e` cuyo `BF` final es la salida enlazable hacia atras, o sea la
+arista de la sonda--. R0-R4 se recargan de RAM, T se recalcula igual, R12/R14
+solo se tocan en el camino de salida: punto fijo desde la segunda visita. 35
+ciclos y 20 instrucciones por vuelta, 11,4 vueltas por grano, de las que
+quedarian ~2,3 ejecutadas.
+
+**Lo que hay que medir antes de creerle a la aritmetica**: la sonda cuesta una
+llamada y ~22 comparaciones cuando NO elide, y el bump de generacion cuesta un
+almacen por escritura emitida en todos los guests. Por eso la palanca tiene tres
+posiciones y no dos: apagada, solo los bumps, y entera.

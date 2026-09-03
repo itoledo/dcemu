@@ -318,6 +318,40 @@ int jit_escritura_bloque(const unsigned char * p, size_t tam);
 		}																\
 	} while (0)
 
+/*
+	El censo del contrato (perf.c, con -DDCEMU_FORMA y --perf).
+
+	Clasifica cada codificacion por **la plantilla que el traductor le
+	aplicaria**, que es lo que decide su costo emitido: una fila directa es
+	elegible para correr dentro de un tramo recto, una de acceso paga hoy la
+	sincronizacion previa, una FPU por envoltorio paga una llamada a C. Sin esto
+	la mezcla dinamica del guest solo se podia mirar por mnemonico, que no dice
+	nada del costo.
+
+	La clasificacion sale de la MISMA tabla que usa el traductor y del mismo
+	oplist, asi que no hay un segundo decodificador que pueda derivar. Se toma el
+	modo PR=0/SZ=0: las filas que dependen del modo FPU caen en la clase FPU en
+	cualquiera de los cuatro.
+*/
+#define JIT_CL_SIN			0	/* sin plantilla: corta el bloque */
+#define JIT_CL_ALU			1	/* directa: elegible para un tramo recto */
+#define JIT_CL_ACCESO		2	/* toca memoria: hoy paga tr_sync antes */
+#define JIT_CL_RAMA			3
+#define JIT_CL_FPU			4	/* envoltorio con llamada a C */
+#define JIT_CL_TERMINAL		5	/* el bloque termina en ella */
+#define JIT_CL_MANEJADOR	6	/* se traduce llamando al manejador real */
+#define JIT_CL_N				7
+
+/* Tabla de 65536 clases, construida al primer uso. NULL si no hay sitio. */
+const unsigned char * jit_clases(void);
+
+/* El informe, con el histograma de ejecuciones por codificacion. */
+void jit_censo_contrato(const unsigned long long * histo,
+	unsigned long long total);
+
+/* El resumen del traductor, llamado desde la secuencia de salida de main.c. */
+void jit_resumen(void);
+
 #else	/* sin traductor compilado no hay nada que vigilar */
 
 /*

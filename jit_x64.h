@@ -240,6 +240,7 @@ void jit_x64_jmp_a(x64_emisor * e, const unsigned char * destino);
    son seis bytes y no hace falta un inmediato de 64 bits ni que el arena
    quede a menos de 2 GB del codigo del emulador. */
 int  jit_x64_call_directo(x64_emisor * e, const void * destino);
+x64_parche jit_x64_call(x64_emisor * e);	/* rel32 a parchear despues */
 void jit_x64_call_m(x64_emisor * e, x64_reg base, int disp);
 void jit_x64_jmp_r (x64_emisor * e, x64_reg r);
 void jit_x64_call_r(x64_emisor * e, x64_reg r);
