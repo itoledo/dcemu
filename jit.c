@@ -1630,8 +1630,21 @@ static x64_parche gen_atajo_p1p2(jit_gen * g)
 
 	jit_x64_mov_rr(&g->e, X64_R11, X64_RCX);
 
+	/*
+		El atajo cuenta el intento **y** lo cuenta como «no se traduce»: sin lo
+		segundo, un acceso a P1/P2 --que no sondea nada-- entraba al resumen
+		como una traduccion SIN acierto, o sea como un fallo de la cache. En
+		DCDoom eso son ~534 M de accesos en 20 s emulados contra 81 M de fallos
+		de verdad, asi que la tasa de aciertos salia siete veces peor de lo que
+		es y «el 84,5 % de los fallos no se traduce» describia el contador, no
+		la cache. Ver perf.c, donde el porcentaje se calcula ahora sobre las
+		que si se traducen.
+	*/
 	if (perf_activa)
+	{
 		jit_x64_add64_mi(&g->e, CTX, D_PERF_TRADUCE, 1);
+		jit_x64_add64_mi(&g->e, CTX, D(&perf_mmu_datos_sin_trad), 1);
+	}
 
 	if (jit_sonda_accesos)
 		jit_x64_add64_mi(&g->e, CTX, D(&jit_acc_p1p2), 1);

@@ -1082,15 +1082,33 @@ void perf_resumen(void)
 				? 100.0 * (double) perf_mmu_fetch_acierto2
 				  / (double) perf_mmu_fetch_fallo : 0.0);
 
-		fprintf(stderr, "perf:   datos: traducciones  %12llu"
-			" (%.2f por instruccion), %.1f %% ya resueltas, %llu faltas\n",
-			perf_mmu_traduce,
-			perf_instrucciones
-				? (double) perf_mmu_traduce / (double) perf_instrucciones : 0.0,
-			perf_mmu_traduce
-				? 100.0 * (double) perf_mmu_datos_acierto
-				  / (double) perf_mmu_traduce : 0.0,
-			perf_mmu_falta);
+		/*
+			La tasa de aciertos va sobre las que SI se traducen, no sobre todos
+			los accesos: P1, P2 y P4 no pasan por la cache ni por la TLB --el
+			atajo las resuelve antes-- y contarlas en el denominador hacia pasar
+			por «fallo de cache» a un acceso que nunca sondeo nada. En DCDoom
+			eran ~534 M de accesos en 20 s emulados contra 81 M de fallos de
+			verdad, o sea que la tasa salia siete veces peor de lo que es. El
+			numero de arriba sigue siendo el total de accesos, que es lo que
+			dice cuanto pesa la MMU en el camino.
+		*/
+		{
+			unsigned long long trad = (perf_mmu_traduce > perf_mmu_datos_sin_trad)
+				? perf_mmu_traduce - perf_mmu_datos_sin_trad : 0;
+
+			fprintf(stderr, "perf:   datos: accesos      %12llu"
+				" (%.2f por instruccion); de esos %llu no se traducen"
+				" (P1/P2/P4), y de los %llu que si, %.1f %% ya resueltas,"
+				" %llu faltas\n",
+				perf_mmu_traduce,
+				perf_instrucciones
+					? (double) perf_mmu_traduce / (double) perf_instrucciones
+					: 0.0,
+				perf_mmu_datos_sin_trad, trad,
+				trad ? 100.0 * (double) perf_mmu_datos_acierto / (double) trad
+					 : 0.0,
+				perf_mmu_falta);
+		}
 
 		/* Las dos piezas del sobrecosto, cronometradas por muestreo. Contra
 		   los ~5,5 ns por instruccion de un guest sin MMU, esto dice cuanto
@@ -1125,22 +1143,9 @@ void perf_resumen(void)
 				100.0 * (double) perf_mmu_datos_capacidad / (double) f,
 				100.0 * (double) perf_mmu_datos_vacia     / (double) f);
 
-			/*
-				Y las que no se traducen, contra el TOTAL de traducciones y no
-				contra los fallos: desde que el atajo de P1/P2/P4 va delante de
-				la cache (2026-09-04) ya no son fallos -- salen antes de mirar
-				la ranura, que es justo lo que este numero pedia. Con
-				DCEMU_MMU_ATAJO_TARDE=1 vuelven a ser fallos y el numero se lee
-				igual, porque el denominador es el mismo en los dos brazos.
-			*/
-			fprintf(stderr, "perf:   ... y %llu accesos (%.1f %% de las"
-				" traducciones) son direcciones que NO se traducen"
-				" (P1/P2/P4)\n",
-				perf_mmu_datos_sin_trad,
-				perf_mmu_traduce
-					? 100.0 * (double) perf_mmu_datos_sin_trad
-							/ (double) perf_mmu_traduce
-					: 0.0);
+			/* Las que no se traducen ya salen en la linea de arriba, con su
+			   cuenta entera (emitidas y del cuerpo en C). Aqui solo queda la
+			   clientela de verdad de la cache. */
 		}
 
 		/*

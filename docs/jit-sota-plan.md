@@ -590,6 +590,13 @@ Tres lecturas, y las tres reordenan lo que queda:
   compartidas, el pliegue de guardas, la rejilla fina y la dirección constante.
   El siguiente movimiento del SH-4 tiene que salir de medir DENTRO de esa clase,
   no de elegir otra.
+- **Y la MMU, adentro de esa clase, ya no tiene techo** (2026-09-04, con el
+  contador arreglado — ver `docs/mmu-plan.md`): su caché de traducciones acierta
+  **98,6 % en DCDoom y 99,8 % en Sega Rally 2** sobre los accesos que de verdad
+  se traducen, con 261 k y 407 k faltas reales. Más de la mitad de los accesos de
+  DCDoom (607,8 M de 1163 M) ni siquiera se traducen: son P1/P2/P4 y el atajo
+  emitido los resuelve. Lo que quede del costo de esos guests está en el código
+  emitido, no en la traducción.
 
 ### Fase C — la elisión de lazos ociosos (la fase 7 heredada, condicional)
 

@@ -702,15 +702,36 @@ predictor la aprende. Eso son milisegundos sobre veintitrés segundos. Queda
 encendido porque es estrictamente menos trabajo y no cuesta nada, no porque se
 haya ganado una tanda.
 
-**Lo que NO se entiende todavía, y por eso no se explica.** El perfil de los
-fallos que quedan cambia muchísimo entre brazos: con el atajo tarde DCDoom
-reparte sus fallos en 10,0 % misma página con otra etiqueta / 4,4 % otra página /
-85,6 % ranura sin estrenar, y con el atajo temprano en 99,3 % / 0,4 % / 0,3 %.
-Pero el contador de direcciones que no se traducen da **el mismo número exacto en
-los dos brazos** (69 584 733), y las traducciones totales y la tasa de aciertos
-también son idénticas. Con 69,6 M de accesos removidos de un pozo de cientos de
-millones, esa redistribución no cuadra. **Puede que el denominador de esas tres
-líneas (`choque + capacidad + vacía`) no sea el que parece, o que haya un camino
-que las cuenta dos veces.** Queda anotado como pregunta abierta y sin hipótesis
-escrita: escribir la explicación equivocada en las notas es el modo de falla que
-este árbol ya pagó con la sonda de capas del OIT.
+**La pregunta que esto abrió, y su respuesta: el contador estaba roto.** El
+perfil de los fallos cambiaba muchísimo entre brazos —con el atajo tarde DCDoom
+repartía 10,0 % misma página / 4,4 % otra página / 85,6 % ranura sin estrenar, y
+con el atajo temprano 99,3 % / 0,4 % / 0,3 %— mientras el contador de direcciones
+que no se traducen daba el mismo número en los dos. Eso no cuadraba, y no cuadraba
+porque **el atajo de P1/P2 del código EMITIDO contaba una traducción sin contar un
+acierto**, así que cada acceso a P1/P2 —que no sondea nada— entraba al resumen
+como un fallo de la caché. En DCDoom eso son **607,8 M de accesos de 1163 M en 20 s
+emulados**, contra ~81 M de fallos de verdad: la tasa de aciertos salía siete veces
+peor de lo que es, y «el 84,5 % de los fallos no se traduce» describía el contador
+y no la caché.
+
+Con el contador arreglado (el atajo emitido cuenta también en «no se traduce», y
+el porcentaje va sobre las que sí se traducen), el diagnóstico se da vuelta:
+
+| | DCDoom 20 s | Sega Rally 2 30 s |
+| --- | --- | --- |
+| accesos | 1 163 M | 2 020 M |
+| de esos, no se traducen (P1/P2/P4) | **607,8 M (52 %)** | 235,1 M (12 %) |
+| de los que sí, ya resueltos por la caché | **98,6 %** | **99,8 %** |
+| faltas de verdad (van al manejador del guest) | 261 497 | 407 028 |
+
+**O sea que la caché de traducciones de datos no tiene nada que ganar**: acierta
+98,6 % y 99,8 %, y lo que queda son 7,8 M y 3,6 M de fallos, el 86-99 % de ellos
+«misma página con otra etiqueta». Los números viejos de esta caché —incluido el
+«43,4 → 84,1 %» de la etiqueta sin modo— están medidos con el denominador roto:
+el salto que esa fase midió es real (el A/B fue sobre el reloj), pero su tasa
+absoluta no se compara con la de esta tabla.
+
+Y explica de paso por qué el atajo del cuerpo en C salió neutro: de los 607,8 M de
+accesos que no se traducen, **534 M los resuelve el atajo emitido** y sólo 69,6 M
+llegaban al cuerpo en C. El cambio ataca el 11 % del tráfico, y ese 11 % son
+milisegundos.
