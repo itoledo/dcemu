@@ -598,6 +598,39 @@ Tres lecturas, y las tres reordenan lo que queda:
   emitido los resuelve. Lo que quede del costo de esos guests está en el código
   emitido, no en la traducción.
 
+**Y el censo de los accesos emitidos cierra la última puerta** (`DCEMU_JIT_SONDA_ACCESOS=1`,
+corrida aparte porque cambia la emisión):
+
+| | DCDoom 20 s | CT 40 s | SR2 30 s |
+| --- | --- | --- | --- |
+| accesos emitidos | 1103 M | 1062 M | 1982 M |
+| por el camino rápido | **96,7 %** | **96,9 %** | **99,4 %** |
+| al ayudante | 36,7 M | 32,7 M | 10,3 M |
+
+Y el residuo de SR2 no tiene un dueño: etiqueta 0,29 %, zona no plana 0,14 %,
+generación 0,04 %, permiso 0,03 %, página con código 0,00 %, y **cero** en
+desalineado y cambio de modo. Cinco causas de dos décimas cada una no son un
+blanco.
+
+### Lo que este reparto deja dicho, y es el estado de cierre de la segunda vuelta
+
+Las cuatro medidas de arriba dicen lo mismo desde cuatro lados: **el camino
+emitido del SH-4 está maduro y no queda un residuo grande con nombre.**
+
+| residuo | techo medido |
+| --- | --- |
+| cobertura de plantillas | 0,06-0,19 % de las instrucciones sin plantilla |
+| envoltorio FPU (B.5) | 3,9 % de las instrucciones de CT, 1,6 % de SR2 |
+| despacho de accesos | 3,1-3,3 % van al ayudante (0,6 % en SR2) |
+| caché de traducciones MMU | 98,6-99,8 % de aciertos |
+
+Ninguno de los cuatro sostiene una fase por sí solo, y los tres primeros ya
+tienen su lote hecho. El próximo movimiento del SH-4, si lo hay, no sale de
+podar un residuo sino de una idea distinta —asignación de registros entre
+bloques, o la aritmética FPU en SSE con su riesgo de MXCSR— y **pide medir su
+techo antes de escribirse**, que es la regla que este archivo viene aplicando y
+la que acaba de bajar a B.5 de candidato obvio a candidato chico.
+
 ### Fase C — la elisión de lazos ociosos (la fase 7 heredada, condicional)
 
 El precedente es la memoización del ARM7: **salida idéntica, la cuenta se reporta
