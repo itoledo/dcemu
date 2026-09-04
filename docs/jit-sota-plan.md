@@ -535,6 +535,62 @@ primera**, B.5 (la aritmética FPU en SSE, el cuerpo de los bloques de CT)
 queda como el movimiento SH-4 con techo por medir, y B.2d/B.3/B.4 bajan —
 la frontera ya no paga.
 
+### El reparto rehecho (2026-09-04, canónico `E2AF381E3ACE3FB5`)
+
+La fase E entera (predecodificación, bloques, `arm7jit`, la cola y el
+encadenado, el sello de onda, el DSP emitido) y todo lo que vino después
+—índice de enlaces, rutinas de traducción compartidas, etiqueta sin modo,
+sincronización en el talón, dirección constante, corte en una comparación,
+elisión de ociosos— cambiaron el reparto lo suficiente como para que el
+anterior ya no sirva de guía. **Ojo con una trampa de lectura**: la línea
+`bloque periodico` de `--perf` es **bruta** e incluye al AICA (así lo dice
+`perf.c`), así que la fila comparable con la tabla vieja es la NETA.
+
+| | DOOM 35 s | CT 180 s | SR2 60 s |
+| --- | --- | --- | --- |
+| resto (SH-4 emitido + despacho + intérprete + MMU) | **82,6 %** | **74,7 %** | **84,3 %** |
+| AICA — ARM7 | 6,7 % | 9,6 % | 5,6 % |
+| AICA — mezclador | 2,1 % | 2,8 % | 1,3 % |
+| AICA total | 8,8 % | 12,5 % | 7,0 % |
+| bloque periódico **neto** | 7,9 % | 3,3 % | 5,3 % |
+| GL entero | 0,7 % | 9,5 % | 3,4 % |
+| marca | **1,45×** | **2,53×** | **1,21×** |
+
+Contra el 19 de agosto: el AICA de Crazy Taxi cayó de **30,9 % a 12,5 %** y su
+SH-4 subió de 57,3 % a 74,7 %. O sea que **la fase E hizo lo que prometía y el
+SH-4 vuelve a ser el único término grande en los tres guests**.
+
+**Y el censo del contrato pone techo a lo que queda del SH-4** (binario
+`build-forma` con `-DDCEMU_FORMA=ON`, corrido con `DCEMU_JIT=0` para que el
+intérprete vea todas las instrucciones):
+
+| clase | CT 60 s | SR2 40 s | DOOM 20 s |
+| --- | --- | --- | --- |
+| acceso en línea | **40,4 %** | **41,4 %** | 38,5 % |
+| directa (tramo) | 35,1 % | 38,2 % | **41,3 %** |
+| rama | 18,5 % | 15,9 % | 12,7 % |
+| FPU por envoltorio | **3,9 %** | 1,6 % | 0,1 % |
+| por manejador C | 1,8 % | 2,6 % | 6,7 % |
+| terminal | 0,2 % | 0,2 % | 0,6 % |
+| sin plantilla | 0,06 % | 0,05 % | 0,19 % |
+
+Tres lecturas, y las tres reordenan lo que queda:
+
+- **B.5 (la aritmética FPU en SSE) tiene su techo medido y es chico**: el
+  envoltorio es el **3,9 % de las instrucciones de Crazy Taxi**, 1,6 % de SR2 y
+  nada en DOOM. Aunque se volviera gratis, con el SH-4 al 74,7 % de CT el techo
+  del movimiento entero está en el orden del 2-3 % de la corrida — y trae el
+  riesgo de MXCSR contra RM/DN y Cause/Flag sobre una conformidad que se compara
+  al bit. **Deja de ser el candidato obvio.**
+- **La cobertura de plantillas está terminada**: «sin plantilla» es 0,06-0,19 %.
+  No queda lote de plantillas que valga la pena; la serie B se cierra por
+  agotamiento del blanco, no por cansancio.
+- **Lo único grande que queda es el acceso a memoria** (38-41 % de las
+  instrucciones en los tres), y ya lleva encima el atajo P1/P2, las rutinas
+  compartidas, el pliegue de guardas, la rejilla fina y la dirección constante.
+  El siguiente movimiento del SH-4 tiene que salir de medir DENTRO de esa clase,
+  no de elegir otra.
+
 ### Fase C — la elisión de lazos ociosos (la fase 7 heredada, condicional)
 
 El precedente es la memoización del ARM7: **salida idéntica, la cuenta se reporta

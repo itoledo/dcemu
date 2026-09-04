@@ -668,3 +668,49 @@ palanca que reproduce la conducta anterior.
 El residuo con nombre: la mitad restante de los fallos de SR2 es **generación vencida** —
 los 5,4 M de LDTLB por minuto de WinCE venciendo entradas guardadas — y eso no lo arregla
 ninguna etiqueta: la entrada de la UTLB realmente cambió. Es el techo de esta caché.
+
+
+## El atajo de P1/P2/P4 delante de la caché (2026-09-04): exacto, neutro, y un censo que no cierra
+
+El reparto del 4 de septiembre dejó al SH-4 como el 82,6 % de DCDoom y el 84,3 %
+de Sega Rally 2, y el censo de la MMU señaló algo que el código emitido ya
+resolvía y el cuerpo en C no: **`mmu_traducir()` consultaba la caché de datos
+antes de descartar P1, P2 y P4**. Esas tres no se traducen y **nunca se guardan
+en la caché**, así que su ranura queda sin estrenar para siempre y cada acceso
+pagaba el índice, la etiqueta y las cuatro comparaciones para fallar siempre. El
+código emitido tiene el orden correcto desde la fase 6, y ahí está medido que el
+orden importa: detrás del fallo, DCDoom perdía la mitad.
+
+**El cambio** es un retorno temprano delante del bloque de la caché, con el
+cuerpo de cada caso idéntico al de siempre, y **P3 privilegiada sigue de largo**
+porque sí se traduce por la TLB. `DCEMU_MMU_ATAJO_TARDE=1` reproduce el orden
+anterior.
+
+**Exacto**: capturas byte a byte y todos los puntos de `DCEMU_CP_MS` idénticos
+entre brazos en los dos guests con MMU (DCDoom 20 000 puntos, SR2 30 000), con
+el RTC clavado.
+
+**Y neutro en el reloj, que es el veredicto.** Cuatro rondas con orden rotado
+sobre un binario (`4E593E734A469A00`): DCDoom **22 814-23 116 ms** contra
+**23 014-23 448** (−1,0 %) y Sega Rally 2 **46 935-47 263** contra
+**47 049-47 477** (−0,35 %), los dos con 3 de 4 rondas a favor y **rangos
+solapados** — por debajo del estándar estricto y también del débil. La
+aritmética lo anticipaba y conviene dejarla escrita para no volver a esperar más:
+son **69 584 733 accesos en 20 s emulados de DCDoom**, o sea 3,5 millones por
+segundo emulado contra una tabla que vive en L1 y falla siempre igual, así que el
+predictor la aprende. Eso son milisegundos sobre veintitrés segundos. Queda
+encendido porque es estrictamente menos trabajo y no cuesta nada, no porque se
+haya ganado una tanda.
+
+**Lo que NO se entiende todavía, y por eso no se explica.** El perfil de los
+fallos que quedan cambia muchísimo entre brazos: con el atajo tarde DCDoom
+reparte sus fallos en 10,0 % misma página con otra etiqueta / 4,4 % otra página /
+85,6 % ranura sin estrenar, y con el atajo temprano en 99,3 % / 0,4 % / 0,3 %.
+Pero el contador de direcciones que no se traducen da **el mismo número exacto en
+los dos brazos** (69 584 733), y las traducciones totales y la tasa de aciertos
+también son idénticas. Con 69,6 M de accesos removidos de un pozo de cientos de
+millones, esa redistribución no cuadra. **Puede que el denominador de esas tres
+líneas (`choque + capacidad + vacía`) no sea el que parece, o que haya un camino
+que las cuenta dos veces.** Queda anotado como pregunta abierta y sin hipótesis
+escrita: escribir la explicación equivocada en las notas es el modo de falla que
+este árbol ya pagó con la sonda de capas del OIT.

@@ -1125,9 +1125,22 @@ void perf_resumen(void)
 				100.0 * (double) perf_mmu_datos_capacidad / (double) f,
 				100.0 * (double) perf_mmu_datos_vacia     / (double) f);
 
-			fprintf(stderr, "perf:   ... y %.1f %% de los fallos son"
-				" direcciones que NO se traducen (P1/P2/P4)\n",
-				100.0 * (double) perf_mmu_datos_sin_trad / (double) f);
+			/*
+				Y las que no se traducen, contra el TOTAL de traducciones y no
+				contra los fallos: desde que el atajo de P1/P2/P4 va delante de
+				la cache (2026-09-04) ya no son fallos -- salen antes de mirar
+				la ranura, que es justo lo que este numero pedia. Con
+				DCEMU_MMU_ATAJO_TARDE=1 vuelven a ser fallos y el numero se lee
+				igual, porque el denominador es el mismo en los dos brazos.
+			*/
+			fprintf(stderr, "perf:   ... y %llu accesos (%.1f %% de las"
+				" traducciones) son direcciones que NO se traducen"
+				" (P1/P2/P4)\n",
+				perf_mmu_datos_sin_trad,
+				perf_mmu_traduce
+					? 100.0 * (double) perf_mmu_datos_sin_trad
+							/ (double) perf_mmu_traduce
+					: 0.0);
 		}
 
 		/*

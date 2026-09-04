@@ -612,6 +612,25 @@ static int mmu_cache_apagada = 0;
 int mmu_macro_probar = 1;
 
 /*
+	El atajo de P1/P2/P4 DELANTE de la consulta a la cache de datos, que es el
+	orden que el codigo emitido tiene desde la fase 6 y que este cuerpo en C no
+	tenia. P1, P2 y P4 no se traducen y **nunca se guardan en la cache**, asi
+	que su ranura queda sin estrenar para siempre y cada acceso pagaba el
+	indice, la etiqueta y las cuatro comparaciones para fallar siempre.
+
+	Lo nombro el censo de la MMU del reparto del 2026-09-04: **el 84,5 % de los
+	fallos de la cache de datos de DCDoom y el 88,1 % de los de Sega Rally 2
+	son direcciones que NO se traducen**. Es exacto por construccion --el
+	camino de P1/P2/P4 es un retorno temprano que no mira la cache ni avanza
+	URC, y no lo hacia tampoco antes-- y de paso limpia el censo: los fallos
+	que quedan son clientela de verdad.
+
+	DCEMU_MMU_ATAJO_TARDE=1 vuelve al orden anterior (la cache primero), que es
+	el brazo del A/B sobre un solo binario.
+*/
+static int mmu_atajo_temprano = 1;
+
+/*
 	Vaciar las tres cachas. Es lo que hay que hacer cuando **cambia el contenido
 	de la TLB**: LDTLB, las escrituras a los arreglos por P4, y MMUCR.
 
@@ -654,6 +673,14 @@ void mmu_sondas_iniciar(void)
 		fprintf(stderr, "mmu: la etiqueta de la cache de entrada lleva el"
 			" modo SIEMPRE (la conducta anterior)\n");
 	}
+
+	v = getenv("DCEMU_MMU_ATAJO_TARDE");
+
+	mmu_atajo_temprano = !(v != NULL && atoi(v) != 0);
+
+	if (!mmu_atajo_temprano)
+		fprintf(stderr, "mmu: atajo de P1/P2/P4 DETRAS de la cache"
+			" (la conducta anterior)\n");
 
 	v = getenv("DCEMU_SIN_MMU_MACRO");
 
@@ -838,6 +865,45 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 
 	PERF_CONTAR(perf_mmu_traduce);
 
+	/*
+		El atajo, delante de la cache: P1/P2/P4 no se traducen y no se guardan,
+		asi que sondear su ranura es trabajo puro. El cuerpo de cada caso es el
+		mismo de siempre, mas abajo; aqui solo se adelanta. Ver el comentario de
+		mmu_atajo_temprano.
+	*/
+	if (mmu_atajo_temprano && direccion >= 0x80000000ul)
+	{
+		/* El censo cuenta las que de verdad no se traducen, y P3 privilegiada
+		   SI se traduce: por eso el contador va en cada salida y no arriba. */
+		if (direccion < 0xC0000000ul)
+		{
+			PERF_CONTAR(perf_mmu_datos_sin_trad);
+
+			if (usuario)
+				return fallar(escritura ? MMU_EXC_DIR_W : MMU_EXC_DIR_R,
+							  MMU_VEC_GENERAL, direccion);
+
+			return direccion;
+		}
+
+		if (direccion >= 0xE0000000ul)
+		{
+			PERF_CONTAR(perf_mmu_datos_sin_trad);
+
+			if (usuario && direccion >= 0xE4000000ul)
+				return fallar(escritura ? MMU_EXC_DIR_W : MMU_EXC_DIR_R,
+							  MMU_VEC_GENERAL, direccion);
+
+			return direccion;
+		}
+
+		/* P3: privilegiada, y si no lo es sigue por el camino de siempre --
+		   una P3 privilegiada SI se traduce por la TLB. */
+		if (usuario)
+			return fallar(escritura ? MMU_EXC_DIR_W : MMU_EXC_DIR_R,
+						  MMU_VEC_GENERAL, direccion);
+	}
+
 	if (!mmu_cache_apagada)
 	{
 		DWORD permiso = escritura ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER;
@@ -871,7 +937,11 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 			   sin estrenar para siempre y cada acceso vuelve a pagar el
 			   viaje al ayudante. Es la pregunta que separa "la cache anda
 			   mal" de "esto no es clientela de la cache". */
-			if (direccion >= 0x80000000ul)
+			/* Con el atajo temprano encendido aqui ya no llega ninguna: las
+			   que no se traducen salieron antes y se contaron alli, y lo unico
+			   que pasa por aqui de P3 para arriba es P3 privilegiada, que SI
+			   se traduce. Sin el atajo (la palanca) cuenta como siempre. */
+			if (!mmu_atajo_temprano && direccion >= 0x80000000ul)
 				perf_mmu_datos_sin_trad++;
 
 			if (dc->etiqueta == 0)

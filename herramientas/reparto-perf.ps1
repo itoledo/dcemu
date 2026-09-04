@@ -8,14 +8,18 @@ param(
 $ErrorActionPreference = "Stop"
 $raiz = Split-Path -Parent $PSScriptRoot
 Set-Location $raiz
+. "$PSScriptRoot\banco.ps1"
 
 if (Get-Process dcemu -EA SilentlyContinue) { throw "dcemu corriendo" }
 $err = Join-Path (Split-Path -Parent $Exe) "stderr.txt"
 Write-Output "hash: $((Get-FileHash $Exe -Algorithm SHA256).Hash.Substring(0,16))"
 
-$doom = "roms\DCDoom GDI and CDI\DCDoom CDI.cdi"
-$ct   = "roms\Crazy Taxi (USA).cdi"
-$sr2  = "roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi"
+$doom = ImagenBanco "doom"
+$ct   = ImagenBanco "ct"
+$sr2  = ImagenBanco "sr2"
+foreach ($x in @($doom, $ct, $sr2)) {
+    if (-not $x) { throw "falta una imagen del banco (ver herramientas/banco.ps1)" }
+}
 
 New-Item -ItemType Directory -Force logs\reparto | Out-Null
 
