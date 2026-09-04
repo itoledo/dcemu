@@ -61,6 +61,22 @@ $ia = Hashes $brazos[0].dir
 $ib = Hashes $brazos[1].dir
 $ja = Hashes $brazos[2].dir
 
+# EL CONTROL, y esta escrito porque su ausencia costo un barrido entero: si
+# ninguna demo dejo captura, los tres brazos coinciden en NADA y el barrido
+# sale "piso 0, senal 0" sin haber medido una sola imagen. Paso el 2026-09-04
+# en la segunda maquina -- faltaba `ip.bin` en el directorio de trabajo (dcemu
+# lo carga junto a todo `.bin` suelto y no esta versionado), las 151 demos
+# salieron con rv=1 y cero bytes, y el resumen se leyo como verde. Es la forma
+# de falla recurrente del arbol: algo que se acepta sin hacer nada y sin
+# decirlo.
+$conImagen = @($ia.Keys | Where-Object { $ia[$_] -ne "-" }).Count
+Write-Output "demos con captura: $conImagen de $($ia.Count)"
+if ($conImagen -eq 0) {
+	throw ("ninguna demo dejo captura: el barrido no midio nada. Mira un" +
+		" $($brazos[0].dir)\*.stderr.txt -- si dice 'No se pudo abrir ip.bin'," +
+		" falta ip.bin en el directorio de trabajo.")
+}
+
 $ruido = @($ia.Keys | Where-Object { $ia[$_] -ne $ib[$_] } | Sort-Object)
 $camb  = @($ia.Keys | Where-Object { $ia[$_] -ne $ja[$_] } | Sort-Object)
 $real  = @($camb | Where-Object { $ruido -notcontains $_ })

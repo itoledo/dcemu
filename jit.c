@@ -203,8 +203,29 @@ static jit_estado_t jit_estado;
 	contexto como las demas. De 64 bits para que no pueda dar la vuelta entre
 	dos visitas a una misma arista: a diez millones de bumps por segundo, 32
 	bits dan la vuelta en siete minutos.
+
+	Y va **partida en clases**, que es el censo de la segunda vuelta: una
+	sonda que falla sabe que la vuelta no fue pura, pero no POR QUE, y las
+	cuatro causas piden cosas distintas de una v2 -- una escritura emitida
+	pide un sello mas fino que 'hubo tienda', un acceso por ayudante pide
+	separar la lectura pura del registro con efecto, un manejador pide mas
+	plantillas, y una entrada al despachador pide enlazar mejor. Comparar
+	cuatro palabras en vez de una no cambia la conducta --la vuelta es pura si
+	y solo si NINGUNA se movio-- y no cuesta nada en lo emitido: cada fila
+	sube la suya con el mismo `add qword [gen+k], 1` de siempre.
 */
-unsigned long long	jit_ocioso_gen = 1;
+#define JIT_IMP_ESCRITURA	0	/* tienda del camino rapido emitido */
+#define JIT_IMP_ACCESO		1	/* gen_llamar: ayudantes, camino lento, PREF */
+#define JIT_IMP_MANEJADOR	2	/* tr_manejador: la fila corre en C */
+#define JIT_IMP_DESPACHO	3	/* entrada al despachador: cambio de grano */
+#define JIT_IMP_N			4
+
+static const char * const jit_imp_nombre[JIT_IMP_N] =
+{
+	"escritura", "acceso", "manejador", "despacho"
+};
+
+unsigned long long	jit_ocioso_gen[JIT_IMP_N] = { 1, 1, 1, 1 };
 
 /* DCEMU_JIT_OCIOSOS: 0 apagada (emision identica a la anterior), 1 solo los
    bumps (mide su costo), 2 entera (la omision). */
@@ -1134,7 +1155,7 @@ static int D(const void * p)
 #define D_ULT_SITIO	D(&jit_ult_sitio)
 #define D_REINTENTO	D(&intc_sh4_reintentar)
 #define D_LIMITE		D(&intc_corte_limite)
-#define D_OCIOSO_GEN	D(&jit_ocioso_gen)
+#define D_OCIOSO_GEN(k)	D(&jit_ocioso_gen[k])
 #define D_MMU		D(&mmu_activa)
 #define D_UBC_OP	D(&ubc_operando_activa)
 #define D_BASE_LEC	D(&mem_base_lectura[0])
@@ -1365,9 +1386,11 @@ static void gen_llamar(jit_gen * g, const void * destino, int disp_tabla)
 {
 	gen_sync_pendiente(g);
 
-	/* Toda salida a C ensucia la vuelta (elision de ociosos). */
+	/* Toda salida a C ensucia la vuelta (elision de ociosos). Clase ACCESO:
+	   por aqui salen los ayudantes de lectura y escritura, el camino lento
+	   de los accesos, PREF y los pares de FMOV. */
 	if (g->ocioso_bumps)
-		jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN, 1);
+		jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN(JIT_IMP_ACCESO), 1);
 
 	if (!jit_x64_call_directo(&g->e, destino))
 		jit_x64_call_m(&g->e, CTX, disp_tabla);
@@ -2254,7 +2277,7 @@ static void gen_escribir(jit_gen * g, int modo, int ancho,
 		   una rama sin par, y una marca en la cabeza del bloque daria por
 		   impura una vuelta por las tiendas de una cola que no corrio. */
 		if (g->ocioso_bumps)
-			jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN, 1);
+			jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN(JIT_IMP_ESCRITURA), 1);
 
 		gen_rapido_fin(g, &a,
 			ancho == 4 ? D_ESCR32F : (ancho == 2 ? D_ESCR16F : D_ESCR8F),
@@ -4836,7 +4859,7 @@ static void tr_manejador(jit_gen * g, jit_traduccion * t, int i, const void * f)
 
 	/* Y la llamada al manejador ensucia la vuelta (elision de ociosos). */
 	if (g->ocioso_bumps)
-		jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN, 1);
+		jit_x64_add64_mi(&g->e, CTX, D_OCIOSO_GEN(JIT_IMP_MANEJADOR), 1);
 
 	jit_x64_mov_ri(&g->e, X64_RCX, (unsigned) t->palabra[i]);
 
@@ -6896,7 +6919,7 @@ typedef struct
 	DWORD				sr, pr, gbr, mach, macl;
 	DWORD				cyc;
 	unsigned long long	instr;
-	unsigned long long	gen;
+	unsigned long long	gen[JIT_IMP_N];
 	int					valido;
 	int					fallos;			/* seguidos sin elidir */
 	int					retirada;
@@ -6909,6 +6932,12 @@ typedef struct
 	unsigned long long	vueltas;
 	unsigned long long	instr_elididas;
 	unsigned long long	ciclos_elididos;
+	/* El censo del fallo: por que esta vuelta no se pudo elidir. Las clases
+	   no son excluyentes entre si --una vuelta puede mover dos-- asi que su
+	   suma puede pasar el total de fallos, y se dice al imprimirlo. */
+	unsigned long long	fallo_clase[JIT_IMP_N];
+	unsigned long long	fallo_regs;			/* generacion quieta, registros no */
+	unsigned long long	fallo_sin_lugar;	/* punto fijo, pero k == 0 */
 } jit_arista;
 
 #define JIT_ARISTAS_N			4096
@@ -6918,6 +6947,31 @@ static jit_arista			jit_aristas[JIT_ARISTAS_N];
 static int					jit_n_aristas = 0;
 static unsigned long long	jit_aristas_sin_lugar = 0;
 static unsigned long long	jit_ocioso_retiradas = 0;
+
+/*
+	El censo de los enlaces que NO reciben sonda, por motivo. Es la mitad del
+	censo que la sonda no puede dar: una arista sin sonda no cuenta nada, asi
+	que sin esto 'cero elisiones' no distingue 'no habia lazos' de 'los lazos
+	estaban del otro lado de una condicion'. Se cuenta al parchear --una vez
+	por enlace instalado, no por cruce--; lo que pesa cada motivo en TIEMPO lo
+	dice la sonda de cruces (DCEMU_JIT_SONDA_CRUCES).
+*/
+#define JIT_RECH_DINAMICO	0	/* enlace con comparacion de PC (no estatico) */
+#define JIT_RECH_PUENTE		1	/* puente entre paginas */
+#define JIT_RECH_ADELANTE	2	/* el destino esta despues: no es retroceso */
+#define JIT_RECH_MMU		3	/* bloque MMU (v1 no entra) */
+#define JIT_RECH_FPU		4	/* bloque con filas FPU */
+#define JIT_RECH_BUSCADOR	5	/* despacho emitido: no pasa por C */
+#define JIT_RECH_SIN_LUGAR	6	/* sin arista libre o sin arena */
+#define JIT_RECH_N			7
+
+static const char * const jit_rech_nombre[JIT_RECH_N] =
+{
+	"dinamico", "puente", "adelante", "mmu", "fpu", "buscador", "sin lugar"
+};
+
+static unsigned long long	jit_ocioso_rech[JIT_RECH_N];
+static unsigned long long	jit_ocioso_enlaces = 0;	/* enlaces parcheados */
 
 /* La retirada: el rel32 del enlace vuelve a apuntar al sucesor directo, y
    el talon queda huerfano en el arena. Lo escribe la propia sonda, desde C
@@ -6953,7 +7007,7 @@ static unsigned jit_ocioso_sonda(jit_arista * a)
 
 	a->sondas++;
 
-	if (a->valido && a->gen == jit_ocioso_gen
+	if (a->valido && memcmp(a->gen, jit_ocioso_gen, sizeof(a->gen)) == 0
 		&& memcmp(a->regs, c->registers, sizeof(a->regs)) == 0
 		&& a->sr == c->SR_REG.SR_ALL && a->pr == c->PR_REG
 		&& a->gbr == c->GBR_REG
@@ -6991,13 +7045,41 @@ static unsigned jit_ocioso_sonda(jit_arista * a)
 			a->fallos = 0;
 		}
 		else
+		{
+			a->fallo_sin_lugar++;
 			a->fallos++;
+		}
 
 		a->cyc   = cyc + k * vuelta;
 		a->instr = jit_estado.instr;
 	}
 	else
 	{
+		/*
+			El censo del fallo: que movio esta vuelta. Va AQUI --en el camino
+			que ya copia la instantanea entera-- y no delante de la prueba,
+			porque en el camino que elide no hay nada que clasificar y una
+			comparacion de mas por vuelta se paga quince millones de veces por
+			minuto en Crazy Taxi. Con la generacion quieta, la unica otra
+			causa posible es el archivo de registros: no hace falta volver a
+			compararlo para nombrarla.
+		*/
+		if (a->valido)
+		{
+			int	j;
+			int	sucia = 0;
+
+			for (j = 0; j < JIT_IMP_N; j++)
+				if (a->gen[j] != jit_ocioso_gen[j])
+				{
+					a->fallo_clase[j]++;
+					sucia = 1;
+				}
+
+			if (!sucia)
+				a->fallo_regs++;
+		}
+
 		memcpy(a->regs, c->registers, sizeof(a->regs));
 		a->sr     = c->SR_REG.SR_ALL;
 		a->pr     = c->PR_REG;
@@ -7006,7 +7088,7 @@ static unsigned jit_ocioso_sonda(jit_arista * a)
 		a->macl   = c->MACL_REG;
 		a->cyc    = cyc;
 		a->instr  = instr;
-		a->gen    = jit_ocioso_gen;
+		memcpy(a->gen, jit_ocioso_gen, sizeof(a->gen));
 		a->valido = 1;
 		a->fallos++;
 	}
@@ -7032,10 +7114,33 @@ static unsigned char * jit_emitir_sonda_ociosa(jit_enlace * e,
 	unsigned char *	inicio;
 	jit_arista *	a;
 
-	if (jit_ociosos < 2 || jit_buscador != NULL || mmu_activa
-		|| fuente->mmu != JIT_ACC_PLANO || fuente->fpu >= 0
-		|| destino->pc > fuente->pc)
+	if (jit_ociosos < 2)
 		return NULL;
+
+	/* El censo por motivo, en el orden en que la condicion los descarta. */
+	if (jit_buscador != NULL)
+	{
+		jit_ocioso_rech[JIT_RECH_BUSCADOR]++;
+		return NULL;
+	}
+
+	if (mmu_activa || fuente->mmu != JIT_ACC_PLANO)
+	{
+		jit_ocioso_rech[JIT_RECH_MMU]++;
+		return NULL;
+	}
+
+	if (fuente->fpu >= 0)
+	{
+		jit_ocioso_rech[JIT_RECH_FPU]++;
+		return NULL;
+	}
+
+	if (destino->pc > fuente->pc)
+	{
+		jit_ocioso_rech[JIT_RECH_ADELANTE]++;
+		return NULL;
+	}
 
 	if (e->sonda != 0)
 		a = &jit_aristas[e->sonda - 1];	/* reparcheo: la misma arista */
@@ -7047,13 +7152,17 @@ static unsigned char * jit_emitir_sonda_ociosa(jit_enlace * e,
 	else
 	{
 		jit_aristas_sin_lugar++;
+		jit_ocioso_rech[JIT_RECH_SIN_LUGAR]++;
 		return NULL;
 	}
 
 	jit_codigo_us = (jit_codigo_us + 15u) & ~15u;
 
 	if (jit_codigo_us >= jit_codigo_tam)
+	{
+		jit_ocioso_rech[JIT_RECH_SIN_LUGAR]++;
 		return NULL;
+	}
 
 	jit_x64_iniciar(&em, jit_codigo + jit_codigo_us,
 		jit_codigo_tam - jit_codigo_us);
@@ -7168,6 +7277,8 @@ static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * fuente,
 
 	/* La sonda de la elision de ociosos, delante del sucesor (costura o
 	   prologo): solo en aristas de retroceso planas y estaticas. */
+	jit_ocioso_enlaces++;
+
 	if (!puente && e->sitio_pc == NULL)
 	{
 		unsigned char * sonda =
@@ -7176,6 +7287,8 @@ static void jit_parchear_enlace(jit_enlace * e, const jit_bloque * fuente,
 		if (sonda != NULL)
 			salto = sonda;
 	}
+	else if (jit_ociosos >= 2)
+		jit_ocioso_rech[puente ? JIT_RECH_PUENTE : JIT_RECH_DINAMICO]++;
 
 	rel   = (long long) (salto - (e->sitio_jmp + 4));
 
@@ -8063,7 +8176,7 @@ int jit_despachar(DWORD pc)
 		jit_estado.entrada = (void *) b->codigo;
 		/* Entre dos entradas corrio el bloque periodico (o el interprete):
 		   la vuelta que cruce una entrada no es pura (elision de ociosos). */
-		jit_ocioso_gen++;
+		jit_ocioso_gen[JIT_IMP_DESPACHO]++;
 		((void (*)(void)) jit_tramp)();
 		corridos = 1;
 
@@ -8386,6 +8499,58 @@ void jit_resumen(void)
 		jit_div1_emitida ? "emitida sin ramas" : "por manejador",
 		jit_dir_constante ? "plegada" : "por tabla");
 
+	/*
+		El censo de la segunda vuelta: por que NO se elide. Dos mitades que
+		hacen falta juntas -- los enlaces que nunca recibieron sonda (por
+		motivo) y, de los que si, que movio la vuelta que no fue pura. Un
+		'cero elisiones' sin esto no distingue 'no habia lazos' de 'los lazos
+		estaban del otro lado de una condicion' ni de 'el lazo hace trabajo'.
+	*/
+	if (jit_ociosos >= 2)
+	{
+		unsigned long long	clase[JIT_IMP_N];
+		unsigned long long	regs = 0, sinlugar = 0, rechazos = 0;
+		int					k;
+
+		for (k = 0; k < JIT_IMP_N; k++)
+			clase[k] = 0;
+
+		for (k = 0; k < jit_n_aristas; k++)
+		{
+			int m;
+
+			for (m = 0; m < JIT_IMP_N; m++)
+				clase[m] += jit_aristas[k].fallo_clase[m];
+
+			regs     += jit_aristas[k].fallo_regs;
+			sinlugar += jit_aristas[k].fallo_sin_lugar;
+		}
+
+		for (k = 0; k < JIT_RECH_N; k++)
+			rechazos += jit_ocioso_rech[k];
+
+		fprintf(stderr, "jit: ociosos, enlaces sin sonda: %llu de %llu"
+			" parcheados", rechazos, jit_ocioso_enlaces);
+
+		for (k = 0; k < JIT_RECH_N; k++)
+			if (jit_ocioso_rech[k] != 0)
+				fprintf(stderr, ", %llu %s", jit_ocioso_rech[k],
+					jit_rech_nombre[k]);
+
+		fprintf(stderr, "\n");
+
+		/* Las clases no son excluyentes: una vuelta puede mover dos, asi que
+		   la suma puede pasar la cuenta de sondas fallidas. */
+		fprintf(stderr, "jit: ociosos, vueltas impuras por clase (no"
+			" excluyentes):");
+
+		for (k = 0; k < JIT_IMP_N; k++)
+			fprintf(stderr, " %s %llu", jit_imp_nombre[k], clase[k]);
+
+		fprintf(stderr, "; %llu con la generacion quieta y registros"
+			" distintos, %llu sin lugar antes del corte\n", regs, sinlugar);
+	}
+
 	/* El desglose de los sin-lugar (ver jit_colision_sitios). La linea dice
 	   ademas cuantas ranuras de bloque quedaron usadas contra el tope, porque
 	   la fuga se cobra ahi. */
@@ -8429,8 +8594,11 @@ void jit_resumen(void)
 	   'el talon no corrio' -- la confusion del gancho de epoca sin llamador. */
 	{
 		unsigned long long sondas = 0, elisiones = 0, vueltas = 0;
-		unsigned long long instr_el = 0, ciclos_el = 0;
+		unsigned long long instr_el = 0, ciclos_el = 0, gen_total = 0;
 		int k, mostrados;
+
+		for (k = 0; k < JIT_IMP_N; k++)
+			gen_total += jit_ocioso_gen[k];
 
 		for (k = 0; k < jit_n_aristas; k++)
 		{
@@ -8447,7 +8615,7 @@ void jit_resumen(void)
 			" %llu ciclos), %llu retiradas\n",
 			jit_ociosos >= 2 ? "entera"
 							 : (jit_ociosos == 1 ? "solo bumps" : "apagada"),
-			jit_ocioso_gen, jit_n_aristas, jit_aristas_sin_lugar, sondas,
+			gen_total, jit_n_aristas, jit_aristas_sin_lugar, sondas,
 			elisiones, vueltas, instr_el,
 			jit_estado.instr
 				? 100.0 * (double) instr_el / (double) jit_estado.instr : 0.0,

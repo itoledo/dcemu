@@ -3,37 +3,46 @@
 # mismo binario -- captura byte a byte + DCEMU_CP_MS punto por punto, la
 # receta de chd-barrido.ps1.
 #
-# La lista es: las imagenes de roms/ (lo que queda en D:) mas TODOS los CHD de
-# E:\Juegos\roms\dreamcast de primer disco. Los discos 2+ de los juegos
-# multi-disco quedan fuera a proposito y se dice aca: arrancan pidiendo el
-# disco 1 y ese camino ya lo cubre el disco 1 (tope explicito, no silencioso).
+# La lista es: las imagenes del banco en roms/ mas TODOS los CHD de primer
+# disco del directorio que resuelva banco.ps1 (E:\Juegos\roms\dreamcast en una
+# maquina, roms\chd en la otra). Los discos 2+ de los juegos multi-disco quedan
+# fuera a proposito y se dice aca: arrancan pidiendo el disco 1 y ese camino ya
+# lo cubre el disco 1 (tope explicito, no silencioso).
 #
 # El brazo int corre primero y paga el primer barrido en frio del CHD (la
 # leccion de Rez); no importa: aqui no se cronometra nada.
 param(
-	[string] $Exe = "build-jit\Release\dcemu.exe",
+	[string] $Exe = "",
 	[int]    $Segundos = 20,
 	[int]    $TopeMin = 8
 )
 
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot\banco.ps1"
+if (-not $Exe) { $Exe = ExeBanco "build-jit" }
 if (Get-Process dcemu -EA SilentlyContinue) { throw "hay un dcemu corriendo" }
 $err = Join-Path (Split-Path $Exe) "stderr.txt"
 
 Write-Output "hash: $((Get-FileHash $Exe -Algorithm SHA256).Hash.Substring(0,16))"
 
-$deRoms = @(
-	"roms\DCDoom GDI and CDI\DCDoom CDI.cdi",
-	"roms\Sega Rally 2 v1.003 (1999)(Sega)(US)[!]\Sega Rally 2 v1.003 (1999)(Sega)(US)[!].gdi",
-	"roms\Crazy Taxi (USA).cdi",
-	"roms\Virtua Tennis (2000)(Sega)(US)[cr DCRES][f PAL 60Hz][repack].cdi"
-)
+$deRoms = @()
+foreach ($n in @("doom", "sr2", "ct", "vt")) {
+	$p = ImagenBanco $n
+	if ($p) { $deRoms += (Resolve-Path -LiteralPath $p).Path }
+	else    { Write-Output "sin imagen para $n" }
+}
 
-$chds = Get-ChildItem "E:\Juegos\roms\dreamcast" -Filter *.chd |
-	Where-Object { $_.Name -notmatch "\(Disc [234]\)" } |
-	Select-Object -ExpandProperty FullName
+# Los CHD: los que haya, y ninguno si no hay directorio. Un .chd que ya entro
+# por el banco --SR2 lo es en la segunda maquina-- no se corre dos veces.
+$chds = @()
+$chdDir = ChdRaiz
+if ($chdDir) {
+	$chds = Get-ChildItem -LiteralPath $chdDir -Filter *.chd |
+		Where-Object { $_.Name -notmatch "\(Disc [234]\)" } |
+		Select-Object -ExpandProperty FullName
+}
 
-$imagenes = $deRoms + $chds
+$imagenes = @($deRoms) + @($chds | Where-Object { $deRoms -notcontains $_ })
 
 function Correr($img, $brazo)
 {

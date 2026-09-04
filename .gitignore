@@ -17,8 +17,11 @@ dcemu.exe
 /out/
 CMakeUserPresets.json
 
-# Logs generados en tiempo de ejecucion
-logs/*.txt
+# Logs generados en tiempo de ejecucion. Va el directorio ENTERO y no solo
+# *.txt: los barridos y las compuertas dejan subdirectorios con capturas
+# (logs/barrido-*/, logs/ociosos-*/) que ensuciaban `git status` corrida
+# tras corrida y no van versionados tampoco.
+logs/*
 !logs/remove.txt
 
 # BIOS e imagenes de disco (no se distribuyen).

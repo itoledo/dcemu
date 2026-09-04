@@ -939,11 +939,8 @@ y no para el cronómetro entre máquinas), con las rutas resueltas por
   Los totales de CT en la tanda muestran los valores bimodales del pad (sin replay,
   a propósito: la tanda mide tiempo y el descarte del jitter es la compuerta).
 
-Queda (c): el barrido KOS y la red de juegos con la palanca entera — la v1 sólo
-instala sondas en enlaces estáticos de retroceso, así que los lazos de una sola
-palabra de las demos (`while (!flag);`, que cierran DENTRO de un bloque por salto
-interno) no eliden todavía: esa es **la segunda forma de arista** del diseño
-original y queda nombrada como el paso siguiente, con su propio censo primero.
+El barrido KOS y la red de juegos con la palanca entera quedan más abajo, junto
+con el censo que contestó qué era la «segunda forma de arista».
 
 **Y una trampa de esta máquina que es del árbol.** El primer arranque del binario
 MSVC dijo «el enlazador plegó manejadores (ICF): la clasificación por puntero está
@@ -951,3 +948,65 @@ contaminada»: el toolset 14.51 de VS 18 SÍ pliega, así que la excepción «MS
 conserva su configuración canónica» del CMakeLists dejó de valer y **los dos
 enlaces van ahora con `/OPT:NOICF`**. La guarda hizo exactamente lo que se
 escribió para hacer.
+
+## El censo de la elisión (2026-09-04): la segunda forma de arista no existe, y Crazy Taxi ya está en su tope
+
+La v1 elide el 36-37 % de las instrucciones de Crazy Taxi y **cero en todo lo
+demás**, y con los contadores de la v1 esa diferencia no se podía leer: una
+arista sin sonda no cuenta nada, y una sonda que falla no dice por qué. El
+censo agrega las dos mitades que faltaban y las dos contestan.
+
+**Las dos mitades, y dónde viven.** Los enlaces que **no** reciben sonda se
+cuentan por motivo al parchear (`jit_ocioso_rech[]`: dinámico, puente,
+adelante, mmu, fpu, buscador, sin lugar), y la **generación de impureza quedó
+partida en cuatro** —escritura emitida, acceso por ayudante, manejador,
+entrada al despachador— para que una vuelta impura diga qué la ensució. Lo
+segundo no cuesta nada en lo emitido (cada fila sube la suya con el mismo
+`add qword [gen+k], 1`) y la conducta no cambia: la vuelta es pura si y sólo si
+ninguna de las cuatro se movió. La atribución se hace **en el camino que
+falla**, que es el que ya copia la instantánea entera; ponerla delante de la
+prueba costaba una comparación de más en el camino que elide, quince millones
+de veces por minuto.
+
+**Crazy Taxi, 60 s: la elisión está en su tope estructural y no hay residuo.**
+De 20 935 enlaces parcheados, 1645 reciben sonda; los 19 290 restantes son
+9385 **dinámicos**, 6196 **hacia adelante** y 3709 **FPU**, con cero por MMU,
+cero por buscador y cero sin lugar. De 31 076 948 sondas, 15 533 422 eliden y
+casi todas las demás fallan por **una sola causa**: `despacho` 15 542 362,
+contra escritura 30 134, acceso 27 506 y manejador 28 765 —tres órdenes de
+magnitud menos—, 118 vueltas con la generación quieta y los registros
+distintos, y **cero sin lugar antes del corte**. O sea que el reparto por grano
+es exactamente el diseñado: una vuelta toma la instantánea (la entrada al
+despachador la ensució), la siguiente la confirma y elide las 8,8 que caben, y
+la parcial corta. **No queda nada que ganar ahí**: las tres clases que una v2
+podría atacar suman el 0,2 % de los fallos.
+
+**Virtua Tennis (60 s) y Capcom vs. SNK (40 s): no tienen lazos ociosos, y la
+retirada los hace gratis.** 1853 y 1182 aristas con sonda, **10 065 y 7368
+sondas en corridas de 7,8 y 5,7 mil millones de instrucciones**, cero
+elisiones, 550 y 410 retiradas. Sus aristas de retroceso son lazos de trabajo
+—las cuatro clases se mueven parejo— y a los 16 fallos la sonda se retira y el
+enlace vuelve a ser directo. El mecanismo cuesta diez mil llamadas por corrida:
+nada. Es el resultado que la palanca de tres posiciones ya había anticipado
+midiendo los bumps neutros, ahora con el mecanismo nombrado.
+
+**Y la «segunda forma de arista» no existe: la premisa era falsa.** Se escribió
+que los lazos que cierran DENTRO de un bloque por salto interno no eliden. En
+la forma vigente del descubridor **una rama siempre termina la traza**, así que
+un lazo se cierra siempre por un enlace, y el caso «el destino ya estaba en la
+traza» (`JIT_FIN_LAZO`) sólo aparece con `DCEMU_JIT_FLUJO=1`, que está apagado
+y medido neutro. El censo de fronteras de la propia corrida lo confirma sin
+argumentar: Crazy Taxi cierra en par de rama 33,7 %, rama/FPU en ranura 23,7 %,
+tope de 64 13,9 %, fila terminal 13,4 %, sin plantilla 7,9 % y ranura con
+memoria 7,1 % — **«lazo cerrado» no aparece**. Así que no hay una v2 por ahí.
+
+**El residuo real, nombrado con su número y sin cliente conocido.** Lo único
+que queda son los enlaces **dinámicos** de retroceso (9385 en CT, 16 183 en
+Virtua Tennis, 6269 en Capcom vs. SNK), que hoy se descartan por no ser
+estáticos. Serían seguros: si el archivo de registros entero es un punto fijo y
+nada impuro corrió, el destino calculado es el mismo destino por construcción
+—es una función de los registros—, que es el mismo argumento que ya sostiene la
+sonda. Pero **no hay evidencia de que haya un lazo ocioso detrás de ellos**: en
+los tres guests las aristas estáticas de retroceso que sí se sondean no eliden
+ni una vez, y el guest que sí elide ya está en su tope. Queda escrito para no
+volver a descubrirlo, no como trabajo pendiente.

@@ -70,6 +70,14 @@ foreach ($brazo in @("interprete","apagada","bumps","entera")) {
     if ($j.replay) { $env:DCEMU_MANDO = $Mando }
     $env:DCEMU_CP_MS = [string]($j.s * 1000)
 
+    # El RTC clavado en TODOS los brazos, que es la regla del expediente de
+    # THPS2 y de la que esta compuerta carecia: un juego tambien lee el reloj
+    # a mitad de corrida, y el RTC sigue al anfitrion. Los brazos corren con
+    # minutos de diferencia, asi que sin esto la compuerta compara dos relojes
+    # distintos -- y salio verde tres veces por suerte antes de que Crazy Taxi
+    # divergiera 1852 instrucciones en un brazo con la captura intacta.
+    $env:DCEMU_RTC_FIJO = "1000000000"
+
     $bmp = "logs\ociosos-gate\$Guest-$brazo.bmp"
     & $Exe "--salir-tras=$($j.s)" --sin-vmu --sin-audio "--captura-gl=$bmp" $j.img | Out-Null
     Remove-Item "Env:DCEMU_CP_MS" -ErrorAction SilentlyContinue
@@ -113,7 +121,7 @@ if ($res.entera.ctl -notmatch 'entera') {
     $fallas++; Write-Output "$Guest CONTROL ROTO: el brazo entera no corrio con la palanca entera"
 }
 
-foreach ($v in @("DCEMU_JIT","DCEMU_MANDO","DCEMU_CP_MS","DCEMU_JIT_OCIOSOS")) {
+foreach ($v in @("DCEMU_JIT","DCEMU_MANDO","DCEMU_CP_MS","DCEMU_JIT_OCIOSOS","DCEMU_RTC_FIJO")) {
     Remove-Item "Env:$v" -ErrorAction SilentlyContinue
 }
 

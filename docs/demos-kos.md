@@ -261,6 +261,39 @@ Ojo con dos cosas: los diez no ejercitan ni el bit de mipmap, ni Flip/Clamp de U
 decal — esos solo un juego los muestra —, y **una captura corrida mientras alguien juega con
 gamepad en otra instancia queda contaminada**: XInput se lee global, sin foco de ventana.
 
+## De dónde sale el parque, y las dos cosas sin las que no arranca (2026-09-04)
+
+`C:\dcsdk\tmp\bins` siempre fue un directorio suelto que existía en **una** máquina y cuya
+procedencia no estaba escrita: el día que hubo que correr el barrido en la segunda no había forma
+de reconstruirlo. Ahora la hay, `herramientas/parque-armar.ps1`, y es lo que se hacía a mano:
+por cada `.elf` construido bajo `kos/examples/dreamcast`, el binario crudo con
+`sh-elf-objcopy -O binary` —la regla `%.bin: %.elf` de `Makefile.rules` de KOS—, más
+`demos/roto/roto.bin`. **El nombre es la ruta del directorio con las barras cambiadas por
+guiones** (`pvr/bumpmap/bump.elf` → `pvr-bumpmap.bin`), que es la convención que este documento y
+los resúmenes del barrido ya usaban; el nombre del `.elf` no entra, porque más de la mitad no
+coincide con el de su directorio. El único directorio con dos `.elf` es `basic/exec` (el segundo
+es el programa que el primero carga) y gana el que se llama como el directorio.
+
+Dos trampas, las dos pagadas el mismo día:
+
+- **El binutils de KOS no arranca fuera de su shell.** Está enlazado contra el runtime de MSYS2 y
+  falla con `0xC0000135` (DLL no encontrada), que PowerShell muestra sólo como un código de salida
+  raro y se lee como un `objcopy` roto. De los tres entornos que trae el SDK sirve `mingw64\bin`;
+  `usr\bin` y `clang64\bin` no. El guion lo agrega al PATH y verifica que arranque antes de
+  convertir nada.
+- **Sin `ip.bin` en el directorio de trabajo no arranca ninguna demo.** dcemu carga `ip.bin` junto
+  a todo `.bin` suelto, no está versionado, y su ausencia sale por stderr (`No se pudo abrir
+  ip.bin`) pero **no** por el código de salida ni por el barrido, que se limita a anotar que no
+  hubo captura. Eso vació un barrido entero de 151 demos sin que el resumen dijera nada: ver la
+  viñeta del barrido vacío en CLAUDE.md, «Measurement discipline».
+
+El parque armado así en la segunda máquina son **151 binarios** contra los 135 de la línea base de
+este documento, porque el árbol de KOS instalado ahí es posterior y trae ejemplos nuevos (`gldc/`
+en lugar de `kgl/`, `sh4zam/`, más `network/` y `filesystem/`). Los nombres de la línea base que
+no aparecen son cuatro y ninguno es una demo: `dc-tool` es herramienta del anfitrión, `kgl-tunnel`
+se llama ahora `gldc-...`, y `barrido-mt-sin`/`sin2` eran nombres de directorios de salida. Un
+barrido sólo se compara contra otro barrido del mismo parque.
+
 **El volcado recortaba, y eso invalidó un barrido entero.** `volcar_gl()` leía 640×480 desde
 (0,0) —el tamaño de la pantalla emulada— pero la ventana de GL es de **800×600** y `screeninit()`
 estira los 640×480 del guest sobre ella entera con `glOrtho`. Así que salía el rectángulo de abajo
