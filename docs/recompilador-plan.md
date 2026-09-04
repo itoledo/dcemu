@@ -1006,7 +1006,46 @@ Virtua Tennis, 6269 en Capcom vs. SNK), que hoy se descartan por no ser
 estáticos. Serían seguros: si el archivo de registros entero es un punto fijo y
 nada impuro corrió, el destino calculado es el mismo destino por construcción
 —es una función de los registros—, que es el mismo argumento que ya sostiene la
-sonda. Pero **no hay evidencia de que haya un lazo ocioso detrás de ellos**: en
-los tres guests las aristas estáticas de retroceso que sí se sondean no eliden
-ni una vez, y el guest que sí elide ya está en su tope. Queda escrito para no
-volver a descubrirlo, no como trabajo pendiente.
+sonda. Pero **no hay evidencia de que haya un lazo ocioso detrás de ellos**: los
+guests que no eliden no eliden nada por sus aristas estáticas tampoco, y los que
+eliden ya están en su tope. Queda escrito para no volver a descubrirlo, no como
+trabajo pendiente.
+
+### El parque KOS: seis demos eliden el 65 %, y el barrido entero es idéntico
+
+El barrido de las 151 demos sobre el canónico salió **verde y no vacío**, que es
+lo que hay que decir en ese orden: **151 de 151 dejaron captura**, el piso de
+ruido (dos corridas del intérprete) es **0**, las que cambian con el traductor
+son **0**, y los veredictos serial distintos en el parque son **0**. Con la
+elisión encendida por omisión, o sea que la elisión es exacta también ahí.
+
+Y el barrido guarda el `stderr` de cada demo, así que el censo del parque salió
+de él sin correr nada: **46 831 297 sondas y 23 351 381 elisiones** en las 151.
+Otra vez el reparto mitad y mitad, y otra vez una sola causa de fallo —
+`despacho` 23 466 708 contra escritura 98 800, acceso 77 376 y manejador
+100 666, con 2085 vueltas de registros distintos y **siete** en todo el parque
+que se quedaron sin lugar antes del corte.
+
+**Seis demos concentran todo, y eliden el 63-65 % de sus instrucciones**:
+`cdrom-stream`, `filesystem-sd-mke2fs`, `filesystem-sd-speedtest`, `library`,
+`pvr-yuv_converter-YUV420` y `pvr-yuv_converter-YUV422`, cada una con ~7,8
+millones de sondas, ~3,9 millones de elisiones y ~720 millones de instrucciones
+elididas de ocho segundos emulados. Son justamente las que **se quedan
+esperando**: hardware que no está (la tarjeta SD, el flujo de CD) o el
+convertidor YUV. Las otras 145 no eliden nada y la retirada las deja gratis.
+
+Eso corrige de paso una lectura apresurada de esta misma sesión: mirando **una**
+demo (`pvr-pvrline`, 72 aristas con sonda, 355 sondas, cero elisiones) se
+concluyó que el parque no elide. Lo que no elide es la demo que dibuja; la que
+espera, elide dos tercios. Una muestra de uno no es un censo, que es la misma
+regla que este archivo aplica a los guests comerciales.
+
+**Y la red de juegos, cerrada el mismo dia: once imagenes, once exactas.**
+Interprete contra traductor sobre el mismo binario, captura byte a byte y
+`DCEMU_CP_MS` punto por punto, con el RTC clavado en los dos brazos: DCDoom,
+Sega Rally 2, Crazy Taxi, Virtua Tennis, 18 Wheeler, Capcom vs. SNK 2,
+Crazy Taxi 2, Mortal Kombat Gold, Tony Hawk's Pro Skater 1 y 2, y el `.chd` de
+Virtua Tennis -- **todas «bmp identicas puntos exacto»**. Con eso los tres
+pendientes que la elision habia dejado abiertos quedan cerrados: la compuerta de
+los guests con MMU, el ciclo de PGO con su tanda de tres guests, y la red de
+regresion entera (parque KOS mas juegos).
