@@ -863,3 +863,91 @@ no la tienen de todos modos.
   rendimiento o subirle la prioridad en vez de girar (`hilo.c` es el único
   archivo con `#ifdef` de plataforma y es donde iría), y un `HILO_AICA_PASO`
   mayor que 1, que ya no está prohibido por corrección.
+
+### El despertar por borde de muestra (2026-09-05, misma tarde): el hilo pasa a ganar en los tres
+
+La tanda de arriba dejó al hilo perdiendo en DCDoom (+9,3 %) y Sega Rally 2
+(+6,5 %) con el giro, y la explicación de «el núcleo que gira le quita
+frecuencia al principal» era plausible pero no estaba medida. Había otro costo
+estructural a la vista en el protocolo mismo: **el hilo se despertaba en cada
+publicación** — cada grano de 400 ciclos, unas 500 000 veces por segundo en
+Crazy Taxi — y sólo una de cada once publicaciones cruza un borde de muestra.
+Diez despertares de once eran para no mezclar nada, y cada uno era una llamada
+al sistema del lado que publica (`avisar_a_todos` con `esperando` puesto) más
+otra del lado que despierta.
+
+**El cambio**: el hilo duerme hasta el primer ciclo de la muestra siguiente
+(`aica_primer_reloj_de_muestra(aica_muestras + 1)`) y `publicar()` sólo avisa
+cuando la cuenta memoizada de `reloj_total` supera la señal de terminación del
+hilo — o sea cuando hay una muestra debida sin terminar. Con eso «al día» pasa a
+ser **por cuenta de muestras** y no por el reloj `alcanzado`: `entrar()` está a
+salvo cuando `aica_muestras_listas >= muestras(objetivo)`, que es exactamente
+«todas las muestras que el objetivo publicado cubre están mezcladas». El
+razonamiento de los tres casos de la cabecera de `hilo_aica.c` se reescribió
+sobre esa señal; es exacto por construcción y la compuerta lo confirma: **verde
+otra vez en los seis brazos**, SR2 incluido, con esperas del 0,04-0,05 %.
+
+**La sonda, a una corrida por celda, ventanas de 60/35/60 s:**
+
+| guest | sin hilos | con, giro 0 | con, giro 0 + prioridad alta | con, giro 2000 |
+| --- | --- | --- | --- | --- |
+| Crazy Taxi | 18 712 ms | 19 095 (36,8 % de esperas) | 19 368 (37,0 %) | **17 014 (−9,1 %)** |
+| DCDoom | 22 801 | 23 530 (1,9 %) | 23 353 (1,9 %) | **20 998 (−7,9 %)** |
+| Sega Rally 2 | 45 860 | 47 940 (1,6 %) | 48 092 (1,8 %) | **43 681 (−4,8 %)** |
+
+Tres cosas que esa tabla dice sola. **DCDoom y SR2 se dan vuelta**: de perder
+9 y 6 % pasan a ganar 8 y 5 % — así que el costo del giro no era la frecuencia
+sino los avisos, y quitarlos deja al giro pagar. **La prioridad alta no mueve
+nada** (`DCEMU_HILO_AICA_PRIORIDAD=1`, `THREAD_PRIORITY_HIGHEST` desde el propio
+hilo): las esperas de CT siguen en 37 %, así que el despertar lento no es de
+planificación sino del propio mecanismo de condición, y queda como palanca
+medida neutra. Y **sin giro el hilo sigue sin pagar** en ninguno: el giro es
+condición necesaria.
+
+**La tanda sobre el canónico reentrenado (`A111161DB00F27C9`)**, cuatro rondas
+rotadas, `--hilos` contra sin, D=1, giro 2000:
+
+| guest | con hilos | sin hilos | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 27 129–27 417 ms | 23 854–24 956 | **+12,8 %, disjuntos, 4/4 en contra** |
+| Crazy Taxi, 180 s | 77 284–79 869 | 73 891–75 285 | **+5,9 %, disjuntos, 4/4 en contra** |
+| Sega Rally 2, 60 s | 55 092–58 328 | 48 204–50 256 | **+15,6 %, disjuntos, 4/4 en contra** |
+
+**Y esta tanda contradice a la sonda de media hora antes en los tres guests, en
+DCDoom sobre la misma ventana de 35 s** (−7,9 % en la sonda, +12,8 % en la
+tanda). Las dos no pueden ser verdad del mismo emulador en la misma máquina, y
+la diferencia es la máquina: la tanda corrió con el portátil en uso —Webex,
+Edge, la superposición de Epic Online Services y otras sesiones de Claude
+abiertas— y sus brazos «sin hilos» salen 3-4 % más lentos y más dispersos que
+los de la tanda anterior con el mismo banco (DCDoom 23 854–24 956 contra
+23 229–23 247, con un 24 956 suelto). El brazo con hilos es **el que más sufre
+la contención**: un hilo que gira necesita un núcleo entero y con la máquina
+ocupada no lo tiene, y dos hilos calientes entran antes en el techo térmico
+que uno.
+
+Por la regla del árbol, una tanda cuyos brazos corren más lento que su propia
+repetición no decide nada, y esta no decide: **queda por repetir con la máquina
+en reposo**, que es donde corrieron todas las anteriores (de madrugada). Lo que
+sí queda medido es que **la ganancia del hilo, cuando existe, es frágil ante la
+carga y el calor de la máquina** — y eso por sí solo desaconseja encenderlo por
+omisión en un portátil, aunque la repetición salga a favor.
+
+**Estado al cerrar el día:**
+
+- El despertar por borde **es exacto** (compuerta verde en los seis brazos,
+  canónico `A111161DB00F27C9`) y **estructuralmente mejor**: elimina diez de
+  cada once despertares y sus avisos. Queda encendido, porque no tiene
+  palanca de vuelta que valga la pena — es el protocolo, no una optimización
+  encima de él — y porque el A/B que lo cuestiona está contaminado.
+- `DCEMU_HILO_AICA_PRIORIDAD` queda como palanca **medida neutra** (no mueve
+  las esperas: el despertar lento no es de planificación).
+- **`--hilos` sigue apagado por omisión.** Las sondas dicen que con el despertar
+  por borde gana en los tres guests (−9,1 / −7,9 / −4,8 %); la tanda bajo carga
+  dice que pierde en los tres. Hasta que una tanda en reposo lo decida, la ayuda
+  de `--hilos` dice lo único seguro: es exacto, y en el banco depende de la
+  máquina.
+- Lo que la repetición tiene que responder es una sola cosa: **si la ganancia
+  de las sondas sobrevive a cuatro rondas de 180 s con la máquina quieta**. Si
+  sí, la decisión de omisión vuelve a estar abierta y pide antes el barrido KOS
+  y la red de juegos con `--hilos`; si no, el hilo queda como palanca para
+  máquinas de escritorio.

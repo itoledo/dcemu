@@ -76,4 +76,13 @@ void		hilo_cond_avisar_a_todos(hilo_cond * c);
 /* Cuantos hilos de ejecucion tiene la maquina. Al menos 1. */
 int		hilo_nucleos(void);
 
+/*
+	Sube la prioridad del hilo que la llama (el propio, no otro: asi no hace
+	falta el handle nativo que SDL 1.2 no expone). Es la alternativa a girar
+	para que un hilo que duerme 44 100 veces por segundo despierte a tiempo:
+	el planificador de Windows expulsa antes a un hilo de prioridad mayor. Fuera
+	de Windows no hace nada por ahora, y lo dice el que llama.
+*/
+void	hilo_prioridad_alta_propia(void);
+
 #endif /* _HILO_H_ */

@@ -2012,6 +2012,11 @@ static unsigned long long primer_reloj_de_muestra(unsigned long long m)
 	        + AICA_MUESTRAS_POR_TRAMO - 1) / AICA_MUESTRAS_POR_TRAMO;
 }
 
+unsigned long long aica_primer_reloj_de_muestra(unsigned long long m)
+{
+	return primer_reloj_de_muestra(m);
+}
+
 /*
 	muestras_hasta(reloj_total), memoizada por borde: dos divisiones de 64 bits
 	por servicio no son gratis cuando el servicio corre en cada grano (bajo

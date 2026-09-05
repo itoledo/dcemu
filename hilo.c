@@ -158,3 +158,16 @@ int hilo_nucleos(void)
 	return (n > 0) ? (int) n : 1;
 #endif
 }
+
+void hilo_prioridad_alta_propia(void)
+{
+#ifdef _WIN32
+	/* HIGHEST y no TIME_CRITICAL: lo segundo pasa por encima de los hilos del
+	   sistema y puede colgar la interfaz; lo primero basta para que el
+	   planificador lo elija antes al despertarlo. */
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#else
+	/* pthread_setschedparam pide politicas y permisos que cambian por sistema;
+	   hasta que alguien lo mida en uno, aqui no se hace nada. */
+#endif
+}

@@ -3,20 +3,22 @@
 	HILO_AICA - el AICA y el ARM7 en su propio hilo. Ver hilo_aica.h.
 
 	El protocolo entero esta en este archivo. Son tres campos bajo un mutex y
-	una variable de condicion:
+	una variable de condicion, mas una senal que vive en aica.c:
 
-	    objetivo   hasta que reloj_total puede avanzar el AICA
-	    alcanzado  hasta donde llego de verdad
-	    terminar   para salir
+	    objetivo               hasta que reloj_total puede avanzar el AICA
+	    aica_muestras_listas   cuantas muestras termino de verdad (aica.c)
+	    terminar               para salir
 
 	y dos reglas que juntas dan el determinismo:
 
 	  - **objetivo nunca supera a reloj_total y nunca retrocede.** Lo publica el
 	    SH-4; el AICA solo lo lee.
-	  - **El AICA actualiza alcanzado con el mutex tomado, despues de terminar
-	    un paso.** Asi, si el SH-4 tiene el mutex y ve alcanzado >= reloj_total,
-	    el otro hilo esta necesariamente detenido: o esperando en la condicion,
-	    o bloqueado pidiendo el mutex.
+	  - **"Al dia" es por cuenta de muestras**: el SH-4, con el mutex tomado,
+	    esta a salvo cuando aica_muestras_listas >= muestras(objetivo), porque
+	    entonces estan mezcladas todas las muestras que el objetivo publicado
+	    cubre, y el otro hilo no puede tocar nada mas: o duerme (necesita el
+	    mutex para despertar), o esta por pedir el mutex, o ni siquiera tiene
+	    una muestra debida que empezar.
 
 	La segunda merece el razonamiento completo, porque de ella depende que no
 	haya carrera y no es evidente. El AICA trabaja **sin** el mutex tomado. Tres
@@ -24,19 +26,23 @@
 
 	  1. El AICA espera en la condicion. Para volver de hilo_cond_esperar()
 	     necesita el mutex, que tiene el SH-4. No avanza.
-	  2. El AICA esta trabajando. Entonces cuando empezo valia
-	     alcanzado < objetivo, y todavia no actualizo alcanzado. Como objetivo
-	     no retrocede y no supera a reloj_total, se cumple
-	     alcanzado < objetivo <= reloj_total, o sea que el SH-4 ve
-	     alcanzado < reloj_total y espera. Cuando el AICA termina, toma el
-	     mutex, actualiza y avisa; el SH-4 despierta ya con el chip al dia y con
-	     el mutex en la mano, y el AICA se bloquea en la vuelta siguiente.
-	  3. El AICA acaba de terminar y todavia no tomo el mutex. Igual que el 2:
-	     alcanzado no esta actualizado, asi que el SH-4 espera.
+	  2. El AICA esta mezclando una muestra. Entonces esa muestra es <=
+	     muestras(objetivo) --nunca empieza una que el objetivo no cubra-- y
+	     todavia no escribio la senal, asi que el SH-4 ve
+	     listas < muestras(objetivo) y espera. Cuando el AICA termina escribe
+	     la senal (ultimo almacen del tick: en x86 los anteriores ya son
+	     visibles), toma el mutex y avisa; el SH-4 despierta ya con el chip al
+	     dia y con el mutex en la mano, y el AICA se bloquea en la vuelta
+	     siguiente.
+	  3. El AICA acaba de terminar y todavia no tomo el mutex. La senal ya
+	     esta escrita y el estado ya esta completo: el SH-4 puede entrar. Para
+	     empezar otra muestra el AICA necesitaria que el objetivo cruzara el
+	     borde siguiente, y el objetivo no se mueve mientras el SH-4 esta
+	     dentro (lo publica el mismo hilo que espera).
 
-	El paso del AICA son HILO_AICA_PASO muestras, y elegir ese numero es la
-	diferencia entre que la fase sirva y que no: ver el comentario de la
-	constante. Medido en docs/hilos-plan.md, "Resultado del paso 0".
+	El AICA duerme hasta el proximo BORDE DE MUESTRA y no hasta la proxima
+	publicacion (ver cuerpo()), y publicar() solo avisa cuando hay una muestra
+	debida sin terminar. El paso son HILO_AICA_PASO muestras: ver la constante.
 
 *****************************************************************************/
 
@@ -139,8 +145,24 @@ static unsigned long long	esperas_giro		= 0;	/* resueltas girando */
 */
 static int					giro				= -1;
 
+/*
+	DCEMU_HILO_AICA_PRIORIDAD=1: el hilo del AICA sube su prioridad al arrancar
+	en vez de (o ademas de) girar. Es la otra salida al despertar lento: un
+	hilo de prioridad mayor se planifica antes al avisarle, sin ocupar un nucleo
+	girando -- que es lo que le quitaba frecuencia al hilo principal en DCDoom
+	y Sega Rally 2. Apagada por omision hasta que el A/B diga.
+*/
+static int					prioridad			= -1;
+
 static void leer_giro(void)
 {
+	if (prioridad < 0)
+	{
+		const char * v = getenv("DCEMU_HILO_AICA_PRIORIDAD");
+
+		prioridad = (v != NULL && atoi(v) != 0);
+	}
+
 	if (giro < 0)
 	{
 		const char * v = getenv("DCEMU_HILO_AICA_GIRO");
@@ -171,24 +193,45 @@ static int cuerpo(void * dato)
 
 	leer_giro();
 
+	if (prioridad)
+		hilo_prioridad_alta_propia();
+
+	/*
+		El hilo duerme hasta el proximo BORDE DE MUESTRA, no hasta la proxima
+		publicacion (2026-09-05). `objetivo` se publica en cada servicio del
+		bloque periodico --cada grano de 400 ciclos, unas 500 000 veces por
+		segundo en Crazy Taxi-- y solo uno de cada once cruza un borde de
+		muestra: despertarse en cada publicacion era diez despertares de once
+		para no mezclar nada. `siguiente` es el primer ciclo en que la muestra
+		que sigue pasa a estar debida; mientras el objetivo no lo cruce no hay
+		nada que hacer, y publicar() solo avisa cuando lo cruzo.
+
+		Exacto por construccion: lo que el SH-4 necesita antes de un acceso
+		es que esten mezcladas TODAS las muestras <= objetivo, y eso es lo
+		que entrar() espera ahora por cuenta de muestras (aica_muestras_listas
+		contra muestras(objetivo)), no por un reloj `alcanzado` que solo decia
+		que el hilo habia pasado por aqui.
+	*/
 	for (;;)
 	{
-		unsigned long long obj, llegue;
+		unsigned long long obj;
+		unsigned long long siguiente =
+			aica_primer_reloj_de_muestra(aica_muestras_hechas() + 1);
 
-		/* El giro, antes del mutex: `alcanzado` lo escribe solo este hilo y
-		   `objetivo` es el volatile de un escritor, asi que se miran sin el.
-		   `terminar` se lee sucio y se vuelve a mirar bajo el mutex. */
+		/* El giro, antes del mutex: `objetivo` es el volatile de un escritor y
+		   `siguiente` es propio, asi que se miran sin el. `terminar` se lee
+		   sucio y se vuelve a mirar bajo el mutex. */
 		if (giro > 0)
 		{
 			int i;
 
-			for (i = 0; i < giro && !terminar && alcanzado >= objetivo; i++)
+			for (i = 0; i < giro && !terminar && objetivo < siguiente; i++)
 				_mm_pause();
 		}
 
 		hilo_mtx_tomar(mtx);
 
-		while (!terminar && alcanzado >= objetivo)
+		while (!terminar && objetivo < siguiente)
 		{
 			esperando++;
 			hilo_cond_esperar(cond, mtx);
@@ -207,20 +250,16 @@ static int cuerpo(void * dato)
 
 		/* Sin el mutex: todo lo que se toca aqui es estado del AICA, y quien
 		   lo quiera mirar desde el SH-4 pasa por hilo_aica_entrar(), que
-		   espera a que este al dia. Ver el razonamiento de arriba. */
-		llegue = aica_tick_hasta(obj, HILO_AICA_PASO);
+		   espera a que este al dia. Ver el razonamiento de arriba. Aqui
+		   siempre hay al menos una muestra debida (objetivo >= siguiente), y
+		   con el paso 1 se mezcla exactamente una; si el objetivo cubre mas,
+		   la vuelta siguiente no duerme. */
+		aica_tick_hasta(obj, HILO_AICA_PASO);
 
 		hilo_mtx_tomar(mtx);
 
-		/* Nunca retroceder: aica_tick_hasta() devuelve el reloj del ultimo
-		   borde de muestra, que puede quedar por detras del objetivo cuando
-		   este cae en medio de una. Si no queda nada por hacer, el AICA esta
-		   al dia con el objetivo aunque no haya producido una muestra nueva. */
-		if (llegue >= obj)
-			alcanzado = obj;
-		else
-		if (llegue > alcanzado)
-			alcanzado = llegue;
+		/* La marca vieja, que ya no decide nada: queda para la traza. */
+		alcanzado = obj;
 
 		/* Solo si hay alguien esperando. Ver `esperando` arriba. */
 		if (esperando)
@@ -327,10 +366,12 @@ void hilo_aica_terminar(void)
 
 		fprintf(stderr, "hilo del AICA, linea: %llu esperas sobre %llu"
 			" muestras (%.2f %% de los bordes), %llu resueltas girando"
-			" (giro %d), %llu llegaron tarde sin esperar, %llu imposibles\n",
+			" (giro %d, prioridad %s), %llu llegaron tarde sin esperar,"
+			" %llu imposibles\n",
 			esperas_linea, muestras,
 			muestras ? 100.0 * (double) esperas_linea / (double) muestras : 0.0,
-			esperas_giro, giro, sin_espera_linea, esperas_imposibles);
+			esperas_giro, giro, prioridad ? "alta" : "normal",
+			sin_espera_linea, esperas_imposibles);
 	}
 
 	hilo_mtx_destruir(mtx);
@@ -357,13 +398,19 @@ void hilo_aica_publicar(void)
 	objetivo = reloj_total;
 
 	/*
-		El aviso solo hace falta si el hilo duerme, y `esperando` se mira sin
-		el mutex a proposito: si la lectura sucia pierde la carrera con el
-		hilo que se esta por dormir, el proximo servicio --microsegundos de
-		reloj real despues-- lo despierta. Es latencia de una publicacion,
-		nunca un aviso perdido para siempre.
+		El aviso solo hace falta si el hilo duerme Y hay una muestra debida
+		que no termino: las publicaciones que no cruzan un borde de muestra no
+		le dan trabajo, y avisarle en cada una eran 500 000 llamadas al
+		sistema por segundo en Crazy Taxi. La cuenta memoizada de reloj_total
+		contra la senal de terminacion del hilo dice si hay muestra debida.
+
+		`esperando` se mira sin el mutex a proposito: si la lectura sucia
+		pierde la carrera con el hilo que se esta por dormir, el proximo
+		servicio --microsegundos de reloj real despues-- lo despierta, porque
+		la muestra sigue debida hasta que la mezcle. Es latencia de una
+		publicacion, nunca un aviso perdido para siempre.
 	*/
-	if (esperando)
+	if (esperando && aica_muestras_al_reloj() > aica_muestras_listas)
 	{
 		hilo_mtx_tomar(mtx);
 
@@ -404,9 +451,13 @@ void hilo_aica_entrar(void)
 
 	hilo_mtx_tomar(mtx);
 
-	obj = objetivo;
+	/* "Al dia" es por cuenta de muestras: estan mezcladas todas las <= al
+	   objetivo publicado cuando la senal de terminacion llega a su cuenta.
+	   Con el hilo durmiendo hasta el borde, un objetivo entre dos bordes no
+	   le pide nada y no hay que esperarlo. */
+	obj = aica_muestras_de_reloj(objetivo);
 
-	if (alcanzado >= obj)
+	if (aica_muestras_listas >= obj)
 	{
 		sin_espera++;
 		return;					/* con el mutex tomado, a proposito */
@@ -419,7 +470,7 @@ void hilo_aica_entrar(void)
 	{
 		PERF_MARCA(t_esp);
 
-		while (alcanzado < obj)
+		while (aica_muestras_listas < obj)
 		{
 			esperando++;
 			hilo_cond_esperar(cond, mtx);

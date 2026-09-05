@@ -252,6 +252,11 @@ extern unsigned long long			aica_linea_log_perdidas;
 unsigned long long aica_muestras_de_reloj(unsigned long long reloj);
 unsigned long long aica_muestras_al_reloj(void);
 
+/* El primer ciclo en que la cuenta de muestras llega a m (el techo; el piso es
+   aica_reloj_de_muestra). Es el borde en que la muestra m pasa a estar
+   debida: el hilo del AICA duerme hasta que el objetivo lo cruce. */
+unsigned long long aica_primer_reloj_de_muestra(unsigned long long m);
+
 /* Saca el siguiente cambio sellado en `hasta` o antes; 0 si no hay. */
 int aica_linea_log_sacar(unsigned long long hasta, int * nivel,
 	unsigned long long * muestra);
