@@ -6,9 +6,9 @@
 # disco. tests/memoria_prueba.c y tests/dobles.c cubren lo que los handlers
 # referencian de ahi.
 #
-# Las cabeceras de SDL 1.2 igual hacen falta para compilar: opcodes.h incluye
-# main.h, que incluye <SDL/SDL.h> y <GL/gl.h>. No se enlaza ninguna funcion de
-# SDL, asi que el ejecutable no necesita las DLL.
+# SDL no hace falta ni para compilar: desde el paso a SDL3 (2026-09-05) main.h
+# no lo incluye, y cada archivo que habla con SDL lo incluye el mismo -- y
+# ninguno de esos se enlaza aqui. Lo que si arrastra main.h es <GL/gl.h>.
 
 set(DCEMU_NUCLEO
 	${CMAKE_SOURCE_DIR}/arith.c
@@ -88,7 +88,6 @@ target_include_directories(dcemu_tests PRIVATE
 	${CMAKE_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/include
 	${CMAKE_CURRENT_SOURCE_DIR}
-	${SDL12_STAGED_INCLUDE}
 )
 
 target_compile_definitions(dcemu_tests PRIVATE
@@ -146,7 +145,6 @@ target_include_directories(dcemu_sh4json PRIVATE
 	${CMAKE_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/include
 	${CMAKE_CURRENT_SOURCE_DIR}
-	${SDL12_STAGED_INCLUDE}
 )
 
 target_compile_definitions(dcemu_sh4json PRIVATE

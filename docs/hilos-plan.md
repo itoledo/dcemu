@@ -66,6 +66,11 @@ y en la ruta de Windows el SDL real es sdl12-compat sobre SDL2 sobre SDL3, así 
 debajo son hilos modernos del sistema. `main.c:1385` incluso tiene un
 `SDL_CreateThread(timer_check, NULL)` comentado de 2005: la idea ya estaba.
 
+*(2026-09-05: el árbol pasó a la API de SDL3 y la tabla de arriba se lee con los nombres
+nuevos — `SDL_Mutex`/`SDL_LockMutex`/`SDL_UnlockMutex`, `SDL_Condition`/`SDL_WaitCondition`/
+`SDL_SignalCondition`/`SDL_BroadcastCondition`, `SDL_CreateThread(cuerpo, nombre, dato)`. La
+capa cumplió su promesa: el cambio fue `hilo.c` y ningún otro archivo de hilos.)*
+
 ### Pero detrás de `hilo.h`
 
 **El código del emulador no ve SDL.** Se agrega un par `hilo.c` / `hilo.h` con una API

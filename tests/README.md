@@ -64,9 +64,9 @@ en `0x0C/0x8C/0xAC`, RAM de video en `0x04/0x05/0xA4/0xA5`, FIFO del TA en
 `0x10` y store queues en `0xE0-0xE3`. Las zonas sin mapear cuentan el acceso en
 `prueba_accesos_invalidos` en vez de escribir.
 
-Las cabeceras de SDL 1.2 igual hacen falta para *compilar* (`opcodes.h` incluye
-`main.h`, que incluye `<SDL/SDL.h>`), pero no se enlaza ninguna funcion de SDL:
-el ejecutable de pruebas no necesita las DLL.
+SDL no hace falta ni para *compilar*: desde el paso a SDL3 (2026-09-05) `main.h` no
+lo incluye, y cada archivo que habla con SDL lo incluye el mismo -- ninguno de esos
+se enlaza aqui. El ejecutable de pruebas no necesita cabeceras ni DLL de SDL.
 
 ## Convenciones
 

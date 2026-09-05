@@ -18,7 +18,11 @@ extern	int DebugMode;
 extern	DWORD MemDebug;
 extern	DWORD BreakPoint;
 
-extern	SDL_Surface *DebugWindow;
+/* Declaracion adelantada y no <SDL3/SDL.h>: esta cabecera la incluyen archivos
+   que tests/ compila sin SDL (traza.c no, pero opcodes.h si). SDL3 define
+   `typedef struct SDL_Surface SDL_Surface`, asi que la etiqueta es esta. */
+struct SDL_Surface;
+extern	struct SDL_Surface *DebugWindow;
 
 void DebugUpdate(void);
 int DebugInit(void);
@@ -26,6 +30,5 @@ void DebugShow(void);
 void DebugHide(void);
 void DebugPrintf (int which, char * fmt, ...);
 void disasm(DWORD address, char *buffer);
-void DrawDebugInlineInfo(SDL_Surface * surface);
 
 #endif // _DEBUG_H_

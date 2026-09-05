@@ -13,11 +13,6 @@
 #include "dctest.h"
 #include "suites.h"
 
-/* main.h arrastra <SDL/SDL.h>, que hace "#define main SDL_main" en Windows.
-   El emulador lo aprovecha (SDLmain.lib aporta el WinMain), pero aqui no se
-   enlaza SDL: el punto de entrada tiene que llamarse main de verdad. */
-#undef main
-
 static const dc_suite * const suites[] =
 {
 	&suite_mov,

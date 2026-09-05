@@ -5,7 +5,9 @@
 extern "C" {
 #endif
 	void gui_init();
-	void gui_event(SDL_Event evt);
+	/* El evento va como puntero opaco: gui.h no incluye SDL para que main.h
+	   tampoco tenga que hacerlo. Dentro es un SDL_Event. */
+	void gui_event(const void * evt);
 	void gui_refresh();
 	void gui_addlog(char * str);
 	void gui_addlogchar(char c);

@@ -8,7 +8,8 @@
 #include <stdarg.h>
 #include "main.h"
 #include "debug.h"
-#include <SDL/SDL_opengl.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #include "graficos.h"
 #include "BFont.h"
 #include <time.h>
@@ -35,9 +36,10 @@ int DebugInit(void)
 	
 //	BFont_SetFontColor(DebugFont, 0xff, 0xff, 0xff);
 	
-	if (DebugWindow == NULL) 
-//		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, 640, 480, 16, 0, 0, 0, 0);
-		DebugWindow = SDL_CreateRGBSurface(SDL_SWSURFACE, 1024, 512, 16, 0, 0, 0, 0);
+	/* RGB565: lo que SDL 1.2 daba para 16 bits sin mascaras, y lo que
+	   DibujarGL() sube como GL_UNSIGNED_SHORT_5_6_5. */
+	if (DebugWindow == NULL)
+		DebugWindow = SDL_CreateSurface(1024, 512, SDL_PIXELFORMAT_RGB565);
 
 	if (DebugWindow == NULL)
  		return 1;
@@ -66,8 +68,8 @@ void DebugUpdate(void)
 	int x, y;
 	WORD opcode;
 	BYTE b;
-	Uint32 color_black = SDL_MapRGBA(DebugWindow->format, 0x0, 0x0, 0x0, 0x0);
-	Uint32 color_white = SDL_MapRGBA(DebugWindow->format, 0xff, 0xff, 0xff, 0x0);
+	Uint32 color_black = SDL_MapSurfaceRGBA(DebugWindow, 0x0, 0x0, 0x0, 0x0);
+	Uint32 color_white = SDL_MapSurfaceRGBA(DebugWindow, 0xff, 0xff, 0xff, 0x0);
 	extern int filelogging;
 
 	/* Sin fuente no se dibuja nada: BFont_LoadFont() devuelve NULL cuando el
@@ -96,31 +98,31 @@ void DebugUpdate(void)
 		filelogging &= ~(FILELOG_MEMREADS | FILELOG_MEMWRITES);
 #endif
 
-   		SDL_FillRect(DebugWindow, NULL, color_black);
+   		SDL_FillSurfaceRect(DebugWindow, NULL, color_black);
    		
    		// Populate Debug Window
    		rect.x = 3; rect.y = 3;
      	rect.h = 3; rect.w = 630;
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
 	
      	rect.h = 470; rect.w = 3;
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
 	
    		rect.x = 633;
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
 	
 	    rect.x = 230; rect.h = 275;
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
 
   		rect.w = 630; rect.h = 3;
     	rect.x = 3; rect.y = 275;
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
          
         rect.y = 473; rect.w += 3;
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
         
         rect.y = 450; 
-  		SDL_FillRect(DebugWindow, &rect, color_white);
+  		SDL_FillSurfaceRect(DebugWindow, &rect, color_white);
    		BFont_PutStringFont(DebugWindow, DebugFont, 10, 457, "F9 = Single Step   /"
         	"   F10 = Stop Execution   /   F11 = Run   /   F12 = Toggle Debug Screen   /   KP+ KP- = Page through Memory");
 
@@ -390,7 +392,7 @@ extern unsigned long instrucciones;
 	rc.w = 320;
 	rc.y = 0;
 
-	SDL_FillRect(surface, &rc, 0x00000000);
+	SDL_FillSurfaceRect(surface, &rc, 0x00000000);
 
 	sprintf(buf, "PC: %08lx t:%d spd:%d SR:%08x", //, %08x,%08x,%08x %s",
 			PC, 

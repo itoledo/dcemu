@@ -3,19 +3,19 @@
 	HILO - implementacion sobre SDL. Ver hilo.h para el porque.
 
 	Es el unico archivo del arbol con #ifdef de plataforma por hilos, y el
-	unico que habla con SDL_Thread / SDL_mutex / SDL_cond. Cambiar de backend
-	--pthreads, Win32, C11 <threads.h>-- es reescribir este archivo y nada mas.
+	unico que habla con SDL_Thread / SDL_Mutex / SDL_Condition. Cambiar de
+	backend --pthreads, Win32, C11 <threads.h>-- es reescribir este archivo y
+	nada mas.
 
-	El conteo de nucleos no sale de SDL: SDL_GetCPUCount es de SDL 2 y aqui la
-	API es la 1.2.
+	El conteo de nucleos se queda en el sistema (GetSystemInfo / sysconf) y no
+	en SDL_GetNumLogicalCPUCores: cuenta lo mismo y asi esta funcion no cambia
+	de respuesta con la version de SDL.
 
 *****************************************************************************/
 
 #include <stdlib.h>
 
-#include <SDL/SDL.h>
-#include <SDL/SDL_thread.h>
-#include <SDL/SDL_mutex.h>
+#include <SDL3/SDL.h>
 
 #include "hilo.h"
 
@@ -33,19 +33,18 @@
 	esta capa no serviria de nada.
 */
 struct hilo		{ SDL_Thread * t; };
-struct hilo_mtx	{ SDL_mutex * m; };
-struct hilo_cond{ SDL_cond * c; };
+struct hilo_mtx	{ SDL_Mutex * m; };
+struct hilo_cond{ SDL_Condition * c; };
 
 hilo * hilo_crear(int (* cuerpo)(void *), void * dato, const char * nombre)
 {
 	hilo * h = (hilo *) malloc(sizeof(hilo));
 
-	(void) nombre;		/* SDL 1.2 no nombra los hilos; SDL 2 si */
-
 	if (h == NULL)
 		return NULL;
 
-	h->t = SDL_CreateThread(cuerpo, dato);
+	/* SDL3 nombra los hilos: es lo que el depurador muestra. */
+	h->t = SDL_CreateThread(cuerpo, nombre, dato);
 
 	if (h->t == NULL)
 	{
@@ -94,12 +93,12 @@ void hilo_mtx_destruir(hilo_mtx * m)
 
 void hilo_mtx_tomar(hilo_mtx * m)
 {
-	SDL_mutexP(m->m);
+	SDL_LockMutex(m->m);
 }
 
 void hilo_mtx_soltar(hilo_mtx * m)
 {
-	SDL_mutexV(m->m);
+	SDL_UnlockMutex(m->m);
 }
 
 hilo_cond * hilo_cond_crear(void)
@@ -109,7 +108,7 @@ hilo_cond * hilo_cond_crear(void)
 	if (c == NULL)
 		return NULL;
 
-	c->c = SDL_CreateCond();
+	c->c = SDL_CreateCondition();
 
 	if (c->c == NULL)
 	{
@@ -125,23 +124,23 @@ void hilo_cond_destruir(hilo_cond * c)
 	if (c == NULL)
 		return;
 
-	SDL_DestroyCond(c->c);
+	SDL_DestroyCondition(c->c);
 	free(c);
 }
 
 void hilo_cond_esperar(hilo_cond * c, hilo_mtx * m)
 {
-	SDL_CondWait(c->c, m->m);
+	SDL_WaitCondition(c->c, m->m);
 }
 
 void hilo_cond_avisar(hilo_cond * c)
 {
-	SDL_CondSignal(c->c);
+	SDL_SignalCondition(c->c);
 }
 
 void hilo_cond_avisar_a_todos(hilo_cond * c)
 {
-	SDL_CondBroadcast(c->c);
+	SDL_BroadcastCondition(c->c);
 }
 
 int hilo_nucleos(void)

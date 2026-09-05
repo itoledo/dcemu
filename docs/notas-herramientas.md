@@ -213,15 +213,22 @@ Para separar "GL nunca recibió la imagen" de "la captura sale negra", `DibujarF
 `glReadPixels` de cuatro puntos del back buffer bajo `--traza-mem` (cada 300 cuadros) y los
 imprime al lado de los bytes que leyó de la RAM de video.
 
-### SDL 1.2 redirige `stdout` y `stderr` a archivos en Windows
+### `stdout` y `stderr` van a archivos junto al ejecutable en Windows
 
-`stdout.txt` y `stderr.txt` **junto al ejecutable**, no en el directorio de trabajo: SDLmain arma
-la ruta con `GetModuleFileName`, así que con la construcción CMake caen en `build/Release/` aun
-corriendo desde la raíz del repositorio. Buscarlos en el directorio de trabajo se lee como "el
-emulador no dijo nada", y lo mismo pasa redirigiendo la salida del proceso desde el shell (o con
-`-RedirectStandardError` de PowerShell), que captura cero bytes. `--traza-mem` y los avisos de la
-MMU salen por ahí. Dos instancias comparten ese archivo: la segunda en arrancar lo trunca, así
-que una corrida medida y una sesión de juego en vivo se pisan los logs.
+`stdout.txt` y `stderr.txt` **junto al ejecutable**, no en el directorio de trabajo: la ruta se
+arma con `GetModuleFileName`, así que con la construcción CMake caen en `build/Release/` (o en la
+raíz de `build-clang/`) aun corriendo desde la raíz del repositorio. Buscarlos en el directorio
+de trabajo se lee como "el emulador no dijo nada", y lo mismo pasa redirigiendo la salida del
+proceso desde el shell (o con `-RedirectStandardError` de PowerShell), que captura cero bytes.
+`--traza-mem` y los avisos de la MMU salen por ahí. Dos instancias comparten ese archivo: la
+segunda en arrancar lo trunca, así que una corrida medida y una sesión de juego en vivo se pisan
+los logs.
+
+Hasta el 2026-09-05 lo hacía SDLmain (SDL 1.2); SDL3 no trae SDL_main ni redirige nada, así que
+desde el paso a SDL3 lo hace `main.c` en `salida_redirigir()`, lo primero de `main()`, con las
+mismas reglas — y un interruptor que antes no existía: `DCEMU_SIN_REDIRECCION=1` deja las dos
+salidas en la consola, para usar el emulador a mano. Ningún guion del banco la pone: todos leen
+`stderr.txt`.
 
 ---
 

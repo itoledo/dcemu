@@ -13,7 +13,7 @@
 #define __BFONT_H_
 
 
-#include <SDL/SDL.h>
+#include <SDL3/SDL.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,17 +110,11 @@ void BFont_JustifiedPrintString     (SDL_Surface *Surface, int y, const char *fm
 void BFont_JustifiedPrintStringFont (SDL_Surface *Surface, BFont_Info *Font,  int y, const char *fmt, ...);
 
 
-/* Returns a new font colored with the color (r,g,b) */
-BFont_Info * BFont_SetFontColor (BFont_Info *Font,Uint8 r, Uint8 g, Uint8 b);
-
-
-/* Load and store the font int the BFont_Info structure from a SDL surface */
-BFont_Info * BFont_LoadFontFromSurface (SDL_Surface *Surface);
-
-
-/* Return a SDL Surface containing the string "text" */
-SDL_Surface * BFont_CreateSurface (const char *text);
-SDL_Surface * BFont_CreateSurfaceFont (BFont_Info *Font, const char *text);
+/* BFont_SetFontColor, BFont_LoadFontFromSurface y BFont_CreateSurface(Font)
+   se quitaron con el paso a SDL3 (2026-09-05): nadie las llamaba --el unico
+   cliente era inicializar_fonts(), que USE_BIOS_FONT deja fuera desde hace
+   anos-- y eran las unicas que tocaban la API de superficies de SDL 1.2 que
+   SDL3 ya no tiene (SDL_ConvertSurface con flags, format->Rmask). */
 
 
 /* This is for compatibility with old versions 1.0.X */
@@ -161,19 +155,6 @@ SDL_Surface * BFont_CreateSurfaceFont (BFont_Info *Font, const char *text);
 	#define LeftPrintStringFont      BFont_LeftPrintStringFont
 	#define JustifiedPrintString     BFont_JustifiedPrintString
 	#define JustifiedPrintStringFont BFont_JustifiedPrintStringFont
-
-	/* BFont v. 1.0.3 */
-
-	#define SetFontColor             BFont_SetFontColor
-
-	/* BFont v. 1.0.4 */
-
-	#define LoadFontFromSurface      BFont_LoadFontFromSurface
-
-	/* BFont v. 1.0.5 */
-
-	#define CreateSurface            BFont_CreateSurface
-	#define CreateSurfaceFont        BFont_CreateSurfaceFont
 
 #endif /* end compatibility */
 

@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <SDL3/SDL.h>
+
 #include "main.h"
 #include "audio.h"
 #include "aica.h"
@@ -20,6 +22,10 @@ int					audio_pico;
 static FILE *	wav;
 static unsigned long wav_bytes;
 static int		dispositivo_abierto;
+
+/* El dispositivo, como lo entrega SDL3: un flujo atado al dispositivo por
+   omision, que pide muestras por la callback de abajo. */
+static SDL_AudioStream * flujo;
 
 /*
 	Un segundo anillo, para poder escuchar y medir a la vez.
@@ -85,37 +91,56 @@ static void wav_cabecera(void)
 	Si el emulador va mas lento que el tiempo real el anillo se queda corto y
 	se completa con silencio, que es lo que hay que hacer: repetir lo anterior
 	suena a chasquido.
+
+	SDL3 no entrega un bufer que llenar sino una cantidad: `adicional` son los
+	bytes que el dispositivo necesita ahora para no quedarse sin nada, y se le
+	entregan con SDL_PutAudioStreamData. Se hace de a lotes de 1024 cuadros,
+	que es el tamano de bufer que se pide al abrir, asi el trabajo por llamada
+	es el mismo que con SDL 1.2.
 */
-static void SDLCALL audio_callback(void * datos, Uint8 * flujo, int largo)
+static void SDLCALL audio_callback(void * datos, SDL_AudioStream * destino,
+	int adicional, int total)
 {
-	unsigned cuadros = (unsigned) (largo / 4);
-	unsigned dados;
+	short lote[1024 * 2];
 
 	(void) datos;
+	(void) total;
 
-	dados = aica_salida_leer((short *) flujo, cuadros);
-
-	if (dados < cuadros)
-		memset(flujo + dados * 4, 0, (cuadros - dados) * 4);
-
-	/* Copia para el volcado, si lo hay. Se descarta lo que no entre: perder
-	   una parte del .wav es mejor que trabar la callback de audio. */
-	if (wav)
+	while (adicional >= 4)
 	{
-		const short * m = (const short *) flujo;
-		unsigned i;
+		unsigned cuadros = (unsigned) (adicional / 4);
+		unsigned dados;
 
-		for (i = 0; i < dados; i++)
+		if (cuadros > 1024)
+			cuadros = 1024;
+
+		dados = aica_salida_leer(lote, cuadros);
+
+		if (dados < cuadros)
+			memset(lote + dados * 2, 0, (cuadros - dados) * 4);
+
+		/* Copia para el volcado, si lo hay. Se descarta lo que no entre:
+		   perder una parte del .wav es mejor que trabar la callback de
+		   audio. */
+		if (wav)
 		{
-			unsigned proxima = (eco_cabeza + 1) % ECO_CUADROS;
+			unsigned i;
 
-			if (proxima == eco_cola)
-				break;
+			for (i = 0; i < dados; i++)
+			{
+				unsigned proxima = (eco_cabeza + 1) % ECO_CUADROS;
 
-			eco[eco_cabeza * 2]     = m[i * 2];
-			eco[eco_cabeza * 2 + 1] = m[i * 2 + 1];
-			eco_cabeza = proxima;
+				if (proxima == eco_cola)
+					break;
+
+				eco[eco_cabeza * 2]     = lote[i * 2];
+				eco[eco_cabeza * 2 + 1] = lote[i * 2 + 1];
+				eco_cabeza = proxima;
+			}
 		}
+
+		SDL_PutAudioStreamData(destino, lote, (int) (cuadros * 4));
+		adicional -= (int) (cuadros * 4);
 	}
 }
 
@@ -139,24 +164,29 @@ void audio_iniciar(void)
 		return;
 
 	{
-		SDL_AudioSpec pedido, dado;
+		SDL_AudioSpec pedido;
 
 		memset(&pedido, 0, sizeof(pedido));
 
 		pedido.freq     = 44100;
-		pedido.format   = AUDIO_S16SYS;
+		pedido.format   = SDL_AUDIO_S16;
 		pedido.channels = 2;
-		pedido.samples  = 1024;
-		pedido.callback = audio_callback;
 
-		if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
+		if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
 		{
 			fprintf(stderr, "audio: no hay subsistema de audio (%s). "
 				"El emulador sigue, mudo.\n", SDL_GetError());
 			return;
 		}
 
-		if (SDL_OpenAudio(&pedido, &dado) < 0)
+		/* El tamano del bufer del dispositivo: SDL 1.2 lo llevaba en el spec
+		   (samples = 1024) y SDL3 lo toma de esta pista al abrir. */
+		SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "1024");
+
+		flujo = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+			&pedido, audio_callback, NULL);
+
+		if (flujo == NULL)
 		{
 			fprintf(stderr, "audio: no se pudo abrir el dispositivo (%s). "
 				"El emulador sigue, mudo.\n", SDL_GetError());
@@ -164,12 +194,21 @@ void audio_iniciar(void)
 		}
 
 		dispositivo_abierto = 1;
-		SDL_PauseAudio(0);
+		SDL_ResumeAudioStreamDevice(flujo);	/* se abre en pausa */
 
 		if (traza_activa)
+		{
+			SDL_AudioSpec dado;
+			int cuadros = 0;
+
+			memset(&dado, 0, sizeof(dado));
+			SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(flujo), &dado,
+				&cuadros);
+
 			fprintf(stderr, "traza: audio: dispositivo abierto a %d Hz, "
 				"%d canales, buffer de %d cuadros\n",
-				dado.freq, dado.channels, dado.samples);
+				dado.freq, dado.channels, cuadros);
+		}
 	}
 }
 
@@ -241,8 +280,11 @@ void audio_terminar(void)
 {
 	if (dispositivo_abierto)
 	{
-		SDL_PauseAudio(1);
-		SDL_CloseAudio();
+		/* Destruir el flujo cierra tambien el dispositivo que
+		   SDL_OpenAudioDeviceStream abrio para el. */
+		SDL_PauseAudioStreamDevice(flujo);
+		SDL_DestroyAudioStream(flujo);
+		flujo = NULL;
 		dispositivo_abierto = 0;
 	}
 

@@ -55,28 +55,24 @@ static char bfont_buffer[BFONT_BUFFER_LEN];
 
 /* utility functions */
 static Uint32 GetPixel(SDL_Surface *Surface, Sint32 X, Sint32 Y);
-static void   PutPixel(SDL_Surface *surface, Sint32 X, Sint32 Y, Uint32 pixel);
 
 
 /* Carga una imagen (png o bmp) a un SDL_Surface RGBA de 32 bits, que es lo
-   mismo que entregaba IMG_Load para el font.png original (color type 6). */
+   mismo que entregaba IMG_Load para el font.png original (color type 6).
+   RGBA32 es el formato por orden de bytes --R en el byte 0, como lo deja
+   stb_image--, o sea las mascaras 0xff/0xff00/0xff0000/0xff000000 de antes. */
 static SDL_Surface * cargar_imagen(const char *filename)
 {
     int w = 0, h = 0, canales = 0;
     unsigned char *pixels;
     SDL_Surface *surface;
     int y;
-#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-    const Uint32 rmask = 0xff000000, gmask = 0x00ff0000, bmask = 0x0000ff00, amask = 0x000000ff;
-#else
-    const Uint32 rmask = 0x000000ff, gmask = 0x0000ff00, bmask = 0x00ff0000, amask = 0xff000000;
-#endif
 
     pixels = stbi_load(filename, &w, &h, &canales, 4);
     if (pixels == NULL)
         return NULL;
 
-    surface = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, 32, rmask, gmask, bmask, amask);
+    surface = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32);
     if (surface == NULL) {
         stbi_image_free(pixels);
         return NULL;
@@ -130,9 +126,9 @@ void InitFont(BFont_Info *Font)
 
     Font->h = Font->Surface->h;
 
-    SDL_SetColorKey(Font->Surface, SDL_SRCCOLORKEY, GetPixel(Font->Surface, 0, Font->Surface->h-1));
+    SDL_SetSurfaceColorKey(Font->Surface, true, GetPixel(Font->Surface, 0, Font->Surface->h-1));
 
-    if (SDL_MUSTLOCK(Font->Surface)) 
+    if (SDL_MUSTLOCK(Font->Surface))
 		SDL_UnlockSurface(Font->Surface);
 }
 
@@ -170,106 +166,11 @@ BFont_Info * BFont_LoadFont (const char *filename)
 
 
 
-BFont_Info * BFont_LoadFontFromSurface (SDL_Surface *Surface)
-{
-    int i;
-	BFont_Info *Font=NULL;
-
-	Font = (BFont_Info *) malloc(sizeof(BFont_Info));
-
-	if (Font == NULL) 
-		return NULL;
-
-	Font->Surface = Surface;
-	for (i=0; i < BFONT_NUM_CHARS; i++) {
-		Font->Chars[i].x = 0;
-		Font->Chars[i].y = 0;
-		Font->Chars[i].h = 0;
-		Font->Chars[i].w = 0;
-	}
-
-	InitFont(Font);
-	BFont_SetCurrentFont(Font);
-
-	return Font;
-}
-
-
 void BFont_FreeFont(BFont_Info *Font)
 {
-    SDL_FreeSurface(Font->Surface);
+    SDL_DestroySurface(Font->Surface);
 	free(Font);
 	Font = NULL;
-}
-
-BFont_Info * BFont_SetFontColor(BFont_Info *Font,Uint8 r, Uint8 g, Uint8 b)
-{
-    int x,y;
-
-    BFont_Info *newfont;
-    SDL_Surface *surface = NULL;
-
-    Uint32 pixel;
-    Uint8 old_r, old_g, old_b, old_a;
-    Uint8 new_r, new_g, new_b, new_a;
-    Uint32 color_key;
-
-	newfont = (BFont_Info *) malloc(sizeof(BFont_Info));
-	if (newfont == NULL) 
-		return NULL;
-
-	newfont->h = Font->h;
-	for (x=0; x < BFONT_NUM_CHARS; x++) {
-		newfont->Chars[x].x = Font->Chars[x].x;
-		newfont->Chars[x].y = Font->Chars[x].y;
-		newfont->Chars[x].h = Font->Chars[x].h;
-		newfont->Chars[x].w = Font->Chars[x].w;
-	}
-
-	surface = SDL_ConvertSurface(Font->Surface, Font->Surface->format, Font->Surface->flags);
-	if (surface == NULL) {
-		free(newfont);
-		return NULL;
-	}
-
-	if (SDL_MUSTLOCK(surface))       SDL_LockSurface(surface);
-	if (SDL_MUSTLOCK(Font->Surface)) SDL_LockSurface(Font->Surface);
-
-	color_key =  GetPixel(surface, 0, surface->h-1);
-
-	for( x=0; x < Font->Surface->w; x++) 
-	{
-		for( y=0; y < Font->Surface->h; y++) 
-		{
-			old_r = old_g = old_b = 0;
-
-			pixel = GetPixel(Font->Surface,x,y);
-
-			if (pixel != color_key) 
-			{
-				SDL_GetRGBA(pixel, surface->format, &old_r, &old_g, &old_b, &old_a);
-
-				new_r = (Uint8) ((old_r * r) / 255);
-				new_g = (Uint8) ((old_g * g) / 255);
-				new_b = (Uint8) ((old_b * b) / 255);
-
-				/* Next line modified by  Antti Mannisto  */
-				new_a = old_a;
-
-				pixel = SDL_MapRGBA(surface->format, new_r, new_g, new_b, new_a);
-
-				PutPixel(surface,x,y,pixel);
-			}
-		}
-	}
-	if (SDL_MUSTLOCK(surface))       SDL_UnlockSurface(surface);
-	if (SDL_MUSTLOCK(Font->Surface)) SDL_UnlockSurface(Font->Surface);
-
-	SDL_SetColorKey(surface, SDL_SRCCOLORKEY, color_key);
-
-	newfont->Surface = surface;
-
-    return newfont;
 }
 
 void BFont_SetCurrentFont(BFont_Info *Font)
@@ -585,81 +486,9 @@ void BFont_JustifiedPrintStringFont(SDL_Surface *Surface, BFont_Info *Font,  int
     BFont_JustifiedPutStringFont( Surface, Font, y,bfont_buffer);
 }
 
-SDL_Surface * BFont_CreateSurfaceFont (BFont_Info *Font, const char *text)
-{
-    SDL_Surface *surface = NULL;
-	Uint32 color_key;
-
-    surface = SDL_CreateRGBSurface(Font->Surface->flags,
-		BFont_TextWidthFont(Font, text), 
-		BFont_FontHeight(Font), 
-		Font->Surface->format->BitsPerPixel, 
-		Font->Surface->format->Rmask, 
-		Font->Surface->format->Gmask, 
-		Font->Surface->format->Bmask, 
-		0);
-
-	if (surface == NULL)
-		return NULL;
-
-	if (SDL_MUSTLOCK(Font->Surface)) SDL_LockSurface(Font->Surface);
-	
-	color_key = GetPixel(Font->Surface, 0, Font->Surface->h - 1);
-
-	if (SDL_MUSTLOCK(Font->Surface)) SDL_UnlockSurface(Font->Surface);	
-
-	SDL_FillRect(surface, NULL, color_key);
-
-	BFont_PutStringFont(surface, Font, 0, 0, text);
-
-	SDL_SetColorKey(surface, SDL_SRCCOLORKEY, color_key);
-
-	return surface;
-}
-
-
-SDL_Surface * BFont_CreateSurface (const char *text)
-{
-	return BFont_CreateSurfaceFont(CurrentFont, text);
-}
-
-
 /*********************************************************************************************************/
 /*********************************************************************************************************/
 /*********************************************************************************************************/
-
-static void   PutPixel(SDL_Surface *surface, Sint32 X, Sint32 Y, Uint32 pixel)
-{
-    int bpp = surface->format->BytesPerPixel;
-    /* Here p is the address to the pixel we want to set */
-    Uint8 *p = (Uint8 *)surface->pixels + Y * surface->pitch + X * bpp;
-
-    switch(bpp) {
-    case 1:
-        *p = pixel;
-        break;
-
-    case 2:
-        *(Uint16 *)p = pixel;
-        break;
-
-    case 3:
-        if(SDL_BYTEORDER == SDL_BIG_ENDIAN) {
-            p[0] = (pixel >> 16) & 0xff;
-            p[1] = (pixel >> 8) & 0xff;
-            p[2] = pixel & 0xff;
-        } else {
-            p[0] = pixel & 0xff;
-            p[1] = (pixel >> 8) & 0xff;
-            p[2] = (pixel >> 16) & 0xff;
-        }
-        break;
-
-    case 4:
-        *(Uint32 *)p = pixel;
-        break;
-    }
-}
 
 static Uint32 GetPixel(SDL_Surface *Surface, Sint32 X, Sint32 Y)
 {
@@ -670,7 +499,10 @@ static Uint32 GetPixel(SDL_Surface *Surface, Sint32 X, Sint32 Y)
    if (X<0) puts("x too small in GetPixel!");
    if (X>=Surface->w) puts("x too big in GetPixel!");
 
-   Bpp = Surface->format->BytesPerPixel;
+   /* En SDL3 `format` es el enumerado del formato, no una estructura; los
+      bytes por pixel y los corrimientos salen de las macros y de
+      SDL_GetPixelFormatDetails. */
+   Bpp = SDL_BYTESPERPIXEL(Surface->format);
 
    bits = ((Uint8 *)Surface->pixels)+Y*Surface->pitch+X*Bpp;
 
@@ -683,11 +515,12 @@ static Uint32 GetPixel(SDL_Surface *Surface, Sint32 X, Sint32 Y)
          return *((Uint16 *)Surface->pixels + Y * Surface->pitch/2 + X);
          break;
       case 3: { // Format/endian independent
+         const SDL_PixelFormatDetails *d = SDL_GetPixelFormatDetails(Surface->format);
          Uint8 r, g, b;
-         r = *((bits)+Surface->format->Rshift/8);
-         g = *((bits)+Surface->format->Gshift/8);
-         b = *((bits)+Surface->format->Bshift/8);
-         return SDL_MapRGB(Surface->format, r, g, b);
+         r = *((bits)+d->Rshift/8);
+         g = *((bits)+d->Gshift/8);
+         b = *((bits)+d->Bshift/8);
+         return SDL_MapRGB(d, NULL, r, g, b);
          }
          break;
       case 4:

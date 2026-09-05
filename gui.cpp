@@ -3,7 +3,7 @@
 // y el emulador funciona igual, solo sin la ventana de log (F2).
 
 #include <iostream>
-#include <SDL/SDL.h>
+#include <SDL3/SDL.h>
 
 #ifdef USE_GUICHAN
 #include <guichan.hpp>
@@ -142,7 +142,7 @@ bool gui_isvisiblelog()
 extern "C" {
 
 void gui_init() {}
-void gui_event(SDL_Event evt) { (void) evt; }
+void gui_event(const void * evt) { (void) evt; }
 void gui_refresh() {}
 void gui_addlog(char * str) { (void) str; }
 void gui_addlogchar(char c) { (void) c; }

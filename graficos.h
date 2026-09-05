@@ -55,7 +55,6 @@ extern	int		pvr_listdone;
 
 int glinit(void);
 int screeninit(void);
-SDL_Surface * draw_backscreen(void);
 void DibujarFramebuffer();
 
 /* Vuelca la RAM de video a un BMP, sin pasar por OpenGL. Tecla F5. */
@@ -79,7 +78,7 @@ void traza_ta_resumen(void);
 extern	char	titulo_ventana[256];
 void titulo_poner(const char * ruta);
 
-/* El contador de FPS del titulo: se marca en cada SDL_GL_SwapBuffers y la
+/* El contador de FPS del titulo: se marca en cada SDL_GL_SwapWindow y la
    tecla `f` lo alterna. Arranca prendido. */
 extern	int		fps_visible;
 void fps_marcar_cuadro(void);
@@ -90,12 +89,17 @@ void pvr_yuv_bloque(void * datos);
 void pvr_yuv_reiniciar(void);
 
 extern DWORD pvr_yuv_convertidos;	/* lo que devuelve PVR_YUV_STAT */
-void DibujarGL(SDL_Surface * sfc);
+
+/* Declaraciones adelantadas: esta cabecera la incluyen mem.c, ta.c y traza.c,
+   que no necesitan SDL, y desde SDL3 main.h ya no lo arrastra. */
+struct SDL_Surface;
+struct SDL_Window;
+void DibujarGL(struct SDL_Surface * sfc);
 void limpiar_pantalla();
 
 /* Presentar el cuadro: si se rasterizo en el destino propio (--render=fbo) lo
    copia a la ventana respetando el aspecto, y despues intercambia. Todo el que
-   antes llamaba a SDL_GL_SwapBuffers tiene que llamar a esto, o el cuadro se
+   antes llamaba a SDL_GL_SwapWindow tiene que llamar a esto, o el cuadro se
    queda dentro del FBO y la ventana no cambia nunca. */
 void gl_presentar(void);
 
@@ -115,8 +119,10 @@ void cb_ppblocksize(DWORD addr, void * p, size_t size);
 void cb_fb_r_sof1(DWORD addr, void * p, size_t size);
 
 
-extern	SDL_Surface *screen;
-extern SDL_Surface *outputscreen;
+/* La ventana y su tamano en pixeles. El tamano se relee al presentar cada
+   cuadro (gl_presentar), que es donde puede cambiar: la pantalla completa. */
+extern struct SDL_Window * ventana;
+extern int ventana_ancho, ventana_alto;
 
 /* ta_address_pointer lo declara ta.h, que es donde vive. */
 

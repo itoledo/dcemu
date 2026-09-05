@@ -306,6 +306,23 @@ Las ocho demos de PVR de control salen byte a byte idénticas entre `--render=fb
 
 ---
 
+### La ventana también es un FBO, y siempre lo fue (2026-09-05)
+
+`--render=ventana` rasteriza en un FBO del tamaño de la ventana y lo copia 1:1 al presentar
+(`destino_ventana` en `graficos.c`). Salió del paso a SDL3: con SDL 1.2 vía sdl12-compat, la capa
+dibujaba el GL de la aplicación en un FBO propio de 800×600 y lo escalaba a la ventana (su
+"OpenGL scaling"), así que **la referencia de siempre era un FBO** y el primer binario que dibujó
+de verdad en la ventana fue el de SDL3 — donde el driver de AMD rasteriza distinto: Crazy Taxi con
+3714 píxeles a ±1 LSB repartidos por toda la imagen y un bloque de deltas grandes en el borde
+derecho, con `.wav`, puntos de control, entregas y total de instrucciones al dígito; DCDoom (2D) y
+Sega Rally 2 (su cuadro de los 20 s) no se movían. La cadena de descarte: el árbol anterior
+compilado hoy reproduce `build-ref`; el contexto es el mismo hasta el `GL_RENDERER` (la traza
+imprime ahora `formato real R8 G8 B8, profundidad 24, plantilla 8, muestras 0` y el renderer);
+`glDisable(GL_DITHER)` no mueve un píxel; y `--render=fbo` sale byte a byte igual en los dos
+binarios. Con el FBO de la ventana los tres guests vuelven byte a byte a `build-ref`, y de paso la
+captura deja de depender de la ventana (DWM, oclusión, propiedad de píxeles).
+`DCEMU_VENTANA_DIRECTA=1` dibuja en la ventana a secas: el A/B, y lo que queda sin FBO.
+
 ## Sprites y el entorno de textura
 
 **Un sprite es un rectángulo entero en un parámetro de 64 bytes** — cuatro esquinas de las cuales

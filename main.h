@@ -6,7 +6,12 @@
 #include <windows.h>
 #endif
 #include <stdio.h>
-#include <SDL/SDL.h>
+#include <stdint.h>
+
+/* Sin SDL aqui, a proposito (2026-09-05): esta cabecera la incluyen los
+   archivos que tests/ enlaza sin SDL (aica.c, arm7.c, g2dma.c, vram.c...), y
+   lo unico que tomaban de ella eran los enteros de ancho fijo. Quien necesite
+   SDL lo incluye el mismo. */
 
 // OpenGL
 #if defined(WIN32)
@@ -42,11 +47,11 @@ extern int filelogging;
 // extern unsigned char * str_PC;
 
 // graficos.cpp
-// extern void PutPixel(Uint32 pos, Uint32 pixel);
-// extern void PutPixelW(Uint32 pos, WORD pixel);
-// extern void PutPixelL(Uint32 pos, DWORD pixel);
-extern void PutPixelN(Uint32 pos, void * data, size_t size);
-extern void ReadPixelN(Uint32 pos, void * data, size_t size);
+// extern void PutPixel(uint32_t pos, Uint32 pixel);
+// extern void PutPixelW(uint32_t pos, WORD pixel);
+// extern void PutPixelL(uint32_t pos, DWORD pixel);
+extern void PutPixelN(uint32_t pos, void * data, size_t size);
+extern void ReadPixelN(uint32_t pos, void * data, size_t size);
 extern bool logmem;
 extern bool logmemreg;
 extern bool logvideomem;

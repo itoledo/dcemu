@@ -1,6 +1,11 @@
 #include "main.h"
-#include <SDL/SDL.h>
-#include <SDL/SDL_opengl.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
+/* main.h ya incluyo el <GL/gl.h> del SDK (1.1), y con __gl_h_ definido SDL3
+   saltea su SDL_opengl.h entero -- glext incluido, que ahi va adentro de la
+   guarda. Los enumerados de GL 1.2+ (GL_BGRA, GL_UNSIGNED_SHORT_5_6_5,
+   GL_COLOR_SUM...) se traen a mano; el de SDL 1.2 los traia siempre. */
+#include <SDL3/SDL_opengl_glext.h>
 #include "options.h"
 #include "graficos.h"
 #include "intc.h"
@@ -24,8 +29,29 @@ static int shader_activo(void);
 static int volumen_px(void);
 
 
-SDL_Surface *screen;
-SDL_Surface *outputscreen;
+/* La ventana, su contexto GL y su tamano en pixeles (ver gl_presentar). */
+SDL_Window *	ventana;
+static SDL_GLContext contexto_gl;
+int				ventana_ancho = 800, ventana_alto = 600;
+
+/*
+	El destino propio DE LA VENTANA: en --render=ventana la escena se
+	rasteriza en un FBO del tamano de la ventana y se copia 1:1 al presentar.
+
+	Existe porque la referencia de siempre ERA eso sin que nadie lo supiera:
+	sdl12-compat dibujaba en un FBO propio de 800x600 y lo escalaba a la
+	ventana (su "OpenGL scaling"), y al pasar a SDL3 (2026-09-05) dcemu paso
+	a dibujar de verdad en el bufer de la ventana -- donde el driver de AMD
+	rasteriza distinto: Crazy Taxi salio con 3714 pixeles a +-1 LSB (y un
+	bloque con deltas grandes en un borde) con la ejecucion identica al
+	digito, y con --render=fbo los dos binarios eran byte a byte iguales. No
+	es el tramado (GL_DITHER apagado no movio un pixel), es el destino. Asi
+	que el FBO de la ventana reproduce la linea base anterior y ademas deja
+	la captura fuera del alcance de la ventana (DWM, oclusion, propiedad de
+	pixeles). DCEMU_VENTANA_DIRECTA=1 dibuja en la ventana a secas: el A/B,
+	y lo que queda si el driver no da FBO.
+*/
+static int		destino_ventana = 0;
 
 /* Lo que va en la barra de titulo. screeninit() se vuelve a llamar cada vez que
    el guest cambia el modo de video, asi que el titulo tiene que estar guardado y
@@ -34,7 +60,7 @@ char titulo_ventana[256] = APPTITLE;
 
 /*
 	El contador de FPS: cuadros presentados por segundo de reloj real, en la
-	barra de titulo junto al nombre. Se marca en cada SDL_GL_SwapBuffers --
+	barra de titulo junto al nombre. Se marca en cada SDL_GL_SwapWindow --
 	los tres caminos que presentan: la escena del TA, el framebuffer 2D y la
 	vista de depuracion -- y el titulo se refresca una vez por segundo, que
 	es lo que cuesta. La tecla `f` lo alterna; arranca prendido.
@@ -43,10 +69,10 @@ int fps_visible = 1;
 
 void fps_marcar_cuadro(void)
 {
-	static Uint32	marca = 0;
+	static Uint64	marca = 0;
 	static int		cuadros = 0;
 	static int		mostrando = 0;
-	Uint32			ahora = SDL_GetTicks();
+	Uint64			ahora = SDL_GetTicks();
 
 	cuadros++;
 	PERF_CONTAR(perf_cuadros);
@@ -67,13 +93,13 @@ void fps_marcar_cuadro(void)
 		snprintf(con_fps, sizeof(con_fps), "%s | %lu FPS", titulo_ventana,
 			(unsigned long) ((cuadros * 1000u + (ahora - marca) / 2)
 				/ (ahora - marca)));
-		SDL_WM_SetCaption(con_fps, NULL);
+		SDL_SetWindowTitle(ventana, con_fps);
 		mostrando = 1;
 	}
 	else if (mostrando)
 	{
 		/* Recien apagado: dejar el titulo limpio una sola vez. */
-		SDL_WM_SetCaption(titulo_ventana, NULL);
+		SDL_SetWindowTitle(ventana, titulo_ventana);
 		mostrando = 0;
 	}
 
@@ -101,8 +127,8 @@ void titulo_poner(const char * ruta)
 
 	snprintf(titulo_ventana, sizeof(titulo_ventana), "%s - dcemu", nombre);
 
-	if (outputscreen != NULL)
-		SDL_WM_SetCaption(titulo_ventana, NULL);
+	if (ventana != NULL)
+		SDL_SetWindowTitle(ventana, titulo_ventana);
 }
 
 typedef Uint16 pcon_func(Uint16 src);
@@ -1945,18 +1971,18 @@ static void gl_estado_olvidar(void);
 */
 static int render_ancho(void)
 {
-	if (glmoderno_fbo_ligado())
+	if (glmoderno_fbo_ligado() && !destino_ventana)
 		return screenancho * opciones.escala;
 
-	return (outputscreen != NULL) ? outputscreen->w : 800;
+	return ventana_ancho;
 }
 
 static int render_alto(void)
 {
-	if (glmoderno_fbo_ligado())
+	if (glmoderno_fbo_ligado() && !destino_ventana)
 		return screenheight * opciones.escala;
 
-	return (outputscreen != NULL) ? outputscreen->h : 600;
+	return ventana_alto;
 }
 
 /* El viewport de la pantalla, que render_a_textura() tiene que reponer. */
@@ -1996,17 +2022,27 @@ void gl_presentar(void)
 {
 	if (glmoderno_fbo_ligado())
 		glmoderno_presentar(render_ancho(), render_alto(),
-			(outputscreen != NULL) ? outputscreen->w : 800,
-			(outputscreen != NULL) ? outputscreen->h : 600);
+			ventana_ancho, ventana_alto);
 
-	SDL_GL_SwapBuffers();
+	SDL_GL_SwapWindow(ventana);
+
+	/* El tamano de la ventana, para el cuadro que viene: es el unico sitio
+	   donde cambia (F1, pantalla completa) y una lectura por cuadro no cuesta
+	   nada; preguntarselo a SDL en render_ancho() lo pagaria cada tira. */
+	SDL_GetWindowSizeInPixels(ventana, &ventana_ancho, &ventana_alto);
 
 	/* Y de vuelta al destino propio para la escena que viene. El viewport se
 	   repone despues de ligar, porque render_ancho() depende de que este
-	   ligado. */
-	if (opciones.render_fbo && glmoderno_hay_fbo())
+	   ligado. El FBO de la ventana sigue a la ventana si cambio de tamano
+	   (pantalla completa); asegurar() no hace nada si mide lo mismo. */
+	if ((opciones.render_fbo || destino_ventana) && glmoderno_hay_fbo())
 	{
-		glmoderno_fbo_ligar(1);
+		if (destino_ventana
+		&& !glmoderno_fbo_asegurar(ventana_ancho, ventana_alto))
+			destino_ventana = 0;
+		else
+			glmoderno_fbo_ligar(1);
+
 		viewport_pantalla();
 	}
 }
@@ -6689,45 +6725,6 @@ void taVertexHandler()
 	}
 }
 
-struct rgbmask
-{
-	Uint32 rmask;
-	Uint32 gmask;
-	Uint32 bmask;
-	Uint32 amask;
-};
-
-struct rgbmask mask[] =
-{
-	{ 0x1f << 10, 0x1f << 5, 0x1f, 0 },	// ARGB0555
-	{ 0x1f << 11, 0x3f << 5, 0x1f, 0 }, // RGB565
-	{ 0xff << 16, 0xff << 8, 0xff, 0 }, // RGB888
-	{ 0xff << 16, 0xff << 8, 0xff, 0 }  // ARGB0888
-};
-
-//void draw_backscreen()
-SDL_Surface * draw_backscreen()
-{
-	SDL_Surface * tmp;
-//	int ancho = screenwidth * ((screenbits == 32) ? 1 : 2);
-	tmp = SDL_CreateRGBSurfaceFrom(
- 			get_memory_pointer(0xA5000000 + pvr_fb_r_sof1),
-    		screenancho,
-      		screenheight,
-        	screenbits,
-			screenancho * (screenbits / 8),
-         	mask[screenformat].rmask,
-         	mask[screenformat].gmask,
-         	mask[screenformat].bmask,
-         	mask[screenformat].amask);
- 	if (tmp == NULL)
- 	{
- 		logxmsg(LOG_PVR, "error al crear backscreen\n");
- 		exit(1);
-	}
-	return tmp;
-}
-
 /*
 	Vuelca el framebuffer emulado a un BMP de 24 bits.
 
@@ -7177,13 +7174,23 @@ int glinit(void)
 		el contexto que da igual sirve.
 	*/
 
-	outputscreen = SDL_SetVideoMode(800, 600, 32, SDL_HWSURFACE|SDL_OPENGL|SDL_HWACCEL);
-	
-	if (outputscreen == NULL)
+	ventana = SDL_CreateWindow(titulo_ventana, 800, 600, SDL_WINDOW_OPENGL);
+
+	if (ventana == NULL)
 	{
-		logxmsg(LOG_PVR, "screeninit: outputscreen = NULL!!!!\n");
+		fprintf(stderr, "gl: no se pudo crear la ventana (%s)\n", SDL_GetError());
 		exit(1);
 	}
+
+	contexto_gl = SDL_GL_CreateContext(ventana);
+
+	if (contexto_gl == NULL || !SDL_GL_MakeCurrent(ventana, contexto_gl))
+	{
+		fprintf(stderr, "gl: no se pudo crear el contexto (%s)\n", SDL_GetError());
+		exit(1);
+	}
+
+	SDL_GetWindowSizeInPixels(ventana, &ventana_ancho, &ventana_alto);
 
 	/*
 		Que contexto dio SDL de verdad, que no tiene por que ser el que se pidio.
@@ -7211,11 +7218,32 @@ int glinit(void)
 		fprintf(stderr, "traza: contexto GL: profundidad %d bits, plantilla %d, "
 			"alfa pedido %d / real %d\n",
 			prof, stencil, alfa, (int) alfa_real);
+
+		/* Y el resto del formato de pixel y quien lo da, porque dos SDL pueden
+		   elegir formatos distintos con la misma lista de atributos y eso se
+		   ve como un LSB de diferencia en las capturas, no como un error. */
+		{
+			GLint r = 0, g = 0, b = 0, d = 0, s = 0, muestras = 0;
+			const char * renderer = (const char *) glGetString(GL_RENDERER);
+			const char * version  = (const char *) glGetString(GL_VERSION);
+
+			glGetIntegerv(GL_RED_BITS, &r);
+			glGetIntegerv(GL_GREEN_BITS, &g);
+			glGetIntegerv(GL_BLUE_BITS, &b);
+			glGetIntegerv(GL_DEPTH_BITS, &d);
+			glGetIntegerv(GL_STENCIL_BITS, &s);
+			glGetIntegerv(GL_SAMPLES, &muestras);
+
+			fprintf(stderr, "traza: contexto GL: formato real R%d G%d B%d, "
+				"profundidad %d, plantilla %d, muestras %d; %s, %s\n",
+				(int) r, (int) g, (int) b, (int) d, (int) s, (int) muestras,
+				renderer ? renderer : "?", version ? version : "?");
+		}
 	}
 
 	/*
 		Las entradas de GL que opengl32.dll no exporta. Va **despues** de
-		SDL_SetVideoMode y antes de cualquier otra cosa que las use: sin
+		SDL_GL_CreateContext y antes de cualquier otra cosa que las use: sin
 		contexto creado, SDL_GL_GetProcAddress devuelve NULL para todo y el
 		camino nuevo se apagaria solo, en silencio y sin motivo.
 	*/
@@ -7244,9 +7272,21 @@ int glinit(void)
 		opciones.escala = 1;
 	}
 
-    SDL_WM_SetCaption(titulo_ventana, NULL);
-    SDL_WM_SetIcon(SDL_LoadBMP("dcemu.bmp"), NULL);
-	SDL_EnableUNICODE(1);
+	/* El destino propio de la ventana (ver la declaracion): la omision en
+	   --render=ventana, salvo palanca o driver sin FBO. */
+	if (!opciones.render_fbo)
+	{
+		const char * v = getenv("DCEMU_VENTANA_DIRECTA");
+
+		destino_ventana = glmoderno_hay_fbo() && !(v != NULL && atoi(v) != 0);
+
+		if (traza_activa)
+			fprintf(stderr, "traza: la ventana se dibuja %s\n", destino_ventana
+				? "en un FBO propio del tamano de la ventana, copiado 1:1"
+				: "directo en su bufer");
+	}
+
+    SDL_SetWindowTitle(ventana, titulo_ventana);
 
 	gui_init();
 
@@ -7490,16 +7530,10 @@ int screeninit(void)
 	if (screenheight > 128)
 		screentexheight = 256.0f;
 
-	if (screen != NULL)
-		SDL_FreeSurface(screen);
-
-	screen = SDL_CreateRGBSurface(SDL_HWSURFACE, screenancho, screenheight, 32, rmask, gmask, bmask, amask);
-
-	if (screen == NULL)
-	{
-		logxmsg(LOG_PVR, "screeninit: screen == NULL!!!!\n");
-		exit(1);
-	}
+	/* Las mascaras de SDL del switch de arriba armaban una superficie
+	   (`screen`) que nadie leia desde que el camino 2D pasa por GL; se fue
+	   con SDL3. Las de GL siguen en uso. */
+	(void) rmask; (void) gmask; (void) bmask; (void) amask;
 
 	/*
 		El destino propio, dimensionado para este modo de video.
@@ -7514,8 +7548,8 @@ int screeninit(void)
 	{
 		int nw = screenancho  * opciones.escala;
 		int nh = screenheight * opciones.escala;
-		int vw = (outputscreen != NULL) ? outputscreen->w : 800;
-		int vh = (outputscreen != NULL) ? outputscreen->h : 600;
+		int vw = ventana_ancho;
+		int vh = ventana_alto;
 
 		if (glmoderno_fbo_asegurar((nw > vw) ? nw : vw, (nh > vh) ? nh : vh))
 			glmoderno_fbo_ligar(1);
@@ -7528,6 +7562,19 @@ int screeninit(void)
 		if (opciones.render_oit)
 			glmoderno_oit_dimensionar(glmoderno_fbo_ancho(),
 				glmoderno_fbo_alto());
+	}
+	else if (destino_ventana)
+	{
+		/* El FBO de la ventana: exactamente su tamano, y la copia al
+		   presentar es 1:1. Si no se puede, se dibuja directo y se dice. */
+		if (glmoderno_fbo_asegurar(ventana_ancho, ventana_alto))
+			glmoderno_fbo_ligar(1);
+		else
+		{
+			fprintf(stderr, "gl: sin FBO del tamano de la ventana; se dibuja"
+				" directo en ella\n");
+			destino_ventana = 0;
+		}
 	}
 
 	viewport_pantalla();

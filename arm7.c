@@ -108,7 +108,7 @@ static DWORD onda_leer16(DWORD a)
 		return (DWORD) (sound_mem[a] | (sound_mem[a + 1] << 8));
 
 	{
-		Uint16 v;
+		uint16_t v;
 
 		memcpy(&v, sound_mem + a, sizeof(v));
 
@@ -235,7 +235,7 @@ void arm7_escribir(DWORD direccion, int tam, DWORD valor)
 			}
 			else
 			{
-				Uint16 v = (Uint16) valor;
+				uint16_t v = (uint16_t) valor;
 
 				memcpy(sound_mem + a, &v, sizeof(v));
 			}

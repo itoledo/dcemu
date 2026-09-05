@@ -10,6 +10,9 @@
 
 /* Para desensamblar el bucle donde se trabo y volcar los registros. traza.c
    solo se enlaza en el emulador, nunca en las pruebas. */
+/* SDL3 ya no llega por main.h: aqui es por SDL_GetTicks(). */
+#include <SDL3/SDL.h>
+
 #include "main.h"
 #include "debug.h"
 #include "sh4emu.h"
@@ -705,7 +708,7 @@ void traza_resumen(void)
 	   que compararlo. Ver docs/clock-plan.md, fase 4. */
 	{
 		unsigned long long emulado = reloj_ms();
-		unsigned long real = SDL_GetTicks();
+		unsigned long real = (unsigned long) SDL_GetTicks();
 
 		if (emulado > 0 && real > 0)
 			fprintf(stderr, "traza: %llu ms emulados en %lu ms reales (%.2fx)\n",

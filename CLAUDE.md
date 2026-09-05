@@ -6,7 +6,7 @@ repository.
 ## What this is
 
 `dcemu` is a Sega Dreamcast emulator written in C (one C++ translation unit) targeting
-SDL 1.2 + OpenGL. It emulates the SH-4 CPU with a dynamic recompiler to x64 (on by
+SDL3 + OpenGL (SDL 1.2 through sdl12-compat until 2026-09-05). It emulates the SH-4 CPU with a dynamic recompiler to x64 (on by
 default since the 2026-08-20 adoption — `DCEMU_JIT=0` is the isolation lever that leaves
 the threaded interpreter alone) and the PowerVR2 (PVR/TA) graphics chip by translating
 tile-accelerator display lists into OpenGL calls.
@@ -134,9 +134,34 @@ dummy `remove.txt`). `inicializar_logs()` aborts startup if it cannot create `lo
 Only `Makefile.linux` has header dependencies per object; `Makefile.win` does not, so
 **after touching a header, `clean` first on Windows** or objects will go stale.
 
-Dependencies: SDL 1.2, SDL_image, OpenGL/GLU, guichan (`guichan`, `guichan_sdl`,
-`guichan_opengl`), libcdio + libiso9660, SIMDx86. The last three ship in-tree under
-`include/` and `lib/{win32,linux}/`.
+Dependencies, as the CMake build actually links them: **SDL3** (3.4.16 — CMake downloads the
+official MSVC devel package with a pinned SHA256; one DLL, `SDL3.dll`), OpenGL (`opengl32`
+plus the entry points `glmoderno.c` resolves at run time), `stb_image.h` (in `include/`, the
+replacement for SDL_image) and **libchdr** (vendored in `deps/libchdr` at upstream `1d40b6ee`,
+2026-09-05). **Until 2026-09-05 SDL was 1.2 through sdl12-compat → sdl2-compat → SDL3 — three
+DLLs to reach the library that did the work**; the port to the SDL3 API touched `main.c`
+(window, events, the `stdout.txt`/`stderr.txt` redirect that SDLmain used to do), `graficos.c`
+(`SDL_CreateWindow` + `SDL_GL_CreateContext`), `audio.c` (`SDL_OpenAudioDeviceStream`),
+`hilo.c` (`SDL_Mutex`/`SDL_Condition`), `BFont.c`/`debug.c` (surfaces) and nothing else, and
+`main.h` no longer includes SDL at all — each user includes `<SDL3/SDL.h>` itself, which is
+what lets `tests/` compile with no SDL headers. Two rules from the port: **SDL3's
+`SDL_opengl.h` skips itself entirely, glext included, when `<GL/gl.h>` came first** (`main.h`
+does that on Windows), so `graficos.c` includes `<SDL3/SDL_opengl_glext.h>` by hand for the GL
+1.2+ enums; and **SDL3 repeats keys**, which SDL 1.2 never did, so the key handler drops
+`event.key.repeat` or a held `p` toggles the pause on and off. **Adopted on measurement**
+(2026-09-05): games gate byte-identical to `build-ref` in the three guests (capture, `.wav`,
+checkpoints and delivery list, with and without `--hilos`), KOS park 151/151 with zero
+differences, and the two-binary tanda (`herramientas/binarios-ab.ps1`) against the pre-SDL3
+tree retrained in a worktree: **DCDoom −0.9 %, Sega Rally 2 −1.9 %, Crazy Taxi −7.8 %, all three
+with disjoint ranges and 4/4**, instruction totals identical to the digit — the gain is entirely
+host-side, and it survives `--sin-audio` (CT −9.2 %, disjoint, 4/4, in a batch whose absolute
+level does not compare), so it is the frame/event path, not the audio one; `docs/msvc-build-plan.md`,
+«SDL3», has the whole chain.
+Still in the tree but dead: guichan (`USE_GUICHAN`, off — `gui.cpp` compiles stubs), libcdio +
+libiso9660 (`USE_LIBCDIO`, off — `iso9660_min.c` replaced it), SIMDx86 (`simdx86_stub.c`), the
+`-lGLU` of the makefiles; they ship under `include/` and `lib/{win32,linux}/` for the makefiles
+only. **The makefiles still name SDL 1.2 and were not ported** — they were already unusable on
+these machines (no gcc); porting them is `sdl3-config --cflags --libs` and nothing in the code.
 
 `Makefile.win` hardcodes `C:/Dev-Cpp` paths and `-march=athlon-xp -m3dnow`; both makefiles
 compile with `-DPOSX -DX86_OPT -fno-strict-aliasing -O3`. `POSX` is defined on Windows too
@@ -166,8 +191,9 @@ the exact frames KOS's `vmu.c` sends), and `aica`, `arm7` and `g2dma`.
 
 They link the real handlers and the real `opcodes.c`; `tests/memoria_prueba.c` replaces
 `mem.c` and `tests/dobles.c` replaces the `graficos.c` / `iso.c` / `intc.c` / `traza.c`
-symbols the code references, which keeps SDL and OpenGL out of the link. SDL *headers* are
-still needed to compile (`opcodes.h` pulls in `main.h`).
+symbols the code references, which keeps SDL and OpenGL out of the link. Since the SDL3 port
+(2026-09-05) `main.h` does not include SDL, so the suites compile with **no SDL headers at
+all** — only `<GL/gl.h>`, which `main.h` still pulls in.
 
 **Several files are SDL-free on purpose so the suites can link them for real**: `sistema.c`,
 `vram.c`, `ta.c`, `aica.c`, `arm7.c`, `g2dma.c`, `cdda.c`, `vmu.c`, `jit_x64.c`. Keep them
@@ -267,7 +293,7 @@ Options are parsed by `opciones.c` into the global `opciones`:
 | `--sin-aica` | no emular el AICA: ni el ARM, ni los canales, ni los temporizadores. Para aislar una regresión |
 | `--vmu=ARCHIVO` | imagen de la Visual Memory de la ranura 1 (`bios/vmu-a1.bin` por omisión; se crea formateada si no existe) |
 | `--sin-vmu` | sin tarjeta en la ranura 1. Es el interruptor de aislamiento, y **el que reproduce la línea base anterior byte a byte** |
-| `--render=MODO` | `ventana` (por omisión, y **es la referencia**), `fbo` —rasterizar a la resolución emulada en un destino propio, respetando el aspecto— o `shader`, que además rasteriza con GLSL en vez de función fija |
+| `--render=MODO` | `ventana` (por omisión, y **es la referencia** — desde el 2026-09-05 rasterizada en un FBO del tamaño de la ventana y copiada 1:1, que es lo que sdl12-compat hacía por debajo desde siempre; ver `DCEMU_VENTANA_DIRECTA`), `fbo` —rasterizar a la resolución emulada en un destino propio, respetando el aspecto— o `shader`, que además rasteriza con GLSL en vez de función fija |
 | `--escala=N` | resolución interna ×N (1 a 8). Implica `--render=fbo`. **Medida: no cuesta nada** — ver abajo |
 | `DCEMU_OIT_SOLO_FONDO=1\|2\|3\|4` | sonda de `--render=oit`: 1 emite sólo el fondo, 2 pinta cuántas capas juntó cada píxel, 3 el **alfa** del fondo (que es lo que consume la mezcla por DST_ALPHA y una captura RGB no muestra) y 4 el color del fragmento más cercano sin mezclar. Separan «la lista está vacía» de «la mezcla da negro», que dan el mismo síntoma |
 | `DCEMU_VOL_SONDA=1\|2` | sonda de los volúmenes por píxel: 1 pinta la tira de rojo donde la máscara dio dentro y de verde donde dio fuera —lo que el shader **lee**—, 2 lee la máscara de vuelta y cuenta los texeles marcados —lo que la pasada **escribió**—. Hacen falta las dos: dan el mismo síntoma y separan el lado que falla |
@@ -291,6 +317,8 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | variable | qué hace |
 | --- | --- |
 | `DCEMU_PULSAR_START=N[,...]` / `DCEMU_SOLO_A=N[,...]` + `DCEMU_PULSAR_A=1` | aprietan el botón durante 20 sondeos desde cada número; 60 sondeos por segundo emulado |
+| `DCEMU_SIN_REDIRECCION=1` | deja `stdout`/`stderr` en la consola en vez de `stdout.txt`/`stderr.txt` junto al ejecutable (desde SDL3 la redirección la hace `main.c`, no SDLmain). Para usar el emulador a mano; **ningún guion del banco la pone**, porque todos leen `stderr.txt` |
+| `DCEMU_VENTANA_DIRECTA=1` | en `--render=ventana`, rasterizar **directo en el búfer de la ventana** en vez de en un FBO propio del tamaño de la ventana copiado 1:1 al presentar (la omisión desde SDL3, 2026-09-05). **La referencia de siempre era ese FBO sin que nadie lo supiera**: sdl12-compat dibujaba en uno propio de 800×600 y lo escalaba a la ventana, y al hablar SDL3 directo la ventana de verdad rasteriza distinto en el driver de AMD — Crazy Taxi con 3714 píxeles a ±1 LSB (y un bloque con deltas grandes en un borde) con la ejecución idéntica al dígito, `.wav`, puntos y entregas iguales; DCDoom y SR2 no se movían. No es el tramado (`glDisable(GL_DITHER)` no movió un píxel): con `--render=fbo` los dos binarios eran byte a byte iguales, así que es el destino. Con el FBO de la ventana los tres guests vuelven **byte a byte** a `build-ref`. Esta palanca es el A/B y lo que queda si el driver no da FBO |
 | `DCEMU_SIN_FMT_CLAVE=1` | la clave de la caché de texturas vuelve a ignorar el formato de píxel — el comportamiento anterior byte a byte. Con el formato fuera de la clave, una misma dirección declarada ARGB1555 por una tira y RGB565 por otra comparte entrada y sirve la decodificación del último que la regeneró: el auto «semitransparente»/confeti de los menús de Sega Rally 2 (fotos 1555 del carrusel y página de librea 565 en el mismo slot). El arreglo sigue la regla que ya tenía el bit de mipmap |
 | `DCEMU_GRABAR_MANDO=archivo` / `DCEMU_MANDO=archivo` | la grabadora y el replay de la entrada, al nivel de lo que ve el Maple: una línea por cambio de estado con su número de sondeo. La grabación va **después** de todas las mezclas (teclado, XInput y las variables de arriba: lo grabado es lo que el guest vio, así que una receta vieja se graba una vez y se reemite idéntica), y el replay **reemplaza** la entrada real entera — el jitter analógico de un mando enchufado no se cuela. El sondeo es tiempo emulado: se graba jugando con `--limitar` y se reproduce a toda velocidad. La VMU sigue la regla de siempre: grabar y reproducir arrancan de la misma imagen. Validado en lazo cerrado: receta grabada → replay → captura byte a byte idéntica. **Un paso también puede fijarse por milisegundo emulado**, con el prefijo `t` (`t45500 fffb 0 0 128 128`): el sondeo cuenta recorridos del Maple y su relación con el tiempo no es fija —el tráfico de la VMU lo acelera—, así que una receta de menús escrita en sondeos se desincroniza con cualquier cambio de temporización; la forma `t` es estable ante eso |
 | `DCEMU_MAPLE_DEMORA_VMU_US=N` | el **tiempo de servicio de la VMU**: un recorrido del Maple que tocó la tarjeta no termina antes de N µs (13 000 por omisión; `0` lo apaga, la conducta anterior). Es el arreglo de la **caja automática de Sega Rally 2 y su rapid-fire de START**: la tarjeta real es un microcontrolador lento, dcemu contestaba en el largo del alambre (0,2-0,9 ms) y a esa velocidad el montaje de MapleDev (WinCE) falla y FILESYS lo reintenta cada ~133 ms para siempre — cada vuelta tumba y rearma DirectInput con 1-2 cuadros de acelerador en cero, y el promedio dejaba la primera marcha a 63 mph, bajo el umbral de 64,5 del cambio. El barrido de la demora (tabla en `mem.c` sobre `MAPLE_VMU_DEMORA_US`): ≤1 ms reintento eterno, 2-10 ms **cuelga el arranque** (el timeout de ~10 ms de WinCE), 12-14 ms sano, ≥16 ms cuelga de nuevo (el fin cae tras el próximo vblank). Verificado: segunda a los 76,5 s y tercera marcha con la omisión y sin variables; pausa firme; compuerta de 5 juegos (DCDoom, VT, CT, CT2, MKG) verde. **Cambia la temporización de todo guest que toque la tarjeta**: el `0` reproduce la línea base anterior. **El barrido KOS completo (2026-08-29) queda cerrado**: piso 0 de 131 (`herramientas/barrido-vmu-demora.ps1`), señal 24 de 131 y las 24 explicadas por un solo mecanismo benigno — el arranque más largo desplaza la fase de una animación por tiempo (el fondo de la pantalla "Set Date/Clock" del BIOS, el pulso de color del logo de Dreamcast), nunca el contenido ni el veredicto serial |
@@ -453,8 +481,11 @@ how to believe a measurement of it.
   the ARM7 memoization read as −0.09% (noise) that way and −0.49% (consistent, disjoint ranges)
   without it. Audio capture and the stopwatch cannot share a run, same as `--captura-gl`.
 - **`stdout.txt` and `stderr.txt` land next to the executable**, i.e. `build/Release/`, not in
-  the working directory — SDL 1.2 builds the path from `GetModuleFileName`. Redirecting the
-  process's output from the shell captures zero bytes. Two instances truncate each other's.
+  the working directory. SDLmain used to do it; SDL3 has no SDLmain, so since 2026-09-05
+  `main.c` does it itself (`salida_redirigir()`, first thing in `main()`), with the same rules —
+  path from `GetModuleFileName`, truncated on open, `stderr` unbuffered so a crash report lands
+  whole. Redirecting the process's output from the shell captures zero bytes. Two instances
+  truncate each other's. `DCEMU_SIN_REDIRECCION=1` leaves both on the console, for hand use.
 - **`--salir-tras=N` matters**: `--desensamblar`, `--volcar` and the `.wav` all close through
   `traza_resumen()`. Killing the process from outside loses them.
 - **Guest time runs ~2.5× fast without `--limitar`**, so a guest-side delay elapses sooner in
@@ -943,10 +974,12 @@ both discarded by measurement.
 
 `glmoderno.c/h` resolves the GL entry points `opengl32.dll` does not export and owns an FBO —
 colour texture plus packed depth24/stencil8 — that the scene can be drawn into instead of the
-window's back buffer. **The context was already GL 4.6**: SDL 1.2 has no version or profile
-attributes, so it cannot ask for a *core* context, and it does not need to — the default context
+window's back buffer. **The context was already GL 4.6**: SDL 1.2 had no version or profile
+attributes, so it could not ask for a *core* context, and it did not need to — the default context
 on Windows and Mesa is compatibility, which reaches 4.6 on any current driver, and the entry
-points load through `SDL_GL_GetProcAddress`. Fixed function and modern GL live in the same
+points load through `SDL_GL_GetProcAddress`. SDL3 *can* ask for a profile and dcemu does not:
+`glinit()` sets the same size attributes as before and takes the default, and the `traza:
+contexto GL` line comes back identical (depth 24, stencil 8, alpha 8). Fixed function and modern GL live in the same
 context, so the migration is incremental. `offset_iniciar()` was already doing this for
 `glSecondaryColorPointer`; this is the same pattern at scale.
 
@@ -964,6 +997,16 @@ What it buys, and what it does not:
 - **It changes nothing about how a pixel is computed**: no shaders, same fixed-function
   pipeline, same draw model. That is why the two paths are comparable at all, and why the
   baseline still holds — `--render=ventana` is the default and stays byte-identical.
+- **`--render=ventana` is itself FBO-backed since 2026-09-05, and it always was without anyone
+  knowing.** sdl12-compat drew the application's GL into an FBO of its own (800×600) and scaled
+  it to the window; with SDL3 spoken directly, dcemu really drew into the window's back buffer
+  and the AMD driver rasterizes that differently — Crazy Taxi came out with 3714 pixels ±1 LSB
+  (plus one block of large deltas at an edge) with execution identical to the digit, and
+  `--render=fbo` byte-identical between the two binaries. Not dithering (`glDisable(GL_DITHER)`
+  moved nothing): the target. So `graficos.c` now renders the window path into a window-sized
+  FBO (`destino_ventana`) and blits 1:1 at present — the old reference byte for byte in all three
+  guests, and a capture that no longer depends on the window (DWM, occlusion, pixel ownership).
+  `DCEMU_VENTANA_DIRECTA=1` draws straight into the window: the A/B, and the fallback without FBO.
 
 #### The programmable path (`--render=shader`)
 
@@ -1364,8 +1407,8 @@ font, as `basic/mmu/pvrmap` does. On hardware it would too.
 build gains no dependency. It maps almost 1:1 onto a Dreamcast pad; the two triggers are
 analogue 0-255 on both consoles and pass through untouched. `main.c` polls it once per frame
 and `entrada_leer()` merges it with the keyboard: buttons with AND (active-low), axes by
-whichever is not at rest, gamepad first. The `SDL_JOY*` handling in `main.c` is the 2005 path
-behind an `#ifdef JOYSTICK` nobody defines.
+whichever is not at rest, gamepad first. The 2005 `SDL_JOY*` path in `main.c`, behind an
+`#ifdef JOYSTICK` nobody defined, went away with the SDL3 port.
 
 The Maple bus lives inside `pvr_write()`, in the `SB_MDST` case (`0x005F6C18`): writing 1 walks
 the command list at `SB_MDSTAR` and answers each transfer in place. Port A carries a standard
@@ -1433,7 +1476,8 @@ bitmap font renderer, driven by `DebugMode` (`DBG_STOP`/`DBG_RUN`/`DBG_STEP`). `
 - `flashrom_get_region()` recognizes only `00000`, `00110` and `00211`; the `00111` in
   `bios/flash.bin` here makes KOS log `unknown code`. That is KOS being strict.
 - Do not request `SDL_GL_DEPTH_SIZE` — asking for it alongside the stencil makes SDL pick a
-  different pixel format, and the context grants 24 bits anyway.
+  different pixel format, and the context grants 24 bits anyway. Re-checked under SDL3
+  (2026-09-05): same context, and `pvr-texture_render` byte-identical to the SDL 1.2 binary.
 - A crash reports the guest's state instead of vanishing (`traza_caida_instalar()`, installed
   first thing in `main()`), **and on Windows the host's stack with function, file and line**
   (dbghelp; Release already carries `/Zi`, so the PDB sits next to the binary). Read it before

@@ -54,8 +54,8 @@ docs/*.pdf
 docs/*.doc
 
 # Directorios de compilacion de CMake fuera de /build/: build-x64/, build-doc/.
-# CMake descarga ahi las cabeceras y binarios de sdl12-compat, y una vez se
-# colaron a un commit -- 48 mil lineas, mas que el proyecto entero.
+# CMake descarga ahi las cabeceras y binarios de SDL3 (antes sdl12-compat), y
+# una vez se colaron a un commit -- 48 mil lineas, mas que el proyecto entero.
 /build*/
 
 scrambled.bin
@@ -67,3 +67,6 @@ perfil.csv
 perfil-*.csv
 perfil-pmu.log
 perfil*.etl
+
+# Area de trabajo de las sesiones de verificacion (capturas, copias de binarios, guiones sueltos).
+scratch/

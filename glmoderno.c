@@ -9,12 +9,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <SDL/SDL.h>
+#include <SDL3/SDL.h>
 /* SDL_opengl.h y no <GL/gl.h> a secas: en Windows el gl.h del SDK usa
    WINGDIAPI y APIENTRY, que los define <windows.h>, y SDL_opengl.h es quien lo
    arrastra. Incluir gl.h solo da veinte paginas de errores de sintaxis dentro
    de la cabecera del sistema. Es lo mismo que hace graficos.c. */
-#include <SDL/SDL_opengl.h>
+#include <SDL3/SDL_opengl.h>
 
 #include "glmoderno.h"
 #include "traza.h"
@@ -88,14 +88,14 @@ static int		ligado = 0;
 static void * resolver(const char * nombre)
 {
 	char	con_ext[64];
-	void *	p = SDL_GL_GetProcAddress(nombre);
+	void *	p = (void *) SDL_GL_GetProcAddress(nombre);
 
 	if (p != NULL)
 		return p;
 
 	snprintf(con_ext, sizeof(con_ext), "%sEXT", nombre);
 
-	return SDL_GL_GetProcAddress(con_ext);
+	return (void *) SDL_GL_GetProcAddress(con_ext);
 }
 
 /* "4.6.0 NVIDIA 551.86" -> 46. Se lee de la cadena y no con glGetIntegerv de

@@ -1,18 +1,11 @@
-// #define TTF
-
 // Las bibliotecas las enlaza el sistema de compilacion (CMake / makefiles),
 // no #pragma comment(lib, ...).
 
-// #include "windows.h"
 #include "main.h"
 #include "math.h"
-#include <SDL/SDL_opengl.h>
-// #include <SDL_thread.h>
-#ifdef TTF
-#include <SDL_ttf.h>
-#else
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #include "BFont.h"
-#endif
 #include <time.h>
 #include <ctype.h>
 // #include <unistd.h>
@@ -67,19 +60,7 @@ DWORD MAPLE_RESET1;
 
 #define MAX_PARAMS 4
 
-#ifdef TTF
-TTF_Font * font;
-#else
 BFont_Info * font;
-#endif
-
-#ifdef OPENGL
-SDL_Color color_blanco = { 0xff, 0xff, 0xff, 0xff };
-SDL_Color color_negro = {0x00, 0x00, 0x00, 0 };
-#else
-SDL_Color color_blanco = { 0xff, 0xff, 0xff, 0x00 };
-SDL_Color color_negro = {0x00, 0x00, 0x00, 0 };
-#endif
 time_t start_time;
 bool logging = true;
 int filelogging = 0;
@@ -95,7 +76,6 @@ bool pausa = false;
 WORD joystick = 0xFFFF;
 unsigned char ltrig = TRIGGER_OFF, rtrig = TRIGGER_OFF;
 unsigned char joyx = JOYSTICK_NEUTRAL, joyy = JOYSTICK_NEUTRAL;
-SDL_Joystick * js;
 
 /* El gamepad del anfitrion, releido una vez por cuadro. */
 static struct mando_estado_t mando;
@@ -523,29 +503,6 @@ void RedibujarPantalla()
 	}
 }
 
-Uint32 VBlankCallback(Uint32 interval, void * param)
-{
-	logmsg("VBlankCallback: %d\n", pvr_scanline);
-	
-	pvr_scanline++;
-
-	if (pvr_scanline == pvr_spg_vblank_int_out)
-	{
-		logxmsg(LOG_INTC, "VBlankCallback: llamando SCANINT1\n");
-		intc_add(ASIC_EVT_PVR_SCANINT1, 0);
-	}
-	else
-	if (pvr_scanline == pvr_spg_vblank_int_in)
-	{
-		logxmsg(LOG_INTC, "VBlankCallback: llamando SCANINT2\n");
-		intc_add(ASIC_EVT_PVR_SCANINT2, 0);
-	}
-
-//	pvr_scanline %= 0x1FF;
-	pvr_scanline %= pvr_spg_load_vcount;
-
-	return 1;
-}
 
 /*
 	DMA del SH-4. Hasta ahora dma_check() solo escribia al log y ni siquiera se
@@ -978,7 +935,7 @@ void main_loop(void)
 
 	// Referencia de tiempo real para --limitar. Se toma aca y no al arrancar el
 	// programa para no contar la carga de la BIOS y de la imagen.
-	real_inicio = SDL_GetTicks();
+	real_inicio = (unsigned long) SDL_GetTicks();
 
 	timer_check(0); // arranca sin ciclos transcurridos: solo fija el TSTR previo
 
@@ -1697,7 +1654,7 @@ void main_loop(void)
 			static unsigned long      marca_cuadros = 0;
 
 			unsigned long long emulado = reloj_ms();
-			unsigned long      real    = SDL_GetTicks() - real_inicio;
+			unsigned long      real    = (unsigned long) SDL_GetTicks() - real_inicio;
 
 			marca_cuadros++;
 
@@ -1749,7 +1706,7 @@ void main_loop(void)
 			if (opciones.limitar)
 			{
 				unsigned long long emulado = reloj_ms();
-				unsigned long      real    = SDL_GetTicks() - real_inicio;
+				unsigned long      real    = (unsigned long) SDL_GetTicks() - real_inicio;
 
 				if (emulado > real)
 				{
@@ -1787,10 +1744,15 @@ void main_loop(void)
 		{
 			switch(event.type)
 			{
-				case SDL_KEYDOWN:
+				case SDL_EVENT_KEY_DOWN:
 				{
+					/* SDL 1.2 no repetia teclas; SDL3 si, y una repeticion
+					   alternaria sola la pausa o el contador de FPS. */
+					if (event.key.repeat)
+						break;
+
 					logmsg("keydown\r\n");
-					switch(event.key.keysym.sym)
+					switch(event.key.key)
 					{
 					case SDLK_LEFT:
 //						logging = true;
@@ -1815,57 +1777,57 @@ void main_loop(void)
 					REMOVE_BIT(joystick, CONT_DPAD_DOWN);
 					break;
 					
-					case SDLK_a: // BOTON X
+					case SDLK_A: // BOTON X
 					REMOVE_BIT(joystick, CONT_X);
 					break;
 					
-					case SDLK_s: // BOTON A
+					case SDLK_S: // BOTON A
 					REMOVE_BIT(joystick, CONT_A);
 					break;
 					
-					case SDLK_d: // BOTON B
+					case SDLK_D: // BOTON B
 					REMOVE_BIT(joystick, CONT_B);
 					break;
 					
-					case SDLK_w: // BOTON W
+					case SDLK_W: // BOTON W
 					REMOVE_BIT(joystick, CONT_Y);
 					break;
 
-					case SDLK_z: // START
+					case SDLK_Z: // START
 					REMOVE_BIT(joystick, CONT_START);
 					break;
 					
-					case SDLK_q: // LEFT
+					case SDLK_Q: // LEFT
 					ltrig = TRIGGER_ON;
 					break;
 
-					case SDLK_e: // RIGHT
+					case SDLK_E: // RIGHT
 					rtrig = TRIGGER_ON;
 					break;
 
-					case SDLK_y: // joystick up
+					case SDLK_Y: // joystick up
 					joyy = JOYSTICK_UP;
 					break;
 					
-					case SDLK_h: // joystick down
+					case SDLK_H: // joystick down
 					joyy = JOYSTICK_DOWN;
 					break;
 					
-					case SDLK_g: // joystick left
+					case SDLK_G: // joystick left
 					joyx = JOYSTICK_LEFT;
 					break;
 					
-					case SDLK_j: // joystick right
+					case SDLK_J: // joystick right
 					joyx = JOYSTICK_RIGHT;
 					break;
 
-					case SDLK_l: // empezar el log en archivo
+					case SDLK_L: // empezar el log en archivo
 /*					filelogging++;
 					filelogging %= 3; */
 					gui_setvisiblelog(!gui_isvisiblelog());
 					break;
 					
-					case SDLK_m: // logmem
+					case SDLK_M: // logmem
 					if ((filelogging & (FILELOG_MEMREADS | FILELOG_MEMWRITES)) == 0)
 					{
 						logmsg("activando filelog memoria\n");
@@ -1878,32 +1840,32 @@ void main_loop(void)
 					}
 					break;
 
-					case SDLK_v: // logmem
+					case SDLK_V: // logmem
 					if (logvideomem)
 						logvideomem = false;
 					else
 						logvideomem = true;
 					break;
 
-					case SDLK_r: // logmem
+					case SDLK_R: // logmem
 					if (logmemreg)
 						logmemreg = false;
 					else
 						logmemreg = true;
 					break;
 
-					case SDLK_p: // pausa
+					case SDLK_P: // pausa
 					if (pausa)
 						pausa = false;
 					else
 						pausa = true;
 					break;
 
-					case SDLK_f: // contador de FPS en el titulo
+					case SDLK_F: // contador de FPS en el titulo
 					fps_visible = !fps_visible;
 					break;
 					
-/*					case SDLK_i: // generar int?
+/*					case SDLK_I: // generar int?
 					intc(0);
 					break; */
 						
@@ -1913,10 +1875,10 @@ void main_loop(void)
 				}
 				break;
 				
-				case SDL_KEYUP:
+				case SDL_EVENT_KEY_UP:
 				{
 					logmsg("keyup\r\n");
-					switch(event.key.keysym.sym)
+					switch(event.key.key)
 					{
 					case SDLK_LEFT:
 					SET_BIT(joystick, CONT_DPAD_LEFT);
@@ -1934,46 +1896,47 @@ void main_loop(void)
 					SET_BIT(joystick, CONT_DPAD_DOWN);
 					break;
 					
-					case SDLK_a: // BOTON X
+					case SDLK_A: // BOTON X
 					SET_BIT(joystick, CONT_X);
 					break;
 					
-					case SDLK_s: // BOTON A
+					case SDLK_S: // BOTON A
 					SET_BIT(joystick, CONT_A);
 					break;
 					
-					case SDLK_d: // BOTON B
+					case SDLK_D: // BOTON B
 					SET_BIT(joystick, CONT_B);
 					break;
 					
-					case SDLK_w: // BOTON W
+					case SDLK_W: // BOTON W
 					SET_BIT(joystick, CONT_Y);
 					break;
 
-					case SDLK_z: // START
+					case SDLK_Z: // START
 					SET_BIT(joystick, CONT_START);
 					break;
 
-					case SDLK_q: // LEFT
+					case SDLK_Q: // LEFT
 					ltrig = TRIGGER_OFF;
 					break;
 
-					case SDLK_e: // RIGHT
+					case SDLK_E: // RIGHT
 					rtrig = TRIGGER_OFF;
 					break;
 					
-					case SDLK_y: // joystick up
-					case SDLK_h: // joystick down
+					case SDLK_Y: // joystick up
+					case SDLK_H: // joystick down
 					joyy = JOYSTICK_NEUTRAL;
 					break;
 					
-					case SDLK_g: // joystick left
-					case SDLK_j: // joystick right
+					case SDLK_G: // joystick left
+					case SDLK_J: // joystick right
 					joyx = JOYSTICK_NEUTRAL;
 					break;
 		   // toggle fullscreen
                     case SDLK_F1:
-					SDL_WM_ToggleFullScreen(outputscreen);
+					SDL_SetWindowFullscreen(ventana,
+						!(SDL_GetWindowFlags(ventana) & SDL_WINDOW_FULLSCREEN));
 					break;
 
                     case SDLK_F5:
@@ -2030,7 +1993,7 @@ void main_loop(void)
 				}
 				break;
 
-				case SDL_QUIT:
+				case SDL_EVENT_QUIT:
 				excepcion_salto_valido = 0;	/* el jmp_buf deja de estar vigente */
 				return;
 
@@ -2038,89 +2001,10 @@ void main_loop(void)
 				RedibujarPantalla();
 				break; */
 
-#ifdef JOYSTICK
-				case SDL_JOYAXISMOTION:
-				{
-					if ((event.jaxis.value < -3200) || (event.jaxis.value > 3200))
-					{
-						if (event.jaxis.axis == 0) // izq/der
-						{
-							if (event.jaxis.value < 0)
-							{
-								SET_BIT(joystick, CONT_DPAD_RIGHT);
-								REMOVE_BIT(joystick, CONT_DPAD_LEFT);
-							}
-							else
-							{
-								SET_BIT(joystick, CONT_DPAD_LEFT);
-								REMOVE_BIT(joystick, CONT_DPAD_RIGHT);
-							}
-						}
-						if (event.jaxis.axis == 1) // up/down
-						{
-							if (event.jaxis.value < 0)
-							{
-								SET_BIT(joystick, CONT_DPAD_DOWN);
-								REMOVE_BIT(joystick, CONT_DPAD_UP);
-							}
-							else
-							{
-								SET_BIT(joystick, CONT_DPAD_UP);
-								REMOVE_BIT(joystick, CONT_DPAD_DOWN);
-							}
-						}
-					}
-					else
-					{
-						if (event.jaxis.axis == 0) // izq/der
-						{
-							SET_BIT(joystick,CONT_DPAD_LEFT|CONT_DPAD_RIGHT);
-						}
-						else
-						if (event.jaxis.axis == 1) // arr/aba
-						{
-							SET_BIT(joystick,CONT_DPAD_UP|CONT_DPAD_DOWN);
-						}
-					}
-				}
-				break;
-				
-				case SDL_JOYBUTTONDOWN:
-				{
-					logmsg("btdown: %d\r\n", event.jbutton.button);
-					switch(event.jbutton.button)
-					{
-						case 0:	REMOVE_BIT(joystick, CONT_Y); break;
-						case 1: REMOVE_BIT(joystick, CONT_B); break;
-						case 2: REMOVE_BIT(joystick, CONT_A); break;
-						case 3: REMOVE_BIT(joystick, CONT_X); break;
-						case 4: REMOVE_BIT(joystick, CONT_Y); break;
-						case 5: REMOVE_BIT(joystick, CONT_Z); break;
-						case 6: REMOVE_BIT(joystick, CONT_START); break;
-					}
-				}
-				break;
-
-				case SDL_JOYBUTTONUP:
-				{
-					logmsg("btup: %d\r\n", event.jbutton.button);
-					switch(event.jbutton.button)
-					{
-						case 0:	SET_BIT(joystick, CONT_Y); break;
-						case 1: SET_BIT(joystick, CONT_B); break;
-						case 2: SET_BIT(joystick, CONT_A); break;
-						case 3: SET_BIT(joystick, CONT_X); break;
-						case 4: SET_BIT(joystick, CONT_Y); break;
-						case 5: SET_BIT(joystick, CONT_Z); break;
-						case 6: SET_BIT(joystick, CONT_START); break;
-					}
-				}
-				break;
-#endif // JOYSTICK
 
 				default:
 //           			  SDL_EventState(event.type, SDL_IGNORE);
-			gui_event(event);
+			gui_event(&event);
 				break;
 			}
 		}
@@ -2157,68 +2041,53 @@ int cargar_bios()
 	return 0;
 }
 
-void inicializar_fonts()
-{
-#ifndef USE_BIOS_FONT
-	// 288 narrow (12 x 24, 36 bytes / char)
-	// letra H
-	char * letras = "_!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-	char * ptr = letras;
-	char buf[2];
-	SDL_Surface * lbuf;
-	BYTE * p, nibble;
-	int x, y, bits;
-	int cnt;
-	
-	buf[1] = '\0';
-//	cnt = mem_n_base + 1024*1024*5; // 5 megas hacia adelante
-	cnt = FONT_BASE;
-
-	while (*ptr)
-	{
-		buf[0] = *ptr;
-#ifdef TTF
-		lbuf = TTF_RenderText_Solid(font, buf, color_blanco);
-#else
-		lbuf = BFont_CreateSurfaceFont(font, buf);
-#endif
-
-		p = lbuf->pixels;
-		bits = 0;
-		nibble = 0;	// si no, el primer byte de la primera letra sale con basura
-
-		for (y = 0; y < 24; y++)
-		{
-			for (x = 0; x < 12; x++)
-			{
-				// hay que formar el nibble
-				if (x < lbuf->w && y < lbuf->h)
-				{
-					p = (BYTE *) lbuf->pixels + y * lbuf->pitch + x * lbuf->format->BytesPerPixel;
-					if (*p)
-					{
-						nibble |= (1 << (7 - (bits % 8)));
-					}
-				}
-				bits++;
-				if (bits % 8 == 0)
-				{
-//					memoria[cnt++] = nibble;
-					memwrite(cnt++, &nibble, sizeof(BYTE));
-					nibble = 0;
-				}
-			}
-		}
-
-//		logmsg("Finalizamos la letra %c.\r\n", *ptr);
-		ptr++;
-	}
-#endif
-}
-
 void exitproc(void)
 {
 	logmsg("Exited with PC = %08x", PC);
+}
+
+/*
+	stdout.txt y stderr.txt al lado del ejecutable.
+
+	Con SDL 1.2 lo hacia SDLmain.lib por su cuenta, y todo el banco de guiones
+	del arbol lee `stderr.txt` en el directorio del binario: el resumen `jit:`,
+	los contadores de control, las sondas. SDL3 no trae SDL_main ni redirige
+	nada, asi que se hace aqui, antes de que nadie escriba. Igual que entonces:
+	se trunca al abrir (dos instancias se pisan) y stderr queda sin bufer, para
+	que un informe de caida llegue entero. DCEMU_SIN_REDIRECCION=1 lo deja en
+	la consola, para usar el emulador a mano.
+*/
+static void salida_redirigir(void)
+{
+#ifdef _WIN32
+	char ruta[MAX_PATH + 16];
+	DWORD n;
+	char * corte;
+	const char * v = getenv("DCEMU_SIN_REDIRECCION");
+
+	if (v != NULL && atoi(v) != 0)
+		return;
+
+	n = GetModuleFileNameA(NULL, ruta, MAX_PATH);
+
+	if (n == 0 || n >= MAX_PATH)
+		return;
+
+	corte = strrchr(ruta, '\\');
+
+	if (corte == NULL)
+		return;
+
+	strcpy(corte + 1, "stdout.txt");
+
+	if (freopen(ruta, "w", stdout) != NULL)
+		setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+
+	strcpy(corte + 1, "stderr.txt");
+
+	if (freopen(ruta, "w", stderr) != NULL)
+		setvbuf(stderr, NULL, _IONBF, 0);
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -2243,6 +2112,8 @@ int main(int argc, char *argv[])
 //	SDL_Thread * timer_thread;
 
 	//FILE * fp;
+
+	salida_redirigir();
 
 	/* Antes que nada: si algo tumba al emulador, que al menos diga por donde
 	   iba el guest en vez de desaparecer en silencio. Ver traza.h. */
@@ -2269,33 +2140,14 @@ int main(int argc, char *argv[])
 
 	inicializar_logs();
 
-    /* initialize SDL */
-#ifdef _DEBUG
-	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE
-#else
-	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER
-//	if ( SDL_Init( SDL_INIT_VIDEO
-#endif
-#ifdef JOYSTICK
-		| SDL_INIT_JOYSTICK
-#endif // JOYSTICK
-		) < 0 )
+	/* SDL3: solo video (los eventos vienen con el). El temporizador ya no es
+	   un subsistema, y el audio lo abre audio_iniciar() cuando hace falta. */
+	if (!SDL_Init(SDL_INIT_VIDEO))
 	{
-		fprintf( stderr, "Video initialization failed: %s\n",
-			SDL_GetError( ) );
-		SDL_Quit( );
-	}
-
-#ifdef JOYSTICK
-	if (SDL_NumJoysticks() < 1)
-	{
-		fprintf(stderr, "No se encontraron joysticks.\r\n");
+		fprintf(stderr, "Video initialization failed: %s\n", SDL_GetError());
 		SDL_Quit();
+		return 1;
 	}
-
-	SDL_JoystickEventState(SDL_ENABLE);
-	js = SDL_JoystickOpen(0);
-#endif
 
 	joystick = 0xFFFF;
 
@@ -2327,14 +2179,7 @@ int main(int argc, char *argv[])
 
 //	SDL_SetAlpha(screen, SDL_RLEACCEL, 128);
 
-#ifdef TTF
-	TTF_Init();
-    
-	font = TTF_OpenFont("font.ttf", 16);
-#else
 	font = BFont_LoadFont("font.png");
-//	font = BFont_SetFontColor(font, 0xff, 0xff, 0xff);
-#endif
 
 	if (!font)
 	{
@@ -2829,17 +2674,7 @@ int main(int argc, char *argv[])
 		return 1;
 	} */
 
-	if ( SDL_MUSTLOCK(screen) )
-	{
-		fprintf(logfp, "Es necesario SDL_Lock\r\n");
-	}
-
 	R(15) = mem_base + mem_offset + 1024*1024*15 - 4;
-
-#ifndef USE_BIOS_FONT
-	logmsg("inicializando fonts\n");
-	inicializar_fonts();
-#endif	
 
 #ifdef BIOS_HACKS
 	// Los hooks de syscall: siguen siendo la forma de correr un .bin suelto
@@ -2977,10 +2812,6 @@ int main(int argc, char *argv[])
 	free(memoria);
 	free(video_mem);
 	free(regmem);
-
-#ifdef TTF
-	TTF_CloseFont(font);
-#endif
 
 	SDL_Quit( );
 

@@ -65,8 +65,9 @@ foreach ($b in $bins) {
 	}
 
 	# El serial y el stderr de la corrida, que caen en el directorio de trabajo
-	# (logs/serial.txt) y junto al ejecutable (stderr.txt, SDL 1.2) y cada demo
-	# pisa los del anterior. Es de donde sale el veredicto de las de consola;
+	# (logs/serial.txt) y junto al ejecutable (stderr.txt, que main.c redirige
+	# como hacia SDLmain con SDL 1.2), y cada demo pisa los del anterior. Es de
+	# donde sale el veredicto de las de consola;
 	# docs/demos-kos.md siempre dijo "aparte se guarda logs/serial.txt" y este
 	# script no lo guardaba.
 	Copy-Item "logs\serial.txt" "$Salida\$nombre.serial.txt" -EA SilentlyContinue

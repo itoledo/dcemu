@@ -3,12 +3,14 @@
 	render propio.
 
 	**El hallazgo que hace esto posible**: `SDL_GL_SetAttribute` de SDL 1.2 no
-	tiene atributos de version ni de perfil, asi que no se puede pedir un
+	tenia atributos de version ni de perfil, asi que no se podia pedir un
 	contexto *core*. No hace falta -- en Windows y en Mesa el contexto por
 	omision es de **compatibilidad**, que en cualquier driver actual llega a
 	GL 4.6, y las entradas se resuelven con `SDL_GL_GetProcAddress`. O sea que
 	funcion fija y GL moderno conviven en el mismo contexto y la migracion es
-	incremental, sin cambiar de SDL y sin un salto todo o nada.
+	incremental, sin un salto todo o nada. Con SDL3 (2026-09-05) se podria
+	pedir perfil y no se pide: glinit() toma el contexto por omision, que es
+	el mismo de antes (profundidad 24, plantilla 8, alfa 8).
 
 	El patron ya existia en el arbol: `offset_iniciar()` de graficos.c resuelve
 	`glSecondaryColorPointer` exactamente asi, con su respaldo EXT y su bandera

@@ -217,45 +217,47 @@ set(DCEMU_PGO "OFF" CACHE STRING "Optimizacion guiada por perfil: OFF, GEN o USE
 set_property(CACHE DCEMU_PGO PROPERTY STRINGS OFF GEN USE)
 
 # ---------------------------------------------------------------------------
-# SDL 1.2, via sdl12-compat
+# SDL3
 #
-# SDL 1.2.15 original ya no compila limpio; sdl12-compat implementa la misma API
-# sobre SDL2 y publica un paquete de desarrollo para MSVC con cabeceras, .lib y
-# las DLL necesarias. Se descarga en el directorio de compilacion.
+# Hasta el 2026-09-05 el emulador hablaba SDL 1.2 a traves de sdl12-compat, que
+# cargaba sdl2-compat, que cargaba SDL3: tres DLL para llegar a la biblioteca
+# que de verdad hacia el trabajo. Ahora habla SDL3 directo (ventana, contexto
+# GL, eventos, audio, hilos y superficies). El paquete de desarrollo oficial
+# para MSVC trae cabeceras, .lib y la DLL; se descarga en el directorio de
+# compilacion. Sirve igual para clang-cl: es la misma ABI.
 # ---------------------------------------------------------------------------
 
-set(SDL12_VERSION "1.2.76")
-set(SDL12_SHA256 "ee9da73c003cabcdefd18edf4a5126604602b381429b3b15684fb8c576afb008")
+set(SDL3_VERSION "3.4.16")
+set(SDL3_SHA256 "1a784cb2a5c64d56fe7a62090fe9d242d9865f235e4ea9678f1a6ba4e693e7de")
 
-set(SDL12_DIR "" CACHE PATH "Directorio de sdl12-compat-devel ya descomprimido (vacio: se descarga)")
+set(SDL3_RAIZ "" CACHE PATH "Directorio de SDL3-devel ya descomprimido (vacio: se descarga)")
 
-if(SDL12_DIR STREQUAL "")
-	set(_sdl12_zip "${CMAKE_BINARY_DIR}/deps/sdl12-compat-devel-${SDL12_VERSION}-VC.zip")
-	set(_sdl12_root "${CMAKE_BINARY_DIR}/deps/sdl12-compat-${SDL12_VERSION}")
+if(SDL3_RAIZ STREQUAL "")
+	set(_sdl3_zip "${CMAKE_BINARY_DIR}/deps/SDL3-devel-${SDL3_VERSION}-VC.zip")
+	set(_sdl3_root "${CMAKE_BINARY_DIR}/deps/SDL3-${SDL3_VERSION}")
 
-	if(NOT EXISTS "${_sdl12_root}/include/SDL.h")
-		message(STATUS "Descargando sdl12-compat ${SDL12_VERSION}")
+	if(NOT EXISTS "${_sdl3_root}/include/SDL3/SDL.h")
+		message(STATUS "Descargando SDL3 ${SDL3_VERSION}")
 		file(DOWNLOAD
-			"https://github.com/libsdl-org/sdl12-compat/releases/download/release-${SDL12_VERSION}/sdl12-compat-devel-${SDL12_VERSION}-VC.zip"
-			"${_sdl12_zip}"
-			EXPECTED_HASH SHA256=${SDL12_SHA256}
+			"https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-devel-${SDL3_VERSION}-VC.zip"
+			"${_sdl3_zip}"
+			EXPECTED_HASH SHA256=${SDL3_SHA256}
 			SHOW_PROGRESS)
-		file(ARCHIVE_EXTRACT INPUT "${_sdl12_zip}" DESTINATION "${CMAKE_BINARY_DIR}/deps")
+		file(ARCHIVE_EXTRACT INPUT "${_sdl3_zip}" DESTINATION "${CMAKE_BINARY_DIR}/deps")
 	endif()
 
-	set(SDL12_DIR "${_sdl12_root}")
+	set(SDL3_RAIZ "${_sdl3_root}")
 endif()
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-	set(SDL12_LIBDIR "${SDL12_DIR}/lib/x64")
+	set(SDL3_LIBDIR "${SDL3_RAIZ}/lib/x64")
 else()
-	set(SDL12_LIBDIR "${SDL12_DIR}/lib/x86")
+	set(SDL3_LIBDIR "${SDL3_RAIZ}/lib/x86")
 endif()
 
-# El paquete deja las cabeceras planas (include/SDL.h) pero el codigo incluye
-# <SDL/SDL.h>, como en el arbol de MinGW. Se replican bajo un subdirectorio SDL.
-set(SDL12_STAGED_INCLUDE "${CMAKE_BINARY_DIR}/deps/include")
-file(COPY "${SDL12_DIR}/include/" DESTINATION "${SDL12_STAGED_INCLUDE}/SDL")
+# Las cabeceras vienen como include/SDL3/SDL.h, que es como el codigo las
+# incluye: no hay que replicar nada, como habia que hacer con sdl12-compat.
+set(SDL3_INCLUDE "${SDL3_RAIZ}/include")
 
 # ---------------------------------------------------------------------------
 # Fuentes
@@ -325,7 +327,7 @@ add_executable(dcemu ${DCEMU_SOURCES})
 target_include_directories(dcemu PRIVATE
 	${CMAKE_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/include
-	${SDL12_STAGED_INCLUDE}
+	${SDL3_INCLUDE}
 )
 
 # POSX no se define: pese al nombre, ambos makefiles lo definen tambien en
@@ -567,21 +569,23 @@ endif()
 # glu32 y winmm estan en los makefiles pero no se usan: la unica llamada a GLU
 # esta comentada (graficos.c) y no hay ninguna a winmm.
 target_link_libraries(dcemu PRIVATE
-	"${SDL12_LIBDIR}/SDL.lib"
-	"${SDL12_LIBDIR}/SDLmain.lib"
+	"${SDL3_LIBDIR}/SDL3.lib"
 	opengl32
 	# dbghelp: la pila simbolizada del informe de caida (traza.c). Release lleva
 	# /Zi, asi que el PDB queda al lado del .exe y no hay nada mas que hacer.
 	dbghelp
 )
 
-# SDL_main.h hace "#define main SDL_main", asi que el punto de entrada real lo
-# aporta SDLmain.lib como WinMain. Con subsistema de consola hay que decirselo
-# al linker explicitamente; a cambio, los fprintf(stderr) quedan a la vista.
+# SDL3 no redefine main ni trae SDLmain.lib: el punto de entrada es el main()
+# de main.c, con el arranque normal del CRT. La redireccion de stdout/stderr a
+# stdout.txt/stderr.txt junto al ejecutable, que antes hacia SDLmain, la hace
+# main.c (salida_redirigir). Sin consola hay que decirle al linker que el
+# arranque sigue siendo el de main, no WinMain.
 if(DCEMU_CONSOLE)
-	target_link_options(dcemu PRIVATE /SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup)
+	target_link_options(dcemu PRIVATE /SUBSYSTEM:CONSOLE)
 else()
 	set_target_properties(dcemu PROPERTIES WIN32_EXECUTABLE TRUE)
+	target_link_options(dcemu PRIVATE /ENTRY:mainCRTStartup)
 endif()
 
 # MSVC no tiene equivalente a -fno-strict-aliasing, que ambos makefiles pasan. En
@@ -628,15 +632,13 @@ foreach(_f ${DCEMU_RUNTIME_FILES})
 	endif()
 endforeach()
 
-# La cadena completa: SDL.dll es sdl12-compat, que carga SDL2.dll (que a su vez
-# es sdl2-compat, no SDL2 de verdad), que carga SDL3.dll. Si falta alguna, el
-# proceso muere antes del main con STATUS_DLL_INIT_FAILED (0xC0000142).
-foreach(_dll SDL.dll SDL2.dll SDL3.dll)
-	add_custom_command(TARGET dcemu POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			"${SDL12_LIBDIR}/${_dll}" "$<TARGET_FILE_DIR:dcemu>/"
-		VERBATIM)
-endforeach()
+# Una sola DLL desde SDL3 (antes eran tres: SDL.dll -> SDL2.dll -> SDL3.dll).
+# Si falta, el proceso muere antes del main con STATUS_DLL_NOT_FOUND
+# (0xC0000135).
+add_custom_command(TARGET dcemu POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		"${SDL3_LIBDIR}/SDL3.dll" "$<TARGET_FILE_DIR:dcemu>/"
+	VERBATIM)
 
 # ---------------------------------------------------------------------------
 # Pruebas unitarias

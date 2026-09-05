@@ -211,7 +211,7 @@ static void hack_romfont(void)
 		   docs/demos-kos.md, `basic-mmu-pvrmap`. */
 		R(0) = 0x00100020;	/* la fuente real, dentro de bios.bin */
 #else
-		R(0) = FONT_BASE;	/* la que rasteriza inicializar_fonts() */
+		R(0) = FONT_BASE;	/* ya no hay quien la rasterice: inicializar_fonts() se fue con SDL3 (2026-09-05) */
 #endif
 		break;
 

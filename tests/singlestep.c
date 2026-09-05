@@ -1180,11 +1180,6 @@ static int cmp_nombre(const void * a, const void * b)
 	return strcmp((const char *) a, (const char *) b);
 }
 
-/* main.h arrastra <SDL/SDL.h>, que hace "#define main SDL_main" en Windows.
-   Igual que en principal.c: aqui no se enlaza SDLmain, asi que el punto de
-   entrada tiene que llamarse main de verdad. */
-#undef main
-
 int main(int argc, char ** argv)
 {
 	static char nombres[512][64];
