@@ -223,6 +223,41 @@ extern volatile int aica_linea_asic;
 extern volatile unsigned aica_asic_subidas;
 extern volatile unsigned aica_asic_bajadas;
 
+/*
+	Y el registro de esos cambios CON SU MUESTRA (2026-09-05), que es lo que
+	deja entregar la linea en un instante que sea funcion del tiempo emulado y
+	no del reloj real -- el unico punto del hilo del AICA sin determinismo por
+	construccion. Ver el comentario largo en aica.c.
+
+	El contrato de orden, sin atomicos: el productor escribe la entrada, luego
+	la cabeza, y al terminar la muestra `aica_muestras_listas`; el consumidor
+	lee `aica_muestras_listas`, luego la cabeza, luego la entrada. Todo
+	volatile para que el compilador no reordene; x86 no reordena almacenes
+	entre si ni cargas entre si.
+
+	`aica_demora_linea` es DCEMU_AICA_DEMORA_LINEA en muestras: main_loop()
+	aplica en cada servicio los cambios sellados hasta
+	muestras_hasta(reloj_total) - demora. Con 0 no se anota nada y se usan los
+	contadores de arriba, que es la conducta anterior byte a byte.
+*/
+#define AICA_LINEA_LOG				4096u
+
+extern int							aica_demora_linea;
+extern volatile unsigned long long	aica_muestras_listas;
+extern unsigned long long			aica_linea_log_anotadas;
+extern unsigned long long			aica_linea_log_perdidas;
+
+/* La cuenta de muestras de un reloj cualquiera, y la de reloj_total memoizada
+   por borde (solo desde el hilo principal). */
+unsigned long long aica_muestras_de_reloj(unsigned long long reloj);
+unsigned long long aica_muestras_al_reloj(void);
+
+/* Saca el siguiente cambio sellado en `hasta` o antes; 0 si no hay. */
+int aica_linea_log_sacar(unsigned long long hasta, int * nivel,
+	unsigned long long * muestra);
+unsigned aica_linea_log_pendientes(void);
+void aica_linea_resumen(void);
+
 /* 1 mientras el ARM esta en reset (ARMRST bit 0). */
 int aica_arm_en_reset(void);
 

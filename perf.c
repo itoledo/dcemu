@@ -70,6 +70,7 @@ unsigned long      perf_vertices_max= 0;
 
 unsigned long long perf_sync_instantes = 0;
 unsigned long long perf_ns_espera	= 0;
+unsigned long long perf_ns_espera_linea = 0;
 
 unsigned long long perf_mmu_traduce			= 0;
 unsigned long long perf_mmu_utlb			= 0;
@@ -857,6 +858,9 @@ void perf_resumen(void)
 
 	if (perf_ns_espera)
 		linea("esperando al AICA",	perf_ns_espera,	real);
+
+	if (perf_ns_espera_linea)
+		linea("esperando la linea del AICA", perf_ns_espera_linea, real);
 
 	/* Lo que queda es el interprete del SH-4 y el andamiaje de main_loop().
 	   El bloque periodico y el AICA estan anidados, asi que no se restan dos

@@ -114,6 +114,7 @@ extern unsigned long long perf_sync_instantes;
 /* Tiempo real que el SH-4 paso bloqueado esperando al hilo del AICA. Es el
    precio de la fase 1 y hay que poder verlo al lado de su beneficio. */
 extern unsigned long long perf_ns_espera;
+extern unsigned long long perf_ns_espera_linea;	/* hilo_aica_esperar_muestra() */
 
 void perf_marcar_sync(void);
 

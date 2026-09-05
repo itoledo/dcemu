@@ -364,6 +364,199 @@ static void la_interrupcion_al_sh4_sale_por_el_asic(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* El registro de la linea con su muestra (la entrega determinista)         */
+/* ------------------------------------------------------------------------ */
+
+static void la_linea_se_anota_con_la_muestra_de_la_mezcla(void)
+{
+	/*
+		Un cambio levantado dentro de la mezcla lleva el indice de la muestra
+		que lo produjo, aunque el tick haya mezclado varias de una vez. El
+		temporizador A en 0xFD con prescaler 1 pasa por 0xFE, 0xFF y da la
+		vuelta en la tercera muestra: el sello es base + 3, ni antes ni despues.
+	*/
+	unsigned long long base, m;
+	int nivel;
+
+	reiniciar();
+	aica_demora_linea = 1;
+	base = aica_muestras;
+
+	escribir_g2(AICA_MCIEB, AICA_INT_TIMER_A);
+	escribir_g2(AICA_TIMER_A, 0xFD);
+
+	avanzar_muestras(5);
+
+	ESPERAR_I32(aica_linea_asic, 1);
+	ESPERAR_I32(aica_linea_log_sacar(base + 2, &nivel, &m), 0);
+	ESPERAR_I32(aica_linea_log_sacar(base + 5, &nivel, &m), 1);
+	ESPERAR_U32((DWORD) (m - base), 3);
+	ESPERAR_I32(nivel, 1);
+	ESPERAR_I32(aica_linea_log_sacar(base + 5, &nivel, &m), 0);
+
+	aica_demora_linea = 0;
+}
+
+static void la_linea_fuera_de_la_mezcla_lleva_la_muestra_hecha(void)
+{
+	/* Una escritura de registro fuera del tick se sella con la cuenta de
+	   muestras hechas -- que es la misma en los dos caminos, porque bajo
+	   hilo_aica_entrar() el hilo esta estacionado en ella. Y la bajada por
+	   MCIRE sale detras de la subida, en orden. */
+	unsigned long long base, m;
+	int nivel;
+
+	reiniciar();
+	aica_demora_linea = 1;
+	base = aica_muestras;
+
+	avanzar_muestras(7);
+
+	escribir_g2(AICA_MCIEB, AICA_INT_CPU);
+	escribir_g2(AICA_MCIPD, AICA_INT_CPU);
+	ESPERAR_I32(aica_linea_asic, 1);
+
+	escribir_g2(AICA_MCIRE, AICA_INT_CPU);
+	ESPERAR_I32(aica_linea_asic, 0);
+
+	ESPERAR_I32(aica_linea_log_sacar(base + 6, &nivel, &m), 0);
+	ESPERAR_I32(aica_linea_log_sacar(base + 7, &nivel, &m), 1);
+	ESPERAR_U32((DWORD) (m - base), 7);
+	ESPERAR_I32(nivel, 1);
+	ESPERAR_I32(aica_linea_log_sacar(base + 7, &nivel, &m), 1);
+	ESPERAR_U32((DWORD) (m - base), 7);
+	ESPERAR_I32(nivel, 0);
+	ESPERAR_I32(aica_linea_log_sacar(base + 7, &nivel, &m), 0);
+
+	aica_demora_linea = 0;
+}
+
+static void el_registro_guarda_el_orden_causal(void)
+{
+	/* Una escritura del SH-4 (sello m) y despues una muestra con vuelta de
+	   temporizador (sello m + 1): salen en ese orden, y con horizonte m sale
+	   solo la primera. */
+	unsigned long long base, m;
+	int nivel;
+
+	reiniciar();
+	aica_demora_linea = 1;
+	base = aica_muestras;
+
+	escribir_g2(AICA_MCIEB, AICA_INT_CPU | AICA_INT_TIMER_A);
+	escribir_g2(AICA_TIMER_A, 0xFF);
+	escribir_g2(AICA_MCIPD, AICA_INT_CPU);
+
+	avanzar_muestras(1);
+
+	ESPERAR_U32(aica_linea_log_pendientes(), 2);
+	ESPERAR_I32(aica_linea_log_sacar(base, &nivel, &m), 1);
+	ESPERAR_U32((DWORD) (m - base), 0);
+	ESPERAR_I32(aica_linea_log_sacar(base, &nivel, &m), 0);
+	ESPERAR_I32(aica_linea_log_sacar(base + 1, &nivel, &m), 1);
+	ESPERAR_U32((DWORD) (m - base), 1);
+	ESPERAR_I32(nivel, 1);
+
+	aica_demora_linea = 0;
+}
+
+static void sin_demora_no_se_anota(void)
+{
+	/* Con demora cero el registro queda vacio y mandan los contadores: es la
+	   conducta anterior byte a byte, y el anillo no se llena sin que nadie lo
+	   drene. */
+	unsigned antes;
+	unsigned long long m;
+	int nivel;
+
+	reiniciar();
+	aica_demora_linea = 0;
+	antes = aica_asic_subidas;
+
+	escribir_g2(AICA_MCIEB, AICA_INT_CPU);
+	escribir_g2(AICA_MCIPD, AICA_INT_CPU);
+
+	ESPERAR_U32(aica_asic_subidas - antes, 1);
+	ESPERAR_U32(aica_linea_log_pendientes(), 0);
+	ESPERAR_I32(aica_linea_log_sacar(~0ull, &nivel, &m), 0);
+}
+
+static void el_registro_lleno_cuenta_lo_perdido(void)
+{
+	/* El desborde no pisa: se cuenta y se descarta, y el contador es de
+	   control -- en una corrida tiene que salir cero. */
+	unsigned long long perdidas0, m;
+	unsigned i, sacados = 0;
+	int nivel;
+
+	reiniciar();
+	aica_demora_linea = 1;
+	perdidas0 = aica_linea_log_perdidas;
+
+	escribir_g2(AICA_MCIEB, AICA_INT_CPU);
+
+	for (i = 0; i < AICA_LINEA_LOG + 50u; i++)
+		escribir_g2(AICA_MCIPD, AICA_INT_CPU);
+
+	ESPERAR_U32((DWORD) (aica_linea_log_perdidas - perdidas0), 50);
+	ESPERAR_U32(aica_linea_log_pendientes(), AICA_LINEA_LOG);
+
+	while (aica_linea_log_sacar(~0ull, &nivel, &m))
+		sacados++;
+
+	ESPERAR_U32(sacados, AICA_LINEA_LOG);
+
+	aica_demora_linea = 0;
+}
+
+static void las_muestras_listas_siguen_a_las_hechas(void)
+{
+	/* La senal de terminacion cierra cada tick igual que la cuenta, incluidos
+	   los lotes de 256 y el descarte de deuda. */
+	reiniciar();
+
+	avanzar_muestras(1);
+	ESPERAR(aica_muestras_listas == aica_muestras);
+	avanzar_muestras(5);
+	ESPERAR(aica_muestras_listas == aica_muestras);
+	avanzar_muestras(256);
+	ESPERAR(aica_muestras_listas == aica_muestras);
+	avanzar_muestras(300);
+	ESPERAR(aica_muestras_listas == aica_muestras);
+}
+
+static void el_horizonte_memoizado_coincide_con_la_cuenta(void)
+{
+	/*
+		aica_muestras_al_reloj() memoiza muestras_hasta(reloj_total) por
+		borde. Se prueba en los bordes que importan: el primer ciclo de una
+		muestra (la cuenta ya la incluye), el piso de una muestra que no es
+		multiplo de 735 (la cuenta todavia no), un multiplo de 735 donde piso y
+		primer ciclo coinciden, y un salto hacia atras del reloj.
+	*/
+	unsigned long long m;
+
+	reiniciar();
+
+	m = 1000;
+	reloj_total = (m * 3324992ull + 734ull) / 735ull;		/* primer ciclo */
+	ESPERAR_U32((DWORD) aica_muestras_al_reloj(), (DWORD) m);
+	ESPERAR_U32((DWORD) aica_muestras_de_reloj(reloj_total), (DWORD) m);
+
+	reloj_total = aica_reloj_de_muestra(m);					/* el piso */
+	ESPERAR_U32((DWORD) aica_muestras_al_reloj(), (DWORD) (m - 1));
+	ESPERAR_U32((DWORD) aica_muestras_de_reloj(reloj_total), (DWORD) (m - 1));
+
+	m = 735 * 3;
+	reloj_total = aica_reloj_de_muestra(m);					/* piso == primer ciclo */
+	ESPERAR_U32((DWORD) aica_muestras_al_reloj(), (DWORD) m);
+
+	m = 500;
+	reloj_total = (m * 3324992ull + 734ull) / 735ull;		/* hacia atras */
+	ESPERAR_U32((DWORD) aica_muestras_al_reloj(), (DWORD) m);
+}
+
+/* ------------------------------------------------------------------------ */
 
 static void el_temporizador_cuenta_hacia_arriba(void)
 {
@@ -1356,6 +1549,13 @@ static const dc_caso casos[] =
 	CASO(una_fuente_sin_mascara_sigue_pendiente),
 	CASO(la_interrupcion_de_intervalo_de_muestra),
 	CASO(la_interrupcion_al_sh4_sale_por_el_asic),
+	CASO(la_linea_se_anota_con_la_muestra_de_la_mezcla),
+	CASO(la_linea_fuera_de_la_mezcla_lleva_la_muestra_hecha),
+	CASO(el_registro_guarda_el_orden_causal),
+	CASO(sin_demora_no_se_anota),
+	CASO(el_registro_lleno_cuenta_lo_perdido),
+	CASO(las_muestras_listas_siguen_a_las_hechas),
+	CASO(el_horizonte_memoizado_coincide_con_la_cuenta),
 	CASO(el_temporizador_cuenta_hacia_arriba),
 	CASO(el_prescaler_divide_por_potencias_de_dos),
 	CASO(el_temporizador_a_da_100_hz_con_lo_que_pone_kos),

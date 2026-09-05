@@ -41,6 +41,8 @@
 *****************************************************************************/
 
 #include <stdio.h>
+#include <stdlib.h>			/* getenv: la palanca del giro */
+#include <intrin.h>			/* _mm_pause, el giro */
 
 #include "main.h"			/* aica.h usa DWORD; de aqui salen los tipos */
 #include "hilo_aica.h"
@@ -63,22 +65,20 @@
 /*
 	Cuantas muestras avanza el AICA entre dos revisiones del estado compartido.
 
-	**Tiene que ser 1, y no por rendimiento sino por correccion.** Se probo con 4
-	para bajar el costo de sincronizar, y el .wav dejo de salir identico: divergia
-	a los 15,6 segundos con un corrimiento de dos cuadros. La causa no es la
-	mezcla sino la entrega de la interrupcion del AICA al ASIC, que es el unico
-	punto del diseno donde el determinismo no esta garantizado por construccion
-	(ver aica_linea_asic en aica.h): el chip levanta la linea en un instante
-	emulado y main_loop() la cobra en el bloque periodico en que se entere, que
-	depende del reloj real. Cuanto mas desacoplados van los dos hilos, mas se
-	nota, y con 4 se nota.
+	Fue 1 por correccion: con 4 el .wav divergia a los 15,6 segundos, y la
+	causa era la entrega de la interrupcion del AICA al ASIC -- el unico punto
+	del diseno sin determinismo por construccion: el chip levantaba la linea en
+	un instante emulado y main_loop() la cobraba en el bloque periodico en que
+	se enterara, que dependia del reloj real. **Eso ya no existe** (2026-09-05):
+	la linea se anota con su muestra y se entrega con una latencia fija en
+	tiempo emulado (aica.h, el registro; hilo_aica_esperar_muestra abajo), y
+	con hilos Sega Rally 2 --el guest que la consumia-- sale identico hasta la
+	lista de entregas.
 
-	Con 1 el .wav sale bit a bit igual al del camino sin hilos sobre 2 646 565
-	muestras, que es la prueba de aceptacion de la fase.
-
-	Es tambien la razon por la que el hilo esta apagado por omision: el costo de
-	sincronizar en cada muestra es justamente lo que hace que la fase no gane
-	tiempo. Ver docs/hilos-plan.md, "Resultado de la fase 1".
+	Con eso el paso vuelve a ser una decision de latencia y no de correccion:
+	es lo maximo que el SH-4 espera en entrar() cuando pide un alcance. Se
+	queda en 1 porque nadie midio otra cosa desde que la entrega es exacta; un
+	paso mayor es un experimento pendiente con su A/B, no una regla.
 */
 #define HILO_AICA_PASO			1
 
@@ -112,6 +112,50 @@ static int					esperando	= 0;
 static unsigned long long	esperas		= 0;
 static unsigned long long	sin_espera	= 0;
 
+/*
+	Y las esperas de la entrega de la linea (hilo_aica_esperar_muestra): cuantas
+	veces el bloque periodico encontro la muestra del horizonte ya terminada,
+	cuantas tuvo que esperarla, y cuantas pidio una muestra que el objetivo
+	publicado ni siquiera cubre -- que no puede pasar y por eso se cuenta.
+*/
+static unsigned long long	esperas_linea		= 0;
+static unsigned long long	sin_espera_linea	= 0;
+static unsigned long long	esperas_imposibles	= 0;
+static unsigned long long	esperas_giro		= 0;	/* resueltas girando */
+
+/*
+	El giro (DCEMU_HILO_AICA_GIRO=N, en vueltas de _mm_pause): cuantas vueltas
+	espera activo cada lado antes de dormirse en la condicion.
+
+	Existe por una medida: con la entrega determinista el hilo principal tiene
+	que haber TERMINADO la muestra del horizonte, y en Crazy Taxi llegaba tarde
+	al 35 % de los bordes -- no por la holgura (doblarla y cuadruplicarla con
+	la demora casi no la movia: 34, 28, 26 %) sino porque el hilo se duerme en
+	la condicion tras CADA muestra (44 100 veces por segundo) y el despertar
+	cuesta mas que los 9 us reales que dura un intervalo a 2,5x. Un despertar
+	es dos cambios de contexto; el giro los evita cuando la proxima muestra
+	esta a microsegundos, que es siempre en el guest que corre rapido, y se
+	rinde y duerme cuando no. Cero es la conducta anterior.
+*/
+static int					giro				= -1;
+
+static void leer_giro(void)
+{
+	if (giro < 0)
+	{
+		const char * v = getenv("DCEMU_HILO_AICA_GIRO");
+
+		/* 2000: medido en Crazy Taxi a 60 s, demora 1 -- 0 vueltas: 33 % de
+		   los bordes con espera y 18 677 ms; 500: 0,10 % y 17 244; 2000:
+		   0,01 % y 16 928; 8000: 0,00 % y 16 815 (sin hilos 18 711). El
+		   escalon de 2000 a 8000 ya no paga lo que cuesta girar. */
+		giro = (v != NULL) ? atoi(v) : 2000;
+
+		if (giro < 0)
+			giro = 0;
+	}
+}
+
 int hilo_aica_activo(void)
 {
 	return activo;
@@ -125,9 +169,22 @@ static int cuerpo(void * dato)
 {
 	(void) dato;
 
+	leer_giro();
+
 	for (;;)
 	{
 		unsigned long long obj, llegue;
+
+		/* El giro, antes del mutex: `alcanzado` lo escribe solo este hilo y
+		   `objetivo` es el volatile de un escritor, asi que se miran sin el.
+		   `terminar` se lee sucio y se vuelve a mirar bajo el mutex. */
+		if (giro > 0)
+		{
+			int i;
+
+			for (i = 0; i < giro && !terminar && alcanzado >= objetivo; i++)
+				_mm_pause();
+		}
 
 		hilo_mtx_tomar(mtx);
 
@@ -248,12 +305,33 @@ void hilo_aica_terminar(void)
 	el_hilo = NULL;
 
 	if (traza_activa)
+	{
 		fprintf(stderr, "traza: hilo del AICA: %llu alcances con espera,"
 			" %llu sin ella (%.1f %% sin esperar).\n",
 			(unsigned long long) esperas, (unsigned long long) sin_espera,
 			(esperas + sin_espera)
 				? 100.0 * (double) sin_espera / (double) (esperas + sin_espera)
 				: 0.0);
+
+	}
+
+	/* La linea: cuantas veces el horizonte ya estaba listo y cuantas no. Va
+	   SIN condicion, como los contadores de control del traductor: las
+	   imposibles tienen que ser cero y un cero callado no se distingue de una
+	   sonda muerta. */
+	/* El denominador honesto son los bordes de muestra, no las llamadas: el
+	   bloque periodico solo llama cuando la senal de terminacion ya venia
+	   atrasada, asi que "esperas sobre llamadas" sale casi siempre ~100 %. */
+	{
+		unsigned long long muestras = aica_muestras_hechas();
+
+		fprintf(stderr, "hilo del AICA, linea: %llu esperas sobre %llu"
+			" muestras (%.2f %% de los bordes), %llu resueltas girando"
+			" (giro %d), %llu llegaron tarde sin esperar, %llu imposibles\n",
+			esperas_linea, muestras,
+			muestras ? 100.0 * (double) esperas_linea / (double) muestras : 0.0,
+			esperas_giro, giro, sin_espera_linea, esperas_imposibles);
+	}
 
 	hilo_mtx_destruir(mtx);
 	hilo_cond_destruir(cond);
@@ -353,6 +431,93 @@ void hilo_aica_entrar(void)
 
 	/* Y se vuelve con el mutex tomado: el acceso pasa ahora, con el otro hilo
 	   detenido. */
+}
+
+/*
+	La espera de la entrega de la linea (2026-09-05), y en que se diferencia
+	de entrar(): espera a que el hilo haya TERMINADO la muestra `muestra`
+	(aica_muestras_listas), no a que alcance el objetivo publicado entero.
+	Esperar el objetivo entero seria el lockstep que el plan viejo daba por
+	inevitable; el horizonte de la entrega va `demora` muestras por detras y
+	el hilo casi siempre ya lo paso.
+
+	Se espera sobre aica_muestras_listas y no sobre `alcanzado`: el objetivo
+	puede caer entre dos bordes de muestra, con lo que `alcanzado == objetivo`
+	no dice cuantas muestras estan cerradas.
+
+	Avisa a la condicion antes de dormirse, como entrar(): publicar() lee
+	`esperando` sucio y confia en que la publicacion siguiente despierte al
+	hilo -- pero mientras el SH-4 duerme aqui nadie publica, asi que si el hilo
+	perdio esa carrera y se durmio, sin este aviso los dos dormirian para
+	siempre.
+
+	Termina: la muestra pedida es <= muestras(objetivo) (publicar() corrio dos
+	lineas antes en el mismo servicio), asi que el hilo la puede producir sin
+	una publicacion nueva, y avisa tras cada muestra mientras haya alguien
+	esperando. Si aun asi la muestra pasa el objetivo -- que no puede ocurrir
+	-- se cuenta y no se espera.
+
+	Solo desde el bloque periodico; nunca dentro de entrar()/salir() ni desde
+	el hilo del AICA.
+*/
+void hilo_aica_esperar_muestra(unsigned long long muestra)
+{
+	if (!activo)
+		return;
+
+	/* El giro de este lado: la muestra que falta suele estar a microsegundos
+	   de cerrarse, y dormir aqui es un par de cambios de contexto en el
+	   camino critico. Se gira sobre la senal de terminacion, sin mutex. */
+	leer_giro();
+
+	if (giro > 0)
+	{
+		int i;
+
+		for (i = 0; i < giro && aica_muestras_listas < muestra; i++)
+			_mm_pause();
+
+		if (aica_muestras_listas >= muestra)
+		{
+			esperas_giro++;
+			return;
+		}
+	}
+
+	hilo_mtx_tomar(mtx);
+
+	if (aica_muestras_listas >= muestra)
+	{
+		sin_espera_linea++;
+		hilo_mtx_soltar(mtx);
+		return;
+	}
+
+	if (aica_muestras_de_reloj(objetivo) < muestra)
+	{
+		esperas_imposibles++;
+		hilo_mtx_soltar(mtx);
+		return;
+	}
+
+	esperas_linea++;
+
+	hilo_cond_avisar_a_todos(cond);
+
+	{
+		PERF_MARCA(t_esp);
+
+		while (aica_muestras_listas < muestra)
+		{
+			esperando++;
+			hilo_cond_esperar(cond, mtx);
+			esperando--;
+		}
+
+		PERF_SUMAR(t_esp, perf_ns_espera_linea);
+	}
+
+	hilo_mtx_soltar(mtx);
 }
 
 void hilo_aica_salir(void)

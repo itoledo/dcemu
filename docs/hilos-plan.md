@@ -702,3 +702,164 @@ y roto en el tercero.
   para lo que existe el alcance a pedido.
 - La hipótesis de la afinidad de hilo **sigue sin probar** y ahora importa menos:
   con el traductor, el mecanismo ya gana donde tiene qué mover.
+
+## La entrega determinista de la línea (2026-09-05): el muro no era un muro
+
+La fase quedó aparcada «en firme» el 29 de agosto por un solo defecto: la
+entrega de la línea del AICA al ASIC dependía del reloj real, y Sega Rally 2 la
+recibía 1052 ciclos tarde con hilos. El argumento de que no tenía arreglo sin
+lockstep decía que el bloque periódico tendría que **saber ya** si la línea
+subió en las muestras que este servicio cruza, o sea esperar al hilo en cada
+muestra. Esa premisa era la equivocada: **no hace falta saber ya; hace falta que
+el instante en que el SH-4 la ve sea función del tiempo emulado.**
+
+### El diagnóstico exacto, y por qué todo lo demás ya era determinista
+
+El hilo nunca corre por delante de `objetivo = reloj_total` (`hilo_aica.c`,
+`publicar()`), y todo acceso del SH-4 al AICA lo estaciona en el instante exacto
+(`entrar()`). Así que **el índice de muestra en que la línea sube o baja es
+función del tiempo emulado en los dos caminos**: ni los temporizadores, ni
+INTON, ni el ARM pueden moverla a otra muestra. Lo único no determinista era
+**cuándo el hilo principal se enteraba**: leía `aica_asic_subidas`/`bajadas`
+sin sincronizar, en el servicio de 400 ciclos que estuviera corriendo cuando el
+incremento del hilo se hiciera visible en tiempo real.
+
+### El mecanismo
+
+- **Un registro de cambios de nivel con su muestra** (`aica.c`, `linea_log[]`):
+  cada subida o bajada se anota con el sello de la muestra en que ocurrió — la
+  que se está mezclando dentro del tick, o `aica_muestras` fuera de él, que es
+  la misma en los dos caminos porque bajo `entrar()` el hilo está estacionado
+  con esa cuenta. Un productor, un consumidor, índices y entradas `volatile`,
+  sin atómicos.
+- **Una latencia fija D en muestras** (`DCEMU_AICA_DEMORA_LINEA`, omisión 1):
+  en cada servicio el hilo principal aplica, en orden causal, los cambios
+  sellados hasta `muestras(reloj_total) − D`. Un cambio sellado en `j` se
+  entrega en la primera frontera de grano ≥ el primer ciclo de la muestra
+  `j + D`, en los dos caminos: con hilos cada frontera es servicio; sin hilos
+  el reloj por eventos ya programa un servicio en cada borde de muestra.
+- **Una señal de terminación aparte** (`aica_muestras_listas`), porque
+  `aica_muestras` no lo es: se incrementa antes de los temporizadores, de INTON
+  y del ARM, o sea antes de que existan los eventos de la muestra. Se escribe al
+  final del tick, tras el ARM.
+- **Una espera acotada** (`hilo_aica_esperar_muestra`): sólo si el hilo no
+  terminó la muestra del horizonte, que va D muestras atrás. No es lockstep:
+  espera una muestra vieja, no el objetivo entero.
+- **Los temporizadores avanzan de a una muestra** con el sello puesto en cada
+  una: avanzarlos de a N corría los N pasos de A, luego B, luego C, y el
+  registro quedaba con sellos no monótonos. Idéntico en estado; sólo cambia el
+  orden de las llamadas a `pedir_int`.
+- **Con D=0 se usa el código anterior, textual**: no es «el registro con demora
+  cero», porque los dos lazos de `main_loop()` aplican todas las subidas y
+  después todas las bajadas — que no es el orden causal, y con una bajada por
+  MCIRE y una subida en el mismo servicio los dos órdenes dan distinto.
+
+**La latencia se aplica también sin hilos**: es una propiedad de la máquina
+emulada, como la demora de servicio de la VMU, para que los dos caminos sean el
+mismo emulador. Dos costos semánticos dichos de frente: la bajada (el ack por
+MCIRE) también se demora D, y el orden causal reemplaza a «subidas y luego
+bajadas». Los dos son más fieles que antes, y mueven la lista de entregas de los
+guests que consumen la línea.
+
+### La compuerta (`herramientas/linea-gate.ps1`)
+
+Seis brazos por manifiesto — captura, `.wav`, puntos de `DCEMU_CP_MS` y **la
+lista de entregas** (`DCEMU_SONDA_ENTREGAS`), que es el árbitro de un cambio de
+temporización de interrupciones porque los puntos por ms no ven una entrega
+corrida dentro del mismo milisegundo:
+
+| comparación | SR2 | DOOM | CT | lo que responde |
+| --- | --- | --- | --- | --- |
+| D=0 nuevo contra binario anterior | igual | igual | igual | D=0 es el binario viejo, entregas incluidas |
+| D=1 con hilos contra sin hilos | **igual** | igual | igual | **la razón del cambio: SR2 ya no diverge** |
+| D=1 con hilos, dos corridas | igual | igual | igual | reproducible |
+| D=0 con hilos contra sin (control) | **distinto** | igual | igual | la compuerta ve lo que dice ver |
+| D=1 contra D=0, sin hilos | distinto | igual | igual | la latencia mueve sólo a quien consume la línea |
+
+Verde primero sobre el binario del cambio y **verde de nuevo sobre el canónico
+reentrenado `B61FE554FDF0483D`**, con la sonda de esperas ya con el giro: SR2
+280 esperas sobre 882 678 muestras (0,03 %), DOOM 296 (0,03 %), CT 829 sobre
+1 764 622 (0,04 %), cero imposibles y cero perdidos en el registro.
+
+### El giro, que es lo que devuelve la ganancia
+
+Con la entrega determinista el hilo principal tiene que haber **terminado** la
+muestra del horizonte, y la sonda de esperas mostró que en Crazy Taxi llegaba
+tarde al **35 % de los bordes** — y que doblar y cuadruplicar la holgura con la
+demora casi no lo movía (34, 28, 26 %). No era la holgura: el hilo se dormía en
+la condición tras **cada** muestra (44 100 veces por segundo) y el despertar
+cuesta más que los 9 µs reales de un intervalo a 2,5×. Con D=1 y sin giro, la
+ganancia del hilo caía de −5,8 % a ~−1 %.
+
+`DCEMU_HILO_AICA_GIRO=N` (vueltas de `_mm_pause`, omisión 2000): cada lado
+espera activo un rato antes de dormirse. Medido en CT a 60 s con D=1:
+
+| giro | esperas (% de los bordes) | con hilos | sin hilos |
+| --- | --- | --- | --- |
+| 0 | 33,27 % | 18 677 ms | 18 711 |
+| 500 | 0,10 % | 17 244 | |
+| 2000 | 0,01 % | 16 928 | |
+| 8000 | 0,00 % | 16 815 | |
+
+De 2000 a 8000 ya no paga lo que cuesta girar. El giro es un lado de la moneda:
+el hilo del AICA ocupa un núcleo casi entero en el guest que corre rápido.
+
+### Las dos tandas A/B sobre el canónico reentrenado (`B61FE554FDF0483D`)
+
+Receta del árbol: un binario, palancas de ambiente, 4 rondas con el orden
+rotado dentro del par, calentamiento por guest descartado, RTC clavado, sin
+captura, desprendidas del árbol de procesos de la herramienta.
+
+**A/B 1 — el costo de la latencia sola** (sin hilos, `DCEMU_AICA_DEMORA_LINEA=1`
+contra `=0`): **neutra en los tres**, que era la condición para que la omisión
+pudiera ser 1.
+
+| guest | D=1 | D=0 | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 23 467–23 890 ms | 23 245–23 851 | solapados, +0,2 % |
+| Crazy Taxi, 180 s | 72 317–74 697 | 73 452–75 636 | solapados, −1,3 % |
+| Sega Rally 2, 60 s | 48 521–49 000 | 48 601–49 158 | solapados, −0,1 % |
+
+**A/B 2 — la ganancia del hilo con la entrega determinista** (`--hilos` contra
+sin, D=1, giro 2000): **el hilo no paga en la ventana del banco.**
+
+| guest | con hilos | sin hilos | veredicto | esperas |
+| --- | --- | --- | --- | --- |
+| DCDoom, 35 s | 25 328–25 599 ms | 23 229–23 247 | **+9,3 %, disjuntos, 4/4 en contra** | 0,02 % |
+| Crazy Taxi, 180 s | 71 428–72 374 | 71 862–73 139 | −0,7 %, solapados: neutro | 0,01 % |
+| Sega Rally 2, 60 s | 51 962–52 346 | 48 812–49 066 | **+6,5 %, disjuntos, 4/4 en contra** | 0,03 % |
+
+Dos cosas que esta tabla corrige de lo escrito el día anterior. **El −5,8 % de
+Crazy Taxi era un número de la ventana de 60 s**, y el −9,5 % del giro también:
+a los 180 s del banco el hilo es neutro. Las ventanas cortas de CT sobreestiman
+al hilo — el arranque y el menú tienen otro reparto que el juego — y esta tanda
+es la que vale. Y **DCDoom pasa de +1,4 % a +9,3 % y SR2 de divergir a +6,5 %**
+por el giro mismo: un hilo que gira ocupa un núcleo entero, y en este portátil
+eso le quita frecuencia al hilo principal. Es el precio de resolver el
+despertar girando; sin el giro CT pierde su ganancia en las esperas y DOOM/SR2
+no la tienen de todos modos.
+
+### Lo que queda dicho
+
+- **El problema que estaba aparcado «en firme» está resuelto.** Bajo `--hilos`
+  los tres guests salen idénticos al camino de un hilo hasta la lista de
+  entregas, Sega Rally 2 incluido, y dos corridas con hilos son idénticas entre
+  sí. El único punto sin determinismo por construcción ya no existe.
+- **`DCEMU_AICA_DEMORA_LINEA=1` queda como omisión en los dos caminos**: es
+  exacta por construcción, neutra en el reloj, y es lo que hace posible lo de
+  arriba. `0` reproduce la línea base anterior byte a byte. Mueve la lista de
+  entregas de los guests que consumen la línea (SR2 en el banco) **y nada más:
+  el barrido KOS de 151 demos sale byte a byte idéntico entre D=0 y D=1** — 151
+  de 151 capturas iguales por `comparar.ps1` y cero veredictos serial distintos
+  —, y el propio barrido a D=1 da piso 0, señal 0 y serial 0 entre intérprete
+  y traductor.
+- **`--hilos` sigue apagado por omisión, y ahora por rendimiento y no por
+  exactitud**: neutro en Crazy Taxi a la ventana del banco y en contra en DCDoom
+  y Sega Rally 2. Es un resultado de esta máquina —un portátil de 20 núcleos
+  con presupuesto térmico compartido— y el mecanismo queda listo para medirse
+  en otra: el giro (`DCEMU_HILO_AICA_GIRO`, omisión 2000, sólo actúa con
+  `--hilos`) es la palanca que reparte ese costo.
+- **Lo que no se probó y queda nombrado**: fijar el hilo a un núcleo de
+  rendimiento o subirle la prioridad en vez de girar (`hilo.c` es el único
+  archivo con `#ifdef` de plataforma y es donde iría), y un `HILO_AICA_PASO`
+  mayor que 1, que ya no está prohibido por corrección.

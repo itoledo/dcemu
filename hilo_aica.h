@@ -62,4 +62,12 @@ void hilo_aica_publicar(void);
 void hilo_aica_entrar(void);
 void hilo_aica_salir(void);
 
+/*
+	Desde el bloque periodico, para la entrega de la linea del AICA (aica.h,
+	el registro con sello): espera a que el hilo haya terminado la muestra
+	`muestra` -- no a que alcance el objetivo entero, que seria lockstep. Con
+	el hilo apagado no hace nada. Nunca dentro de entrar()/salir().
+*/
+void hilo_aica_esperar_muestra(unsigned long long muestra);
+
 #endif /* _HILO_AICA_H_ */

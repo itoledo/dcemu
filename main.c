@@ -1477,22 +1477,78 @@ void main_loop(void)
 					if (sonda_linea < 0)
 						sonda_linea = getenv("DCEMU_SONDA_LINEA_AICA") != NULL;
 
-					while (vistas_sub != aica_asic_subidas)
+					if (aica_demora_linea <= 0)
 					{
-						vistas_sub++;
+						// La conducta anterior, textual: los contadores sin
+						// instante. Bajo --hilos esto NO es determinista (el
+						// contador se hace visible cuando el hilo llega en
+						// tiempo real); sin hilos es la linea base de siempre.
+						while (vistas_sub != aica_asic_subidas)
+						{
+							vistas_sub++;
 
-						/* SONDA temporal: el instante de entrega de la linea. */
-						if (sonda_linea && vistas_sub <= 400)
-							fprintf(stderr, "sonda linea: subida %u en reloj=%llu\n",
-								vistas_sub, (unsigned long long) reloj_total);
+							/* SONDA temporal: el instante de entrega de la linea. */
+							if (sonda_linea && vistas_sub <= 400)
+								fprintf(stderr, "sonda linea: subida %u en reloj=%llu\n",
+									vistas_sub, (unsigned long long) reloj_total);
 
-						intc_add_ext(ASIC_EVT_EXT_AICA);
+							intc_add_ext(ASIC_EVT_EXT_AICA);
+						}
+
+						while (vistas_baj != aica_asic_bajadas)
+						{
+							vistas_baj++;
+							intc_remove_ext(ASIC_EVT_EXT_AICA);
+						}
 					}
-
-					while (vistas_baj != aica_asic_bajadas)
+					else
 					{
-						vistas_baj++;
-						intc_remove_ext(ASIC_EVT_EXT_AICA);
+						// La entrega determinista (2026-09-05): se aplican, en
+						// orden causal, los cambios sellados hasta la muestra
+						// `m - demora`. Esa muestra el hilo la termino hace rato
+						// casi siempre; si no, se lo espera (acotado: a lo sumo
+						// lo que tarda en cerrar las `demora` muestras que le
+						// faltan, y con el objetivo ya publicado dos lineas mas
+						// arriba). Sin hilos la espera no hace nada porque el
+						// tick recien corrio hasta aqui mismo.
+						//
+						// El ORDEN de las tres lecturas es portante: primero la
+						// senal de terminacion, despues la cabeza del registro
+						// (dentro de sacar), despues la entrada. Al reves, una
+						// cabeza vieja con una senal fresca difiere un cambio
+						// de la muestra `k` al grano siguiente. Ver aica.h.
+						unsigned long long m = aica_muestras_al_reloj();
+
+						if (m >= (unsigned long long) aica_demora_linea)
+						{
+							unsigned long long k = m - (unsigned long long) aica_demora_linea;
+							unsigned long long sello;
+							int nivel;
+
+							if (aica_muestras_listas < k)
+								hilo_aica_esperar_muestra(k);
+
+							while (aica_linea_log_sacar(k, &nivel, &sello))
+							{
+								if (nivel)
+								{
+									vistas_sub++;
+
+									if (sonda_linea && vistas_sub <= 400)
+										fprintf(stderr, "sonda linea: subida %u"
+											" muestra=%llu en reloj=%llu\n",
+											vistas_sub, sello,
+											(unsigned long long) reloj_total);
+
+									intc_add_ext(ASIC_EVT_EXT_AICA);
+								}
+								else
+								{
+									vistas_baj++;
+									intc_remove_ext(ASIC_EVT_EXT_AICA);
+								}
+							}
+						}
 					}
 				}
 

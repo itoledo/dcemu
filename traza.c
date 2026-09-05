@@ -680,6 +680,10 @@ void traza_resumen(void)
 	   el CD-DA. */
 	aicadsp_resumen();
 
+	/* El registro de la linea del AICA al ASIC: demora, anotados, pendientes
+	   y perdidos (los perdidos tienen que ser cero). */
+	aica_linea_resumen();
+
 	/* El LFO y el filtro FEG estan emulados; esto dice si en esta corrida
 	   trabajaron. Los contadores nacieron como centinelas de "sin emular" y
 	   fueron los que encontraron a los clientes de ambos. */

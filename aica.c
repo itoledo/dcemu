@@ -70,6 +70,106 @@ volatile unsigned	aica_asic_subidas = 0;
 volatile unsigned	aica_asic_bajadas = 0;
 
 /*
+	El registro de cambios de nivel CON SU INSTANTE (2026-09-05), que es lo que
+	hace determinista la entrega bajo --hilos.
+
+	Los dos contadores de arriba no llevan instante: dicen que la linea subio,
+	no en que muestra. Sin hilos da lo mismo, porque main_loop() los cobra dos
+	lineas despues del tick, en el mismo servicio. Con el AICA en su hilo, el
+	incremento se hace visible en el servicio de 400 ciclos que el SH-4 este
+	corriendo cuando el hilo llegue EN TIEMPO REAL -- y eso corria la entrega
+	1052 ciclos en Sega Rally 2 (docs/hilos-plan.md, "el muro medido").
+
+	Lo que NO es aleatorio es el indice de la muestra en que la linea cambia:
+	el hilo nunca corre por delante del objetivo publicado y todo acceso del
+	SH-4 lo estaciona en el instante exacto (hilo_aica_entrar), asi que el
+	estado del chip en cada muestra es funcion del tiempo emulado en los dos
+	caminos. Entonces cada cambio se anota aqui con el sello de su muestra, y
+	main_loop() aplica --en los dos caminos por igual-- los cambios sellados
+	hasta `muestras_hasta(reloj_total) - aica_demora_linea`: una latencia fija
+	en tiempo emulado, que el hilo ya tiene lista casi siempre (mezcla una
+	muestra en ~1 us contra ~9 us reales por intervalo). Con eso el instante de
+	entrega es funcion del tiempo emulado y no del reloj real.
+
+	El anillo: un productor (quien mezcla: el hilo del AICA, o main_loop sin
+	hilos) y un consumidor (main_loop), indices volatile como aica_salida[] y
+	ADEMAS entradas volatile, para que el compilador conserve el orden
+	productor `entrada -> cabeza -> aica_muestras_listas` y consumidor
+	`listas -> cabeza -> entrada`; x86 (TSO) hace el resto. Sin atomicos, que
+	es la regla de hilo.h. Las escrituras del SH-4 (bajo entrar(), con el hilo
+	estacionado) y las del hilo nunca corren a la vez: el mutex de hilo_aica es
+	la entrega de manos.
+
+	El sello es `muestra_actual`: dentro de aica_tick_hasta, la muestra que se
+	esta mezclando (numerada como la cuenta al terminarla); fuera del tick,
+	aica_muestras -- que es lo mismo en los dos caminos porque bajo entrar() el
+	hilo esta estacionado en el objetivo con esa cuenta.
+
+	`aica_muestras_listas` es la senal de terminacion, y hace falta porque
+	aica_muestras NO lo es: se incrementa ANTES de los temporizadores, de INTON
+	y del ARM, o sea antes de que existan los eventos de la muestra. Se escribe
+	al final de aica_tick_hasta, tras el ARM.
+
+	Con aica_demora_linea == 0 no se anota nada y main_loop() usa los
+	contadores de siempre: es la linea base anterior byte a byte, y no es lo
+	mismo que "el registro con demora cero" -- los dos lazos de main_loop()
+	aplican todas las subidas y despues todas las bajadas, que no es el orden
+	causal, y con una bajada por MCIRE y una subida en el mismo servicio los
+	dos ordenes dan distinto.
+*/
+int							aica_demora_linea = -1;	/* -1: aun no leida */
+volatile unsigned long long	aica_muestras_listas = 0;
+static unsigned long long	muestra_actual = 0;
+
+typedef struct
+{
+	unsigned long long	muestra;
+	int					nivel;
+} aica_linea_evento;
+
+static volatile aica_linea_evento	linea_log[AICA_LINEA_LOG];
+static volatile unsigned			linea_log_cabeza = 0;
+static volatile unsigned			linea_log_cola   = 0;
+unsigned long long					aica_linea_log_anotadas = 0;
+unsigned long long					aica_linea_log_perdidas = 0;
+
+static void linea_anotar(int nivel)
+{
+	unsigned cabeza = linea_log_cabeza;
+
+	if (cabeza - linea_log_cola >= AICA_LINEA_LOG)
+	{
+		aica_linea_log_perdidas++;
+		return;
+	}
+
+	linea_log[cabeza % AICA_LINEA_LOG].muestra = muestra_actual;
+	linea_log[cabeza % AICA_LINEA_LOG].nivel   = nivel;
+	linea_log_cabeza = cabeza + 1;
+	aica_linea_log_anotadas++;
+}
+
+/* Los dos unicos sitios que mueven la linea: conservan el nivel y los
+   contadores (los lee el camino sin demora y la suite) y anotan el sello. */
+static void linea_subir(void)
+{
+	aica_linea_asic = 1;
+	aica_asic_subidas++;
+
+	if (aica_demora_linea > 0)
+		linea_anotar(1);
+}
+
+static void linea_bajar(void)
+{
+	aica_linea_asic = 0;
+	aica_asic_bajadas++;
+
+	if (aica_demora_linea > 0)
+		linea_anotar(0);
+}
+
+/*
 	La relacion exacta entre el reloj de la CPU y el de muestreo. DC_CPU_HZ es
 	199499520 y gcd(44100, DC_CPU_HZ) = 60, asi que salen 735 muestras cada
 	3324992 ciclos sin resto. Sin deriva y con enteros: la leccion de
@@ -161,7 +261,7 @@ static void pedir_int(DWORD fuente)
 	poner16(AICA_MCIPD, reg16(AICA_MCIPD) | fuente);
 
 	if (reg16(AICA_MCIEB) & fuente)
-		{ aica_linea_asic = 1; aica_asic_subidas++; }
+		linea_subir();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1572,7 +1672,7 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 			poner16(off, reg16(off) | AICA_INT_CPU);
 
 			if (off == AICA_MCIPD && (reg16(AICA_MCIEB) & AICA_INT_CPU))
-				{ aica_linea_asic = 1; aica_asic_subidas++; }
+				linea_subir();
 		}
 		return;
 
@@ -1585,7 +1685,7 @@ static void escribir_registro(unsigned long off, DWORD valor, int del_arm)
 
 		/* Reconocer del todo baja la linea hacia el SH-4. */
 		if (!(reg16(AICA_MCIPD) & reg16(AICA_MCIEB) & AICA_INT_TODAS))
-			{ aica_linea_asic = 0; aica_asic_bajadas++; }
+			linea_bajar();
 		return;
 
 	case AICA_ARMRST:
@@ -1892,6 +1992,94 @@ unsigned long long aica_muestras_hechas(void)
 	return aica_muestras;
 }
 
+unsigned long long aica_muestras_de_reloj(unsigned long long reloj)
+{
+	return muestras_hasta(reloj);
+}
+
+/*
+	El primer ciclo en que la cuenta de muestras llega a m. No es lo mismo que
+	aica_reloj_de_muestra(m), que es el piso: muestras_hasta(piso) da m - 1
+	salvo cuando m es multiplo de 735 y la division es exacta. Es el borde que
+	usa el horizonte memoizado de abajo y el que define la entrega: un cambio
+	sellado en j se entrega en la primera frontera de grano >= este ciclo de
+	(j + demora).
+*/
+static unsigned long long primer_reloj_de_muestra(unsigned long long m)
+{
+	return m / AICA_MUESTRAS_POR_TRAMO * AICA_CICLOS_POR_TRAMO
+	     + ((m % AICA_MUESTRAS_POR_TRAMO) * AICA_CICLOS_POR_TRAMO
+	        + AICA_MUESTRAS_POR_TRAMO - 1) / AICA_MUESTRAS_POR_TRAMO;
+}
+
+/*
+	muestras_hasta(reloj_total), memoizada por borde: dos divisiones de 64 bits
+	por servicio no son gratis cuando el servicio corre en cada grano (bajo
+	--hilos el reloj por eventos esta apagado). Solo desde el hilo principal.
+	Se recalcula tambien si el reloj fue hacia atras, que en el emulador no
+	pasa pero en las suites si.
+*/
+unsigned long long aica_muestras_al_reloj(void)
+{
+	static unsigned long long m_memo = 0;
+	static unsigned long long base   = 0;	/* primer reloj de m_memo */
+	static unsigned long long borde  = 0;	/* primer reloj de m_memo + 1 */
+
+	if (reloj_total >= borde || reloj_total < base)
+	{
+		m_memo = muestras_hasta(reloj_total);
+		base   = primer_reloj_de_muestra(m_memo);
+		borde  = primer_reloj_de_muestra(m_memo + 1);
+	}
+
+	return m_memo;
+}
+
+/*
+	Saca del registro el siguiente cambio de nivel sellado en `hasta` o antes.
+	Lee la cabeza fresca en cada llamada: el consumidor tiene que haber leido
+	aica_muestras_listas ANTES de entrar aqui (ver main_loop), porque una
+	cabeza vieja con una senal de terminacion nueva diferiria un cambio de la
+	muestra `hasta` al grano siguiente -- y eso es exactamente el modo de falla
+	que el registro existe para eliminar.
+*/
+int aica_linea_log_sacar(unsigned long long hasta, int * nivel,
+	unsigned long long * muestra)
+{
+	unsigned cabeza = linea_log_cabeza;
+	unsigned cola   = linea_log_cola;
+	unsigned long long m;
+
+	if (cola == cabeza)
+		return 0;
+
+	m = linea_log[cola % AICA_LINEA_LOG].muestra;
+
+	if (m > hasta)
+		return 0;
+
+	*nivel   = linea_log[cola % AICA_LINEA_LOG].nivel;
+	*muestra = m;
+	linea_log_cola = cola + 1;
+	return 1;
+}
+
+/* Cuantos cambios esperan en el registro (para el resumen y las suites). */
+unsigned aica_linea_log_pendientes(void)
+{
+	return linea_log_cabeza - linea_log_cola;
+}
+
+/* Sin condicion, como los contadores de control del traductor: un cero
+   callado no se distingue de una sonda muerta, y `perdidos` es de control. */
+void aica_linea_resumen(void)
+{
+	fprintf(stderr, "aica: linea al ASIC: demora %d muestras,"
+		" %llu cambios anotados, %u pendientes, %llu perdidos\n",
+		aica_demora_linea, aica_linea_log_anotadas,
+		aica_linea_log_pendientes(), aica_linea_log_perdidas);
+}
+
 /*
 	El cuerpo, contra un reloj cualquiera y con un tope de muestras por vuelta.
 
@@ -1911,7 +2099,9 @@ unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope)
 
 	if (opciones.sin_aica)
 	{
-		aica_muestras = objetivo;
+		aica_muestras        = objetivo;
+		muestra_actual       = objetivo;
+		aica_muestras_listas = objetivo;
 		return reloj;
 	}
 
@@ -1925,7 +2115,31 @@ unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope)
 
 	aica_muestras += faltan;
 
-	timers_avanzar((unsigned) faltan);
+	/*
+		Los temporizadores, de a una muestra y con el sello puesto en cada una.
+		Avanzarlos de a `faltan` corria los N pasos de A, luego los de B y
+		luego los de C, y el registro de la linea quedaba con A@5 antes que
+		B@3: un sello no monotono, y el drenado se detiene en el primero que
+		pasa el horizonte. En estado es identico -- contadores, restos y el
+		registro visible, que el ARM lee DESPUES en este mismo tick --; solo
+		cambia el orden de las llamadas a pedir_int, que el camino sin demora
+		pliega en dos lazos sin orden. INTON, la mezcla y el ARM llevan la
+		ultima muestra del lote, que es la unica cuando el tope es 1 (el hilo)
+		y casi siempre sin hilos (el reloj por eventos programa un servicio en
+		cada borde de muestra).
+	*/
+	{
+		unsigned long long base = aica_muestras - faltan;
+		unsigned long long i;
+
+		for (i = 1; i <= faltan; i++)
+		{
+			muestra_actual = base + i;
+			timers_avanzar(1);
+		}
+
+		muestra_actual = aica_muestras;
+	}
 
 	/*
 		La interrupcion de intervalo de muestra (INTON, bit 10): el chip la
@@ -1951,8 +2165,7 @@ unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope)
 		if (reg16(AICA_MCIEB) & AICA_INT_MUESTRA)
 		{
 			poner16(AICA_MCIPD, reg16(AICA_MCIPD) | AICA_INT_MUESTRA);
-			aica_linea_asic = 1;
-			aica_asic_subidas++;
+			linea_subir();
 		}
 	}
 
@@ -1977,6 +2190,11 @@ unsigned long long aica_tick_hasta(unsigned long long reloj, unsigned tope)
 
 		PERF_SUMAR(t1, perf_ns_arm);
 	}
+
+	/* La senal de terminacion, al final y despues del ARM: recien ahora
+	   existen todos los eventos de estas muestras. El orden respecto del
+	   registro es el contrato del consumidor (ver aica_linea_log_sacar). */
+	aica_muestras_listas = aica_muestras;
 
 	return aica_reloj_de_muestra(aica_muestras);
 }
@@ -2029,6 +2247,27 @@ void aica_reset(void)
 	   con reloj_total ya avanzado produciria si no una rafaga de todas las
 	   muestras transcurridas desde el encendido. */
 	aica_muestras = muestras_hasta_ahora();
+
+	/* La demora de la linea, leida una vez (decimal, como todas; vacia vale 0,
+	   que es el camino sin registro). La omision es UNA muestra (~22,7 us
+	   emulados): la minima que hace determinista la entrega bajo --hilos, y
+	   con el giro del hilo (hilo_aica.c) el horizonte casi nunca hay que
+	   esperarlo. El registro arranca vacio y la senal de terminacion, donde
+	   esta la marca. */
+	if (aica_demora_linea < 0)
+	{
+		const char * v = getenv("DCEMU_AICA_DEMORA_LINEA");
+
+		aica_demora_linea = (v != NULL) ? atoi(v) : 1;
+
+		if (aica_demora_linea < 0)
+			aica_demora_linea = 0;
+	}
+
+	muestra_actual       = aica_muestras;
+	aica_muestras_listas = aica_muestras;
+	linea_log_cabeza     = 0;
+	linea_log_cola       = 0;
 
 	/* El ARM arranca detenido: KOS lo suelta escribiendo 0 en ARMRST, y hasta
 	   entonces la RAM de onda es suya para cargarle el firmware. */

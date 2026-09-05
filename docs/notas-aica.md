@@ -487,3 +487,16 @@ lo que ve un juego que adelanta y después suelta. Desde 2026-08-06 lo dice la t
 Dos valores se contestan sin una medición detrás, y están marcados como tales porque un registro
 de identificación contestado a la ligera ya colgó al guest dos veces (`REVISION` y `SB_G1SYSM`):
 `VER[3:0]` de `0x2800`, al que se le da 1, y `MEM8MB`, que se acepta y se ignora.
+
+
+## La línea al ASIC se entrega con latencia fija (2026-09-05)
+
+`aica_linea_asic` y los dos contadores siguen existiendo, pero desde esta fecha la entrega
+no sale de ellos salvo con `DCEMU_AICA_DEMORA_LINEA=0`: cada cambio de nivel se anota en
+`linea_log[]` con la muestra en que ocurrió, y `main_loop()` aplica en cada servicio los
+sellados hasta `muestras(reloj_total) − 1`. Es lo que hace determinista la entrega bajo
+`--hilos` sin lockstep. Tres reglas que cuestan una divergencia si se rompen: la señal de
+terminación es `aica_muestras_listas` y no `aica_muestras` (que sube antes de los
+temporizadores y del ARM); los temporizadores avanzan de a una muestra para que los sellos
+sean monótonos; y el consumidor lee `listas` antes que la cabeza del registro. El expediente
+entero, con la compuerta y las dos tandas, está en `docs/hilos-plan.md`.
