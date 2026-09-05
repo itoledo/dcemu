@@ -399,7 +399,8 @@ gráfico reciente se validó contra seis. Cuesta espacio: el disco pasó de 13,8
 
 `chd.c`/`chd.h`, sobre libchdr (vendorizada en `deps/libchdr` con sus tres dependencias — lzma,
 miniz, zstd — porque sus binarios publicados son de MinGW y aquí se compila con MSVC; commit
-`6cde5348` del upstream). Es el otro formato en que está preservada la biblioteca, y el de las
+`1d40b6ee` del upstream desde el 2026-09-05, antes `6cde5348`: la actualización salió byte a
+byte idéntica en las ocho imágenes CHD del banco). Es el otro formato en que está preservada la biblioteca, y el de las
 colecciones actuales: un solo archivo comprimido por juego, los sectores en «hunks» (aquí de 8
 frames de 2448 bytes: 2352 de sector más 96 de subcanal) y las pistas descritas en metadatos de
 texto, una entrada por pista.

@@ -27,9 +27,12 @@ option(DCEMU_USE_LIBCDIO "Compilar el backend libcdio (bin/cue, lectora fisica)"
 # El backend .chd (chdman, de MAME), sobre libchdr, que viene vendorizado en
 # deps/libchdr con sus tres dependencias (lzma, miniz, zstd) porque sus
 # binarios publicados son de MinGW y aqui se compila con MSVC. Es el commit
-# 6cde5348 de https://github.com/rtissera/libchdr, sin cambios. Apagado, chd.c
-# se compila igual pero como stub que informa que esta compilacion no lo trae,
-# igual que la ruta libcdio.
+# 1d40b6ee (2026-09-04) de https://github.com/rtissera/libchdr, sin cambios
+# salvo quitar su .github/ (lzma 26.02, miniz 3.1.2, zstd 1.5.7; antes fue
+# 6cde5348 con lzma 25.01 y miniz 3.1.1 -- la actualizacion salio byte a byte
+# identica en las ocho imagenes CHD del banco). Apagado, chd.c se compila igual
+# pero como stub que informa que esta compilacion no lo trae, igual que la ruta
+# libcdio.
 option(DCEMU_USE_CHD "Compilar el backend .chd (libchdr, en deps/)" ON)
 option(DCEMU_CONSOLE "Dejar la consola abierta para ver los mensajes a stderr" ON)
 option(DCEMU_BUILD_TESTS "Compilar las pruebas unitarias de opcodes (tests/)" ON)
