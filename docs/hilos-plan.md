@@ -638,3 +638,67 @@ aparezca la tentación:
 
 El paso 0 puede decidir que la fase 1 no vale la pena, y está bien que así sea: es una
 tarde de trabajo contra varios días.
+
+
+## El veredicto se da vuelta con el traductor (2026-09-04)
+
+La fase 1 se midió el 2026-08-01 **en Debug y con el intérprete solo**, cuando
+Crazy Taxi corría a 0,27×, y perdía 4-5 %. Ese número describía un emulador que
+ya no existe: hoy CT corre a **2,53×** sobre el canónico de clang, o sea que el
+hilo principal hace el mismo trabajo emulado en un noveno del tiempo real y el
+AICA, que no se aceleró en la misma proporción, pasó a pesar relativamente más.
+**Rehecha la medición sobre el binario de hoy (`666C05AE56E195DE`), el signo se
+invierte en el guest donde el AICA pesa.**
+
+Cuatro rondas con orden rotado, calentamiento por guest descartado, sobre un
+binario y con el RTC clavado:
+
+| guest | sin hilos | con hilos | veredicto |
+| --- | --- | --- | --- |
+| Crazy Taxi, 60 s | 19 937-20 265 ms | **18 811-19 063** | **−5,8 %, rangos disjuntos, 4/4** |
+| DCDoom, 35 s | 22 884-23 512 | 23 263-23 602 | **+1,4 %**, 4/4 en contra |
+
+Y eso es exactamente lo que el reparto anticipa: el AICA es el **12,5 % de Crazy
+Taxi** y sólo el **8,8 % de DCDoom**, así que en uno el trabajo movido paga el
+costo del hilo y en el otro no. **El resultado es por guest, no del mecanismo.**
+
+### La exactitud: dos guests sí, uno no
+
+- **Crazy Taxi es exacto**: captura byte a byte, **40 000 puntos de
+  `DCEMU_CP_MS` idénticos** y el **`.wav` de la reverberación byte a byte**
+  (7 058 532 bytes, mismo hash) contra el camino sin hilos. Y con dos corridas
+  con hilos, idénticas entre sí.
+- **DCDoom es exacto**: captura, `.wav` y 20 000 puntos idénticos.
+- **Sega Rally 2 NO**. Captura y `.wav` idénticos, pero los puntos de control
+  divergen: la primera diferencia está en el **ms 9316**, con 114 ciclos de más
+  (`ciclos=1858537706` contra `1858537592`), `r7` dos arriba y `MMUCR.URC` en 8
+  en vez de 2. Lo que **sí** se sostiene es que el camino con hilos es
+  **reproducible** — dos corridas dan el mismo hash exacto —, así que no es
+  ruido de planificación sino un horario distinto y estable.
+
+Eso confirma desde el otro lado lo que la fase 1 ya había nombrado como el único
+punto del diseño sin determinismo por construcción: **la entrega de la
+interrupción del AICA al ASIC**. El chip levanta `aica_linea_asic` en un instante
+emulado y `main_loop()` la cobra en el bloque periódico en que se entere; con los
+dos hilos desacoplados ese instante se corre, y el ISR del guest escribe el AICA
+en otro momento. Que CT y DOOM salgan idénticos y SR2 no es cuestión de cuánto
+depende cada guest de ese instante, no de que el mecanismo sea sano en dos casos
+y roto en el tercero.
+
+### Qué se hace con esto
+
+- **Sigue apagado por omisión**, y ahora por dos motivos independientes y los dos
+  medidos: pierde en DCDoom, y no es exacto en Sega Rally 2. Cualquiera de los
+  dos alcanza para no adoptarlo.
+- **Pero deja de ser «hoy es más lento»**, que es lo que decía la ayuda de
+  `--hilos` y ya no es cierto: en el guest más pesado del banco gana 5,8 % con
+  rangos disjuntos, exacto hasta el `.wav`. La ayuda quedó corregida.
+- **Y el camino para adoptarlo tiene nombre**: hacer determinista la entrega de
+  la interrupción. El diseño que lo permitiría sin volver al lockstep es que el
+  hilo del AICA produzca, junto a las muestras, un **registro de eventos con su
+  instante emulado**, y que el hilo principal los aplique en ese instante en vez
+  de cuando se entera. La restricción sigue siendo la de siempre: el AICA no
+  puede adelantarse más allá de lo que el SH-4 todavía puede cambiarle, que es
+  para lo que existe el alcance a pedido.
+- La hipótesis de la afinidad de hilo **sigue sin probar** y ahora importa menos:
+  con el traductor, el mecanismo ya gana donde tiene qué mover.
