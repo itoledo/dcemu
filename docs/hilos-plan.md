@@ -1019,3 +1019,12 @@ Rondas: DCDoom 20 921 / 20 750 / 20 871 / 21 039 contra 23 126 / 23 248 / 23 470
 paso a SDL3, la misma tarde). Es la mayor ganancia por mecanismo del árbol desde el índice de
 enlaces, y la fase de hilos, que empezó midiendo −4/−5 % en contra, queda cerrada con su omisión
 dada vuelta por medición.
+
+**La red de juegos** (`herramientas/hilos-juegos.ps1`, nueva: la lista de `juegos-jit.ps1` —
+las imágenes del banco más los CHD de primer disco — con `--sin-hilos` contra `--hilos` sobre el
+canónico `F79CFE145D3ED123`, 20 s, captura byte a byte, `DCEMU_CP_MS` punto por punto y **la
+lista de entregas de `DCEMU_SONDA_ENTREGAS=1`**, que es el árbitro propio de los hilos): **once
+imágenes, once exactas** — DCDoom, Sega Rally 2, Crazy Taxi, Virtua Tennis (los dos rips),
+18 Wheeler, Capcom vs. SNK 2, Crazy Taxi 2, Mortal Kombat Gold, Tony Hawk 1 y 2 —, 20 000 puntos y
+entre 5606 y 59 536 entregas iguales por imagen, y en cada par la línea del hilo sólo en el brazo
+que la pide. Con eso la omisión queda con la misma red que tuvo la del traductor.
