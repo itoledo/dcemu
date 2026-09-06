@@ -173,10 +173,15 @@ relative to the makefiles; the makefiles are the source of truth for the object 
 ## Tests
 
 ```sh
-cmake -S . -B build [-DDCEMU_SH4_JSON=/path/to/SingleStepTests-sh4]
+cmake -S . -B build -A x64 [-DDCEMU_SH4_JSON=/path/to/SingleStepTests-sh4]
 cmake --build build --config Debug --target dcemu_tests dcemu_sh4json
 ctest --test-dir build -C Debug --output-on-failure
 ```
+
+**`-A x64` is not decoration**: a Visual Studio tree configured for Win32 cannot build the suites
+at all — `DC_ASSERT_SIZE(context, context_t, 176)` in `sh4emu.h` counts two 8-byte pointers, and
+with 4-byte pointers the struct is 164 and every translation unit fails with «negative subscript»
+(2026-09-05, a stale `build/` on the second machine; the suites live in `build-tests/` there).
 
 `tests/` holds unit tests for every implemented row of `opcodes[]` (one suite per handler
 file, plus one for the dispatch-table expansion), plus suites that are not opcodes:

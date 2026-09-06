@@ -545,3 +545,10 @@ dos caminos, con y sin hilos, corren ahora el mismo reloj —, con la palanca pa
 regla nueva para el reparto: **un porcentaje de `--perf` sobre un contador de decenas de
 millones de marcas lleva adentro el costo de marcar**, y antes de creerle hay que restarle el
 observador o, mejor, preguntarle al reloj.
+
+**La red del parque, con la omisión final.** El barrido KOS sobre una copia del canónico
+`FF19A0810D05593E` sin banderas (hilos más reloj por eventos), RTC clavado y VMU fresca, contra el
+barrido de la misma noche con hilos y el reloj apagado (que a su vez había salido idéntico al de
+sin hilos): **151 demos, 151 con captura en los dos, 0 capturas distintas, 0 códigos de salida
+distintos, 0 veredictos serial distintos**. El cambio del reloj queda con la misma red que el
+resto: compuerta de cinco brazos, once juegos por la adopción del hilo, y el parque entero.
