@@ -480,3 +480,64 @@ los periféricos no entregan su propia interrupción).
 en cada frontera, **el comportamiento anterior bit a bit** (el barrido lo probó sobre las
 139). Viene **encendido por omisión**. Con `--hilos` el camino del hilo del AICA no calcula
 vencimientos y el interruptor queda inerte.
+
+## El reloj por eventos bajo `--hilos` (2026-09-05, noche)
+
+Desde la fase 5 el hilo del AICA apagaba el reloj por eventos («ese camino publica trabajo en
+cada frontera y no tiene vencimiento que calcular»), y mientras `--hilos` fue una palanca eso
+no importó. La misma noche en que pasó a ser la omisión, el reparto `--perf` del canónico
+nuevo puso el bloque periódico en **12,6 % de Crazy Taxi, 10,9 % de DCDoom y 9,1 % de Sega
+Rally 2** — un servicio por grano, 90 millones en 180 s de CT contra 16 millones con el reloj
+sin hilos —, y el candidato se escribía solo.
+
+**El cambio son diez líneas de `reloj_calcular()`.** La premisa de la fase 5 era falsa a
+medias: la publicación al hilo no necesita cada grano, necesita cada vencimiento — el hilo
+mezcla hasta el objetivo publicado, sea de hace un grano o de hace dieciséis, y `entrar()`
+publica por su cuenta antes de un acceso. Lo único que cambia bajo hilos es de dónde sale el
+término del AICA: sin hilos es la muestra que el tick de este hilo no mezcló todavía
+(`aica_muestras_hechas() + 1`, cuyo piso se autocorrige un grano después si cae un ciclo
+antes del borde); con hilos esa cuenta es del otro hilo y va atrasada, así que el término sale
+**del reloj** — `aica_primer_reloj_de_muestra(aica_muestras_al_reloj() + 1)`, el primer ciclo
+en que la cuenta de muestras del reloj llega a la siguiente —, que es exactamente el borde en
+que la entrega determinista de la línea avanza su horizonte y el borde que cruza el objetivo
+que despierta al hilo. Puro valor calculado, función de `reloj_total`. La palanca es la de
+siempre: `DCEMU_SIN_RELOJ_EVENTOS=1` reproduce bajo hilos la conducta anterior (un servicio por
+grano).
+
+**La compuerta**, sobre el canónico reentrenado con el cambio (`FF19A0810D05593E`; clang
+avisó al enlazar que el perfil viejo ya no calzaba con `main_loop` — «control flow change
+detected, count discarded» — y una tanda sin reentrenar habría medido el lazo caliente sin
+perfil): cinco brazos verdes, d0 IGUAL a `build-ref` en SR2, DCDoom y CT hasta la lista de
+entregas, d1-con ≡ d1-sin, d1-conB ≡ d1-con, y el control d0-con de SR2 sigue DISTINTO.
+
+**El humo**, Crazy Taxi 60 s con `--perf`: servicios **30 millones → 5,3 millones**, bloque
+periódico 12,6 % → 8,0 %, 3,52× tiempo real. **Y la tanda no lo vio** (un binario, `--hilos`
+en los dos brazos, eventos contra `DCEMU_SIN_RELOJ_EVENTOS=1`, cuatro rondas rotadas, en
+reposo y sin usuario):
+
+| guest | eventos | cada grano | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 20 990–21 129 ms | 20 963–21 094 | +0,2 %, 0/4, solapados: inerte |
+| Sega Rally 2, 60 s | 42 618–43 313 | 43 232–44 099 | −1,5 %, **4/4**, solape de 81 ms: dirección clara |
+| Crazy Taxi, 180 s | 58 261–59 037 | 58 911–59 402 | −0,8 %, 3/4, solapados |
+
+Rondas: DCDoom 21 129 / 20 990 / 21 022 / 21 101 contra 21 094 / 20 976 / 20 963 / 21 075;
+SR2 42 618 / 42 934 / 42 810 / 43 313 contra 43 494 / 43 433 / 43 232 / 44 099; CT 58 812 /
+58 261 / 58 543 / 59 037 contra 58 924 / 59 391 / 59 402 / 58 911. Totales al dígito en las
+24 corridas.
+
+**Por qué el humo mintió, y es la lección de B.3 con el instrumento como protagonista.**
+`--perf` marca el reloj a la entrada y a la salida de cada servicio, y con 90 millones de
+servicios por corrida esas dos marcas son la mayor parte de los 7,9 s que el reparto atribuía
+al bloque: el servicio vacío por grano — publicar un `volatile`, mirar el horizonte
+memoizado, cuatro comparaciones — son cargas y comparaciones predecibles que el desorden del
+procesador ya ejecutaba en la sombra del trabajo vecino, exactamente lo que el servicio
+partido de B.3 encontró del lado sin hilos. El reparto vale para ordenar candidatos; el reloj
+decide, y aquí decidió que el bloque por grano costaba un 1 % y no un 12.
+
+**Queda encendido**, como el atajo P1/P2 de la MMU: exacto por construcción, estrictamente
+menos trabajo (seis veces menos servicios en el hilo principal), y quita un caso especial — los
+dos caminos, con y sin hilos, corren ahora el mismo reloj —, con la palanca para el A/B. Y la
+regla nueva para el reparto: **un porcentaje de `--perf` sobre un contador de decenas de
+millones de marcas lleva adentro el costo de marcar**, y antes de creerle hay que restarle el
+observador o, mejor, preguntarle al reloj.

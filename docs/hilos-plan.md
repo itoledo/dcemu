@@ -1028,3 +1028,10 @@ imágenes, once exactas** — DCDoom, Sega Rally 2, Crazy Taxi, Virtua Tennis (l
 18 Wheeler, Capcom vs. SNK 2, Crazy Taxi 2, Mortal Kombat Gold, Tony Hawk 1 y 2 —, 20 000 puntos y
 entre 5606 y 59 536 entregas iguales por imagen, y en cada par la línea del hilo sólo en el brazo
 que la pide. Con eso la omisión queda con la misma red que tuvo la del traductor.
+
+**Y el reloj por eventos corre también bajo hilos** (misma noche): la fase 5 lo apagaba con el
+hilo, el reparto `--perf` del canónico nuevo puso el bloque periódico en 12,6 % de CT, y con
+el término del AICA saliendo del reloj en vez de la cuenta del hilo los servicios bajan de 90 a
+16 millones por 180 s — compuerta de cinco brazos verde, tanda neutra con dirección (SR2 −1,5 %
+4/4 solapado, CT −0,8 %, DOOM inerte): el 12,6 % era en su mayor parte el costo de las marcas de
+`--perf`. Queda encendido; el expediente entero en `docs/clock-plan.md`, sección final.

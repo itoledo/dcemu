@@ -682,9 +682,15 @@ static unsigned long long reloj_calcular(void)
 	{
 		const char * e = getenv("DCEMU_SIN_RELOJ_EVENTOS");
 
-		/* Con el hilo del AICA no se saltea nada: ese camino publica trabajo
-		   en cada frontera y no tiene vencimiento que calcular. */
-		eventos = !(e != NULL && atoi(e) != 0) && !opciones.hilos;
+		/* Hasta el 2026-09-05 el hilo del AICA apagaba el reloj por eventos
+		   ("ese camino publica trabajo en cada frontera"), y con la omision
+		   dada vuelta ese servicio por grano resulto ser el 12,6 % de Crazy
+		   Taxi (90 millones de servicios en 180 s contra 16 millones con el
+		   reloj): la publicacion no necesita cada grano, necesita cada
+		   vencimiento -- el hilo mezcla hasta el objetivo publicado, sea de
+		   hace un grano o de hace dieciseis, y entrar() publica por su cuenta
+		   antes de un acceso. Ver el termino del AICA de abajo. */
+		eventos = !(e != NULL && atoi(e) != 0);
 	}
 
 	if (!eventos || dma_auto_activo())
@@ -695,15 +701,44 @@ static unsigned long long reloj_calcular(void)
 	/* La inversa del AICA son dos divisiones de 64 bits y su argumento solo
 	   cambia cuando una muestra se produce: memoizada, el servicio tipico
 	   --el de la linea de barrido-- no las paga. Puro valor calculado, asi
-	   que no puede mover nada. */
+	   que no puede mover nada.
+
+	   Sin hilos, la muestra que sigue es la que el tick de este hilo no
+	   mezclo todavia (aica_muestras_hechas() + 1), y su piso sirve: si el
+	   grano cae un ciclo antes del borde, el servicio no mezcla nada, la
+	   cuenta no se mueve y la frontera siguiente vuelve a ser servicio.
+
+	   Con el hilo del AICA esa cuenta es del otro hilo y va atrasada, asi
+	   que el termino sale del RELOJ: el primer ciclo en que la cuenta de
+	   muestras del reloj llega a la siguiente (aica_muestras_al_reloj() + 1),
+	   que es exactamente el borde en que la entrega determinista de la
+	   linea avanza su horizonte (un cambio sellado en j se entrega en la
+	   primera frontera de grano >= ese ciclo de j + demora) y el borde que
+	   cruza el objetivo que despierta al hilo. Puro valor calculado tambien:
+	   una funcion de reloj_total. */
 	{
 		static unsigned long long m_memo = ~0ull, t_memo;
-		unsigned long long m = aica_muestras_hechas() + 1;
+		unsigned long long m;
 
-		if (m != m_memo)
+		if (opciones.hilos)
 		{
-			m_memo = m;
-			t_memo = aica_reloj_de_muestra(m);
+			m = aica_muestras_al_reloj() + 1;
+
+			if (m != m_memo)
+			{
+				m_memo = m;
+				t_memo = aica_primer_reloj_de_muestra(m);
+			}
+		}
+		else
+		{
+			m = aica_muestras_hechas() + 1;
+
+			if (m != m_memo)
+			{
+				m_memo = m;
+				t_memo = aica_reloj_de_muestra(m);
+			}
 		}
 
 		t = t_memo;

@@ -2020,7 +2020,9 @@ unsigned long long aica_primer_reloj_de_muestra(unsigned long long m)
 /*
 	muestras_hasta(reloj_total), memoizada por borde: dos divisiones de 64 bits
 	por servicio no son gratis cuando el servicio corre en cada grano (bajo
-	--hilos el reloj por eventos esta apagado). Solo desde el hilo principal.
+	--hilos el reloj por eventos estuvo apagado hasta el 2026-09-05; desde
+	entonces el vencimiento del AICA sale de esta cuenta, ver reloj_calcular()
+	en main.c). Solo desde el hilo principal.
 	Se recalcula tambien si el reloj fue hacia atras, que en el emulador no
 	pasa pero en las suites si.
 */

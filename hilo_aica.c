@@ -199,12 +199,15 @@ static int cuerpo(void * dato)
 	/*
 		El hilo duerme hasta el proximo BORDE DE MUESTRA, no hasta la proxima
 		publicacion (2026-09-05). `objetivo` se publica en cada servicio del
-		bloque periodico --cada grano de 400 ciclos, unas 500 000 veces por
-		segundo en Crazy Taxi-- y solo uno de cada once cruza un borde de
-		muestra: despertarse en cada publicacion era diez despertares de once
-		para no mezclar nada. `siguiente` es el primer ciclo en que la muestra
-		que sigue pasa a estar debida; mientras el objetivo no lo cruce no hay
-		nada que hacer, y publicar() solo avisa cuando lo cruzo.
+		bloque periodico --hasta esa noche, cada grano de 400 ciclos, unas
+		500 000 veces por segundo en Crazy Taxi, y solo uno de cada once
+		cruzaba un borde de muestra: despertarse en cada publicacion era diez
+		despertares de once para no mezclar nada; desde entonces el reloj por
+		eventos corre tambien bajo --hilos y el servicio cae en cada
+		vencimiento, entre ellos cada borde de muestra (reloj_calcular() en
+		main.c)--. `siguiente` es el primer ciclo en que la muestra que sigue
+		pasa a estar debida; mientras el objetivo no lo cruce no hay nada que
+		hacer, y publicar() solo avisa cuando lo cruzo.
 
 		Exacto por construccion: lo que el SH-4 necesita antes de un acceso
 		es que esten mezcladas TODAS las muestras <= objetivo, y eso es lo
