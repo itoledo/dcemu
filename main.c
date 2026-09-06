@@ -2100,10 +2100,12 @@ static void salida_redirigir(void)
 	abierta). Minimizada no lo dispara. Es la politica de energia de Windows 11
 	para los procesos que considera de segundo plano --los manda a los nucleos
 	eficientes a baja frecuencia (EcoQoS) y les engrosa el reloj--, y
-	reproducir audio exime. Un banco que corre desprendido mientras el usuario
-	trabaja encima medía eso sin saberlo, y --sin-audio era el regimen que lo
-	destapaba: 76-132 s en las tandas de la tarde con los dos brazos moviendose
-	juntos, 66 s con la ventana libre. Ver docs/notas-herramientas.md.
+	reproducir audio exime. Un banco desprendido cae en ese regimen sin que
+	nadie lo vea --aqui sin entrada de teclado ni raton desde la noche
+	anterior: lo que tapa la ventana puede ser la pantalla apagada o el
+	bloqueo--, y --sin-audio era el regimen que lo destapaba: 76-132 s en las
+	tandas de la tarde con los dos brazos moviendose juntos, 66 s con la
+	ventana libre. Ver docs/notas-herramientas.md.
 
 	SetProcessInformation(ProcessPowerThrottling) con el bit en la mascara de
 	control y en cero en la de estado es "nunca": ni la velocidad de ejecucion

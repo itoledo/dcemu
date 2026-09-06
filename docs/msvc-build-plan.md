@@ -321,8 +321,8 @@ tres capas de traducción por callback, cada una con su hilo) y el del cuadro (e
 copiado 1:1 en vez del de sdl12-compat escalado), y el guest que más gana es el que más presenta
 — CT ~163 cuadros por segundo real contra ~91 de DOOM y ~77 de SR2 —, que es un indicio y no una
 atribución. También conviene decir que el absoluto del binario viejo (72,0–72,9 s) cae en la
-banda de «portátil en uso» de esta máquina (73,9–75,3 s en la tanda contaminada de la mañana) y
-no en la de reposo (66,2–67,1 s el 2026-09-03), con los dos brazos alternados en el mismo lote:
+banda lenta de esta máquina (73,9–75,3 s en la tanda contaminada de la mañana) y no en la de
+reposo (66,2–67,1 s el 2026-09-03), con los dos brazos alternados en el mismo lote:
 lo que se compara es el par, y el absoluto sólo dice que la cadena de compatibilidad rinde peor
 en la misma máquina que el binario nuevo. La tanda que separa audio de cuadro es la misma con
 `--sin-audio` en los dos brazos; la de dos rondas que corrió dentro de la cadena salió ilegible

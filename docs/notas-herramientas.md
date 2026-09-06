@@ -406,9 +406,10 @@ noche con la ventana libre. Tres sondas de Crazy Taxi, todas con la ejecución i
 Tapada y sin audio, 68 % más lento; tapada con la tarjeta abierta, nada; minimizada, nada. Es la
 política de energía de Windows 11 para los procesos que considera de segundo plano: los manda a
 los núcleos eficientes a baja frecuencia (EcoQoS) y les engrosa la resolución del reloj, y un
-proceso que reproduce audio queda exento. Un banco que corre desprendido mientras el usuario
-trabaja encima está en ese régimen exactamente cuando corre sin audio — las compuertas, los
-barridos y cualquier corrida con `--captura-audio` —, y por eso el «costo» aparecía y desaparecía
+proceso que reproduce audio queda exento. Un banco desprendido cae en ese régimen sin que nadie
+lo vea — aquí no fue el usuario: la última entrada de teclado o ratón fue la noche anterior, y lo
+que tapa las ventanas es la pantalla apagada o el bloqueo — exactamente cuando corre sin audio:
+las compuertas, los barridos y cualquier corrida con `--captura-audio`. Por eso el «costo» aparecía y desaparecía
 con lo que el usuario tuviera abierto.
 
 El arreglo es pedirle a Windows que no lo haga: `main()` llama a
