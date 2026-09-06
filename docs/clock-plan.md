@@ -527,13 +527,17 @@ SR2 42 618 / 42 934 / 42 810 / 43 313 contra 43 494 / 43 433 / 43 232 / 44 099; 
 24 corridas.
 
 **Por qué el humo mintió, y es la lección de B.3 con el instrumento como protagonista.**
-`--perf` marca el reloj a la entrada y a la salida de cada servicio, y con 90 millones de
-servicios por corrida esas dos marcas son la mayor parte de los 7,9 s que el reparto atribuía
-al bloque: el servicio vacío por grano — publicar un `volatile`, mirar el horizonte
-memoizado, cuatro comparaciones — son cargas y comparaciones predecibles que el desorden del
-procesador ya ejecutaba en la sombra del trabajo vecino, exactamente lo que el servicio
-partido de B.3 encontró del lado sin hilos. El reparto vale para ordenar candidatos; el reloj
-decide, y aquí decidió que el bloque por grano costaba un 1 % y no un 12.
+`--perf` cronometra el bloque por muestreo — una entrada de cada 1021 paga dos marcas y el
+intervalo se multiplica —, así que la estimación de **cada** servicio lleva adentro la latencia
+de una marca: 23 ns calibrados, que sobre 90 millones de servicios son 2,1 s de los 7,9 que el
+reparto atribuía al bloque. Desde esa noche `--perf` calibra esa latencia al arrancar, la
+imprime bajo el bloque («de eso el instrumento») y la descuenta del resto. Y los 5,8 s que
+quedan tampoco eran del bloque, o la tanda los habría visto: un servicio **medido** corre
+serializado detrás de la marca, mientras que el servicio vacío por grano — publicar un
+`volatile`, mirar el horizonte memoizado, cuatro comparaciones — son cargas y comparaciones
+predecibles que el desorden del procesador ejecuta en la sombra del trabajo vecino, exactamente
+lo que el servicio partido de B.3 encontró del lado sin hilos. El reparto vale para ordenar
+candidatos; el reloj decide, y aquí decidió que el bloque por grano costaba un 1 % y no un 12.
 
 **Queda encendido**, como el atajo P1/P2 de la MMU: exacto por construcción, estrictamente
 menos trabajo (seis veces menos servicios en el hilo principal), y quita un caso especial — los

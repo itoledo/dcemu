@@ -15,6 +15,7 @@
 #include "bloques.h"
 #endif
 #include "tmu.h"			/* reloj_total, reloj_ms() */
+#include "opciones.h"		/* hilos: el AICA en el otro hilo no entra en el reparto */
 #include "arm7.h"			/* los contadores de la memoizacion de barridos */
 #ifdef DCEMU_JIT
 #include "jit.h"			/* las clases del censo del contrato */
@@ -28,6 +29,11 @@
 #endif
 
 int perf_activa = 0;
+
+/* La latencia de una marca (perf_ahora), calibrada en perf_iniciar(): lo que
+   la estimacion por muestreo del bloque periodico le carga a CADA servicio. */
+static unsigned long long perf_ns_marca = 0;
+static unsigned long long perf_ns_observador = 0;	/* marcas x servicios, en el resumen */
 
 unsigned long long perf_ns_aica		= 0;
 unsigned long long perf_ns_canales	= 0;
@@ -518,6 +524,36 @@ void perf_inicio(void)
 	if (perf_sonda_onda)
 		fprintf(stderr, "perf: censo por paginas de la RAM de onda\n");
 
+	/*
+		El costo del instrumento, medido antes de medir nada. El bloque
+		periodico se cronometra por muestreo (PERF_MARCA_MUESTRA): una entrada
+		de cada 1021 paga dos marcas y el intervalo se multiplica por 1021, asi
+		que la estimacion de CADA servicio lleva adentro la latencia de una
+		marca aunque solo una de cada mil la haya pagado. Con 90 millones de
+		servicios por corrida (un servicio por grano, la noche de la adopcion
+		de --hilos) y 23 ns por marca eso son 2,1 s de los 7,9 que el reparto
+		atribuia al bloque -- y la tanda que prometia 4,6 puntos dio 0,8, o
+		sea que el resto tampoco era del bloque: un servicio MEDIDO corre
+		serializado detras de la marca, mientras que el servicio vacio de
+		siempre son cargas y comparaciones predecibles que el procesador
+		ejecuta en la sombra del trabajo vecino (la leccion de B.3). Esta
+		linea descuenta lo que se puede calibrar; lo que no, lo dice el reloj.
+		docs/clock-plan.md, "El reloj por eventos bajo --hilos".
+	*/
+	{
+		unsigned long long a, b, acum = 0;
+		int i;
+
+		for (i = 0; i < 4096; i++)
+		{
+			a = perf_ahora();
+			b = perf_ahora();
+			acum += b - a;
+		}
+
+		perf_ns_marca = acum / 4096;
+	}
+
 	arranque = perf_ahora();
 }
 
@@ -830,6 +866,29 @@ void perf_resumen(void)
 	linea("  de eso presentar",	perf_ns_presentar,	real);
 	linea("bloque periodico",	perf_ns_servicio,	real);
 
+	/* Lo que de eso es el instrumento: una latencia de marca por servicio,
+	   porque la estimacion por muestreo se la carga a todos. Ver
+	   perf_iniciar(). Se descuenta del resto mas abajo. */
+	{
+		unsigned long long servicios = perf_serv_vencido + perf_serv_reintento;
+
+		perf_ns_observador = servicios * perf_ns_marca;
+
+		if (perf_ns_observador > perf_ns_servicio)
+			perf_ns_observador = perf_ns_servicio;
+
+		if (servicios)
+		{
+			linea("  de eso el instrumento", perf_ns_observador, real);
+			fprintf(stderr, "perf:     (%llu servicios x %llu ns por marca;"
+				" el bloque sin el instrumento: %llu ms, %.1f %%)\n",
+				servicios, perf_ns_marca,
+				(perf_ns_servicio - perf_ns_observador) / 1000000ULL,
+				real ? 100.0 * (double) (perf_ns_servicio - perf_ns_observador)
+				             / (double) real : 0.0);
+		}
+	}
+
 	if (perf_serv_vencido || perf_serv_reintento)
 		fprintf(stderr, "perf:   servicios: %llu por vencimiento, %llu solo"
 			" por reintento de entrega (%.1f %%)\n",
@@ -868,8 +927,10 @@ void perf_resumen(void)
 	   se resta es perf_ns_cuadro, que contiene a escena, presentar y captura --
 	   y ademas la ordenacion, que antes no la contaba nadie. */
 	{
-		unsigned long long medido = perf_ns_servicio + perf_ns_cuadro
-		                          + perf_ns_ta;
+		/* El bloque entra neto del instrumento: la inflacion por muestreo no
+		   es tiempo que el proceso haya gastado. */
+		unsigned long long medido = (perf_ns_servicio - perf_ns_observador)
+		                          + perf_ns_cuadro + perf_ns_ta;
 
 		linea("resto (interprete)",
 			real > medido ? real - medido : 0, real);
@@ -1204,6 +1265,14 @@ void perf_resumen(void)
 		hilo que queda tiene con que llenarlo, y ademas hay que descontar lo
 		que se pierda sincronizando. Es una cota superior.
 	*/
+	if (real && opciones.hilos && !opciones.sin_aica)
+		/* Con el hilo puesto (la omision desde el 2026-09-05) el AICA corre
+		   en el otro nucleo: su tiempo no es del hilo principal y el techo de
+		   arriba, que lo supone anidado en el bloque periodico, no significa
+		   nada. Se dice, en vez de imprimir un numero falso. */
+		fprintf(stderr, "perf: el AICA corre en su propio hilo (--hilos):"
+			" su tiempo no entra en el reparto del hilo principal\n");
+	else
 	if (real)
 		fprintf(stderr, "perf: techo de sacar el AICA a otro hilo: %.2fx"
 			" (de %.2fx a %.2fx)\n",

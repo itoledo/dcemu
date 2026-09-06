@@ -1033,5 +1033,7 @@ que la pide. Con eso la omisión queda con la misma red que tuvo la del traducto
 hilo, el reparto `--perf` del canónico nuevo puso el bloque periódico en 12,6 % de CT, y con
 el término del AICA saliendo del reloj en vez de la cuenta del hilo los servicios bajan de 90 a
 16 millones por 180 s — compuerta de cinco brazos verde, tanda neutra con dirección (SR2 −1,5 %
-4/4 solapado, CT −0,8 %, DOOM inerte): el 12,6 % era en su mayor parte el costo de las marcas de
-`--perf`. Queda encendido; el expediente entero en `docs/clock-plan.md`, sección final.
+4/4 solapado, CT −0,8 %, DOOM inerte): el 12,6 % era el instrumento — 2,1 s de marcas calibradas,
+que `--perf` descuenta desde entonces, y un servicio medido que corre serializado mientras el vacío
+se ejecuta en la sombra. Queda encendido; el expediente entero en `docs/clock-plan.md`, sección
+final.
