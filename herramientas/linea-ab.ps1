@@ -49,7 +49,9 @@ function Correr($demora, $hilos) {
 	$env:DCEMU_AICA_DEMORA_LINEA = "$demora"
 
 	$args = @("--salir-tras=$($j.s)", "--sin-vmu", "--sin-audio")
-	if ($hilos) { $args += "--hilos" }
+	# Explicito en los dos brazos: desde la adopcion (2026-09-05) la omision es
+	# con hilos, y un brazo "sin" que no lo dijera mediria hilos contra hilos.
+	$args += $(if ($hilos) { "--hilos" } else { "--sin-hilos" })
 	$args += $img
 
 	$t = [Diagnostics.Stopwatch]::StartNew()

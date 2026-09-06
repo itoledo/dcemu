@@ -64,7 +64,9 @@ foreach ($g in $guests) {
 	# correr lo que se entrega. Los contadores de control imprimen sin ella.
 	$args = @("--salir-tras=$($g.s)", "--sin-vmu", "--sin-audio",
 		"--captura-gl=$bmp", "--captura-audio=$wav")
-	if ($Hilos) { $args += "--hilos" }
+	# Explicito en los dos sentidos: desde la adopcion (2026-09-05) la omision
+	# es con hilos, y un brazo "sin" que callara compararia hilos contra hilos.
+	$args += $(if ($Hilos) { "--hilos" } else { "--sin-hilos" })
 	$args += $img
 
 	& $Exe @args | Out-Null

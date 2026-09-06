@@ -40,7 +40,9 @@ foreach ($j in @(
         $args = @($j.img, "--salir-tras=$($j.s)", "--sin-vmu", "--sin-audio",
                   "--captura-gl=$d\$($j.n)-$brazo.bmp")
         if ($j.wav) { $args += "--captura-audio=$d\$($j.n)-$brazo.wav" }
-        if ($brazo -eq "con") { $args += "--hilos" }
+        # Desde la adopcion (2026-09-05) la omision es con hilos: el brazo de
+        # control lo dice explicito, o la compuerta compara hilos contra hilos.
+        $args += $(if ($brazo -eq "con") { "--hilos" } else { "--sin-hilos" })
 
         & $Exe @args | Out-Null
         Copy-Item $err "$d\stderr-$($j.n)-$brazo.txt" -Force

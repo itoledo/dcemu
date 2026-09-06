@@ -110,12 +110,17 @@ struct opciones_t
 
 	/* 1: sacar el AICA y el ARM7 a su propio hilo (hilo_aica.c).
 
-	   **Apagado por omision, y no por precaucion sino por medicion**: cuesta
-	   entre un 4 y un 5 % de tiempo real en vez de ganarlo. La salida sale bit
-	   a bit identica, el protocolo funciona y el SH-4 solo pasa un 0,4 % del
-	   tiempo esperando; lo que no cierra es que el mismo trabajo del AICA sale
-	   un 46 % mas caro en el segundo hilo y el interprete del primero se
-	   frena un 20 %. Ver docs/hilos-plan.md, "Resultado de la fase 1". */
+	   **Encendido por omision desde el 2026-09-05, por medicion.** Estuvo
+	   apagado por medicion tambien: en la fase 1 costaba 4-5 %, y con el
+	   traductor y la entrega determinista de la linea al ASIC ganaba en Crazy
+	   Taxi y perdia 9-13 % en DCDoom -- solo que esas tandas corrian sin audio
+	   en una maquina que Windows 11 consideraba desatendida, y el proceso
+	   estrangulado a nucleos eficientes es el que peor lleva dos hilos
+	   calientes (main.c, proceso_sin_estrangular). Con el proceso exento, en
+	   reposo y sin usuario: DCDoom -8,3 %, Sega Rally 2 -7,1 %, Crazy Taxi
+	   -10,5 %, los tres con rangos disjuntos y 4/4. Exacto hasta la lista de
+	   entregas en los tres (linea-gate.ps1). --sin-hilos es el aislamiento.
+	   Ver docs/hilos-plan.md, la seccion final. */
 	int				hilos;
 
 	/* Watchpoint de escritura: direccion (0 = apagado) y tamano en bytes.

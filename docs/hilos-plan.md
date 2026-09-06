@@ -956,3 +956,66 @@ omisión en un portátil, aunque la repetición salga a favor.
   sí, la decisión de omisión vuelve a estar abierta y pide antes el barrido KOS
   y la red de juegos con `--hilos`; si no, el hilo queda como palanca para
   máquinas de escritorio.
+
+### La tanda en reposo (2026-09-05, noche): el hilo gana en los tres, y se adopta
+
+La tanda «contaminada» de la mañana no estaba contaminada por el usuario: la última entrada de
+teclado o ratón de esta máquina fue la noche anterior. Lo que la frenaba lo encontró el
+expediente del `--sin-audio` del paso a SDL3 (`docs/notas-herramientas.md`, la sección final):
+**Windows 11 estrangula al proceso cuya sesión considera desatendida y que no reproduce audio**
+— núcleos eficientes a baja frecuencia y reloj grueso —, y `linea-ab.ps1` corre sin audio. Un
+proceso así estrangulado es el que peor lleva dos hilos calientes, que es exactamente la forma
+de los +12,8 / +5,9 / +15,6 % en contra. Desde ese día `main()` se exime
+(`proceso_sin_estrangular()`, palanca `DCEMU_ESTRANGULAR=1`), y la tanda se repitió sobre el
+canónico reentrenado con la exención adentro (`E8D3B903B7B5C52A`), cuatro rondas rotadas, D=1,
+giro 2000, esperando reposo antes de cada guest y anotando si hubo entrada del usuario durante la
+tanda (`herramientas/en-reposo.ps1`: no la hubo, carga 0-13 %):
+
+| guest | con hilos | sin hilos | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 20 932–21 902 ms | 23 051–23 329 | **−8,3 %, rangos disjuntos, 4/4** |
+| Sega Rally 2, 60 s | 43 144–43 631 | 46 428–46 876 | **−7,1 %, rangos disjuntos, 4/4** |
+| Crazy Taxi, 180 s | 58 664–59 454 | 65 646–66 605 | **−10,5 %, rangos disjuntos, 4/4** |
+
+Las cuatro corridas por brazo: DCDoom con 21 206 / 21 090 / 21 902 / 20 932 contra 23 195 /
+23 238 / 23 051 / 23 329; SR2 43 144 / 43 222 / 43 524 / 43 631 contra 46 428 / 46 658 /
+46 801 / 46 876; CT 58 664 / 59 160 / 59 454 / 59 031 contra 65 646 / 65 782 / 66 139 / 66 605.
+Las esperas del hilo quedan en 0,01-0,03 % de los bordes y las «llegaron tarde sin esperar» en
+2-21 por corrida. Es la tabla que la sección anterior pedía — la ganancia de las sondas
+sobrevive a cuatro rondas con la máquina quieta, en los tres guests, y con más margen que las
+sondas (−9,1 / −7,9 / −4,8 %) —, así que **`--hilos` pasa a ser la omisión** y `--sin-hilos`
+la palanca de aislamiento y el brazo de control. Los tres guiones cuyo brazo «sin» confiaba en
+no pasar la bandera (`hilos-gate.ps1`, `linea-ab.ps1`, `linea-brazo.ps1`) la ponen explícita:
+la misma trampa que cobró la adopción del traductor, pagada por adelantado. Con la omisión, el
+reloj por eventos queda apagado (`main.c`: con el hilo no hay vencimiento que calcular), que
+es lo que ese camino siempre hizo bajo `--hilos`.
+
+**La red antes de voltear la omisión.** El parque KOS con `--hilos` sobre el mismo canónico
+(`barrido.ps1 -Extra --hilos`, 151 demos, RTC clavado, VMU fresca) contra el barrido sin hilos del
+mismo emulador: **151 con captura en los dos, 0 capturas distintas, 0 códigos de salida distintos,
+0 veredictos serial distintos**, y las 151 con la línea `hilo del AICA` en su `stderr` — el
+control de que el brazo corrió lo que dice. Una trampa vieja volvió a cobrarse a mitad del
+barrido y se anota porque es la misma de siempre: la captura de `pvr-palette-4bpp` salía con otro
+hash **porque el archivo estaba a medio escribir** (`--captura-gl` reescribe el BMP en cada
+cuadro); terminada, byte a byte igual. La prueba de humo de la omisión: sin bandera, el resumen
+trae la línea del hilo; con `--sin-hilos`, no.
+
+**El canónico que se entrega (`F79CFE145D3ED123`)**, reentrenado con la omisión adentro — los
+cuatro guests del banco de PGO corren ahora con hilos, dos formas cada uno —, pasó la compuerta
+de cinco brazos entera (d0 con `--sin-hilos` explícito IGUAL a `build-ref` en SR2, DCDoom y CT
+hasta la lista de entregas; d1-con ≡ d1-sin; d1-conB ≡ d1-con; el control d0-con de SR2 sigue
+DISTINTO; `imposibles` en cero) y su tanda propia, en reposo, sin usuario:
+
+| guest | con hilos (la omisión) | `--sin-hilos` | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 20 750–21 039 ms | 23 126–23 470 | **−10,4 %, rangos disjuntos, 4/4** |
+| Sega Rally 2, 60 s | 43 107–44 764 | 46 972–48 417 | **−7,7 %, rangos disjuntos, 4/4** |
+| Crazy Taxi, 180 s | 58 295–59 350 | 65 685–66 966 | **−11,3 %, rangos disjuntos, 4/4** |
+
+Rondas: DCDoom 20 921 / 20 750 / 20 871 / 21 039 contra 23 126 / 23 248 / 23 470 / 23 423; SR2
+44 764 / 44 125 / 43 648 / 43 107 contra 47 624 / 48 417 / 47 180 / 46 972; CT 58 295 / 58 931 /
+59 350 / 58 955 contra 66 966 / 66 415 / 65 685 / 66 309. Marcas con la omisión: **Crazy Taxi
+3,06×, DCDoom 1,67×, Sega Rally 2 1,37×** (venían de 2,70×, 1,50× y 1,28× sobre el canónico del
+paso a SDL3, la misma tarde). Es la mayor ganancia por mecanismo del árbol desde el índice de
+enlaces, y la fase de hilos, que empezó midiendo −4/−5 % en contra, queda cerrada con su omisión
+dada vuelta por medición.

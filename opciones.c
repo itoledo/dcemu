@@ -39,7 +39,7 @@ struct opciones_t opciones =
 	1,					/* escala */
 	0,					/* render_shader: funcion fija, que es la referencia */
 	0,					/* render_oit */
-	0,					/* hilos: apagado por omision, ver opciones.h */
+	1,					/* hilos: encendido por omision desde el 2026-09-05, ver opciones.h */
 	0,					/* watchpoint: apagado */
 	4,					/* watchpoint_tam */
 	0,					/* watchpoint_lect: apagado */
@@ -90,10 +90,12 @@ void opciones_ayuda(const char * programa)
 		"                        u oit, que encima ordena y mezcla la lista\n"
 		"                        translucida por pixel y no por tira.\n"
 		"  --escala=N            resolucion interna xN (1 a 8). Implica --render=fbo.\n"
-		"  --hilos               sacar el AICA y el ARM7 a su propio hilo. Exacto\n"
-		"                        (la linea al ASIC se entrega con latencia fija);\n"
-		"                        si gana tiempo depende de la maquina, y en un\n"
-		"                        portatil con carga pierde. Ver docs/hilos-plan.md.\n"
+		"  --hilos               el AICA y el ARM7 en su propio hilo (por omision\n"
+		"                        desde el 2026-09-05: exacto, y gana 7-11 % en los\n"
+		"                        tres guests del banco). Ver docs/hilos-plan.md.\n"
+		"  --sin-hilos           todo en un hilo. Es la palanca de aislamiento y\n"
+		"                        el brazo de control del A/B; y lo que conviene\n"
+		"                        en una maquina de uno o dos nucleos.\n"
 		"  --perf                al salir, desglosa en que se fue el tiempo real y\n"
 		"                        cuantas veces el SH-4 toco el estado del AICA.\n"
 		"  --traza-desde=PC[:N[:K]]\n"
@@ -334,6 +336,15 @@ int opciones_parsear(int argc, char ** argv)
 		if (strcmp(arg, "--hilos") == 0)
 		{
 			opciones.hilos = 1;
+		}
+		else
+		if (strcmp(arg, "--sin-hilos") == 0)
+		{
+			/* La adopcion cobra la misma trampa que la del traductor: un guion
+			   cuyo brazo de control "no pasaba --hilos" corre ahora con hilos.
+			   Los cuatro del arbol (hilos-gate, linea-ab, linea-brazo por
+			   linea-gate) ponen el --sin-hilos explicito. */
+			opciones.hilos = 0;
 		}
 		else
 		if (strcmp(arg, "--perf") == 0)
