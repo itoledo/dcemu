@@ -2090,6 +2090,51 @@ static void salida_redirigir(void)
 #endif
 }
 
+/*
+	Que Windows no estrangule al emulador cuando su ventana queda tapada.
+
+	Medido el 2026-09-05 (Windows 11 26200, Ryzen AI 9 HX 370, clang canonico):
+	Crazy Taxi 120 s corre en 39,7 s con la ventana libre y en 66,6 s con otra
+	ventana encima --68 % mas lento, la ejecucion identica al digito--, salvo
+	que el proceso este reproduciendo audio (40,3 s tapada con la tarjeta
+	abierta). Minimizada no lo dispara. Es la politica de energia de Windows 11
+	para los procesos que considera de segundo plano --los manda a los nucleos
+	eficientes a baja frecuencia (EcoQoS) y les engrosa el reloj--, y
+	reproducir audio exime. Un banco que corre desprendido mientras el usuario
+	trabaja encima medía eso sin saberlo, y --sin-audio era el regimen que lo
+	destapaba: 76-132 s en las tandas de la tarde con los dos brazos moviendose
+	juntos, 66 s con la ventana libre. Ver docs/notas-herramientas.md.
+
+	SetProcessInformation(ProcessPowerThrottling) con el bit en la mascara de
+	control y en cero en la de estado es "nunca": ni la velocidad de ejecucion
+	ni la resolucion del reloj (de la que depende el SDL_Delay de --limitar).
+	DCEMU_ESTRANGULAR=1 deja al proceso como Windows lo quiera: el A/B.
+*/
+static void proceso_sin_estrangular(void)
+{
+#if defined(_WIN32) && defined(PROCESS_POWER_THROTTLING_CURRENT_VERSION)
+	PROCESS_POWER_THROTTLING_STATE estado;
+	const char * v = getenv("DCEMU_ESTRANGULAR");
+
+	if (v != NULL && atoi(v) != 0)
+		return;
+
+	memset(&estado, 0, sizeof(estado));
+	estado.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+	estado.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+	                   | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+	estado.StateMask   = 0;
+
+	if (SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+	                          &estado, sizeof(estado)))
+		fprintf(stderr, "arranque: estrangulamiento del proceso apagado "
+			"(velocidad y resolucion del reloj)\n");
+	else
+		fprintf(stderr, "arranque: no se pudo apagar el estrangulamiento del "
+			"proceso (error %lu)\n", (unsigned long) GetLastError());
+#endif
+}
+
 int main(int argc, char *argv[])
 {
 //	long idx, cnt = 0;
@@ -2114,6 +2159,7 @@ int main(int argc, char *argv[])
 	//FILE * fp;
 
 	salida_redirigir();
+	proceso_sin_estrangular();
 
 	/* Antes que nada: si algo tumba al emulador, que al menos diga por donde
 	   iba el guest en vez de desaparecer en silencio. Ver traza.h. */

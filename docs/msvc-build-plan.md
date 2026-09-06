@@ -346,6 +346,8 @@ presentación. Lo que esa tanda **no** puede dar es un número: su nivel absolut
 encima de su propia repetición de una hora antes (111,9 s contra 75,9 del mismo binario, misma
 receta, con la máquina en corriente, plan equilibrado y 4 % de carga al terminar), que es la
 señal con la que este árbol declara que una tanda corrió con la máquina en otro estado; los dos
-brazos se movieron juntos y el par se lee, la magnitud no. El régimen sin audio de esta máquina
-es inestable por su cuenta — es el expediente abierto del `timeBeginPeriod` — y no se cierra aquí.
+brazos se movieron juntos y el par se lee, la magnitud no. Ese régimen resultó inestable por una
+razón que se encontró la misma noche: **Windows 11 estrangula al proceso cuya ventana está tapada
+y no reproduce audio**, y `--sin-audio` era el brazo que lo destapaba — `DCEMU_ESTRANGULAR` en
+CLAUDE.md y la lección en `docs/notas-herramientas.md`; el proceso ya se exime solo.
 Marcas sobre el binario adoptado (`35BF46FA…`), con audio: CT 2,70×, DCDoom 1,50×, SR2 1,28×.

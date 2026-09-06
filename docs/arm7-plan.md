@@ -414,6 +414,13 @@ incremento en línea.
 o sea ruido, contra el −0,49 % consistente del régimen normal. La captura de audio y el
 cronómetro **no pueden ir en la misma corrida**, igual que `--captura-gl`.
 
+**Corrección (2026-09-05).** El 50 % no era de `--sin-audio` ni de la captura: era Windows 11
+estrangulando al proceso por tener la ventana tapada y no reproducir audio (núcleos eficientes a
+baja frecuencia y reloj grueso; el audio exime). Medido con la ventana libre, `--sin-audio` sale
+1-6 % más rápido que con la tarjeta, y `--captura-audio` no cuesta nada medible. La regla que
+queda es más angosta — los dos brazos de un A/B con el mismo ajuste de audio — y el proceso ya se
+exime solo: `DCEMU_ESTRANGULAR` en CLAUDE.md y la lección entera en `docs/notas-herramientas.md`.
+
 ## Barandas
 
 `.wav` de `--captura-audio` bit a bit en los dos guests, verificado además contra el mismo

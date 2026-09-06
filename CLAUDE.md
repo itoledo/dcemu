@@ -154,8 +154,8 @@ checkpoints and delivery list, with and without `--hilos`), KOS park 151/151 wit
 differences, and the two-binary tanda (`herramientas/binarios-ab.ps1`) against the pre-SDL3
 tree retrained in a worktree: **DCDoom −0.9 %, Sega Rally 2 −1.9 %, Crazy Taxi −7.8 %, all three
 with disjoint ranges and 4/4**, instruction totals identical to the digit — the gain is entirely
-host-side, and it survives `--sin-audio` (CT −9.2 %, disjoint, 4/4, in a batch whose absolute
-level does not compare), so it is the frame/event path, not the audio one; `docs/msvc-build-plan.md`,
+host-side, and it survives `--sin-audio` (CT −9.2 %, disjoint, 4/4, in a batch Windows was
+throttling — see `DCEMU_ESTRANGULAR`), so it is the frame/event path, not the audio one; `docs/msvc-build-plan.md`,
 «SDL3», has the whole chain.
 Still in the tree but dead: guichan (`USE_GUICHAN`, off — `gui.cpp` compiles stubs), libcdio +
 libiso9660 (`USE_LIBCDIO`, off — `iso9660_min.c` replaced it), SIMDx86 (`simdx86_stub.c`), the
@@ -411,6 +411,7 @@ Environment variables, all decimal (`atoi`) — see `docs/notas-herramientas.md`
 | `DCEMU_SIN_RELOJ_EVENTOS=1` | apaga el reloj por eventos: el bloque periódico completo corre en cada frontera de 400 ciclos, **el comportamiento anterior bit a bit** (barrido KOS 139/139 idéntico entre estados). Encendido, el servicio corre solo al llegar el próximo vencimiento (línea, muestra del AICA memoizada, TMU, WDT, demoras del INTC; con DMA auto no se saltea) o cuando alguien invalida con `reloj_tocar()` — la grilla, `reloj_total` y cada entrega no se mueven, por eso es exacto por construcción. Vale **−0,7/−1,0 % en SR2 y −0,5 % en CT, neutro en DOOM** (el guest denso en invalidaciones). Las tres reglas que lo sostienen (invalidar todo lo que mueva una entrega, sincronizar ticks antes de una escritura on-chip, el contador `reloj_toques` que impide que el recálculo pise una invalidación del propio servicio) están en `docs/clock-plan.md`, fase 5 |
 | `DCEMU_ARCH` (compilación) | conjunto de instrucciones (`AVX2`, `AVX`, `SSE2`, `OFF`). **Medido: `AVX2` cuesta 2,1 %**, por tamaño del código caliente; viene en `OFF` |
 | `DCEMU_SIN_ALINEAR` (compilación) | apaga `DC_ALINEADO`, o sea la alineación a 64 de `core`, de la instantánea y de los bancos de FPU. Es el A/B de la alineación: **vale 2,4 % en Crazy Taxi y 1,9 % en Virtua Tennis, ≈0 en DCDoom**, ver `docs/interprete-plan.md` |
+| `DCEMU_ESTRANGULAR=1` | deja que Windows estrangule al proceso como a cualquier otro — la conducta anterior. Por omisión `main()` pide con `SetProcessInformation(ProcessPowerThrottling)` que **nunca** le baje la velocidad de ejecución ni le engrose la resolución del reloj. Lo que destapó (2026-09-05, Windows 11 26200): **con la ventana tapada por otra ventana, dcemu corre un 68 % más lento** (Crazy Taxi 120 s: 66,6 s contra 39,7 s con la ventana libre, ejecución al dígito) **salvo que esté reproduciendo audio** (40,3 s tapada con la tarjeta abierta); minimizada no lo dispara. Es la política de energía de Windows 11 para los procesos que considera de segundo plano — núcleos eficientes a baja frecuencia y reloj grueso, EcoQoS — y reproducir audio exime. Con el arreglo, tapada y sin audio 39,4 y 38,9 s; el brazo de control con la palanca 64,1 s. **Era el «`--sin-audio` cuesta 50 %» de las notas**: no costaba nada (`--sin-audio` sale 1-6 % más rápido que con tarjeta, y `--captura-audio` tampoco cuesta: 39,9 s escribiendo un `.wav` de 21 MB); lo que costaba era correr sin audio con el usuario trabajando encima, que es exactamente el régimen de una compuerta desprendida. Es también lo que hizo ilegible la tanda de `--sin-audio` del paso a SDL3 (76-132 s con los dos brazos moviéndose juntos). El `SDL_Delay` de `--limitar` depende de la resolución del reloj, por eso se piden los dos bits. `herramientas/` no lo necesita: el proceso se exime solo, y una línea `arranque:` en `stderr.txt` dice que lo hizo |
 | `DCEMU_LTCG` | construcción con LTCG (encendida por omisión) |
 
 Todas viven en el binario normal a propósito: comparar dos compilaciones mete el layout como
@@ -476,10 +477,20 @@ how to believe a measurement of it.
   samples, distinct values, RMS and peak. Crazy Taxi's is silent for the whole run **unless the
   bench's key presses are set** — without them the game sits before the title and never makes a
   sound, so the file looks like a valid baseline and guards nothing.
-- **`--sin-audio` costs ~50%**: Crazy Taxi runs at 1.14× with it and 1.72× without. It is
-  needed to capture the `.wav`, so an A/B run with it measures a regime the bench never sees —
-  the ARM7 memoization read as −0.09% (noise) that way and −0.49% (consistent, disjoint ranges)
-  without it. Audio capture and the stopwatch cannot share a run, same as `--captura-gl`.
+- **`--sin-audio` costs nothing — but a covered window without audio did, and it read as
+  `--sin-audio` for a year.** Measured 2026-09-05 (Crazy Taxi 120 s, execution identical to the
+  digit): 39.7 s with the window free, 66.6 s with another window on top, 40.3 s covered but with
+  the sound card open, and minimized does not trigger it. Windows 11 throttles a process whose
+  windows are all covered unless it plays audio (efficiency cores at low clock, coarse timer),
+  which is exactly the regime of a detached bench with the user working on top — and why the
+  `--sin-audio`/`--captura-audio` runs of the ARM7 memoization read 50 % slower and −0.09 %
+  (noise) against −0.49 % with the card, and why the SDL3 `--sin-audio` tanda came out at
+  76-132 s with both arms moving together. `main()` now opts the process out
+  (`DCEMU_ESTRANGULAR=1` is the A/B; its control arm reproduces 64.1 s). `--captura-audio`
+  itself costs nothing measurable (39.9 s writing a 21 MB `.wav`). The rule that survives is
+  narrower: both arms of an A/B keep the same audio setting, because the card itself is not free
+  (41.0 s open against 39.4 s closed), and `--captura-gl` still cannot share a run with the
+  stopwatch.
 - **`stdout.txt` and `stderr.txt` land next to the executable**, i.e. `build/Release/`, not in
   the working directory. SDLmain used to do it; SDL3 has no SDLmain, so since 2026-09-05
   `main.c` does it itself (`salida_redirigir()`, first thing in `main()`), with the same rules —

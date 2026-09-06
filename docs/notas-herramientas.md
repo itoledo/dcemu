@@ -385,3 +385,44 @@ el canónico reaparece en una recorrida tranquila, y los guests que no ramifican
 valores analógicos (DCDoom, Sega Rally 2) no lo muestran jamás: ellos son los árbitros
 de exactitud inmunes al mando. Una divergencia de traducción real es determinista — el
 mismo valor equivocado en cada corrida — y eso es exactamente lo contrario.
+
+## Windows 11 estrangula al emulador con la ventana tapada, y el audio lo exime (2026-09-05)
+
+Un año de notas decía que `--sin-audio` costaba 50 % (Crazy Taxi de 1,72× a 1,14×), y por eso
+la captura del `.wav` y el cronómetro no podían compartir corrida. No era `--sin-audio`. Lo que
+lo destapó fue la tanda de `--sin-audio` del paso a SDL3: 76 s, 92 s, 112 s y 132 s para la misma
+receta de 180 s en distintas horas de la tarde, con los dos brazos moviéndose juntos, y 66 s a la
+noche con la ventana libre. Tres sondas de Crazy Taxi, todas con la ejecución idéntica al dígito:
+
+| condición | 60 s | 120 s | 180 s |
+| --- | --- | --- | --- |
+| ventana libre, tarjeta abierta | 20,2–20,4 s | 40,3–41,0 | 68,0 |
+| ventana libre, `--sin-audio` | 18,8–19,1 | 39,7 | 65,9–66,8 |
+| minimizada, tarjeta abierta | 19,7–19,8 | — | — |
+| minimizada, `--sin-audio` | 18,5–18,7 | — | — |
+| **tapada por otra ventana, tarjeta abierta** | — | **40,3** | — |
+| **tapada por otra ventana, `--sin-audio`** | — | **66,6** | — |
+
+Tapada y sin audio, 68 % más lento; tapada con la tarjeta abierta, nada; minimizada, nada. Es la
+política de energía de Windows 11 para los procesos que considera de segundo plano: los manda a
+los núcleos eficientes a baja frecuencia (EcoQoS) y les engrosa la resolución del reloj, y un
+proceso que reproduce audio queda exento. Un banco que corre desprendido mientras el usuario
+trabaja encima está en ese régimen exactamente cuando corre sin audio — las compuertas, los
+barridos y cualquier corrida con `--captura-audio` —, y por eso el «costo» aparecía y desaparecía
+con lo que el usuario tuviera abierto.
+
+El arreglo es pedirle a Windows que no lo haga: `main()` llama a
+`SetProcessInformation(ProcessPowerThrottling)` con los bits de velocidad de ejecución y de
+resolución del reloj en la máscara de control y en cero en la de estado — «nunca» — antes de
+cualquier otra cosa, y deja una línea `arranque:` en `stderr.txt`. Verificado con la misma sonda
+(120 s, tapada, `--sin-audio`): 39,4 y 38,9 s con el arreglo, 64,1 s con `DCEMU_ESTRANGULAR=1`,
+que es la palanca del A/B y la conducta anterior. Y dos costos que se creían y no existen:
+`--captura-audio` (39,9 s escribiendo un `.wav` de 21 MB, contra 39,4 sin captura) y
+`--sin-audio` (sale 1-6 % más rápido que con la tarjeta, que es lo que uno esperaría). La regla
+que queda: los dos brazos de un A/B con el mismo ajuste de audio, porque la tarjeta sí cuesta
+algo (41,0 contra 39,4 s); `--captura-gl` sigue sin poder compartir corrida con el cronómetro.
+
+La lección de método es la de siempre en este árbol, del lado del instrumento: una diferencia
+que aparece con una palanca no es de la palanca hasta que se demuestra que depende de ella. Aquí
+la palanca cambiaba el régimen del anfitrión —con audio, exento; sin audio, estrangulable— y el
+cronómetro medía a Windows.
