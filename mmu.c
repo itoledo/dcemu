@@ -80,6 +80,10 @@ void mmu_reset(void)
 	   estatico: un reset a mitad de corrida los encuentra donde el guest los
 	   dejo. Ver mmu.h. */
 	mmu_etiqueta_recalcular();
+
+	/* Y lo pendiente del avance diferido de URC se va con el reset, como el
+	   resto del estado de la TLB. */
+	mmu_urc_pend = 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -600,6 +604,52 @@ unsigned long long	mmu_etiqueta_incoherente = 0;
 void mmu_etiqueta_recalcular(void)
 {
 	mmu_etiqueta = MMU_ETIQUETA_DE(*PTEH, SR_MD);
+}
+
+/* ------------------------------------------------------------------------ */
+/* URC diferido (ver mmu.h)                                                 */
+/* ------------------------------------------------------------------------ */
+
+unsigned long long	mmu_urc_pend = 0;
+
+DWORD mmu_urc_tras(DWORD urc, DWORD urb, unsigned long long n)
+{
+	unsigned long long k0;
+
+	if (n == 0)
+		return urc & 0x3F;
+
+	urc &= 0x3F;
+	urb &= 0x3F;
+
+	if (urb == 0)
+		return (DWORD) ((urc + n) & 0x3F);
+
+	/* Pasos hasta que URC vale cero por primera vez. */
+	k0 = (urc < urb) ? (urb - urc) : (64u - urc);
+
+	if (n < k0)
+		return (DWORD) ((urc + n) & 0x3F);
+
+	return (DWORD) ((n - k0) % urb);
+}
+
+void mmu_urc_al_dia(void)
+{
+	DWORD urc;
+
+	if (mmu_urc_pend == 0)
+		return;
+
+	urc = mmu_urc_tras(MMUCR_URC(*MMUCR), MMUCR_URB(*MMUCR), mmu_urc_pend);
+	mmu_urc_pend = 0;
+
+	*MMUCR = (*MMUCR & ~0x0000FC00ul) | (urc << 10);
+}
+
+void mmu_urc_descartar(void)
+{
+	mmu_urc_pend = 0;
 }
 
 /*

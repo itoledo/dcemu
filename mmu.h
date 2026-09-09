@@ -341,15 +341,52 @@ extern DWORD				mmu_sonda_uv;
 #define MMU_SONDA_UC()	do { } while (0)
 #endif
 
+/*
+	URC se avanza DIFERIDO: el acceso solo suma uno a una cuenta y el valor se
+	materializa donde alguien lo mira (2026-09-08).
+
+	El avance es un read-modify-write de MMUCR en cada acceso a la UTLB, y
+	MMUCR vive adentro de `regmem` --un bloque de 16 MB-- a una linea de cache
+	que no toca nada mas: en el codigo emitido eran **veinte instrucciones**
+	con una carga del puntero, una carga dependiente del registro, la extraccion
+	de URC y de URB, dos ramas y un almacenamiento. Diferido es `add [pend], 1`.
+
+	**Nadie puede ver la diferencia**, y esa es la premisa que lo hace exacto:
+	URC solo se observa en tres sitios y los tres materializan primero --el
+	LDTLB del guest (syscontrol.c), una lectura del guest a MMUCR
+	(`regmap_read`) y las trazas--, y una escritura del guest a MMUCR
+	**descarta** lo pendiente, porque el valor que el guest escribe es el que
+	queda (aplicar y despues pisar es pisar). Ver mmu_urc_al_dia().
+
+	DCEMU_MMU_URC_INMEDIATO=1 vuelve al avance en cada acceso y reproduce la
+	emision anterior byte por byte.
+*/
+extern unsigned long long	mmu_urc_pend;
+
+/* Aplica lo pendiente y deja MMUCR con el URC que corresponde. Barata cuando
+   no hay nada pendiente, que es el caso de todo guest sin MMU. */
+void mmu_urc_al_dia(void);
+
+/* Lo que el guest escribe manda: lo pendiente se descarta. */
+void mmu_urc_descartar(void);
+
+/*
+	La forma cerrada de N avances, en un solo sitio porque la prueba de
+	`tests/test_mmu.c` la compara contra N pasos de a uno.
+
+	Con URB en cero --el caso de todo el parque-- URC es un contador de seis
+	bits y N avances son una suma. Con URB puesto, el paso es
+	`u = (u+1) & 63; if (u == URB) u = 0`, asi que desde `urc` faltan `k0`
+	pasos para llegar a cero (URB - urc si urc < URB, y 64 - urc si no, que es
+	cuando se llega a cero por el envolvimiento de seis bits) y despues el
+	ciclo tiene periodo URB.
+*/
+DWORD mmu_urc_tras(DWORD urc, DWORD urb, unsigned long long n);
+
 #define MMU_URC_AVANZAR()												\
 	do																	\
 	{																	\
-		DWORD _urc = (MMUCR_URC(*MMUCR) + 1) & 0x3F;					\
-																		\
-		if (MMUCR_URB(*MMUCR) && _urc == MMUCR_URB(*MMUCR))				\
-			_urc = 0;													\
-																		\
-		*MMUCR = (*MMUCR & ~0x0000FC00ul) | (_urc << 10);				\
+		mmu_urc_pend++;													\
 		MMU_SONDA_UC();													\
 	} while (0)
 

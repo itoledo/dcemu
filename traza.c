@@ -72,6 +72,12 @@ void traza_cp_periodico(void)
 			return;
 	}
 
+	/* Los puntos de control imprimen MMUCR, o sea que MIRAN URC: se aplica lo
+	   que el avance diferido dejo pendiente antes de leerlo (mmu.h). Sin esto
+	   el punto de control diria un URC de hace rato y la compuerta compararia
+	   el instrumento en vez del emulador. */
+	mmu_urc_al_dia();
+
 	ms = reloj_ms();
 
 	if (traza_cp_fino && ms + 1 >= (unsigned long long) traza_cp_tope)

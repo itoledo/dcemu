@@ -72,7 +72,11 @@ OPCODE(sets144) // SETS (00000000 01011000)
 OPCODE(ldtlb136) // LDTLB (00000000 00111000)
 {
 	/* Carga la entrada de la UTLB que apunta MMUCR.URC desde PTEH, PTEL y
-	   PTEA. No toca URC: el contador lo mueve la busqueda, no la carga. */
+	   PTEA. No toca URC: el contador lo mueve la busqueda, no la carga.
+
+	   Es uno de los tres sitios que MIRAN URC, asi que primero se aplica lo
+	   que el avance diferido dejo pendiente (mmu.h). */
+	mmu_urc_al_dia();
 	mmu_ldtlb(*PTEH, *PTEL, *PTEA, MMUCR_URC(*MMUCR));
 
 	PC += 2;

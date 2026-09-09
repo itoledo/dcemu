@@ -1172,6 +1172,7 @@ static int D(const void * p)
 #define D_P_PTEH		D(&jit_estado.p_pteh)
 #define D_P_MMUCR		D(&jit_estado.p_mmucr)
 #define D_ETIQUETA		D(&mmu_etiqueta)
+#define D_URC_PEND		D(&mmu_urc_pend)
 #define D_PERF_TRADUCE	D(&perf_mmu_traduce)
 #define D_PERF_ACIERTO	D(&perf_mmu_datos_acierto)
 
@@ -1486,6 +1487,11 @@ static int					jit_atajo_p1p2 = 1;
    anterior byte por byte: es el brazo del A/B. */
 static int					jit_etiqueta_viva = 1;
 
+/* El avance de URC, diferido a una cuenta en vez de un read-modify-write de
+   MMUCR por acceso (ver gen_traducir_mmu y mmu.h). DCEMU_MMU_URC_INMEDIATO=1
+   vuelve al avance completo y reproduce la emision anterior byte por byte. */
+static int					jit_urc_diferido = 1;
+
 /* El corte del bloque periodico, emitido como UNA comparacion contra el limite
    envenenable de intc.h en vez de dos contra la constante y la bandera.
    DCEMU_JIT_CORTE_VIEJO=1 vuelve a las dos y reproduce la emision anterior
@@ -1780,7 +1786,25 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 		DAT + (int) offsetof(mmu_datos_t, gen));
 	gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_GEN, fallo, fallo_rz, &nf);
 
-	/* --- MMU_URC_AVANZAR() --- */
+	/*
+		--- MMU_URC_AVANZAR() ---
+
+		**Una suma y no veinte instrucciones** (2026-09-08). El avance era un
+		read-modify-write de MMUCR --que vive adentro de regmem, a 16 MB del
+		contexto y en una linea de cache que no toca nada mas-- con la carga
+		del puntero, la carga dependiente del registro, la extraccion de URC y
+		de URB, dos ramas y el almacenamiento, y todo eso en CADA acceso a la
+		UTLB. Diferido, es sumarle uno a una cuenta que vive al lado del
+		contexto; el valor se materializa en los tres sitios que lo miran.
+		Ver mmu.h.
+
+		DCEMU_MMU_URC_INMEDIATO=1 vuelve al avance completo y reproduce la
+		emision anterior byte por byte.
+	*/
+	if (jit_urc_diferido)
+		jit_x64_add64_mi(&g->e, CTX, D_URC_PEND, 1);
+	else
+	{
 	jit_x64_mov64_rm(&g->e, X64_R8, CTX, D_P_MMUCR);
 	jit_x64_mov_rm(&g->e, X64_RAX, X64_R8, 0);
 	jit_x64_mov_rr(&g->e, X64_RDX, X64_RAX);
@@ -1805,6 +1829,7 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_shl_ri(&g->e, X64_RDX, 10);
 	jit_x64_add_rr(&g->e, X64_RAX, X64_RDX);
 	jit_x64_mov_mr(&g->e, X64_R8, 0, X64_RAX);
+	}
 
 #ifdef DCEMU_SONDA_URC
 	/* La sonda de conservacion: el avance emitido se cuenta y deja su
@@ -8526,9 +8551,12 @@ void jit_resumen(void)
 	   -- un cero callado no se distingue de una sonda muerta -- y con la forma
 	   vigente al lado, porque las dos cosas juntas son lo que dice si el A/B
 	   comparo lo que dice comparar. */
-	fprintf(stderr, "jit: etiqueta de traduccion %s, %llu incoherencias\n",
+	fprintf(stderr, "jit: etiqueta de traduccion %s, %llu incoherencias;"
+		" URC %s, %llu pendientes al salir\n",
 		jit_etiqueta_viva ? "viva (una carga)" : "construida en cada acceso",
-		mmu_etiqueta_incoherente);
+		mmu_etiqueta_incoherente,
+		jit_urc_diferido ? "diferido" : "en cada acceso",
+		mmu_urc_pend);
 
 	fprintf(stderr, "jit: sincronizacion %s, %llu filas con acceso sin sitio"
 		" de llamada; corte %s, %llu incoherencias del limite; DIV1 %s;"
@@ -8981,9 +9009,13 @@ void jit_iniciar(void)
 
 			{
 				const char * ev = getenv("DCEMU_MMU_ETIQUETA_CALCULADA");
+				const char * ui = getenv("DCEMU_MMU_URC_INMEDIATO");
 
 				if (ev != NULL && atoi(ev) != 0)
 					jit_etiqueta_viva = 0;
+
+				if (ui != NULL && atoi(ui) != 0)
+					jit_urc_diferido = 0;
 			}
 
 			if (gv != NULL && atoi(gv) != 0)

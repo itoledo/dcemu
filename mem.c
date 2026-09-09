@@ -3083,6 +3083,12 @@ void regmap_read(unsigned long direccion, void * p, size_t size)
 		return;
 	}
 
+	// MMUCR: el avance de URC va diferido y esta es una de las tres puertas
+	// por las que se lo mira (mmu.h). Se materializa antes de servir la
+	// lectura; sin MMU no hay nada pendiente y la llamada es una comparacion.
+	if ((direccion & 0x00FFFFFF) == 0x000010)
+		mmu_urc_al_dia();
+
 	memcpy(p, &regmem[direccion & 0x00FFFFFF], size);
 
 /*    if ((direccion & 0x00FF0000) == 0xD80000)
@@ -3193,6 +3199,11 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 
 		case 0x000010: // MMUCR, MMU Control Register
 		{
+			/* El URC que el guest acaba de escribir manda: lo que el avance
+			   diferido tenia pendiente se descarta, porque aplicarlo y despues
+			   dejar que el guest lo pise es lo mismo que pisarlo. Ver mmu.h. */
+			mmu_urc_descartar();
+
 			mmu_mmucr_escrito(*MMUCR);
 
 			// TI es de un solo disparo: invalida y no queda puesto.

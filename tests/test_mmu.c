@@ -640,6 +640,20 @@ static void ldtlb_invalida_el_cache_del_fetch(void)
 	jamas, y sin el avance la pagina de codigo y la de datos de una misma
 	instruccion se desalojaban mutuamente en un ping-pong infinito.
 */
+/*
+	El avance de URC va DIFERIDO desde el 2026-09-08 (mmu.h): el acceso suma
+	uno a una cuenta y MMUCR se materializa en los tres sitios que lo miran.
+	Este caso mira MMUCR directo, que es una puerta que el guest no tiene, asi
+	que hace lo que hacen esas tres: pedir el valor al dia primero. Lo que se
+	prueba sigue siendo lo mismo -- que un acceso a la UTLB avanza el contador
+	y que P1 no.
+*/
+static DWORD urc_visto(void)
+{
+	mmu_urc_al_dia();
+	return MMUCR_URC(*MMUCR);
+}
+
 static void urc_avanza_con_cada_acceso_a_la_utlb(void)
 {
 	partir();
@@ -647,24 +661,64 @@ static void urc_avanza_con_cada_acceso_a_la_utlb(void)
 
 	cargar(0, 0x12345000, 0, 0x0C001000, PAG4K_RW);
 
+	/* Poner MMUCR a mano es lo que hace una escritura del guest, y esa
+	   descarta lo que el avance diferido tenga pendiente (mmu.h): sin esto el
+	   caso arrastraria los avances de los casos anteriores. */
 	*MMUCR = (*MMUCR & ~0x00FFFC00ul) | (5ul << 10);	/* URC=5, URB=0 */
+	mmu_urc_descartar();
 	mmu_traducir(0x12345000, MMU_LECTURA);
-	ESPERAR_U32(MMUCR_URC(*MMUCR), 6);
+	ESPERAR_U32(urc_visto(), 6);
 
 	/* Tambien en un fallo. */
 	mmu_traducir(0x40000000, MMU_LECTURA);
-	ESPERAR_U32(MMUCR_URC(*MMUCR), 7);
+	ESPERAR_U32(urc_visto(), 7);
 
 	/* P1 no pasa por la UTLB: no avanza. */
 	mmu_traducir(0x8C001000, MMU_LECTURA);
-	ESPERAR_U32(MMUCR_URC(*MMUCR), 7);
+	ESPERAR_U32(urc_visto(), 7);
 
 	/* Con URB puesto, al alcanzarlo vuelve a cero. */
 	*MMUCR = (*MMUCR & ~0x00FFFC00ul) | (3ul << 18) | (2ul << 10); /* URB=3, URC=2 */
+	mmu_urc_descartar();
 	mmu_traducir(0x12345000, MMU_LECTURA);
-	ESPERAR_U32(MMUCR_URC(*MMUCR), 0);
+	ESPERAR_U32(urc_visto(), 0);
 
 	mmu_activa = 0;
+}
+
+/*
+	La forma cerrada de N avances contra N avances de a uno, que es lo que el
+	diferido reemplaza. Se prueba antes que el emisor y sobre el espacio
+	entero: los 64 URC por los 64 URB por 130 valores de N, con el paso a paso
+	--el cuerpo textual del macro de antes-- como referencia.
+*/
+static void la_forma_cerrada_de_urc_coincide_con_los_pasos(void)
+{
+	DWORD urc, urb;
+	unsigned n;
+
+	for (urb = 0; urb < 64; urb++)
+		for (urc = 0; urc < 64; urc++)
+			for (n = 0; n < 130; n++)
+			{
+				DWORD paso = urc;
+				unsigned k;
+
+				for (k = 0; k < n; k++)
+				{
+					paso = (paso + 1) & 0x3F;
+
+					if (urb && paso == urb)
+						paso = 0;
+				}
+
+				ESPERAR_U32(mmu_urc_tras(urc, urb, n), paso);
+			}
+
+	/* Y una cuenta grande, que es la que el emulador de verdad acumula: no
+	   puede desbordar ni salirse del rango de seis bits. */
+	ESPERAR_U32(mmu_urc_tras(5, 0, 1000000007ull), (5 + 1000000007ull) & 0x3F);
+	ESPERAR_U32(mmu_urc_tras(5, 7, 1000000007ull) < 7, 1);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -819,6 +873,7 @@ static const dc_caso casos[] =
 	CASO(fetch_de_usuario_respeta_la_proteccion),
 	CASO(ldtlb_invalida_el_cache_del_fetch),
 	CASO(urc_avanza_con_cada_acceso_a_la_utlb),
+	CASO(la_forma_cerrada_de_urc_coincide_con_los_pasos),
 	CASO(desalineado_es_inerte_sin_salto_valido),
 	CASO(desalineado_aborta_con_tea_y_expevt),
 	CASO(desalineado_sin_instantanea_entra_igual),

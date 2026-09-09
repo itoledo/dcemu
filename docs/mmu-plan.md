@@ -789,3 +789,65 @@ la etiqueta) dice que lo que se quitó es latencia de camino crítico y no traba
 
 `DCEMU_MMU_ETIQUETA_CALCULADA=1` la vuelve a construir y reproduce la emisión anterior byte por
 byte.
+
+## El avance diferido de URC (2026-09-08)
+
+El mismo camino, un escalón más abajo. `MMUCR.URC` es el contador de reemplazo de la UTLB: la
+regla del manual —y el invariante de este árbol— es que **un acierto de caché sigue siendo un
+acceso a la UTLB y tiene que avanzarlo**, porque es lo que decide qué entrada reemplaza el
+`LDTLB` del guest, o sea su camino de ejecución. Así que cada acceso emitido pagaba, dentro de
+la rutina compartida de traducción, un lectura-modificación-escritura de MMUCR: cargar el
+puntero al registro, cargar el registro (dependiente), extraer URC y URB, dos ramas para el
+envolvimiento y un almacenamiento. Unas veinte instrucciones, y sobre una línea de caché del
+bloque de 16 MB de registros que nada más toca.
+
+**Nadie lo mira en el camino caliente.** El valor se observa en exactamente tres sitios: el
+`LDTLB` del guest (`syscontrol.c`), una lectura del guest a MMUCR (`regmap_read`) y los puntos
+de control de `traza.c`. Entre observación y observación, lo único que importa es *cuántos*
+avances hubo. Así que el acceso emitido suma uno a `mmu_urc_pend`, que vive junto al contexto
+—un `add64 [CTX+off],1`, una instrucción—, y esos tres sitios lo materializan antes de mirar.
+Una escritura del guest a MMUCR **descarta** lo pendiente en vez de aplicarlo: aplicar y después
+dejar que lo pisen es pisarlo.
+
+**La forma cerrada está probada antes que el emisor**, que es la lección que dejó DIV1. Avanzar
+URC N veces no es sumar N módulo 64: URC se envuelve a cero en 64 y **si URB no es cero se
+envuelve en URB**, así que la trayectoria tiene un tramo inicial distinto del régimen periódico.
+`mmu_urc_tras(urc, urb, n)` cuenta los pasos hasta el primer cero (`k0`) y después toma el resto
+módulo URB; `tests/test_mmu.c` la compara contra N pasos de a uno sobre el espacio **entero** —
+64 valores de URC × 64 de URB × 130 de N — más dos cuentas de mil millones donde el paso a paso
+no llega.
+
+El caso viejo `urc_avanza_con_cada_acceso_a_la_utlb` también cambió, y por un motivo que vale
+anotar: leía `*MMUCR` directo, que es una puerta que el guest no tiene. Ahora lee por
+`urc_visto()`, que materializa primero, y las escrituras directas del arreglo llaman a
+`mmu_urc_descartar()` — la misma regla que el guest.
+
+**Medido** (canónico reentrenado `0577D82BE7D5E77B`, un binario, cuatro rondas rotadas, en
+reposo y sin usuario, `herramientas/urc-ab.ps1`):
+
+| guest | URC diferido | en cada acceso | veredicto |
+| --- | --- | --- | --- |
+| Sega Rally 2, 60 s | 41 264–41 634 ms | 42 542–43 133 | **−3,4 %, rangos disjuntos, 4/4** |
+| DCDoom, 35 s | 19 997–20 162 | 20 628–20 716 | **−2,7 %, rangos disjuntos, 4/4** |
+| Crazy Taxi, 180 s | 59 978–60 784 | 59 314–60 634 | inerte por construcción |
+
+Totales de instrucciones al dígito en las 24 corridas, y Crazy Taxi con **cero pendientes al
+salir**: en modo plano la traducción no se emite, así que su +0,4 % solapado es el ambiente.
+Es la mayor ganancia de la MMU desde el atajo P1/P2, y la primera de esta serie que gana en los
+dos guests con MMU.
+
+**La emisión baja 112 bytes** (68 420 638 → 68 420 526 en SR2), o sea nada, y eso es la
+confirmación del mecanismo, igual que con la etiqueta: desde que la traducción vive en dos
+rutinas compartidas lo emitido se cuenta dos veces y lo ejecutado una por acceso. Lo que se
+quitó son ~56 bytes de código en cada rutina que corrían en **cada** traducción, con su cadena
+de cargas dependientes y su escritura a una línea fría.
+
+**La compuerta** (`herramientas/urc-ab.ps1` para el reloj, la compuerta de la palanca para la
+exactitud): captura, 25 000-40 000 puntos de `DCEMU_CP_MS` y las listas completas de
+`DCEMU_SONDA_ENTREGAS` idénticas entre los dos brazos en los tres guests. Los puntos de control
+imprimen MMUCR, así que comparan también el URC materializado — que es exactamente lo que había
+que probar. Y encima la compuerta de juegos de cinco brazos volvió a salir verde con el binario
+nuevo, con los controles de SR2 distinguiendo como siempre.
+
+`DCEMU_MMU_URC_INMEDIATO=1` vuelve a avanzarlo en cada acceso y reproduce la emisión anterior
+byte por byte.
