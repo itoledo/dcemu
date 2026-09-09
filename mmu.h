@@ -294,12 +294,40 @@ typedef struct
 {
 	DWORD	vpn;			/* direccion & ~mascara */
 	DWORD	mascara;
+	DWORD	mascara_neg;	/* ~mascara, ya negada: ver el comentario de abajo */
 	DWORD	etiqueta;		/* ASID | usuario << 8 | VALIDA */
 	DWORD	base;			/* la fisica de la pagina, ya compuesta */
 	DWORD	permisos;		/* que tipos de acceso ya pasaron todas las pruebas */
 	int		entrada;		/* de que entrada de la UTLB salio */
 	DWORD	gen;			/* y con que generacion */
 } mmu_datos_t;
+
+/*
+	La entrada mide 32 bytes y eso NO es relleno: el campo que la lleva de 28 a
+	32 es la mascara ya negada, que el camino rapido negaba en cada acceso.
+	Tres cosas salen de la misma linea, y por eso van juntas:
+
+	  - **el indice deja de multiplicar**. 28 no es potencia de dos, asi que el
+	    codigo emitido llevaba un `imul` de tres ciclos ADELANTE de la primera
+	    carga, o sea en la cabeza de la cadena; con 32 es un `shl 5`.
+	  - **la entrada deja de cruzar lineas de cache**. Con 28 bytes, 7 de cada
+	    16 entradas quedan a caballo de dos lineas de 64, y el camino rapido lee
+	    la entrada COMPLETA (etiqueta, permisos, mascara, vpn, entrada, gen y
+	    base). Con 32 entran exactamente dos por linea y ninguna se parte.
+	  - **el `not` se va del camino rapido**: la comparacion de vpn queda
+	    `(dir & mascara_neg) == vpn` en vez de negar la mascara recien cargada.
+
+	Las dos mascaras se escriben juntas en el unico sitio que llena la entrada;
+	la comparacion de reuso mira `mascara`, asi que la negada la sigue de balde.
+*/
+DC_ASSERT_SIZE(mmu_datos, mmu_datos_t, 32);
+
+/* El corrimiento que reemplaza a la multiplicacion en el codigo emitido. Los
+   dos asertos van juntos a proposito: un cambio de tamano de la entrada tiene
+   que romper la compilacion, no emitir un indice que apunta a otra ranura --
+   que seria exacto en el interprete y silenciosamente distinto en el emitido. */
+#define MMU_DATOS_DESP		5
+DC_ASSERT(mmu_datos_desp, (1 << MMU_DATOS_DESP) == sizeof(mmu_datos_t));
 
 extern mmu_datos_t	mmu_datos[MMU_DATOS_N];
 extern DWORD		mmu_datos_mascara;
@@ -408,7 +436,7 @@ DWORD mmu_urc_tras(DWORD urc, DWORD urb, unsigned long long n);
 																		\
 		if (_mm_e->etiqueta == _mm_tag									\
 			&& (_mm_e->permisos & (permiso_bit))						\
-			&& ((var) & ~_mm_e->mascara) == _mm_e->vpn					\
+			&& ((var) & _mm_e->mascara_neg) == _mm_e->vpn				\
 			&& mmu_utlb_gen[_mm_e->entrada] == _mm_e->gen)				\
 		{																\
 			MMU_URC_AVANZAR();											\

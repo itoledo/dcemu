@@ -1110,13 +1110,14 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 			|| dc->mascara != mascara || dc->entrada != i
 			|| dc->gen != mmu_utlb_gen[i])
 		{
-			dc->vpn      = vpn;
-			dc->mascara  = mascara;
-			dc->etiqueta = etiqueta;
-			dc->base     = (((d1 & 0x1FFFFC00ul) & ~mascara) | 0xA0000000ul);
-			dc->permisos = 0;
-			dc->entrada  = i;
-			dc->gen      = mmu_utlb_gen[i];
+			dc->vpn         = vpn;
+			dc->mascara     = mascara;
+			dc->mascara_neg = ~mascara;
+			dc->etiqueta    = etiqueta;
+			dc->base        = (((d1 & 0x1FFFFC00ul) & ~mascara) | 0xA0000000ul);
+			dc->permisos    = 0;
+			dc->entrada     = i;
+			dc->gen         = mmu_utlb_gen[i];
 		}
 
 		dc->permisos |= escritura ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER;

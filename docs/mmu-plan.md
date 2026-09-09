@@ -851,3 +851,91 @@ nuevo, con los controles de SR2 distinguiendo como siempre.
 
 `DCEMU_MMU_URC_INMEDIATO=1` vuelve a avanzarlo en cada acceso y reproduce la emisión anterior
 byte por byte.
+
+## La entrada de 32 bytes, y lo que un guest inerte dijo de la medicion (2026-09-09)
+
+La entrada de `mmu_datos[]` medía 28 bytes, y eso costaba tres cosas en el camino
+rápido emitido, todas en la cabeza de la cadena que decide si el acceso sale barato:
+
+  - **el índice multiplicaba.** 28 no es potencia de dos, así que el código emitido
+    llevaba un `imul` de tres ciclos *delante* de la primera carga.
+  - **la entrada cruzaba líneas de caché.** Con 28 bytes, 7 de cada 16 entradas quedan
+    a caballo de dos líneas de 64, y el camino rápido lee la entrada **completa**
+    (etiqueta, permisos, máscara, vpn, entrada, generación y base).
+  - **la máscara se negaba en cada acceso**, un `not` entre la carga y la comparación.
+
+El campo que la lleva a 32 no es relleno: es la máscara ya negada. Con eso el índice
+es un `shl 5`, la entrada entra dos por línea y el `not` desaparece.
+
+**Las dos mitades no se miden igual, y ahí está la lección.** El corrimiento y la
+máscara negada son decisiones del emisor y caben en una palanca de ambiente
+(`DCEMU_MMU_EMISION_VIEJA=1`, que vuelve al `imul` y al `not`): un binario, la receta
+de siempre. El tamaño del struct no: es compilación, y obliga a comparar **dos
+binarios**, que es la forma débil que este árbol ya documentó con `DCEMU_SIN_ALINEAR`.
+
+**Tanda 1, la mitad emitida** (canónico reentrenado `93C117A032E8EA28`, un binario,
+cuatro rondas rotadas, en reposo, `herramientas/entrada-ab.ps1`):
+
+| guest | corrimiento + máscara negada | imul + not | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 19 899–20 007 ms | 20 079–20 186 | **−1,0 %, rangos disjuntos, 4/4** |
+| Sega Rally 2, 60 s | 41 132–41 513 | 41 145–41 471 | −0,1 %, solapados |
+| Crazy Taxi, 180 s | 58 482–59 331 | 59 014–59 615 | inerte por construcción |
+
+Crazy Taxi es el **medidor de ruido de esta tanda**: en modo plano no se emite
+traducción alguna, así que sus dos brazos son el mismo código y su −0,4 % con 3 de 4
+es exactamente lo que vale una diferencia sin causa aquí. DCDoom queda por encima de
+eso con rangos disjuntos; Sega Rally 2 no distingue.
+
+**Tanda 2, el cambio entero contra el canónico anterior** (`herramientas/binarios-ab.ps1`,
+los dos binarios con su PGO reentrenado):
+
+| guest | entrada de 32 bytes | de 28 | veredicto |
+| --- | --- | --- | --- |
+| Sega Rally 2, 60 s | 41 016–41 699 ms | 41 096–41 406 | −0,1 %, solapados |
+| DCDoom, 35 s | 19 931–20 066 | 19 845–19 994 | +0,4 %, 1/4, solapados |
+| Crazy Taxi, 180 s | 59 193–59 405 | 59 541–59 998 | **−0,7 %, disjuntos, 4/4** |
+
+**Y eso último es el resultado, no una ganancia.** Crazy Taxi no puede notar este
+cambio: no emite traducción, no consulta la caché y su código emitido no se mueve. Que
+salga **−0,7 % con rangos disjuntos y 4 de 4 pares** es la contaminación de disposición
+midiéndose a sí misma, y es **más grande que el efecto buscado**. Con ese piso, el
++0,4 % solapado de DCDoom y el −0,1 % de Sega Rally 2 no dicen nada en ninguna
+dirección.
+
+Tres cosas que se siguen de ahí, y que valen más que el número:
+
+  - **en una tanda de dos binarios, un guest que el cambio no puede tocar es el
+    medidor de ruido**, y hay que correrlo aunque no tenga nada que aportar al
+    veredicto. Es el equivalente del piso del barrido KOS, para el reloj.
+  - **repetir no lo arregla.** El sesgo de disposición es sistemático por binario, no
+    aleatorio: más rondas achican los rangos y dejan el sesgo intacto. Por eso no se
+    puede "medir mejor" esta mitad, y por eso no se resta el delta de Crazy Taxi de los
+    otros dos (su sesgo es el de *su* código caliente, no el de ellos).
+  - queda dicho lo que no se puede separar: la tabla pasa de 112 a 128 KB, y si eso le
+    cuesta algo a DCDoom, este instrumento no lo distingue de la disposición.
+
+**Se queda, y el motivo es el de siempre en este árbol**: la mitad que se puede aislar
+gana donde la medición distingue (DCDoom −1,0 %, disjunto), la otra mitad es su
+habilitador —no hay `shl 5` si la entrada no mide 32— y el conjunto es **estrictamente
+menos trabajo por acceso**: una multiplicación, una negación y una línea partida menos.
+Es el mismo criterio con que se quedaron el atajo P1/P2 tardío y el reloj por eventos.
+
+**La emisión no cambia de tamaño** — 68 420 526 bytes en Sega Rally 2 y 36 899 178 en
+DCDoom, idénticos en los tres brazos: los seis bytes del `not` que se van viven en las
+dos rutinas compartidas y los absorbe la alineación. Es la tercera vez seguida en este
+camino que el tamaño no se mueve y el reloj sí, que es la firma de las rutinas
+compartidas: lo emitido se cuenta dos veces y lo ejecutado, una por acceso.
+
+**La compuerta** (`scratchpad/entrada-gate.ps1`, tres brazos por guest): captura, 25 000
+a 40 000 puntos de `DCEMU_CP_MS` y las listas completas de `DCEMU_SONDA_ENTREGAS`
+idénticas —contra el brazo de la palanca **y contra el binario anterior**— en los tres
+guests, más la compuerta de juegos de cinco brazos. Los tres controles de sonda viva
+(el brazo nuevo dice «corrimiento», el viejo dice «imul», la referencia no dice ninguna
+de las dos porque es anterior al campo) están en el guion a propósito: sin ellos una
+palanca que no llega deja la compuerta verde y muda.
+
+Dos asertos de compilación atan la forma: el tamaño de la entrada y `MMU_DATOS_DESP`
+contra ese tamaño. Un cambio de campo que rompa la potencia de dos tiene que romper la
+compilación, porque el intérprete seguiría exacto y sólo el emitido buscaría en otra
+ranura.

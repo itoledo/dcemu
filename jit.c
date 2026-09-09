@@ -1492,6 +1492,12 @@ static int					jit_etiqueta_viva = 1;
    vuelve al avance completo y reproduce la emision anterior byte por byte. */
 static int					jit_urc_diferido = 1;
 
+/* La entrada de la cache de traducciones mide 32 bytes, asi que el indice se
+   corre en vez de multiplicarse y la mascara viene ya negada (ver el struct en
+   mmu.h). DCEMU_MMU_EMISION_VIEJA=1 vuelve al imul y al not, dejando como
+   unica diferencia contra el arbol anterior la forma de la entrada. */
+static int					jit_emision_vieja = 0;
+
 /* El corte del bloque periodico, emitido como UNA comparacion contra el limite
    envenenable de intc.h en vez de dos contra la constante y la bandera.
    DCEMU_JIT_CORTE_VIEJO=1 vuelve a las dos y reproduce la emision anterior
@@ -1718,14 +1724,30 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	else
 		gen_lento(g, a, X64_E, JIT_RZ_TR_PROBAR);
 
-	/* r9 = MMU_DATOS_INDICE(dir) * sizeof(mmu_datos_t), en bytes: el elemento
-	   no mide una potencia de dos, asi que el indice viaja ya multiplicado y
-	   la escala del SIB es 1. Es el indice de mmu.h y tiene que dar la misma
-	   ranura, o la emitida buscaria donde la otra no guarda. */
+	/*
+		r9 = MMU_DATOS_INDICE(dir) * sizeof(mmu_datos_t), en bytes: el indice
+		viaja ya multiplicado y la escala del SIB es 1. Es el indice de mmu.h y
+		tiene que dar la misma ranura, o la emitida buscaria donde la otra no
+		guarda.
+
+		**La entrada mide 32 bytes, asi que esto es un corrimiento** (2026-09-09).
+		Media 28 -- no potencia de dos -- y el `imul` de tres ciclos iba
+		ADELANTE de la primera carga, o sea en la cabeza de la cadena que
+		decide el camino rapido. Ver el comentario del struct en mmu.h: el
+		campo que la lleva a 32 no es relleno, es la mascara ya negada.
+
+		DCEMU_MMU_EMISION_VIEJA=1 vuelve a multiplicar (por 32, el tamano de
+		hoy) y vuelve a negar la mascara al vuelo: deja como unica diferencia
+		contra el arbol anterior la FORMA de la entrada, que es lo que no se
+		puede aislar dentro de un binario.
+	*/
 	jit_x64_mov_rr(&g->e, X64_RAX, X64_RCX);
 	jit_x64_shr_ri(&g->e, X64_RAX, 12);
 	jit_x64_and_rm(&g->e, X64_RAX, CTX, D_DATOS_MASCARA);
-	jit_x64_imul_rri(&g->e, X64_RAX, X64_RAX, (int) sizeof(mmu_datos_t));
+	if (jit_emision_vieja)
+		jit_x64_imul_rri(&g->e, X64_RAX, X64_RAX, (int) sizeof(mmu_datos_t));
+	else
+		jit_x64_shl_ri(&g->e, X64_RAX, MMU_DATOS_DESP);
 	jit_x64_mov_rr(&g->e, X64_R9, X64_RAX);
 
 	/*
@@ -1769,10 +1791,17 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 		DAT + (int) offsetof(mmu_datos_t, permisos), (int) permiso_bit);
 	gen_trad_fallo(g, a, X64_E, JIT_RZ_TR_PERMISO, fallo, fallo_rz, &nf);
 
-	/* (dir & ~mascara) == vpn */
-	jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
-		DAT + (int) offsetof(mmu_datos_t, mascara));
-	jit_x64_not_r(&g->e, X64_RAX);
+	/* (dir & mascara_neg) == vpn. La mascara vive negada en la entrada, asi
+	   que el camino rapido no la niega: ver el struct en mmu.h. */
+	if (jit_emision_vieja)
+	{
+		jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
+			DAT + (int) offsetof(mmu_datos_t, mascara));
+		jit_x64_not_r(&g->e, X64_RAX);
+	}
+	else
+		jit_x64_mov_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
+			DAT + (int) offsetof(mmu_datos_t, mascara_neg));
 	jit_x64_and_rr(&g->e, X64_RAX, X64_RCX);
 	jit_x64_cmp_rm_idx(&g->e, X64_RAX, CTX, X64_R9, 1,
 		DAT + (int) offsetof(mmu_datos_t, vpn));
@@ -8552,11 +8581,14 @@ void jit_resumen(void)
 	   vigente al lado, porque las dos cosas juntas son lo que dice si el A/B
 	   comparo lo que dice comparar. */
 	fprintf(stderr, "jit: etiqueta de traduccion %s, %llu incoherencias;"
-		" URC %s, %llu pendientes al salir\n",
+		" URC %s, %llu pendientes al salir; entrada de %d bytes, indice por %s\n",
 		jit_etiqueta_viva ? "viva (una carga)" : "construida en cada acceso",
 		mmu_etiqueta_incoherente,
 		jit_urc_diferido ? "diferido" : "en cada acceso",
-		mmu_urc_pend);
+		mmu_urc_pend,
+		(int) sizeof(mmu_datos_t),
+		jit_emision_vieja ? "imul, mascara negada al vuelo"
+						  : "corrimiento, mascara ya negada");
 
 	fprintf(stderr, "jit: sincronizacion %s, %llu filas con acceso sin sitio"
 		" de llamada; corte %s, %llu incoherencias del limite; DIV1 %s;"
@@ -9010,12 +9042,16 @@ void jit_iniciar(void)
 			{
 				const char * ev = getenv("DCEMU_MMU_ETIQUETA_CALCULADA");
 				const char * ui = getenv("DCEMU_MMU_URC_INMEDIATO");
+				const char * em = getenv("DCEMU_MMU_EMISION_VIEJA");
 
 				if (ev != NULL && atoi(ev) != 0)
 					jit_etiqueta_viva = 0;
 
 				if (ui != NULL && atoi(ui) != 0)
 					jit_urc_diferido = 0;
+
+				if (em != NULL && atoi(em) != 0)
+					jit_emision_vieja = 1;
 			}
 
 			if (gv != NULL && atoi(gv) != 0)
