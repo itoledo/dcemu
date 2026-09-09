@@ -266,6 +266,9 @@ extern unsigned long long perf_mmu_ent_etiq_sh;		/* ... y la entrada es comparti
 extern unsigned long long perf_mmu_ent_etiq_modo;	/* ... mismo ASID, solo otro modo */
 extern unsigned long long perf_mmu_ent_pagina;		/* otra pagina: choque o capacidad */
 extern unsigned long long perf_mmu_datos_acierto;
+extern unsigned long long perf_l0_consultas;		/* sonda del techo de una L0: ver mmu.h */
+extern unsigned long long perf_l0_acierto1;			/* ... con una ranura por tipo de acceso */
+extern unsigned long long perf_l0_acierto2;			/* ... con dos */
 extern unsigned long long perf_mmu_vaciados;		/* mmu_tlb_invalidar(): el vaciado entero */
 extern unsigned long long perf_mmu_datos_choque;	/* fallo con la MISMA pagina: modo o ASID */
 extern unsigned long long perf_mmu_datos_capacidad;	/* fallo con otra pagina: capacidad */

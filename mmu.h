@@ -457,6 +457,34 @@ extern int mmu_permiso_aparte;
 #define MMU_ETIQUETA_ENTRADA(e)											\
 	(mmu_permiso_aparte ? (e)->etiqueta_r : ((e)->etiqueta_r | (e)->etiqueta_w))
 
+/*
+	La sonda del techo de una cache de UNA entrada delante de la tabla (L0).
+	Cuenta, sobre los accesos que el codigo emitido traduce de verdad --sin
+	P1/P2/P4, que el atajo resuelve antes--, cuantos caen en la misma pagina
+	que el anterior del MISMO tipo. Es la pregunta que decide si vale la pena
+	construirla, y se contesta antes de escribir una linea del emisor.
+
+	Vive SOLO en el camino del interprete y se enciende con DCEMU_SONDA_PAGINA:
+	el codigo emitido no pasa por este macro, asi que el binario por omision no
+	paga nada, y la secuencia de accesos es la misma en los dos caminos (exacta
+	por construccion), asi que medirla con el interprete contesta por los dos.
+
+	Es una COTA, y por dos motivos que hay que decir: usa paginas de 4 KB
+	cuando la del guest puede ser de 1 KB (cuenta de mas) o de 64 KB / 1 MB
+	(cuenta de menos), y no sabe de fronteras de bloque ni de llamadas al
+	ayudante, que una L0 real tendria que respetar.
+*/
+extern int mmu_sonda_pagina;
+void mmu_sonda_l0(DWORD dir, unsigned permiso_bit);
+void mmu_sonda_resumen(void);
+
+#define MMU_SONDA_L0(var, permiso_bit)									\
+	do																	\
+	{																	\
+		if (mmu_sonda_pagina)											\
+			mmu_sonda_l0((var), (permiso_bit));							\
+	} while (0)
+
 /* De perf.h, que los llamadores ya incluyen via mem.h. */
 #define MMU_TRADUCIR_EN_SITIO(var, permiso_bit, escritura)				\
 	do																	\
@@ -469,6 +497,8 @@ extern int mmu_permiso_aparte;
 			(var) = mmu_traducir((var), (escritura));					\
 			break;														\
 		}																\
+																		\
+		MMU_SONDA_L0((var), (permiso_bit));								\
 																		\
 		_mm_e   = &mmu_datos[MMU_DATOS_INDICE(var)];					\
 		_mm_tag = mmu_etiqueta;											\

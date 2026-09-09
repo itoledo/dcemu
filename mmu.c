@@ -591,6 +591,67 @@ DWORD		mmu_datos_mascara = MMU_DATOS_N - 1;
    una vez en mmu_reset() y la comparten el llenado, el macro y el emisor. */
 int			mmu_permiso_aparte = 0;
 
+/* La sonda del techo de una L0 (ver mmu.h). Solo en el camino del interprete. */
+int			mmu_sonda_pagina = 0;
+
+void mmu_sonda_resumen(void)
+{
+	if (!mmu_sonda_pagina)
+		return;
+
+	if (perf_l0_consultas == 0)
+	{
+		fprintf(stderr, "mmu: sonda de pagina encendida y CERO consultas:"
+			" el guest no traduce (modo plano) o la sonda no llego\n");
+		return;
+	}
+
+	fprintf(stderr, "mmu: sonda de pagina, %llu accesos traducidos;"
+		" misma pagina que el anterior del mismo tipo: %llu con una ranura"
+		" (%.1f %%), %llu con dos (%.1f %%)\n",
+		perf_l0_consultas, perf_l0_acierto1,
+		100.0 * (double) perf_l0_acierto1 / (double) perf_l0_consultas,
+		perf_l0_acierto2,
+		100.0 * (double) perf_l0_acierto2 / (double) perf_l0_consultas);
+}
+
+void mmu_sonda_l0(DWORD dir, unsigned permiso_bit)
+{
+	/* Una ranura y dos, por tipo de acceso: la de dos dice si el vaiven entre
+	   dos regiones --pila y datos, el caso obvio-- es lo que tira la de una. */
+	static DWORD r1 = 0xFFFFFFFFul, r2 = 0xFFFFFFFEul;
+	static DWORD w1 = 0xFFFFFFFDul, w2 = 0xFFFFFFFCul;
+	DWORD        pag;
+
+	/* Lo que el codigo emitido NO traduce: P1/P2 salen por el atajo y P4 no es
+	   clientela. Contarlas aqui inflaria la tasa con accesos que la L0 nunca
+	   veria. */
+	if (dir >= 0x80000000ul)
+		return;
+
+	pag = dir >> 12;
+	perf_l0_consultas++;
+
+	if (permiso_bit == MMU_DATOS_LEER)
+	{
+		if (pag == r1)
+			perf_l0_acierto1++, perf_l0_acierto2++;
+		else if (pag == r2)
+			perf_l0_acierto2++, r2 = r1, r1 = pag;
+		else
+			r2 = r1, r1 = pag;
+	}
+	else
+	{
+		if (pag == w1)
+			perf_l0_acierto1++, perf_l0_acierto2++;
+		else if (pag == w2)
+			perf_l0_acierto2++, w2 = w1, w1 = pag;
+		else
+			w2 = w1, w1 = pag;
+	}
+}
+
 /*
 	La etiqueta vigente de esa cache (ver mmu.h). La construian en cada acceso
 	el macro del camino rapido y el codigo emitido --diez instrucciones con dos
@@ -775,6 +836,14 @@ void mmu_sondas_iniciar(void)
 	if (mmu_permiso_aparte)
 		fprintf(stderr, "mmu: etiqueta y permiso SEPARADOS"
 			" (dos comparaciones, la conducta anterior)\n");
+
+	v = getenv("DCEMU_SONDA_PAGINA");
+
+	mmu_sonda_pagina = (v != NULL && atoi(v) != 0);
+
+	if (mmu_sonda_pagina)
+		fprintf(stderr, "mmu: sonda de pagina ENCENDIDA"
+			" (solo el camino del interprete; usa DCEMU_JIT=0)\n");
 
 	v = getenv("DCEMU_MMU_DATOS");
 

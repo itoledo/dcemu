@@ -2896,6 +2896,7 @@ int main(int argc, char *argv[])
 #ifdef DCEMU_JIT
 	jit_resumen();		/* aca y no por atexit: ver jit.c */
 	arm7jit_resumen();
+	mmu_sonda_resumen();
 #endif
 
 //	SDL_RemoveTimer(timer_id);
