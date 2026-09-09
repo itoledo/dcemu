@@ -1006,3 +1006,26 @@ de sonda viva —el brazo nuevo tiene que decir «fundidos en una», el viejo «
 comparaciones»— están en el guion porque los tres consumidores de la palanca (llenado,
 macro y emisor) pueden desincronizarse en silencio, y una palanca que no llega deja la
 compuerta verde y muda.
+
+## La red ancha sobre los cuatro cambios (2026-09-09)
+
+Los cuatro cambios de esta serie —la etiqueta viva, el URC diferido, la entrada de 32
+bytes y la etiqueta por tipo de acceso— se verificaron cada uno con su compuerta de tres
+guests. Eso no basta y el árbol lo tiene escrito: un barrido de demos no ejercita lo que
+ejercitan los juegos, y tres juegos no son catorce. Así que al cerrar la serie se corrió
+la red entera sobre el canónico `1555E6699C14A284`:
+
+- **Parque KOS, 151 demos, tres brazos**: **151 de 151 dejaron captura** (el control que
+  atrapa el barrido vacío por falta de `ip.bin`), **piso de ruido 0 de 151**, intérprete
+  contra traductor **0 diferencias**, señal **0**, y **0 veredictos serial distintos**.
+- **Red de juegos, 11 imágenes, 11 exactas**: intérprete contra traductor sobre un mismo
+  binario, captura byte a byte y puntos de control exactos en DCDoom, Sega Rally 2, Crazy
+  Taxi, Crazy Taxi 2, las dos Virtua Tennis, 18 Wheeler, Capcom vs. SNK 2, Mortal Kombat
+  Gold y los dos Tony Hawk's Pro Skater.
+
+Ese segundo es el que vale para esta serie en particular, y conviene decir por qué: cada
+uno de los cuatro cambios tiene **tres consumidores** de la misma decisión —el llenado de
+la entrada en `mmu.c`, el macro del intérprete en `mmu.h` y el emisor en `jit.c`— y una
+desincronización entre ellos es exactamente la clase de error que las compuertas de un
+solo camino no ven. El intérprete contra el traductor sobre once juegos es la prueba de
+que los tres dicen lo mismo.
