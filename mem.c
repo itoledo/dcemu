@@ -3184,6 +3184,10 @@ void regmap_write(unsigned long direccion, void * p, size_t size)
 		case 0x000000: // PTEH: el ASID cambia que traduccion vale
 		{
 			mmu_fetch_invalidar();
+
+			/* Y la etiqueta vigente de mmu_datos, que lleva el ASID: es uno
+			   de los tres sitios que pueden moverla. Ver mmu.h. */
+			mmu_etiqueta_recalcular();
 		}
 		break;
 

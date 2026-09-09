@@ -735,3 +735,57 @@ Y explica de paso por qué el atajo del cuerpo en C salió neutro: de los 607,8 
 accesos que no se traducen, **534 M los resuelve el atajo emitido** y sólo 69,6 M
 llegaban al cuerpo en C. El cambio ataca el 11 % del tráfico, y ese 11 % son
 milisegundos.
+
+## La etiqueta viva de la caché de traducciones (2026-09-08)
+
+El reparto de la noche anterior dejó el frente donde había que mirar: con el AICA en su propio
+hilo y el reloj por eventos corriendo, **el código emitido es el 89 % de Sega Rally 2 y el 92 %
+de DCDoom**, y esos dos guests pagan 5,1 y 4,1 ns por instrucción contra los 2,8 de Crazy Taxi.
+La diferencia es la traducción por acceso, y dentro de ella había algo que se hacía en cada uno
+sin necesidad.
+
+**La etiqueta de `mmu_datos` — `ASID_DE(*PTEH) | ((SR_MD == 0) << 8) | MMU_CACHE_VALIDA` — se
+construía en cada acceso.** En el código emitido son diez instrucciones, y dos de ellas son
+**cargas dependientes** (el puntero a PTEH, y con él PTEH) que alimentan justo la comparación
+que decide el camino rápido. Es función de dos cosas que casi nunca cambian.
+
+Ahora vive en `mmu_etiqueta` y la mantienen los **cuatro** sitios que pueden moverla: las dos
+entradas de `UpdateSR()` —todo cambio de SR.MD pasa por ahí, incluida la entrada a una excepción,
+que pone MD a mano y avisa—, la escritura del guest a PTEH (`regmap_write`) y el reset de la CPU.
+El emitido la lee con una sola carga. Es la disciplina del límite del corte con la bandera de
+reintento (`intc.h`): se mueven juntas, y el bloque periódico **verifica la coherencia una vez
+por servicio** con un contador que sale en el resumen sin condición.
+
+**Ese contador encontró un agujero el mismo día que se escribió, y por eso está.** La primera
+compuerta salió verde —capturas, 40 000 puntos de control y las listas de entregas idénticas
+entre brazos en los tres guests— y aun así marcaba **1 incoherencia en cada uno, Crazy Taxi
+incluido, que no usa MMU**. Instrumentado: `mmu: etiqueta incoherente: 00010100 contra 00010000
+(PTEH 00000000, MD 1, reloj 401)`. `mmu_reset()` recalculaba con SR todavía en cero —modo
+usuario— y el SR de reset se escribe a mano en `initCpuSubSystem()` sin pasar por `UpdateSR()`,
+así que **el arranque entero corría con la etiqueta del modo equivocado**. Inofensivo aquí
+porque la MMU todavía no traduce, pero es exactamente la forma de falla del árbol: algo que se
+acepta sin decir nada. Con el recálculo en el reset, cero.
+
+**Medido** (canónico reentrenado `57BC6AB6B6168F89`, un binario, cuatro rondas rotadas, en
+reposo y sin usuario, `herramientas/etiqueta-ab.ps1`):
+
+| guest | etiqueta viva | construida | veredicto |
+| --- | --- | --- | --- |
+| DCDoom, 35 s | 20 866–20 980 ms | 21 304–21 420 | **−2,1 %, rangos disjuntos, 4/4** |
+| Sega Rally 2, 60 s | 42 701–43 488 | 42 908–43 826 | −1,0 %, 3/4, solapados: dirección |
+| Crazy Taxi, 180 s | 59 330–59 769 | 58 818–59 624 | inerte por construcción |
+
+Totales de instrucciones al dígito en las 24 corridas. Crazy Taxi es **inerte por construcción
+y su emisión es idéntica**: en modo plano `gen_traducir_mmu()` no se emite, así que su ±0,5 % es
+el ambiente y nada más.
+
+**Y la emisión baja sólo 64 bytes** (68 420 702 → 68 420 638 en SR2), que es la confirmación del
+mecanismo: desde que la traducción se emite como **dos rutinas compartidas** (2026-08-25) la
+etiqueta se construía una vez por rutina, no una por sitio, así que lo que se gana no es icache
+sino la ejecución de esas diez instrucciones en cada llamada — y sobre todo la cadena de dos
+cargas dependientes delante de la comparación. Que DCDoom gane más que SR2 teniendo **menos**
+accesos que construyen etiqueta (el 52 % de los suyos son P1/P2 y salen por el atajo, antes de
+la etiqueta) dice que lo que se quitó es latencia de camino crítico y no trabajo por volumen.
+
+`DCEMU_MMU_ETIQUETA_CALCULADA=1` la vuelve a construir y reproduce la emisión anterior byte por
+byte.

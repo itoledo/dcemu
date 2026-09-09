@@ -1430,6 +1430,24 @@ void main_loop(void)
 				if ((intc_corte_limite == 0) != (intc_sh4_reintentar != 0))
 					intc_corte_incoherente++;
 
+				/* Lo mismo para la etiqueta viva de la cache de traducciones,
+				   y por el mismo motivo: la mantienen tres sitios (las dos
+				   entradas de UpdateSR y la escritura a PTEH) y un cuarto que
+				   apareciera sin avisar dejaria al emulador traduciendo con la
+				   etiqueta de antes. Ver mmu.h. */
+				if (mmu_etiqueta != MMU_ETIQUETA_DE(*PTEH, SR_MD))
+				{
+					if (mmu_etiqueta_incoherente == 0)
+						fprintf(stderr, "mmu: etiqueta incoherente: %08lx"
+							" contra %08lx (PTEH %08lx, MD %d, reloj %llu)\n",
+							(unsigned long) mmu_etiqueta,
+							(unsigned long) MMU_ETIQUETA_DE(*PTEH, SR_MD),
+							(unsigned long) *PTEH, (int) SR_MD,
+							(unsigned long long) reloj_total);
+
+					mmu_etiqueta_incoherente++;
+				}
+
 				INTC_LIMPIAR_REINTENTO();
 
 				// Los dos temporizadores reciben la cantidad de ciclos y llevan

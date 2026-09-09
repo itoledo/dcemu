@@ -75,6 +75,11 @@ void mmu_reset(void)
 	memset(mmu_utlb_dir,  0, sizeof(mmu_utlb_dir));
 	memset(mmu_utlb_dat1, 0, sizeof(mmu_utlb_dat1));
 	memset(mmu_utlb_dat2, 0, sizeof(mmu_utlb_dat2));
+
+	/* La etiqueta vigente sale del PTEH y del SR de ahora, no del inicializador
+	   estatico: un reset a mitad de corrida los encuentra donde el guest los
+	   dejo. Ver mmu.h. */
+	mmu_etiqueta_recalcular();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -577,6 +582,25 @@ mmu_datos_t	mmu_datos[MMU_DATOS_N];
    el tamano dentro de un mismo binario: comparar dos compilaciones mete el
    layout como variable. DCEMU_MMU_DATOS=N (potencia de dos). */
 DWORD		mmu_datos_mascara = MMU_DATOS_N - 1;
+
+/*
+	La etiqueta vigente de esa cache (ver mmu.h). La construian en cada acceso
+	el macro del camino rapido y el codigo emitido --diez instrucciones con dos
+	cargas dependientes-- y es funcion de dos cosas que casi nunca cambian.
+
+	El valor de arranque es el de PTEH en cero y SR.MD en 1, que es el SR del
+	reset: coincide con lo que recalcularia si la llamaran. No se deja en cero
+	a proposito --cero no es una etiqueta valida, le falta MMU_CACHE_VALIDA--,
+	porque una etiqueta invalida haria fallar todo acceso hasta el primer
+	cambio de modo en vez de fallar ruidosamente.
+*/
+DWORD				mmu_etiqueta = MMU_ETIQUETA_DE(0, 1);
+unsigned long long	mmu_etiqueta_incoherente = 0;
+
+void mmu_etiqueta_recalcular(void)
+{
+	mmu_etiqueta = MMU_ETIQUETA_DE(*PTEH, SR_MD);
+}
 
 /*
 	Y la de busqueda de instrucciones, detras de la pagina unica que ya habia.

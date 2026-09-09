@@ -1171,6 +1171,7 @@ static int D(const void * p)
 #define D_UTLB_GEN		D(&mmu_utlb_gen[0])
 #define D_P_PTEH		D(&jit_estado.p_pteh)
 #define D_P_MMUCR		D(&jit_estado.p_mmucr)
+#define D_ETIQUETA		D(&mmu_etiqueta)
 #define D_PERF_TRADUCE	D(&perf_mmu_traduce)
 #define D_PERF_ACIERTO	D(&perf_mmu_datos_acierto)
 
@@ -1479,6 +1480,12 @@ static int					jit_sonda_accesos = 0;
    byte por byte: es el A/B de la fase y la linea base de antes. */
 static int					jit_atajo_p1p2 = 1;
 
+/* La etiqueta de la cache de traducciones, leida de mmu_etiqueta en vez de
+   construida en cada acceso (ver gen_traducir_mmu y mmu.h).
+   DCEMU_MMU_ETIQUETA_CALCULADA=1 la vuelve a construir y reproduce la emision
+   anterior byte por byte: es el brazo del A/B. */
+static int					jit_etiqueta_viva = 1;
+
 /* El corte del bloque periodico, emitido como UNA comparacion contra el limite
    envenenable de intc.h en vez de dos contra la constante y la bandera.
    DCEMU_JIT_CORTE_VIEJO=1 vuelve a las dos y reproduce la emision anterior
@@ -1715,17 +1722,36 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	jit_x64_imul_rri(&g->e, X64_RAX, X64_RAX, (int) sizeof(mmu_datos_t));
 	jit_x64_mov_rr(&g->e, X64_R9, X64_RAX);
 
-	/* edx = ASID_DE(*PTEH) | ((SR_MD == 0) << 8) | MMU_CACHE_VALIDA */
-	jit_x64_mov64_rm(&g->e, X64_R8, CTX, D_P_PTEH);
-	jit_x64_mov_rm(&g->e, X64_RDX, X64_R8, 0);
-	jit_x64_and_ri(&g->e, X64_RDX, 0xFF);
-	jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_SR);
-	jit_x64_shr_ri(&g->e, X64_RAX, 30);			/* MD es el bit 30 */
-	jit_x64_and_ri(&g->e, X64_RAX, 1);
-	jit_x64_xor_ri(&g->e, X64_RAX, 1);
-	jit_x64_shl_ri(&g->e, X64_RAX, 8);
-	jit_x64_or_ri(&g->e, X64_RDX, (int) MMU_CACHE_VALIDA);
-	jit_x64_add_rr(&g->e, X64_RDX, X64_RAX);	/* los bits son disjuntos */
+	/*
+		edx = la etiqueta vigente.
+
+		**Una carga y no diez instrucciones** (2026-09-08). La etiqueta es
+		`ASID_DE(*PTEH) | ((SR_MD == 0) << 8) | MMU_CACHE_VALIDA` y se
+		construia aca, en cada acceso: dos cargas DEPENDIENTES --el puntero a
+		PTEH y despues PTEH-- mas ocho operaciones, y todo eso alimentando
+		justo la comparacion que decide el camino rapido. Ahora la mantiene
+		mmu_etiqueta_recalcular() en los tres sitios que pueden moverla (las
+		dos entradas de UpdateSR y la escritura del guest a PTEH), y el bloque
+		periodico verifica la coherencia una vez por servicio. Ver mmu.h.
+
+		DCEMU_MMU_ETIQUETA_CALCULADA=1 vuelve a construirla aqui y reproduce
+		la emision anterior byte por byte: es el brazo del A/B.
+	*/
+	if (!jit_etiqueta_viva)
+	{
+		jit_x64_mov64_rm(&g->e, X64_R8, CTX, D_P_PTEH);
+		jit_x64_mov_rm(&g->e, X64_RDX, X64_R8, 0);
+		jit_x64_and_ri(&g->e, X64_RDX, 0xFF);
+		jit_x64_mov_rm(&g->e, X64_RAX, CTX, O_SR);
+		jit_x64_shr_ri(&g->e, X64_RAX, 30);			/* MD es el bit 30 */
+		jit_x64_and_ri(&g->e, X64_RAX, 1);
+		jit_x64_xor_ri(&g->e, X64_RAX, 1);
+		jit_x64_shl_ri(&g->e, X64_RAX, 8);
+		jit_x64_or_ri(&g->e, X64_RDX, (int) MMU_CACHE_VALIDA);
+		jit_x64_add_rr(&g->e, X64_RDX, X64_RAX);	/* los bits son disjuntos */
+	}
+	else
+		jit_x64_mov_rm(&g->e, X64_RDX, CTX, D_ETIQUETA);
 
 	/* etiqueta */
 	jit_x64_cmp_rm_idx(&g->e, X64_RDX, CTX, X64_R9, 1,
@@ -8500,6 +8526,10 @@ void jit_resumen(void)
 	   -- un cero callado no se distingue de una sonda muerta -- y con la forma
 	   vigente al lado, porque las dos cosas juntas son lo que dice si el A/B
 	   comparo lo que dice comparar. */
+	fprintf(stderr, "jit: etiqueta de traduccion %s, %llu incoherencias\n",
+		jit_etiqueta_viva ? "viva (una carga)" : "construida en cada acceso",
+		mmu_etiqueta_incoherente);
+
 	fprintf(stderr, "jit: sincronizacion %s, %llu filas con acceso sin sitio"
 		" de llamada; corte %s, %llu incoherencias del limite; DIV1 %s;"
 		" direccion constante %s\n",
@@ -8948,6 +8978,13 @@ void jit_iniciar(void)
 
 			if (ap != NULL && atoi(ap) != 0)
 				jit_atajo_p1p2 = 0;
+
+			{
+				const char * ev = getenv("DCEMU_MMU_ETIQUETA_CALCULADA");
+
+				if (ev != NULL && atoi(ev) != 0)
+					jit_etiqueta_viva = 0;
+			}
 
 			if (gv != NULL && atoi(gv) != 0)
 				jit_guardas_viejas = 1;

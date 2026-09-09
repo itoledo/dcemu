@@ -257,6 +257,35 @@ extern int mmu_macro_probar;
    conserva el modo, que es el caso por el que el bit existe. */
 #define MMU_CACHE_AMBOS		0x00020000ul
 
+/*
+	La etiqueta vigente de mmu_datos, calculada UNA VEZ y no en cada acceso.
+
+	`ASID_DE(*PTEH) | ((SR_MD == 0) << 8) | MMU_CACHE_VALIDA` es funcion de dos
+	cosas que casi nunca cambian --el ASID que el guest deja en PTEH y el modo
+	privilegiado-- y se construia en cada acceso: en el codigo emitido son diez
+	instrucciones con **dos cargas dependientes** (el puntero a PTEH y despues
+	PTEH) alimentando justo la comparacion que decide el camino rapido. Sega
+	Rally 2 hace 3400 millones de accesos emitidos en 60 s emulados.
+
+	Se mueve en los tres unicos sitios que pueden moverla, como el limite del
+	corte con la bandera de reintento (intc.h): las dos entradas de UpdateSR()
+	--todo cambio de SR.MD pasa por ahi, incluida la entrada a una excepcion,
+	que pone MD a mano y avisa-- y la escritura del guest a PTEH. El bloque
+	periodico verifica la coherencia una vez por servicio y
+	`mmu_etiqueta_incoherente` sale en el resumen: un sitio nuevo que cambiara
+	el ASID o el modo sin avisar dejaria al emulador traduciendo con la
+	etiqueta de antes, que es una divergencia silenciosa y tardia.
+*/
+extern DWORD				mmu_etiqueta;
+extern unsigned long long	mmu_etiqueta_incoherente;
+
+void mmu_etiqueta_recalcular(void);
+
+/* La forma canonica, en un solo sitio: la usan quien la recalcula y quien
+   verifica la coherencia, asi que no pueden discrepar. */
+#define MMU_ETIQUETA_DE(pteh, md)										\
+	(ASID_DE(pteh) | ((DWORD) ((md) == 0) << 8) | MMU_CACHE_VALIDA)
+
 #define MMU_DATOS_N			8192			/* tope; el efectivo lo da la mascara */
 #define MMU_DATOS_LEER		1u
 #define MMU_DATOS_ESCRIBIR	2u
@@ -338,8 +367,7 @@ extern DWORD				mmu_sonda_uv;
 		}																\
 																		\
 		_mm_e   = &mmu_datos[MMU_DATOS_INDICE(var)];					\
-		_mm_tag = ASID_DE(*PTEH) | ((DWORD) (SR_MD == 0) << 8)			\
-				| MMU_CACHE_VALIDA;										\
+		_mm_tag = mmu_etiqueta;											\
 																		\
 		if (_mm_e->etiqueta == _mm_tag									\
 			&& (_mm_e->permisos & (permiso_bit))						\

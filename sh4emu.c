@@ -1,5 +1,6 @@
 #include "sh4emu.h"
 #include "jit.h"		/* JIT_EPOCA_MAPEO(): SR.MD cambia el mapeo */
+#include "mmu.h"		/* mmu_etiqueta_recalcular(): SR.MD va en la etiqueta */
 #include <stdio.h>
 #include "options.h"
 #include "branch.h"
@@ -170,6 +171,12 @@ void reset()
     el banco puesto arranca siendo ese. Sin esto la primera llamada a UpdateSR()
     veria una diferencia que no existe y cambiaria de banco sin motivo. */
  core.context.banco_activo = SR_RB;
+ /* El SR de reset se escribe a mano y no por UpdateSR(), asi que la etiqueta
+    de la cache de traducciones --que lleva el modo-- se recalcula aqui. Lo
+    encontro su propio contador de coherencia el dia que se escribio: mmu_reset()
+    corre antes de esta linea y con SR todavia en cero calculaba la etiqueta de
+    modo usuario, que quedaba vigente todo el arranque. Ver mmu.h. */
+ mmu_etiqueta_recalcular();
  SSR = 0; // Saved Status Register
  SPC = 0; // Saved Program Counter
  GBR = 0; // Global Base Register
@@ -439,6 +446,11 @@ void UpdateSR(DWORD new)
 	// otro y ejecutaba el codigo de otra pagina. Ver jit.h.
 	JIT_EPOCA_MODO(SR_MD);
 
+	// Y la etiqueta de la cache de traducciones, que lleva el modo: la
+	// construian el macro del camino rapido y el codigo emitido en CADA
+	// acceso. Ver mmu.h.
+	mmu_etiqueta_recalcular();
+
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();
 
@@ -460,6 +472,7 @@ void UpdateSR_ya_escrito(void)
 
 	/* La entrada a una excepcion pone MD a mano: mismo motivo que arriba. */
 	JIT_EPOCA_MODO(SR_MD);
+	mmu_etiqueta_recalcular();
 
 	if ((int) SR_RB != core.context.banco_activo)
 		swap_registers();

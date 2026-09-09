@@ -258,6 +258,16 @@ traductor, que es por qué el banco de 60 s no la veía. Compuerta verde (captur
 completos, SR2 180 s y DOOM). El mismo censo de la caché de entrada de la MMU de esa noche
 está en `docs/mmu-plan.md` («La etiqueta sin modo», DOOM −3,0 % disjunto).
 
+**El residuo (a) quedo cerrado por medicion el 2026-09-08, y la respuesta es que no.**
+El censo de Sega Rally 2 a 180 s con el traductor de hoy: **43 374 rechazos sobre
+872 405 046 entradas, o sea el 0,005 %**, de los cuales 41 610 son el tope de retraduccion.
+Los reincidentes que el censo nombra no son sitios de contenido alternante sino cuatro
+direcciones contiguas en `0x8c02ebc0` rechazadas **por modo**, y los de palabras cargan 33, 19
+y 18 veces cada uno. Construir variantes por ASID --una segunda dimension en la busqueda del
+camino caliente-- para recuperar menos de una milesima de las entradas no se hace; el numero
+queda escrito para que nadie lo vuelva a proponer sin medirlo. DCDoom, de testigo, trae 1337
+rechazos en 89 M de entradas y 0 al tope.
+
 ## El gancho que nunca estuvo conectado (2026-08-14)
 
 Es el hallazgo de la sesión y no es de rendimiento: **la época no se movía nunca
