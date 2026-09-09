@@ -587,6 +587,10 @@ mmu_datos_t	mmu_datos[MMU_DATOS_N];
    layout como variable. DCEMU_MMU_DATOS=N (potencia de dos). */
 DWORD		mmu_datos_mascara = MMU_DATOS_N - 1;
 
+/* La etiqueta por tipo de acceso, fundida con el permiso (ver mmu.h). Se lee
+   una vez en mmu_reset() y la comparten el llenado, el macro y el emisor. */
+int			mmu_permiso_aparte = 0;
+
 /*
 	La etiqueta vigente de esa cache (ver mmu.h). La construian en cada acceso
 	el macro del camino rapido y el codigo emitido --diez instrucciones con dos
@@ -763,6 +767,14 @@ void mmu_sondas_iniciar(void)
 	if (!mmu_macro_probar)
 		fprintf(stderr, "mmu: sondeo en el macro APAGADO"
 			" (todo acceso entra por mmu_traducir)\n");
+
+	v = getenv("DCEMU_MMU_PERMISO_APARTE");
+
+	mmu_permiso_aparte = (v != NULL && atoi(v) != 0);
+
+	if (mmu_permiso_aparte)
+		fprintf(stderr, "mmu: etiqueta y permiso SEPARADOS"
+			" (dos comparaciones, la conducta anterior)\n");
 
 	v = getenv("DCEMU_MMU_DATOS");
 
@@ -985,7 +997,7 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 		etiqueta = ASID_DE(*PTEH) | ((DWORD) usuario << 8) | MMU_CACHE_VALIDA;
 		dc       = &mmu_datos[MMU_DATOS_INDICE(direccion)];
 
-		if (dc->etiqueta == etiqueta && (dc->permisos & permiso)
+		if (MMU_ETIQUETA_OK(dc, etiqueta, permiso)
 			&& (direccion & ~dc->mascara) == dc->vpn
 			&& mmu_utlb_gen[dc->entrada] == dc->gen)
 		{
@@ -1018,7 +1030,7 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 			if (!mmu_atajo_temprano && direccion >= 0x80000000ul)
 				perf_mmu_datos_sin_trad++;
 
-			if (dc->etiqueta == 0)
+			if (MMU_ETIQUETA_ENTRADA(dc) == 0)
 				perf_mmu_datos_vacia++;
 			else if ((direccion & ~dc->mascara) == dc->vpn)
 				perf_mmu_datos_choque++;
@@ -1106,21 +1118,30 @@ DWORD mmu_traducir(DWORD direccion, int escritura)
 	{
 		DWORD vpn = direccion & ~mascara;
 
-		if (dc->etiqueta != etiqueta || dc->vpn != vpn
+		if (MMU_ETIQUETA_ENTRADA(dc) != etiqueta || dc->vpn != vpn
 			|| dc->mascara != mascara || dc->entrada != i
 			|| dc->gen != mmu_utlb_gen[i])
 		{
 			dc->vpn         = vpn;
 			dc->mascara     = mascara;
 			dc->mascara_neg = ~mascara;
-			dc->etiqueta    = etiqueta;
 			dc->base        = (((d1 & 0x1FFFFC00ul) & ~mascara) | 0xA0000000ul);
-			dc->permisos    = 0;
 			dc->entrada     = i;
 			dc->gen         = mmu_utlb_gen[i];
+
+			/* Recien hecha, sin ningun permiso todavia: en la forma separada
+			   eso es la etiqueta con los permisos en cero, y en la fundida son
+			   los dos campos en cero. La linea de abajo enciende el que toca. */
+			dc->etiqueta_r  = mmu_permiso_aparte ? etiqueta : 0;
+			dc->etiqueta_w  = 0;
 		}
 
-		dc->permisos |= escritura ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER;
+		if (mmu_permiso_aparte)
+			dc->etiqueta_w |= escritura ? MMU_DATOS_ESCRIBIR : MMU_DATOS_LEER;
+		else if (escritura)
+			dc->etiqueta_w = etiqueta;
+		else
+			dc->etiqueta_r = etiqueta;
 	}
 
 	return fisica | 0xA0000000ul;

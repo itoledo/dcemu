@@ -939,3 +939,70 @@ Dos asertos de compilación atan la forma: el tamaño de la entrada y `MMU_DATOS
 contra ese tamaño. Un cambio de campo que rompa la potencia de dos tiene que romper la
 compilación, porque el intérprete seguiría exacto y sólo el emitido buscaría en otra
 ranura.
+
+## La etiqueta por tipo de acceso (2026-09-09)
+
+El camino rápido preguntaba dos cosas seguidas sobre la misma entrada: si la etiqueta
+era la vigente —misma página, mismo ASID, mismo modo— y si el bit de permiso de *ese*
+tipo de acceso ya estaba encendido. Dos cargas, una comparación, un `test` y dos ramas.
+
+Se contestan con una sola comparación guardando **la etiqueta por tipo de acceso**: la
+etiqueta cuando el permiso ya pasó, cero cuando no. El cero no puede confundirse con
+una etiqueta viva porque **toda etiqueta viva lleva `MMU_CACHE_VALIDA`** (0x00010000), y
+los dos desenlaces que se funden —etiqueta equivocada y permiso que falta— ya eran el
+mismo: el ayudante, que reevalúa todo sobre la entrada real de la UTLB.
+
+No cambia el tamaño de la entrada (dos DWORD eran `etiqueta` y `permisos`, dos son
+`etiqueta_r` y `etiqueta_w`) **ni los desplazamientos**, y eso último es a propósito:
+`DCEMU_MMU_PERMISO_APARTE=1` hace que los dos campos vuelvan a significar la etiqueta y
+los permisos —el llenado, el macro del intérprete y el emisor leen la misma palanca— y
+con los desplazamientos intactos el brazo viejo emite **byte por byte** lo de antes.
+Así que, a diferencia de la entrada de 32 bytes, esta pregunta **cabe entera en un
+binario**.
+
+El precio, dicho porque si no se convierte en un contador que siempre da cero: los dos
+motivos de rechazo del censo (`JIT_RZ_TR_ETIQUETA` y `JIT_RZ_TR_PERMISO`) se funden en
+uno, y el resumen lo dice con todas las letras.
+
+**Medido dos veces, sobre el canónico reentrenado `1555E6699C14A284`, en reposo**
+(`herramientas/permiso-ab.ps1`). Las seis rondas se decidieron **antes** de mirar las
+cuatro, y las dos tablas van completas:
+
+| guest | rondas | fundida | separada | |
+| --- | --- | --- | --- | --- |
+| Sega Rally 2, 60 s | 4 | 40 273–41 153 ms | 40 906–41 203 | −1,3 %, 4/4 |
+| | 6 | 40 168–41 456 | 40 928–42 499 | −1,7 %, 5/6 |
+| DCDoom, 35 s | 4 | 19 654–19 906 | 19 904–20 018 | −0,7 %, 4/4 |
+| | 6 | 19 479–20 030 | 19 670–20 229 | −0,7 %, 6/6 |
+| Crazy Taxi, 180 s | 4 | 58 636–59 728 | 58 995–59 598 | −0,1 %, 2/4 |
+| | 6 | 58 994–59 959 | 59 293–60 049 | ±0,0 %, 3/6 |
+
+**Los rangos se solapan en las seis filas, así que esto no alcanza el estándar estricto
+del árbol — y sin embargo el resultado es firme, por una vía que conviene nombrar.**
+DCDoom gana **10 de 10 pares** entre las dos tandas con el mismo −0,7 % las dos veces;
+Sega Rally 2, 9 de 10. Y Crazy Taxi, que es **inerte por construcción** —en modo plano
+no se emite traducción alguna y sus dos brazos son el mismo código—, sale en **5 de 10
+pares y ±0,0 %**, que es exactamente lo que tiene que salir cuando no hay efecto. Ese
+control es lo que convierte el conteo de pares en evidencia: 10 de 10 contra un testigo
+que da 5 de 10 no es lo mismo que 4 de 4 sin testigo.
+
+La lección de método, que vale más que el número: **cuando la dispersión de un guest
+tapa el efecto, el estándar de rangos disjuntos deja de discriminar y hay que cambiar
+de estadístico, no de conclusión**. Los pares acumulados sobre dos tandas independientes,
+con un guest inerte de calibración, dicen más que cuatro rondas disjuntas — y el
+árbol ya tenía la mitad de esta receta (el testigo inerte, de la entrada de 32 bytes);
+esto es la otra mitad.
+
+**La emisión baja 32 bytes exactos** en los dos guests (Sega Rally 2 68 420 526 →
+68 420 494, DCDoom 36 899 178 → 36 899 146): el `test` y su rama, 16 bytes en cada una de
+las dos rutinas compartidas. Es la primera vez en este camino que el tamaño se mueve, y
+mueve exactamente lo que la aritmética predice — lo que confirma que el cambio llega al
+código emitido donde se cree.
+
+**La compuerta** (`herramientas/permiso-gate.ps1`): captura, 25 000 a 40 000 puntos de
+`DCEMU_CP_MS` y las listas completas de `DCEMU_SONDA_ENTREGAS` idénticas entre los dos
+brazos en los tres guests, más la compuerta de juegos de cinco brazos. Los dos controles
+de sonda viva —el brazo nuevo tiene que decir «fundidos en una», el viejo «en dos
+comparaciones»— están en el guion porque los tres consumidores de la palanca (llenado,
+macro y emisor) pueden desincronizarse en silencio, y una palanca que no llega deja la
+compuerta verde y muda.

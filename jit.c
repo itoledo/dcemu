@@ -1781,15 +1781,36 @@ static void gen_traducir_mmu(jit_gen * g, jit_acceso * a, unsigned permiso_bit)
 	else
 		jit_x64_mov_rm(&g->e, X64_RDX, CTX, D_ETIQUETA);
 
-	/* etiqueta */
-	jit_x64_cmp_rm_idx(&g->e, X64_RDX, CTX, X64_R9, 1,
-		DAT + (int) offsetof(mmu_datos_t, etiqueta));
-	gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_ETIQUETA, fallo, fallo_rz, &nf);
+	/*
+		Etiqueta y permiso, en UNA comparacion (2026-09-09). La entrada guarda
+		la etiqueta por tipo de acceso --la etiqueta si el permiso ya paso,
+		cero si no--, y el cero no puede confundirse con una etiqueta viva
+		porque todas llevan MMU_CACHE_VALIDA. Los dos desenlaces que se funden
+		--etiqueta equivocada, permiso que falta-- eran el mismo: el ayudante.
+		Ver el comentario del struct en mmu.h.
 
-	/* permisos */
-	jit_x64_test_mi_idx(&g->e, CTX, X64_R9, 1,
-		DAT + (int) offsetof(mmu_datos_t, permisos), (int) permiso_bit);
-	gen_trad_fallo(g, a, X64_E, JIT_RZ_TR_PERMISO, fallo, fallo_rz, &nf);
+		DCEMU_MMU_PERMISO_APARTE=1 vuelve a las dos. Los desplazamientos de los
+		campos no se movieron a proposito, asi que ese brazo emite byte por
+		byte lo de antes; el llenado y el macro leen la misma palanca.
+	*/
+	if (mmu_permiso_aparte)
+	{
+		jit_x64_cmp_rm_idx(&g->e, X64_RDX, CTX, X64_R9, 1,
+			DAT + (int) offsetof(mmu_datos_t, etiqueta_r));
+		gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_ETIQUETA, fallo, fallo_rz, &nf);
+
+		jit_x64_test_mi_idx(&g->e, CTX, X64_R9, 1,
+			DAT + (int) offsetof(mmu_datos_t, etiqueta_w), (int) permiso_bit);
+		gen_trad_fallo(g, a, X64_E, JIT_RZ_TR_PERMISO, fallo, fallo_rz, &nf);
+	}
+	else
+	{
+		jit_x64_cmp_rm_idx(&g->e, X64_RDX, CTX, X64_R9, 1,
+			DAT + (int) (permiso_bit == MMU_DATOS_LEER
+				? offsetof(mmu_datos_t, etiqueta_r)
+				: offsetof(mmu_datos_t, etiqueta_w)));
+		gen_trad_fallo(g, a, X64_NE, JIT_RZ_TR_ETIQUETA, fallo, fallo_rz, &nf);
+	}
 
 	/* (dir & mascara_neg) == vpn. La mascara vive negada en la entrada, asi
 	   que el camino rapido no la niega: ver el struct en mmu.h. */
@@ -8581,14 +8602,18 @@ void jit_resumen(void)
 	   vigente al lado, porque las dos cosas juntas son lo que dice si el A/B
 	   comparo lo que dice comparar. */
 	fprintf(stderr, "jit: etiqueta de traduccion %s, %llu incoherencias;"
-		" URC %s, %llu pendientes al salir; entrada de %d bytes, indice por %s\n",
+		" URC %s, %llu pendientes al salir; entrada de %d bytes, indice por %s;"
+		" etiqueta y permiso %s\n",
 		jit_etiqueta_viva ? "viva (una carga)" : "construida en cada acceso",
 		mmu_etiqueta_incoherente,
 		jit_urc_diferido ? "diferido" : "en cada acceso",
 		mmu_urc_pend,
 		(int) sizeof(mmu_datos_t),
 		jit_emision_vieja ? "imul, mascara negada al vuelo"
-						  : "corrimiento, mascara ya negada");
+						  : "corrimiento, mascara ya negada",
+		mmu_permiso_aparte ? "en dos comparaciones"
+						   : "fundidos en una (el rechazo por permiso se"
+							 " cuenta como etiqueta)");
 
 	fprintf(stderr, "jit: sincronizacion %s, %llu filas con acceso sin sitio"
 		" de llamada; corte %s, %llu incoherencias del limite; DIV1 %s;"

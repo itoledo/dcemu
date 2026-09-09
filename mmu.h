@@ -295,9 +295,9 @@ typedef struct
 	DWORD	vpn;			/* direccion & ~mascara */
 	DWORD	mascara;
 	DWORD	mascara_neg;	/* ~mascara, ya negada: ver el comentario de abajo */
-	DWORD	etiqueta;		/* ASID | usuario << 8 | VALIDA */
+	DWORD	etiqueta_r;		/* la etiqueta SI la lectura ya paso; si no, 0 */
 	DWORD	base;			/* la fisica de la pagina, ya compuesta */
-	DWORD	permisos;		/* que tipos de acceso ya pasaron todas las pruebas */
+	DWORD	etiqueta_w;		/* lo mismo para la escritura */
 	int		entrada;		/* de que entrada de la UTLB salio */
 	DWORD	gen;			/* y con que generacion */
 } mmu_datos_t;
@@ -319,6 +319,23 @@ typedef struct
 
 	Las dos mascaras se escriben juntas en el unico sitio que llena la entrada;
 	la comparacion de reuso mira `mascara`, asi que la negada la sigue de balde.
+
+	**La etiqueta va por tipo de acceso, y eso funde dos preguntas en una.** El
+	camino rapido preguntaba dos cosas seguidas sobre la misma entrada: si la
+	etiqueta era la vigente (misma pagina, mismo ASID, mismo modo) y si el bit
+	de permiso de ESTE tipo de acceso ya estaba encendido. Guardando la
+	etiqueta por separado para lectura y escritura --la etiqueta cuando el
+	permiso esta, cero cuando no-- las dos se contestan con una comparacion:
+	el cero no puede confundirse con una etiqueta viva porque TODA etiqueta
+	viva lleva MMU_CACHE_VALIDA encendido, y los dos desenlaces --etiqueta
+	equivocada y permiso que falta-- son el mismo, el ayudante.
+
+	No cambia el tamano (dos DWORD eran y dos son) NI los desplazamientos, y
+	eso es a proposito: DCEMU_MMU_PERMISO_APARTE=1 hace que estos dos campos
+	vuelvan a significar `etiqueta` y `permisos` --el llenado, el macro y el
+	emisor leen la misma palanca-- y con los desplazamientos intactos la
+	emision vieja sale byte por byte. El precio es que los dos motivos de
+	rechazo del censo se funden en uno; el resumen lo dice.
 */
 DC_ASSERT_SIZE(mmu_datos, mmu_datos_t, 32);
 
@@ -418,6 +435,28 @@ DWORD mmu_urc_tras(DWORD urc, DWORD urb, unsigned long long n);
 		MMU_SONDA_UC();													\
 	} while (0)
 
+/* La palanca de la etiqueta por tipo de acceso: 0 (la omision) funde etiqueta
+   y permiso en una comparacion, 1 los separa como antes. La leen los TRES
+   consumidores --el llenado en mmu.c, el macro de aqui y el emisor de jit.c--
+   y tienen que estar de acuerdo, que es lo que comprueba la compuerta. */
+extern int mmu_permiso_aparte;
+
+/* El campo de la entrada que contesta por este tipo de acceso. `permiso_bit`
+   es literal en cada sitio de uso, asi que el ternario se pliega al compilar. */
+#define MMU_ETIQUETA_CAMPO(e, permiso_bit)								\
+	(((permiso_bit) == MMU_DATOS_LEER) ? (e)->etiqueta_r : (e)->etiqueta_w)
+
+#define MMU_ETIQUETA_OK(e, tag, permiso_bit)							\
+	(mmu_permiso_aparte													\
+		? ((e)->etiqueta_r == (tag) && ((e)->etiqueta_w & (permiso_bit)))\
+		: (MMU_ETIQUETA_CAMPO(e, permiso_bit) == (tag)))
+
+/* La etiqueta de la entrada, sin mirar permisos: lo que el llenado compara
+   para decidir si reusa la ranura o la rehace. En la forma fundida sale de
+   juntar las dos, que valen la etiqueta o cero. */
+#define MMU_ETIQUETA_ENTRADA(e)											\
+	(mmu_permiso_aparte ? (e)->etiqueta_r : ((e)->etiqueta_r | (e)->etiqueta_w))
+
 /* De perf.h, que los llamadores ya incluyen via mem.h. */
 #define MMU_TRADUCIR_EN_SITIO(var, permiso_bit, escritura)				\
 	do																	\
@@ -434,8 +473,7 @@ DWORD mmu_urc_tras(DWORD urc, DWORD urb, unsigned long long n);
 		_mm_e   = &mmu_datos[MMU_DATOS_INDICE(var)];					\
 		_mm_tag = mmu_etiqueta;											\
 																		\
-		if (_mm_e->etiqueta == _mm_tag									\
-			&& (_mm_e->permisos & (permiso_bit))						\
+		if (MMU_ETIQUETA_OK(_mm_e, _mm_tag, permiso_bit)				\
 			&& ((var) & _mm_e->mascara_neg) == _mm_e->vpn				\
 			&& mmu_utlb_gen[_mm_e->entrada] == _mm_e->gen)				\
 		{																\
